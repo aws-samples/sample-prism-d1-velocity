@@ -14,8 +14,8 @@
     "@aws-sdk/client-eventbridge": "^3.1043.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "cors": "^2.8.5",
-    "express": "^4.22.2",
-    "uuid": "^9.0.1"
+    "express": "^4.21.0",
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
