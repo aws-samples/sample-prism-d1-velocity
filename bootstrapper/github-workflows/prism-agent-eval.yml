@@ -1,0 +1,313 @@
+# prism-agent-eval.yml -- Evaluate agent outputs on PRs that modify agent code.
+#
+# Copy this file to .github/workflows/prism-agent-eval.yml in your repo.
+#
+# Required setup:
+#   - OIDC provider configured for GitHub Actions in your AWS account
+#   - IAM role with bedrock:InvokeModel and events:PutEvents permissions
+#   - Repository secret PRISM_METRICS_ROLE_ARN set to the OIDC role ARN
+#   - .prism/config.json committed to the repo (created by: bash prism-cli bootstrapper install-git-hooks)
+#   - .prism/eval-harness/ installed (run: bash prism-cli bootstrapper install-eval-harness)
+#   - (Optional) Agent entry point supports --mock flag for dry-run execution
+
+name: PRISM Agent Eval
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, master]
+    paths:
+      - 'agent/**'
+      - 'agents/**'
+      - 'mcp-servers/**'
+      - '**/agent*.py'
+      - '**/agent*.ts'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  agent-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Read team ID from .prism/config.json
+        id: prism-config
+        run: |
+          if [[ -f .prism/config.json ]]; then
+            TEAM_ID=$(jq -r '.team_id' .prism/config.json)
+          else
+            echo "::error::.prism/config.json not found. Run bootstrapper/metric-hooks/install.sh first."
+            exit 1
+          fi
+          echo "team_id=${TEAM_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq bc
+          pip install --quiet strands-agents strands-agents-tools requests
+
+      - name: Identify agent changes
+        id: detect-agent
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+
+          # Find changed files in agent-related paths
+          AGENT_FILES=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" \
+            | grep -E '(^agent/|^agents/|^mcp-servers/|agent.*\.(py|ts)$)' || true)
+
+          if [[ -z "${AGENT_FILES}" ]]; then
+            echo "No agent-related files changed."
+            echo "has_agent_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_agent_changes=true" >> "$GITHUB_OUTPUT"
+          echo "${AGENT_FILES}" > /tmp/agent-changed-files.txt
+
+          FILE_COUNT=$(echo "${AGENT_FILES}" | wc -l | tr -d ' ')
+          echo "Found ${FILE_COUNT} changed agent files."
+          echo "file_count=${FILE_COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Run agent in mock mode
+        id: agent-run
+        if: steps.detect-agent.outputs.has_agent_changes == 'true'
+        run: |
+          # Look for agent entry points and run them with --mock flag
+          # The --mock flag should make the agent execute its workflow
+          # without real side effects, using stubbed tool responses.
+
+          AGENT_ENTRY=""
+          for CANDIDATE in agent/main.py agents/main.py agent.py; do
+            if [[ -f "${CANDIDATE}" ]]; then
+              AGENT_ENTRY="${CANDIDATE}"
+              break
+            fi
+          done
+
+          if [[ -z "${AGENT_ENTRY}" ]]; then
+            echo "No agent entry point found. Skipping mock run."
+            echo "mock_ran=false" >> "$GITHUB_OUTPUT"
+            echo "{}" > /tmp/agent-output.json
+            exit 0
+          fi
+
+          echo "Running agent in mock mode: ${AGENT_ENTRY}"
+          echo "mock_ran=true" >> "$GITHUB_OUTPUT"
+
+          set +e
+          python "${AGENT_ENTRY}" --mock > /tmp/agent-output.json 2>/tmp/agent-stderr.log
+          EXIT_CODE=$?
+          set -e
+
+          if [[ "${EXIT_CODE}" -ne 0 ]]; then
+            echo "Agent mock run exited with code ${EXIT_CODE}"
+            echo "agent_exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+            # Still continue to evaluate whatever output was produced
+          else
+            echo "agent_exit_code=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Evaluate agent output
+        id: eval
+        if: steps.detect-agent.outputs.has_agent_changes == 'true'
+        run: |
+          set -o pipefail
+          chmod +x .prism/eval-harness/run-eval.sh
+
+          RUBRIC=".prism/eval-harness/rubrics/agent-quality.json"
+
+          # If agent produced output, evaluate it
+          if [[ -s /tmp/agent-output.json ]]; then
+            EVAL_TARGET="/tmp/agent-output.json"
+          else
+            # Fall back to evaluating the agent source code itself
+            EVAL_TARGET=$(head -1 /tmp/agent-changed-files.txt)
+          fi
+
+          echo "Evaluating: ${EVAL_TARGET} against ${RUBRIC}"
+
+          set +e
+          OUTPUT=$(./.prism/eval-harness/run-eval.sh "${RUBRIC}" "${EVAL_TARGET}" 2>&1)
+          EXIT_CODE=$?
+          set -e
+
+          SCORE=$(echo "${OUTPUT}" | grep '^Score:' | awk '{print $2}' || echo "0")
+          RESULT=$(echo "${OUTPUT}" | grep '^Result:' | awk '{print $2}' || echo "UNKNOWN")
+
+          echo "score=${SCORE}" >> "$GITHUB_OUTPUT"
+          echo "result=${RESULT}" >> "$GITHUB_OUTPUT"
+
+          # Extract per-criteria scores if available
+          TASK_COMPLETION=$(echo "${OUTPUT}" | grep 'task_completion' | awk '{print $NF}' || echo "N/A")
+          TOOL_EFFICIENCY=$(echo "${OUTPUT}" | grep 'tool_usage_efficiency' | awk '{print $NF}' || echo "N/A")
+          GUARDRAIL_COMPLIANCE=$(echo "${OUTPUT}" | grep 'guardrail_compliance' | awk '{print $NF}' || echo "N/A")
+          REASONING_QUALITY=$(echo "${OUTPUT}" | grep 'reasoning_trace_quality' | awk '{print $NF}' || echo "N/A")
+          ERROR_RECOVERY=$(echo "${OUTPUT}" | grep 'error_recovery' | awk '{print $NF}' || echo "N/A")
+
+          echo "task_completion=${TASK_COMPLETION}" >> "$GITHUB_OUTPUT"
+          echo "tool_efficiency=${TOOL_EFFICIENCY}" >> "$GITHUB_OUTPUT"
+          echo "guardrail_compliance=${GUARDRAIL_COMPLIANCE}" >> "$GITHUB_OUTPUT"
+          echo "reasoning_quality=${REASONING_QUALITY}" >> "$GITHUB_OUTPUT"
+          echo "error_recovery=${ERROR_RECOVERY}" >> "$GITHUB_OUTPUT"
+
+      - name: Post PR comment
+        if: steps.detect-agent.outputs.has_agent_changes == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const score = '${{ steps.eval.outputs.score }}';
+            const result = '${{ steps.eval.outputs.result }}';
+            const mockRan = '${{ steps.agent-run.outputs.mock_ran }}';
+            const agentExit = '${{ steps.agent-run.outputs.agent_exit_code }}';
+            const fileCount = '${{ steps.detect-agent.outputs.file_count }}';
+            const emoji = result === 'PASS' ? ':white_check_mark:' : ':x:';
+
+            const taskCompletion = '${{ steps.eval.outputs.task_completion }}';
+            const toolEfficiency = '${{ steps.eval.outputs.tool_efficiency }}';
+            const guardrailCompliance = '${{ steps.eval.outputs.guardrail_compliance }}';
+            const reasoningQuality = '${{ steps.eval.outputs.reasoning_quality }}';
+            const errorRecovery = '${{ steps.eval.outputs.error_recovery }}';
+
+            const mockStatus = mockRan === 'true'
+              ? (agentExit === '0' ? ':white_check_mark: Mock run succeeded' : `:warning: Mock run exited with code ${agentExit}`)
+              : ':information_source: No agent entry point found — evaluated source code only';
+
+            const body = `## ${emoji} PRISM Agent Eval — ${result}
+
+            **Overall Score**: ${score} | **Agent Files Changed**: ${fileCount}
+
+            ${mockStatus}
+
+            ### Criteria Breakdown
+
+            | Criteria | Score | Weight |
+            |---|---|---|
+            | Task Completion | ${taskCompletion} | 0.30 |
+            | Tool Usage Efficiency | ${toolEfficiency} | 0.20 |
+            | Guardrail Compliance | ${guardrailCompliance} | 0.20 |
+            | Reasoning Trace Quality | ${reasoningQuality} | 0.15 |
+            | Error Recovery | ${errorRecovery} | 0.15 |
+
+            > Threshold: 0.82 | Rubric: agent-quality.json | Evaluated by Amazon Bedrock
+            > [PRISM D1 Velocity](${{ github.server_url }}/${{ github.repository }})`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c => c.body.includes('PRISM Agent Eval'));
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Post skip comment
+        if: steps.detect-agent.outputs.has_agent_changes != 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes('PRISM Agent Eval'));
+            if (!existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: ':white_check_mark: **PRISM Agent Eval** — No agent code changes detected. Evaluation skipped.',
+              });
+            }
+
+      - name: Emit prism.d1.agent.eval event
+        if: steps.detect-agent.outputs.has_agent_changes == 'true'
+        env:
+          SCORE: ${{ steps.eval.outputs.score }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          EVAL_EVENT=$(jq -n \
+            --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg timestamp "${TIMESTAMP}" \
+            --argjson score "${SCORE:-0}" \
+            --arg result "${{ steps.eval.outputs.result }}" \
+            --argjson file_count "${{ steps.detect-agent.outputs.file_count }}" \
+            --arg pr_number "${{ github.event.pull_request.number }}" \
+            --arg mock_ran "${{ steps.agent-run.outputs.mock_ran }}" \
+            '{
+              "team_id": $team_id,
+              "repo": $repo,
+              "timestamp": $timestamp,
+              "prism_level": 3,
+              "metric": {
+                "name": "agent_eval_score",
+                "value": $score,
+                "unit": "score"
+              },
+              "ai_context": {
+                "tool": "bedrock-eval",
+                "model": "anthropic.claude-sonnet-4-20250514",
+                "origin": "ai-generated"
+              },
+              "ai_dora": {
+                "eval_gate_pass_rate": (if $result == "PASS" then 1.0 else 0.0 end)
+              },
+              "agent_eval": {
+                "file_count": $file_count,
+                "result": $result,
+                "mock_ran": ($mock_ran == "true"),
+                "pr_number": ($pr_number | tonumber),
+                "rubric": "agent-quality"
+              }
+            }')
+
+          aws events put-events \
+            --region us-west-2 \
+            --entries "[{
+              \"Source\": \"prism.d1.velocity\",
+              \"DetailType\": \"prism.d1.agent.eval\",
+              \"EventBusName\": \"prism-d1-metrics\",
+              \"Detail\": $(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')
+            }]"
+
+      - name: Fail if eval gate failed
+        if: steps.eval.outputs.result == 'FAIL'
+        run: |
+          echo "Agent eval gate FAILED. Agent output scored below threshold."
+          exit 1

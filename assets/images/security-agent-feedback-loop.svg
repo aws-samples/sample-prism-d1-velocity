@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 350" font-family="'Open Sans', -apple-system, sans-serif">
+  <defs>
+    <filter id="sd"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.12"/></filter>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#414d5c"/></marker>
+    <marker id="arRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d13212"/></marker>
+  </defs>
+
+  <rect width="800" height="350" rx="12" fill="#f8f9fa"/>
+  <text x="400" y="28" text-anchor="middle" font-size="15" font-weight="700" fill="#232f3e">AWS Security Agent — AI-DLC Feedback Loop</text>
+
+  <!-- AI-DLC Workflow (top row) -->
+  <rect x="20" y="45" width="760" height="95" rx="10" fill="white" stroke="#0073bb" stroke-width="1.5" filter="url(#sd)"/>
+  <text x="40" y="63" font-size="10" font-weight="700" fill="#0073bb">AI-DLC Workflow (Kiro / Claude Code)</text>
+
+  <!-- Security Extensions bar -->
+  <rect x="35" y="70" width="730" height="18" rx="4" fill="#1d8102" opacity="0.15"/>
+  <text x="400" y="82" text-anchor="middle" font-size="8" font-weight="600" fill="#1d8102">Security Extensions (horizontal layer — active at every phase)</text>
+
+  <!-- Phases -->
+  <rect x="35" y="95" width="100" height="34" rx="5" fill="#ec7211" filter="url(#sd)"/>
+  <text x="85" y="116" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Requirements</text>
+
+  <line x1="135" y1="112" x2="155" y2="112" stroke="#414d5c" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="160" y="95" width="100" height="34" rx="5" fill="#0073bb" filter="url(#sd)"/>
+  <text x="210" y="116" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Design</text>
+
+  <line x1="260" y1="112" x2="280" y2="112" stroke="#414d5c" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="285" y="95" width="100" height="34" rx="5" fill="#0073bb" filter="url(#sd)"/>
+  <text x="335" y="116" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Code Gen</text>
+
+  <line x1="385" y1="112" x2="405" y2="112" stroke="#414d5c" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="410" y="95" width="100" height="34" rx="5" fill="#6a1b9a" filter="url(#sd)"/>
+  <text x="460" y="116" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Eval Gate</text>
+
+  <line x1="510" y1="112" x2="530" y2="112" stroke="#414d5c" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="535" y="95" width="100" height="34" rx="5" fill="#232f3e" filter="url(#sd)"/>
+  <text x="585" y="116" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Staging</text>
+
+  <line x1="635" y1="112" x2="655" y2="112" stroke="#414d5c" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="660" y="95" width="100" height="34" rx="5" fill="#232f3e" filter="url(#sd)"/>
+  <text x="710" y="116" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Production</text>
+
+  <!-- Artifacts dropping down -->
+  <line x1="210" y1="129" x2="210" y2="160" stroke="#687078" stroke-width="1" stroke-dasharray="3"/>
+  <rect x="165" y="160" width="90" height="25" rx="4" fill="#fef6ed" stroke="#ec7211"/>
+  <text x="210" y="176" text-anchor="middle" font-size="8" font-weight="600" fill="#ec7211">Design Doc</text>
+
+  <line x1="335" y1="129" x2="335" y2="160" stroke="#687078" stroke-width="1" stroke-dasharray="3"/>
+  <rect x="290" y="160" width="90" height="25" rx="4" fill="#f1faff" stroke="#0073bb"/>
+  <text x="335" y="176" text-anchor="middle" font-size="8" font-weight="600" fill="#0073bb">Source Code</text>
+
+  <line x1="585" y1="129" x2="585" y2="160" stroke="#687078" stroke-width="1" stroke-dasharray="3"/>
+  <rect x="540" y="160" width="90" height="25" rx="4" fill="#f2f8f0" stroke="#1d8102"/>
+  <text x="585" y="176" text-anchor="middle" font-size="8" font-weight="600" fill="#1d8102">Deployed App</text>
+
+  <!-- Security Agent scan arrows -->
+  <line x1="210" y1="185" x2="210" y2="215" stroke="#d13212" stroke-width="1.5" stroke-dasharray="4"/>
+  <text x="210" y="210" text-anchor="middle" font-size="7" fill="#d13212">Design Review</text>
+
+  <line x1="335" y1="185" x2="335" y2="215" stroke="#d13212" stroke-width="1.5" stroke-dasharray="4"/>
+  <text x="335" y="210" text-anchor="middle" font-size="7" fill="#d13212">Code Review</text>
+
+  <line x1="585" y1="185" x2="585" y2="215" stroke="#d13212" stroke-width="1.5" stroke-dasharray="4"/>
+  <text x="585" y="210" text-anchor="middle" font-size="7" fill="#d13212">Pen Testing</text>
+
+  <!-- Security Agent box -->
+  <rect x="120" y="220" width="560" height="50" rx="10" fill="#d13212" filter="url(#sd)"/>
+  <text x="400" y="244" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">AWS Security Agent</text>
+  <text x="400" y="261" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">Findings → PRISM Pipeline → Dashboards + Eval Gate (SECURITY-09)</text>
+
+  <!-- Feedback arrow (the big red loop) -->
+  <path d="M 120 245 L 50 245 L 50 112 L 35 112" stroke="#d13212" stroke-width="2.5" fill="none" marker-end="url(#arRed)"/>
+
+  <!-- Feedback label -->
+  <rect x="15" y="165" width="70" height="55" rx="6" fill="#fdf3f1" stroke="#d13212"/>
+  <text x="50" y="183" text-anchor="middle" font-size="8" font-weight="700" fill="#d13212">Feedback</text>
+  <text x="50" y="196" text-anchor="middle" font-size="7" fill="#d13212">Findings adjust</text>
+  <text x="50" y="207" text-anchor="middle" font-size="7" fill="#d13212">requirements,</text>
+  <text x="50" y="218" text-anchor="middle" font-size="7" fill="#d13212">design, code</text>
+
+  <!-- Bottom: metrics -->
+  <rect x="120" y="285" width="560" height="50" rx="8" fill="#232f3e" filter="url(#sd)"/>
+  <text x="400" y="308" text-anchor="middle" font-size="10" font-weight="700" fill="#ff9900">PRISM Metrics: FindingSurvivalRate | RemediationTime | ShiftLeftRatio</text>
+  <text x="400" y="326" text-anchor="middle" font-size="8" fill="#aab7b8">Are teams catching issues earlier? Is AI code safer than human code? How fast are findings fixed?</text>
+</svg>

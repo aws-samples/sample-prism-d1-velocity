@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380" font-family="'Open Sans', -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f8f9fa"/><stop offset="100%" stop-color="#eef1f4"/></linearGradient>
+    <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.12"/></filter>
+  </defs>
+
+  <rect width="800" height="380" rx="12" fill="url(#bg)"/>
+
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" font-size="16" font-weight="700" fill="#232f3e">Choose Your AI Surface — Same Backend, Same Metrics</text>
+
+  <!-- Bedrock box (top) -->
+  <rect x="200" y="48" width="400" height="44" rx="8" fill="#6a1b9a" filter="url(#sh)"/>
+  <text x="400" y="70" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Amazon Bedrock (Claude Models)</text>
+  <text x="400" y="84" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">inference + evaluations + guardrails</text>
+
+  <!-- Arrows down from Bedrock -->
+  <line x1="280" y1="92" x2="150" y2="120" stroke="#6a1b9a" stroke-width="2"/>
+  <line x1="400" y1="92" x2="400" y2="120" stroke="#6a1b9a" stroke-width="2"/>
+  <line x1="520" y1="92" x2="650" y2="120" stroke="#6a1b9a" stroke-width="2"/>
+
+  <!-- Surface 1: Kiro -->
+  <rect x="30" y="120" width="240" height="155" rx="10" fill="white" filter="url(#sh)" stroke="#ec7211" stroke-width="2"/>
+  <rect x="30" y="120" width="240" height="35" rx="10" fill="#ec7211"/>
+  <rect x="30" y="140" width="240" height="15" fill="#ec7211"/>
+  <text x="150" y="142" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Kiro IDE</text>
+  <text x="150" y="175" text-anchor="middle" font-size="10" font-weight="600" fill="#232f3e">AWS's AI-Native IDE</text>
+  <text x="50" y="195" font-size="9" fill="#545b64">Integrated spec editor</text>
+  <text x="50" y="210" font-size="9" fill="#545b64">Built-in planning agent</text>
+  <text x="50" y="225" font-size="9" fill="#545b64">Spec-to-code in one tool</text>
+  <text x="50" y="240" font-size="9" fill="#545b64">Steering files support</text>
+  <rect x="50" y="250" width="200" height="18" rx="4" fill="#fef6ed"/>
+  <text x="150" y="263" text-anchor="middle" font-size="8" font-weight="600" fill="#ec7211">Best for: Spec-driven teams</text>
+
+  <!-- Surface 2: Claude Code in IDE -->
+  <rect x="280" y="120" width="240" height="155" rx="10" fill="white" filter="url(#sh)" stroke="#0073bb" stroke-width="2"/>
+  <rect x="280" y="120" width="240" height="35" rx="10" fill="#0073bb"/>
+  <rect x="280" y="140" width="240" height="15" fill="#0073bb"/>
+  <text x="400" y="142" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Claude Code in IDE</text>
+  <text x="400" y="175" text-anchor="middle" font-size="10" font-weight="600" fill="#232f3e">VS Code / JetBrains Extension</text>
+  <text x="300" y="195" font-size="9" fill="#545b64">Inline AI in familiar IDE</text>
+  <text x="300" y="210" font-size="9" fill="#545b64">Reads your repo context</text>
+  <text x="300" y="225" font-size="9" fill="#545b64">Edits files alongside you</text>
+  <text x="300" y="240" font-size="9" fill="#545b64">CLAUDE.md configuration</text>
+  <rect x="300" y="250" width="200" height="18" rx="4" fill="#f1faff"/>
+  <text x="400" y="263" text-anchor="middle" font-size="8" font-weight="600" fill="#0073bb">Best for: Existing IDE users</text>
+
+  <!-- Surface 3: Claude Code CLI -->
+  <rect x="530" y="120" width="240" height="155" rx="10" fill="white" filter="url(#sh)" stroke="#1d8102" stroke-width="2"/>
+  <rect x="530" y="120" width="240" height="35" rx="10" fill="#1d8102"/>
+  <rect x="530" y="140" width="240" height="15" fill="#1d8102"/>
+  <text x="650" y="142" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Claude Code CLI</text>
+  <text x="650" y="175" text-anchor="middle" font-size="10" font-weight="600" fill="#232f3e">Terminal-First Agent</text>
+  <text x="550" y="195" font-size="9" fill="#545b64">Agentic workflow from terminal</text>
+  <text x="550" y="210" font-size="9" fill="#545b64">Multi-repo operations</text>
+  <text x="550" y="225" font-size="9" fill="#545b64">CI/CD scripting</text>
+  <text x="550" y="240" font-size="9" fill="#545b64">CLAUDE.md configuration</text>
+  <rect x="550" y="250" width="200" height="18" rx="4" fill="#f2f8f0"/>
+  <text x="650" y="263" text-anchor="middle" font-size="8" font-weight="600" fill="#1d8102">Best for: Platform / infra teams</text>
+
+  <!-- Arrows down to PRISM -->
+  <line x1="150" y1="275" x2="150" y2="300" stroke="#687078" stroke-width="1.5" stroke-dasharray="4"/>
+  <line x1="400" y1="275" x2="400" y2="300" stroke="#687078" stroke-width="1.5" stroke-dasharray="4"/>
+  <line x1="650" y1="275" x2="650" y2="300" stroke="#687078" stroke-width="1.5" stroke-dasharray="4"/>
+
+  <!-- PRISM unifying layer -->
+  <rect x="30" y="300" width="740" height="60" rx="10" fill="#232f3e" filter="url(#sh)"/>
+  <text x="400" y="325" text-anchor="middle" font-size="12" font-weight="700" fill="#ff9900">PRISM Metrics Pipeline</text>
+  <text x="400" y="345" text-anchor="middle" font-size="9" fill="#aab7b8">Same git hooks  |  Same eval gates  |  Same dashboards  |  Same CloudWatch metrics  |  Same alarms</text>
+</svg>

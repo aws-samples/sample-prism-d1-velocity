@@ -1,0 +1,46 @@
+{
+  "_comment": "AgentCore Runtime configuration template. Replace all <PLACEHOLDER> values with your actual configuration.",
+  "agent_name": "<AGENT_NAME>",
+  "description": "<DESCRIPTION_OF_AGENT_PURPOSE>",
+  "handler": {
+    "type": "LAMBDA",
+    "lambda_arn": "<LAMBDA_FUNCTION_ARN>",
+    "runtime": "python3.12"
+  },
+  "memory_config": {
+    "enabled": true,
+    "config_ref": "agentcore-memory.json",
+    "session_memory": {
+      "max_messages": 50,
+      "include_tool_results": true
+    }
+  },
+  "timeout": {
+    "invocation_timeout_seconds": 120,
+    "idle_timeout_seconds": 30
+  },
+  "model_access": {
+    "primary_model": "anthropic.claude-sonnet-4-20250514",
+    "fallback_model": "anthropic.claude-haiku-3-20250318",
+    "region": "us-west-2",
+    "max_tokens": 4096,
+    "temperature": 0.1
+  },
+  "guardrails": {
+    "guardrail_id": "<GUARDRAIL_ID>",
+    "guardrail_version": "DRAFT"
+  },
+  "environment": {
+    "PRISM_TEAM_ID": "<TEAM_ID>",
+    "PRISM_EVENT_BUS": "prism-d1-metrics",
+    "LOG_LEVEL": "INFO",
+    "AGENT_VERSION": "1.0.0",
+    "MCP_TRANSPORT": "stdio",
+    "MAX_AGENT_STEPS": "15"
+  },
+  "tags": {
+    "prism:pillar": "d1-velocity",
+    "prism:component": "agent-runtime",
+    "prism:team": "<TEAM_ID>"
+  }
+}

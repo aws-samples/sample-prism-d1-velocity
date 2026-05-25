@@ -1,0 +1,18 @@
+{
+  "name": "prism-d1-github-webhook-handler",
+  "version": "1.0.0",
+  "description": "Lambda handler for processing GitHub webhook events into PRISM metrics",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --verbose"
+  },
+  "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.540.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.136",
+    "@types/node": "^20.11.19",
+    "typescript": "^5.3.3"
+  }
+}

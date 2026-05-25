@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRISM D1 Assessment — Arcline Health</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    color: #1e293b; background: #f8fafc; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 900px; margin: 0 auto; padding: 40px 24px; }
+  .header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: #fff; padding: 48px 40px; border-radius: 12px; margin-bottom: 32px;
+  }
+  .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  .header .subtitle { font-size: 15px; color: #94a3b8; margin-bottom: 24px; }
+  .header-grid {
+    display: grid; grid-template-columns: 140px 1fr 140px 1fr;
+    gap: 10px 16px; font-size: 14px;
+  }
+  .header-grid .label { color: #94a3b8; }
+  .header-grid .value { color: #e2e8f0; font-weight: 500; }
+  .card {
+    background: #fff; border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 32px; margin-bottom: 24px;
+  }
+  .card h2 {
+    font-size: 20px; font-weight: 700; color: #1a1a2e;
+    margin-bottom: 16px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0;
+  }
+  .card h3 { font-size: 16px; font-weight: 600; color: #334155; margin-top: 20px; margin-bottom: 12px; }
+  .level-display { display: flex; align-items: center; gap: 24px; margin-bottom: 20px; }
+  .level-badge {
+    display: flex; align-items: center; justify-content: center;
+    width: 88px; height: 88px; border-radius: 50%;
+    background: linear-gradient(135deg, #0066ff, #7c3aed);
+    color: #fff; font-size: 28px; font-weight: 800; flex-shrink: 0;
+  }
+  .level-label { font-size: 22px; font-weight: 700; color: #1a1a2e; }
+  .level-band { font-size: 14px; color: #64748b; margin-bottom: 6px; }
+  .verdict-badge {
+    display: inline-block; padding: 4px 14px; border-radius: 20px;
+    font-size: 13px; font-weight: 600; color: #fff;
+  }
+  .verdict-ready { background: #22c55e; }
+  .verdict-foundations { background: #f59e0b; }
+  .verdict-notqualified { background: #ef4444; }
+  .scores-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 20px; }
+  .score-card {
+    background: #f8fafc; border-radius: 8px; padding: 16px; text-align: center;
+  }
+  .score-card .score-value { font-size: 32px; font-weight: 800; color: #0066ff; }
+  .score-card .score-max { font-size: 14px; color: #94a3b8; }
+  .score-card .score-label { font-size: 12px; color: #64748b; margin-top: 4px; }
+  .narrative { font-size: 15px; color: #334155; line-height: 1.7; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    background: #f1f5f9; color: #475569; font-weight: 600; text-align: left;
+    padding: 10px 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .radar-container { text-align: center; margin: 20px 0; }
+  .track-badge {
+    display: inline-block; padding: 6px 18px; border-radius: 6px;
+    background: linear-gradient(135deg, #0066ff, #7c3aed);
+    color: #fff; font-size: 18px; font-weight: 700;
+  }
+  .status-dot {
+    display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+  .status-green { background: #22c55e; }
+  .status-amber { background: #f59e0b; }
+  .status-red { background: #ef4444; }
+  .progress-bg { background: #e2e8f0; border-radius: 4px; height: 8px; width: 100%; }
+  .progress-fill { border-radius: 4px; height: 8px; }
+  .fill-green { background: #22c55e; }
+  .fill-amber { background: #f59e0b; }
+  .fill-red { background: #ef4444; }
+  .footer { text-align: center; padding: 24px; color: #94a3b8; font-size: 13px; }
+  @media print {
+    body { background: #fff; font-size: 12px; }
+    .page { padding: 0; max-width: 100%; }
+    .header {
+      border-radius: 0; margin-bottom: 16px; padding: 20px 24px;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    .card {
+      box-shadow: none; border: 1px solid #e2e8f0;
+      page-break-inside: avoid; margin-bottom: 12px; padding: 16px;
+    }
+    .status-dot, .progress-bg, .progress-fill, .level-badge, .verdict-badge, .track-badge, .score-card {
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <h1>PRISM D1 Velocity Assessment</h1>
+    <div class="subtitle">AI-Assisted Development Lifecycle Maturity Report</div>
+    <div class="header-grid">
+      <div class="label">Customer</div>
+      <div class="value">Arcline Health</div>
+      <div class="label">Team Size</div>
+      <div class="value">14 engineers</div>
+      <div class="label">Funding Stage</div>
+      <div class="value">Series B</div>
+      <div class="label">Assessment Date</div>
+      <div class="value">2026-04-08</div>
+      <div class="label">Solutions Architect</div>
+      <div class="value">Priya Chakraborty</div>
+      <div class="label">Repository</div>
+      <div class="value" style="font-family:monospace;font-size:13px">github.com/arcline-health/care-platform</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Executive Summary</h2>
+    <div class="level-display">
+      <div class="level-badge">L2.5</div>
+      <div>
+        <div class="level-label">PRISM D1 Level 2.5</div>
+        <div class="level-band">Structured — AI tooling adopted, early measurement</div>
+        <span class="verdict-badge verdict-ready">Ready For Pilot</span>
+      </div>
+    </div>
+    <p class="narrative">Arcline Health is a Series B startup with 14 engineers, currently assessed at
+    <strong>PRISM D1 Level 2.5</strong> (Structured).
+    The automated scanner scored 48/100 and the SA interview scored 54/100,
+    with an org readiness score of 20/20, producing a blended score of 60.8.
+    The assessment verdict is <strong>Ready For Pilot</strong>, routing Arcline Health to
+    <strong>Track B: Full Workshop</strong>.</p>
+    <div class="scores-grid">
+      <div class="score-card">
+        <div class="score-value">48</div>
+        <div class="score-max">/ 100</div>
+        <div class="score-label">Scanner Score (40%)</div>
+      </div>
+      <div class="score-card">
+        <div class="score-value">54</div>
+        <div class="score-max">/ 100</div>
+        <div class="score-label">Interview Score (40%)</div>
+      </div>
+      <div class="score-card">
+        <div class="score-value">20</div>
+        <div class="score-max">/ 20</div>
+        <div class="score-label">Org Readiness (20%)</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Scanner Category Breakdown</h2>
+    <div class="radar-container">
+      <svg viewBox="0 0 380 380" width="380" height="380" xmlns="http://www.w3.org/2000/svg">
+<rect width="380" height="380" fill="none"/>
+<circle cx="190" cy="190" r="32.5" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<circle cx="190" cy="190" r="65.0" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<circle cx="190" cy="190" r="97.5" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<circle cx="190" cy="190" r="130.0" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<line x1="190" y1="190" x2="190.0" y2="60.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="190.0" y="32.0" text-anchor="middle" font-size="10" fill="#64748b" font-family="sans-serif">AI Tool Config</text>
+<line x1="190" y1="190" x2="255.0" y2="77.4" stroke="#e2e8f0" stroke-width="1"/>
+<text x="269.0" y="53.2" text-anchor="start" font-size="10" fill="#64748b" font-family="sans-serif">Spec-Driven ..</text>
+<line x1="190" y1="190" x2="302.6" y2="125.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="326.8" y="111.0" text-anchor="start" font-size="10" fill="#64748b" font-family="sans-serif">Commit Hygiene</text>
+<line x1="190" y1="190" x2="320.0" y2="190.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="348.0" y="190.0" text-anchor="start" font-size="10" fill="#64748b" font-family="sans-serif">CI/CD Integr..</text>
+<line x1="190" y1="190" x2="302.6" y2="255.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="326.8" y="269.0" text-anchor="start" font-size="10" fill="#64748b" font-family="sans-serif">Eval & Quality</text>
+<line x1="190" y1="190" x2="255.0" y2="302.6" stroke="#e2e8f0" stroke-width="1"/>
+<text x="269.0" y="326.8" text-anchor="start" font-size="10" fill="#64748b" font-family="sans-serif">Testing Matu..</text>
+<line x1="190" y1="190" x2="190.0" y2="320.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="190.0" y="348.0" text-anchor="middle" font-size="10" fill="#64748b" font-family="sans-serif">AI Observabi..</text>
+<line x1="190" y1="190" x2="125.0" y2="302.6" stroke="#e2e8f0" stroke-width="1"/>
+<text x="111.0" y="326.8" text-anchor="end" font-size="10" fill="#64748b" font-family="sans-serif">Governance</text>
+<line x1="190" y1="190" x2="77.4" y2="255.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="53.2" y="269.0" text-anchor="end" font-size="10" fill="#64748b" font-family="sans-serif">Agent Workfl..</text>
+<line x1="190" y1="190" x2="60.0" y2="190.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="32.0" y="190.0" text-anchor="end" font-size="10" fill="#64748b" font-family="sans-serif">Platform Reuse</text>
+<line x1="190" y1="190" x2="77.4" y2="125.0" stroke="#e2e8f0" stroke-width="1"/>
+<text x="53.2" y="111.0" text-anchor="end" font-size="10" fill="#64748b" font-family="sans-serif">Documentation</text>
+<line x1="190" y1="190" x2="125.0" y2="77.4" stroke="#e2e8f0" stroke-width="1"/>
+<text x="111.0" y="53.2" text-anchor="end" font-size="10" fill="#64748b" font-family="sans-serif">Dependencies</text>
+<polygon points="190.0,86.0 222.5,133.7 265.1,146.7 250.7,190.0 212.5,203.0 229.0,257.5 190.0,203.0 164.0,235.0 167.5,203.0 138.0,190.0 114.9,146.7 125.0,77.4" fill="rgba(124,58,237,0.2)" stroke="#7c3aed" stroke-width="2"/>
+<circle cx="190.0" cy="86.0" r="5" fill="#22c55e" stroke="#fff" stroke-width="2"/>
+<circle cx="222.5" cy="133.7" r="5" fill="#f59e0b" stroke="#fff" stroke-width="2"/>
+<circle cx="265.1" cy="146.7" r="5" fill="#22c55e" stroke="#fff" stroke-width="2"/>
+<circle cx="250.7" cy="190.0" r="5" fill="#f59e0b" stroke="#fff" stroke-width="2"/>
+<circle cx="212.5" cy="203.0" r="5" fill="#ef4444" stroke="#fff" stroke-width="2"/>
+<circle cx="229.0" cy="257.5" r="5" fill="#22c55e" stroke="#fff" stroke-width="2"/>
+<circle cx="190.0" cy="203.0" r="5" fill="#ef4444" stroke="#fff" stroke-width="2"/>
+<circle cx="164.0" cy="235.0" r="5" fill="#f59e0b" stroke="#fff" stroke-width="2"/>
+<circle cx="167.5" cy="203.0" r="5" fill="#ef4444" stroke="#fff" stroke-width="2"/>
+<circle cx="138.0" cy="190.0" r="5" fill="#f59e0b" stroke="#fff" stroke-width="2"/>
+<circle cx="114.9" cy="146.7" r="5" fill="#22c55e" stroke="#fff" stroke-width="2"/>
+<circle cx="125.0" cy="77.4" r="5" fill="#22c55e" stroke="#fff" stroke-width="2"/>
+</svg>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Category</th><th>Score</th><th>Progress</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td>AI Tool Config</td>
+          <td style="font-weight:600">8 / 10</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-green" style="width:80%"></div></div>
+          </td>
+          <td><span class="status-dot status-green"></span>80%</td>
+        </tr>
+        <tr>
+          <td>Spec-Driven Dev</td>
+          <td style="font-weight:600">5 / 10</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-amber" style="width:50%"></div></div>
+          </td>
+          <td><span class="status-dot status-amber"></span>50%</td>
+        </tr>
+        <tr>
+          <td>Commit Hygiene</td>
+          <td style="font-weight:600">10 / 15</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-green" style="width:66%"></div></div>
+          </td>
+          <td><span class="status-dot status-green"></span>66%</td>
+        </tr>
+        <tr>
+          <td>CI/CD Integration</td>
+          <td style="font-weight:600">7 / 15</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-amber" style="width:46%"></div></div>
+          </td>
+          <td><span class="status-dot status-amber"></span>46%</td>
+        </tr>
+        <tr>
+          <td>Eval & Quality</td>
+          <td style="font-weight:600">2 / 10</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-red" style="width:20%"></div></div>
+          </td>
+          <td><span class="status-dot status-red"></span>20%</td>
+        </tr>
+        <tr>
+          <td>Testing Maturity</td>
+          <td style="font-weight:600">6 / 10</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-green" style="width:60%"></div></div>
+          </td>
+          <td><span class="status-dot status-green"></span>60%</td>
+        </tr>
+        <tr>
+          <td>AI Observability</td>
+          <td style="font-weight:600">1 / 10</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-red" style="width:10%"></div></div>
+          </td>
+          <td><span class="status-dot status-red"></span>10%</td>
+        </tr>
+        <tr>
+          <td>Governance</td>
+          <td style="font-weight:600">2 / 5</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-amber" style="width:40%"></div></div>
+          </td>
+          <td><span class="status-dot status-amber"></span>40%</td>
+        </tr>
+        <tr>
+          <td>Agent Workflows</td>
+          <td style="font-weight:600">1 / 5</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-red" style="width:20%"></div></div>
+          </td>
+          <td><span class="status-dot status-red"></span>20%</td>
+        </tr>
+        <tr>
+          <td>Platform Reuse</td>
+          <td style="font-weight:600">2 / 5</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-amber" style="width:40%"></div></div>
+          </td>
+          <td><span class="status-dot status-amber"></span>40%</td>
+        </tr>
+        <tr>
+          <td>Documentation</td>
+          <td style="font-weight:600">2 / 3</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-green" style="width:66%"></div></div>
+          </td>
+          <td><span class="status-dot status-green"></span>66%</td>
+        </tr>
+        <tr>
+          <td>Dependencies</td>
+          <td style="font-weight:600">2 / 2</td>
+          <td>
+            <div class="progress-bg"><div class="progress-fill fill-green" style="width:100%"></div></div>
+          </td>
+          <td><span class="status-dot status-green"></span>100%</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Interview Assessment</h2>
+    <table>
+      <thead>
+        <tr><th>Section</th><th>Score</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td><strong>AI Tooling Landscape</strong><ul style='margin:4px 0 0 16px;color:#64748b;font-size:12px'><li>Claude Code deployed via Bedrock across all 3 squads</li><li>CLAUDE.md exists but is inconsistent across repos (2 of 5 repos have it)</li><li>Kiro IDE adopted by 8 of 14 developers</li><li>Standardized on Claude 3.5 Sonnet for code generation</li></ul></td>
+          <td style="font-weight:600">11 / 15</td>
+          <td><span class="status-dot status-green"></span>73%</td>
+        </tr>
+        <tr>
+          <td><strong>Development Workflow & Specs</strong><ul style='margin:4px 0 0 16px;color:#64748b;font-size:12px'><li>Feature specs used informally by senior engineers but not mandated</li><li>No bug fix or refactor spec templates in use</li><li>PRD-to-spec mapping attempted but not systematic</li><li>Team lead has drafted a spec template but it is not adopted yet</li></ul></td>
+          <td style="font-weight:600">10 / 20</td>
+          <td><span class="status-dot status-amber"></span>50%</td>
+        </tr>
+        <tr>
+          <td><strong>CI/CD & Quality</strong><ul style='margin:4px 0 0 16px;color:#64748b;font-size:12px'><li>GitHub Actions with lint, test, and build steps</li><li>No eval gates -- all PRs go through human review only</li><li>Test coverage at 68%, above average for the stage</li><li>HIPAA compliance checks in CI are manual</li></ul></td>
+          <td style="font-weight:600">10 / 20</td>
+          <td><span class="status-dot status-amber"></span>50%</td>
+        </tr>
+        <tr>
+          <td><strong>Metrics & Visibility</strong><ul style='margin:4px 0 0 16px;color:#64748b;font-size:12px'><li>Basic GitHub Insights used for commit activity</li><li>No AI-specific metrics (acceptance rate, cost, token usage)</li><li>Engineering manager tracks velocity in Jira but not AI contribution</li><li>No executive dashboard or readout process</li></ul></td>
+          <td style="font-weight:600">4 / 15</td>
+          <td><span class="status-dot status-red"></span>26%</td>
+        </tr>
+        <tr>
+          <td><strong>Governance & Security</strong><ul style='margin:4px 0 0 16px;color:#64748b;font-size:12px'><li>HIPAA-aware: team avoids sending PHI to AI tools</li><li>No formal AI governance policy documented</li><li>Data handling guidelines exist for prod but not for AI tools</li><li>Security team has reviewed Bedrock data residency</li></ul></td>
+          <td style="font-weight:600">7 / 15</td>
+          <td><span class="status-dot status-amber"></span>46%</td>
+        </tr>
+        <tr>
+          <td><strong>Org & Culture</strong><ul style='margin:4px 0 0 16px;color:#64748b;font-size:12px'><li>VP Engineering is the executive sponsor, actively engaged</li><li>Dedicated AI champion (senior engineer) driving adoption</li><li>All 3 squads have at least one AI-enthusiastic member</li><li>Team ran an internal AI hackathon last quarter</li></ul></td>
+          <td style="font-weight:600">12 / 15</td>
+          <td><span class="status-dot status-green"></span>80%</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Organizational Readiness</h2>
+    <div style="margin:12px 0"><div style="display:inline-block;margin:4px 16px 4px 0;font-size:14px"><span style="color:#22c55e;font-weight:700;margin-right:4px">&#10003;</span>Executive Sponsor Identified</div><div style="display:inline-block;margin:4px 16px 4px 0;font-size:14px"><span style="color:#22c55e;font-weight:700;margin-right:4px">&#10003;</span>Dedicated AI Champion</div><div style="display:inline-block;margin:4px 16px 4px 0;font-size:14px"><span style="color:#22c55e;font-weight:700;margin-right:4px">&#10003;</span>Team Willingness</div><div style="display:inline-block;margin:4px 16px 4px 0;font-size:14px"><span style="color:#22c55e;font-weight:700;margin-right:4px">&#10003;</span>Budget Approved</div><div style="display:inline-block;margin:4px 16px 4px 0;font-size:14px"><span style="color:#22c55e;font-weight:700;margin-right:4px">&#10003;</span>Timeline Commitment</div></div>
+    <p style="color:#64748b;font-size:14px;margin-top:8px">Org readiness score: <strong>20/20</strong></p>
+  </div>
+
+  <div class="card">
+    <h2>Top Strengths</h2>
+    <ol style="margin-left:20px;color:#334155"><li><strong>Dependencies</strong>: 2/2 (100%)</li><li><strong>AI Tool Config</strong>: 8/10 (80%)</li><li><strong>Commit Hygiene</strong>: 10/15 (66%)</li></ol>
+  </div>
+
+  <div class="card">
+    <h2>Gap Analysis &amp; Remediation</h2>
+    <table>
+      <thead>
+        <tr><th>Priority</th><th>Category</th><th>Score</th><th>Recommended Action</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td style="font-weight:600">#1</td>
+          <td>AI Observability (scanner)</td>
+          <td>1/10 (10%)</td>
+          <td>Deploy the EventBridge-Timestream metrics pipeline. Enable token tracking, cost attribution, and latency monitoring.</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">#2</td>
+          <td>Eval & Quality (scanner)</td>
+          <td>2/10 (20%)</td>
+          <td>Define quality rubrics for AI-generated code. Implement automated scoring. Establish minimum acceptance thresholds.</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">#3</td>
+          <td>Agent Workflows (scanner)</td>
+          <td>1/5 (20%)</td>
+          <td>Identify first candidate for multi-step agent workflow. Start with low-risk automation. Document the workflow pattern.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Onboarding Recommendation</h2>
+    <div style="margin-bottom:20px">
+      <span class="track-badge">Track B: Full Workshop</span>
+    </div>
+
+    <h3>Workshop Modules</h3>
+    <table>
+      <thead>
+        <tr><th style="width:40px"></th><th>ID</th><th>Module</th><th>Rationale</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td style="color:#22c55e;font-weight:700;font-size:16px;text-align:center">&#10003;</td>
+          <td>M00</td>
+          <td>Environment Setup</td>
+          <td style="color:#64748b;font-size:13px">Verify and upgrade existing setup</td>
+        </tr>
+        <tr>
+          <td style="color:#22c55e;font-weight:700;font-size:16px;text-align:center">&#10003;</td>
+          <td>M01</td>
+          <td>CLAUDE.md & Standards</td>
+          <td style="color:#64748b;font-size:13px">Align existing config to PRISM standards</td>
+        </tr>
+        <tr>
+          <td style="color:#22c55e;font-weight:700;font-size:16px;text-align:center">&#10003;</td>
+          <td>M02</td>
+          <td>Spec-Driven Development</td>
+          <td style="color:#64748b;font-size:13px">Formalize and standardize spec workflows</td>
+        </tr>
+        <tr>
+          <td style="color:#22c55e;font-weight:700;font-size:16px;text-align:center">&#10003;</td>
+          <td>M03</td>
+          <td>CI/CD & Eval Gates</td>
+          <td style="color:#64748b;font-size:13px">Instrument pipeline with eval gates</td>
+        </tr>
+        <tr>
+          <td style="color:#22c55e;font-weight:700;font-size:16px;text-align:center">&#10003;</td>
+          <td>M04</td>
+          <td>Metrics & Dashboards</td>
+          <td style="color:#64748b;font-size:13px">Deploy Timestream + QuickSight dashboards</td>
+        </tr>
+        <tr>
+          <td style="color:#22c55e;font-weight:700;font-size:16px;text-align:center">&#10003;</td>
+          <td>M05</td>
+          <td>Governance & Scaling</td>
+          <td style="color:#64748b;font-size:13px">Establish governance model for scaling</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Success Metrics</h3>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Target</th><th>Measure By</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td>AI acceptance rate</td>
+          <td style="font-weight:600">30%+</td>
+          <td>Week 4 checkpoint</td>
+        </tr>
+        <tr>
+          <td>Eval gate active in CI</td>
+          <td style="font-weight:600">At least 1 pipeline</td>
+          <td>Week 2 of pilot</td>
+        </tr>
+        <tr>
+          <td>Weekly executive readout</td>
+          <td style="font-weight:600">Active and reviewed</td>
+          <td>Week 3 of pilot</td>
+        </tr>
+        <tr>
+          <td>PRISM D1 level improvement</td>
+          <td style="font-weight:600">+0.5 levels</td>
+          <td>Week 8 of pilot</td>
+        </tr>
+        <tr>
+          <td>Dashboard data freshness</td>
+          <td style="font-weight:600">Within 1 hour</td>
+          <td>Week 2 of pilot</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>90-Day Roadmap</h2>
+    <table>
+      <thead>
+        <tr><th>Timeline</th><th>Milestone</th><th>Measurable Outcome</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td style="font-weight:600">Week 1</td>
+          <td>Bootstrapper fully deployed</td>
+          <td style="color:#64748b;font-size:13px">All components live, first metrics flowing</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 2</td>
+          <td>Eval gate in CI, dashboards active</td>
+          <td style="color:#64748b;font-size:13px">PR pipeline includes eval step, QuickSight live</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 4</td>
+          <td>Midpoint checkpoint passed</td>
+          <td style="color:#64748b;font-size:13px">AI acceptance rate 30%+, exec readout active</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 6</td>
+          <td>Governance model documented</td>
+          <td style="color:#64748b;font-size:13px">Policy document published to team wiki</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 8</td>
+          <td>Pilot readout delivered</td>
+          <td style="color:#64748b;font-size:13px">L3.0+ achieved, Track C eligible</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 12</td>
+          <td>90-day sustained adoption</td>
+          <td style="color:#64748b;font-size:13px">Metrics stable, no regression below L2.5</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>SA Engagement Cadence</h2>
+    <table>
+      <thead>
+        <tr><th>Week</th><th>Type</th><th>Duration</th><th>Agenda</th></tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+          <td style="font-weight:600">Week -1</td>
+          <td>Pre-work kick-off call</td>
+          <td>30 min</td>
+          <td style="color:#64748b;font-size:13px">Review pre-work checklist, confirm AWS access, workshop logistics</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 0</td>
+          <td>Workshop delivery</td>
+          <td>4 hr</td>
+          <td style="color:#64748b;font-size:13px">Deliver all 6 modules, hands-on exercises, bootstrapper deployment</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 1</td>
+          <td>Video call</td>
+          <td>45 min</td>
+          <td style="color:#64748b;font-size:13px">Verify bootstrapper deployment, review first metrics, troubleshoot</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 2</td>
+          <td>Async check-in</td>
+          <td>15 min (Slack)</td>
+          <td style="color:#64748b;font-size:13px">Review dashboard data quality, flag any pipeline issues</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 4</td>
+          <td>Checkpoint call</td>
+          <td>1 hr</td>
+          <td style="color:#64748b;font-size:13px">Midpoint review, acceptance rate check, adjust pilot targets</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 6</td>
+          <td>Async check-in</td>
+          <td>15 min (Slack)</td>
+          <td style="color:#64748b;font-size:13px">Review progress toward 8-week goals, flag risks</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600">Week 8</td>
+          <td>Pilot readout call</td>
+          <td>1 hr</td>
+          <td style="color:#64748b;font-size:13px">Final pilot metrics, L3 readiness determination, next steps</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    <p>PRISM D1 Velocity Assessment Report &mdash; Generated 2026-04-08</p>
+    <p>AWS Solutions Architecture &middot; Startups Organization &middot; CONFIDENTIAL</p>
+    <p style="margin-top:8px">Solutions Architect: Priya Chakraborty</p>
+  </div>
+
+</div>
+</body>
+</html>

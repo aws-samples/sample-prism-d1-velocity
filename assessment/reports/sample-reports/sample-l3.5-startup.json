@@ -1,0 +1,191 @@
+{
+  "metadata": {
+    "description": "Sample assessment for Vectrix AI, an L3.5 Series C developer tools startup. Strong across most categories with specific gaps in governance and platform reuse. Verdict: READY_FOR_PILOT, Track C.",
+    "generatedBy": "PRISM D1 Velocity Assessment Engine",
+    "samplePurpose": "Demonstrates Track C routing for teams in the Established band"
+  },
+  "customer": {
+    "name": "Vectrix AI",
+    "teamSize": 28,
+    "fundingStage": "Series C"
+  },
+  "assessment": {
+    "assessmentDate": "2026-04-05",
+    "saName": "Marcus Chen",
+    "repoAnalyzed": "github.com/vectrix-ai/vx-platform",
+    "scannerScores": [
+      { "id": "ai_tool_config", "name": "AI Tool Config", "score": 9, "maxScore": 10 },
+      { "id": "spec_driven_dev", "name": "Spec-Driven Dev", "score": 8, "maxScore": 10 },
+      { "id": "commit_hygiene", "name": "Commit Hygiene", "score": 13, "maxScore": 15 },
+      { "id": "cicd_integration", "name": "CI/CD Integration", "score": 11, "maxScore": 15 },
+      { "id": "eval_quality", "name": "Eval & Quality", "score": 7, "maxScore": 10 },
+      { "id": "testing_maturity", "name": "Testing Maturity", "score": 8, "maxScore": 10 },
+      { "id": "ai_observability", "name": "AI Observability", "score": 5, "maxScore": 10 },
+      { "id": "governance", "name": "Governance", "score": 1, "maxScore": 5 },
+      { "id": "agent_workflows", "name": "Agent Workflows", "score": 3, "maxScore": 5 },
+      { "id": "platform_reuse", "name": "Platform Reuse", "score": 1, "maxScore": 5 },
+      { "id": "documentation", "name": "Documentation", "score": 3, "maxScore": 3 },
+      { "id": "dependencies", "name": "Dependencies", "score": 2, "maxScore": 2 }
+    ],
+    "scannerTotal": 71,
+    "interviewScores": [
+      {
+        "id": "ai_tooling_landscape",
+        "name": "AI Tooling Landscape",
+        "score": 14,
+        "maxScore": 15,
+        "keyFindings": [
+          "Claude Code deployed via Bedrock across all 5 squads with standardized configuration",
+          "CLAUDE.md in every repository, reviewed quarterly",
+          "Kiro IDE is the default IDE for 24 of 28 engineers",
+          "Custom Claude Code extensions for internal tooling built by platform team"
+        ]
+      },
+      {
+        "id": "dev_workflow_specs",
+        "name": "Development Workflow & Specs",
+        "score": 16,
+        "maxScore": 20,
+        "keyFindings": [
+          "Feature specs mandatory for all new work; enforced via PR template",
+          "Bug fix and refactor specs adopted by 3 of 5 squads",
+          "Spec quality varies -- some are too brief, missing acceptance criteria",
+          "Automated spec-to-PR linking in place via GitHub Actions"
+        ]
+      },
+      {
+        "id": "cicd_quality",
+        "name": "CI/CD & Quality",
+        "score": 15,
+        "maxScore": 20,
+        "keyFindings": [
+          "GitHub Actions with comprehensive lint, test, build, and security scan steps",
+          "Basic eval gate exists but uses threshold of 0 (everything passes)",
+          "Test coverage at 81%, well above average",
+          "Bedrock Evaluation integration started but not yet gating PRs"
+        ]
+      },
+      {
+        "id": "metrics_visibility",
+        "name": "Metrics & Visibility",
+        "score": 8,
+        "maxScore": 15,
+        "keyFindings": [
+          "Custom Datadog dashboard tracks commit volumes and deployment frequency",
+          "AI-origin trailer data collected but not visualized",
+          "No AI acceptance rate or cost-per-commit metrics",
+          "Engineering VP reviews velocity metrics weekly but not AI-specific ones"
+        ]
+      },
+      {
+        "id": "governance_security",
+        "name": "Governance & Security",
+        "score": 5,
+        "maxScore": 15,
+        "keyFindings": [
+          "SOC 2 compliant: strong data handling for production systems",
+          "AI governance policy is informal and undocumented",
+          "No agent autonomy levels defined -- all engineers have full access",
+          "Security review of AI-generated code relies solely on human PR review",
+          "No cost controls on Bedrock usage"
+        ]
+      },
+      {
+        "id": "org_culture",
+        "name": "Org & Culture",
+        "score": 13,
+        "maxScore": 15,
+        "keyFindings": [
+          "CTO leads AI adoption strategy personally",
+          "Two dedicated platform engineers focused on developer tooling",
+          "Monthly internal AI showcase with cross-team presentations",
+          "New hire onboarding includes AI tooling training module"
+        ]
+      }
+    ],
+    "interviewTotal": 71,
+    "orgReadiness": {
+      "executiveSponsor": true,
+      "dedicatedChampion": true,
+      "teamWillingness": true,
+      "budgetApproved": true,
+      "timelineCommitment": true,
+      "totalScore": 20
+    },
+    "blendedScore": 76.8,
+    "prismLevel": 3.5,
+    "verdict": "READY_FOR_PILOT"
+  },
+  "onboardingPlan": {
+    "track": "C",
+    "trackName": "Accelerated",
+    "customer": {
+      "name": "Vectrix AI",
+      "teamSize": 28,
+      "fundingStage": "Series C"
+    },
+    "prismLevel": 3.5,
+    "verdict": "READY_FOR_PILOT",
+    "workshopModules": [
+      { "id": "M00", "name": "Environment Setup", "included": false, "reason": "Already have a working setup" },
+      { "id": "M01", "name": "CLAUDE.md & Standards", "included": false, "reason": "Already adopted standards" },
+      { "id": "M02", "name": "Spec-Driven Development", "included": false, "reason": "Already practicing spec-driven dev" },
+      { "id": "M03", "name": "CI/CD & Eval Gates", "included": true, "reason": "Close eval and quality gaps" },
+      { "id": "M04", "name": "Metrics & Dashboards", "included": true, "reason": "Deploy advanced observability" },
+      { "id": "M05", "name": "Governance & Scaling", "included": true, "reason": "Formalize governance for scale" }
+    ],
+    "preWork": [
+      { "task": "Review assessment report and gap analysis in detail", "deadline": "3 days before workshop", "owner": "Team lead" },
+      { "task": "Prepare access to CI/CD pipeline for eval gate integration", "deadline": "Before workshop", "owner": "Platform/DevOps lead" },
+      { "task": "Identify the production endpoint for Bedrock Evaluation", "deadline": "Before workshop", "owner": "Platform/DevOps lead" },
+      { "task": "Schedule executive readout for Week 2 of the pilot", "deadline": "Before workshop", "owner": "Engineering manager" }
+    ],
+    "bootstrapperComponents": [
+      { "component": "CI/CD eval gate integration", "priority": "immediate" },
+      { "component": "Advanced metrics pipeline upgrades", "priority": "immediate" },
+      { "component": "Governance policy documentation", "priority": "week1" },
+      { "component": "Advanced QuickSight dashboard views", "priority": "week1" },
+      { "component": "Agent workflow automation templates", "priority": "week2" }
+    ],
+    "gapRemediation": [
+      {
+        "gap": "#1",
+        "category": "Governance (scanner)",
+        "score": "1/5 (20%)",
+        "action": "Create an AI usage governance charter. Define approval workflows for agent autonomy levels. Document data handling policies."
+      },
+      {
+        "gap": "#2",
+        "category": "Platform Reuse (scanner)",
+        "score": "1/5 (20%)",
+        "action": "Audit for reusable AI components. Create a shared prompt library. Establish a pattern catalog for common AI-assisted tasks."
+      },
+      {
+        "gap": "#3",
+        "category": "Governance & Security (interview)",
+        "score": "5/15 (33%)",
+        "action": "Draft an AI governance charter. Address data residency and PII concerns. Define security review requirements for AI-generated code."
+      }
+    ],
+    "successMetrics": [
+      { "metric": "Top-3 gap category scores", "target": "50%+ improvement", "measureBy": "Week 4" },
+      { "metric": "PRISM D1 level", "target": "Reach L3.5+", "measureBy": "Week 8" },
+      { "metric": "Governance model", "target": "Documented and adopted", "measureBy": "Week 2" },
+      { "metric": "Advanced dashboards", "target": "Live with trend data", "measureBy": "Week 4" }
+    ],
+    "milestones": [
+      { "week": 1, "milestone": "Gap remediation started", "measurable": "Top-3 gaps have action plans in progress" },
+      { "week": 2, "milestone": "Advanced dashboards deployed", "measurable": "Custom views live with trend analysis" },
+      { "week": 4, "milestone": "Midpoint checkpoint passed", "measurable": "Top-3 gaps improved 50%+" },
+      { "week": 8, "milestone": "L3.5+ achieved, pilot complete", "measurable": "Re-assessment confirms L3.5+" },
+      { "week": 12, "milestone": "L4 transition ready", "measurable": "Track D architecture review scheduled" }
+    ],
+    "saTouchpoints": [
+      { "week": -1, "type": "Async prep", "duration": "15 min (Slack)", "agenda": "Share gap analysis, confirm workshop focus areas" },
+      { "week": 0, "type": "Targeted workshop", "duration": "2 hr", "agenda": "Deliver Modules 03-05 with gap-specific exercises" },
+      { "week": 2, "type": "Video call", "duration": "30 min", "agenda": "Verify gap remediation progress, review dashboards" },
+      { "week": 4, "type": "Checkpoint call", "duration": "45 min", "agenda": "Midpoint review, gap score improvements, adjust plan" },
+      { "week": 8, "type": "Pilot readout call", "duration": "1 hr", "agenda": "Final readout, L3.5+ confirmation, L4 transition plan" }
+    ]
+  }
+}

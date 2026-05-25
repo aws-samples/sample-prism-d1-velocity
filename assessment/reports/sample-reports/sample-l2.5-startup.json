@@ -1,0 +1,203 @@
+{
+  "metadata": {
+    "description": "Sample assessment for Arcline Health, an L2.5 Series B healthtech startup. Good tool config and commit hygiene, but significant gaps in eval gates and AI observability. Verdict: READY_FOR_PILOT, Track B.",
+    "generatedBy": "PRISM D1 Velocity Assessment Engine",
+    "samplePurpose": "Demonstrates Track B routing for teams in the Developing band"
+  },
+  "customer": {
+    "name": "Arcline Health",
+    "teamSize": 14,
+    "fundingStage": "Series B"
+  },
+  "assessment": {
+    "assessmentDate": "2026-04-08",
+    "saName": "Priya Chakraborty",
+    "repoAnalyzed": "github.com/arcline-health/care-platform",
+    "scannerScores": [
+      { "id": "ai_tool_config", "name": "AI Tool Config", "score": 8, "maxScore": 10 },
+      { "id": "spec_driven_dev", "name": "Spec-Driven Dev", "score": 5, "maxScore": 10 },
+      { "id": "commit_hygiene", "name": "Commit Hygiene", "score": 10, "maxScore": 15 },
+      { "id": "cicd_integration", "name": "CI/CD Integration", "score": 7, "maxScore": 15 },
+      { "id": "eval_quality", "name": "Eval & Quality", "score": 2, "maxScore": 10 },
+      { "id": "testing_maturity", "name": "Testing Maturity", "score": 6, "maxScore": 10 },
+      { "id": "ai_observability", "name": "AI Observability", "score": 1, "maxScore": 10 },
+      { "id": "governance", "name": "Governance", "score": 2, "maxScore": 5 },
+      { "id": "agent_workflows", "name": "Agent Workflows", "score": 1, "maxScore": 5 },
+      { "id": "platform_reuse", "name": "Platform Reuse", "score": 2, "maxScore": 5 },
+      { "id": "documentation", "name": "Documentation", "score": 2, "maxScore": 3 },
+      { "id": "dependencies", "name": "Dependencies", "score": 2, "maxScore": 2 }
+    ],
+    "scannerTotal": 48,
+    "interviewScores": [
+      {
+        "id": "ai_tooling_landscape",
+        "name": "AI Tooling Landscape",
+        "score": 11,
+        "maxScore": 15,
+        "keyFindings": [
+          "Claude Code deployed via Bedrock across all 3 squads",
+          "CLAUDE.md exists but is inconsistent across repos (2 of 5 repos have it)",
+          "Kiro IDE adopted by 8 of 14 developers",
+          "Standardized on Claude 3.5 Sonnet for code generation"
+        ]
+      },
+      {
+        "id": "dev_workflow_specs",
+        "name": "Development Workflow & Specs",
+        "score": 10,
+        "maxScore": 20,
+        "keyFindings": [
+          "Feature specs used informally by senior engineers but not mandated",
+          "No bug fix or refactor spec templates in use",
+          "PRD-to-spec mapping attempted but not systematic",
+          "Team lead has drafted a spec template but it is not adopted yet"
+        ]
+      },
+      {
+        "id": "cicd_quality",
+        "name": "CI/CD & Quality",
+        "score": 10,
+        "maxScore": 20,
+        "keyFindings": [
+          "GitHub Actions with lint, test, and build steps",
+          "No eval gates -- all PRs go through human review only",
+          "Test coverage at 68%, above average for the stage",
+          "HIPAA compliance checks in CI are manual"
+        ]
+      },
+      {
+        "id": "metrics_visibility",
+        "name": "Metrics & Visibility",
+        "score": 4,
+        "maxScore": 15,
+        "keyFindings": [
+          "Basic GitHub Insights used for commit activity",
+          "No AI-specific metrics (acceptance rate, cost, token usage)",
+          "Engineering manager tracks velocity in Jira but not AI contribution",
+          "No executive dashboard or readout process"
+        ]
+      },
+      {
+        "id": "governance_security",
+        "name": "Governance & Security",
+        "score": 7,
+        "maxScore": 15,
+        "keyFindings": [
+          "HIPAA-aware: team avoids sending PHI to AI tools",
+          "No formal AI governance policy documented",
+          "Data handling guidelines exist for prod but not for AI tools",
+          "Security team has reviewed Bedrock data residency"
+        ]
+      },
+      {
+        "id": "org_culture",
+        "name": "Org & Culture",
+        "score": 12,
+        "maxScore": 15,
+        "keyFindings": [
+          "VP Engineering is the executive sponsor, actively engaged",
+          "Dedicated AI champion (senior engineer) driving adoption",
+          "All 3 squads have at least one AI-enthusiastic member",
+          "Team ran an internal AI hackathon last quarter"
+        ]
+      }
+    ],
+    "interviewTotal": 54,
+    "orgReadiness": {
+      "executiveSponsor": true,
+      "dedicatedChampion": true,
+      "teamWillingness": true,
+      "budgetApproved": true,
+      "timelineCommitment": true,
+      "totalScore": 20
+    },
+    "blendedScore": 60.8,
+    "prismLevel": 2.5,
+    "verdict": "READY_FOR_PILOT"
+  },
+  "onboardingPlan": {
+    "track": "B",
+    "trackName": "Full Workshop",
+    "customer": {
+      "name": "Arcline Health",
+      "teamSize": 14,
+      "fundingStage": "Series B"
+    },
+    "prismLevel": 2.5,
+    "verdict": "READY_FOR_PILOT",
+    "workshopModules": [
+      { "id": "M00", "name": "Environment Setup", "included": true, "reason": "Verify and upgrade existing setup" },
+      { "id": "M01", "name": "CLAUDE.md & Standards", "included": true, "reason": "Align existing config to PRISM standards" },
+      { "id": "M02", "name": "Spec-Driven Development", "included": true, "reason": "Formalize and standardize spec workflows" },
+      { "id": "M03", "name": "CI/CD & Eval Gates", "included": true, "reason": "Instrument pipeline with eval gates" },
+      { "id": "M04", "name": "Metrics & Dashboards", "included": true, "reason": "Deploy Timestream + QuickSight dashboards" },
+      { "id": "M05", "name": "Governance & Scaling", "included": true, "reason": "Establish governance model for scaling" }
+    ],
+    "preWork": [
+      { "task": "Install Claude Code and configure for AWS Bedrock", "deadline": "Before workshop", "owner": "Each developer" },
+      { "task": "Install Kiro IDE", "deadline": "Before workshop", "owner": "Each developer" },
+      { "task": "Run verify-setup.sh and confirm green output", "deadline": "Before workshop", "owner": "Team lead" },
+      { "task": "Read 'Why Spec-Driven Development' (Module 02 primer)", "deadline": "1 week before workshop", "owner": "Each developer" },
+      { "task": "Identify 2 features the team will build during the workshop", "deadline": "3 days before workshop", "owner": "Team lead" },
+      { "task": "Ensure AWS account has EventBridge, Timestream, and CloudWatch access", "deadline": "1 week before workshop", "owner": "Platform/DevOps lead" },
+      { "task": "Identify the primary CI/CD pipeline to instrument", "deadline": "1 week before workshop", "owner": "Team lead" },
+      { "task": "Get approval for GitHub webhook integration", "deadline": "1 week before workshop", "owner": "Engineering manager" },
+      { "task": "Designate an executive sponsor for the weekly readout", "deadline": "1 week before workshop", "owner": "Engineering manager" }
+    ],
+    "bootstrapperComponents": [
+      { "component": "CLAUDE.md configuration file", "priority": "immediate" },
+      { "component": "Git hooks for AI-origin trailers", "priority": "immediate" },
+      { "component": "Spec templates (feature, bug, refactor)", "priority": "immediate" },
+      { "component": ".kiro/settings for Kiro IDE", "priority": "immediate" },
+      { "component": "EventBridge metrics pipeline (CDK stack)", "priority": "week1" },
+      { "component": "Timestream database and tables", "priority": "week1" },
+      { "component": "CI/CD eval gate integration", "priority": "week2" },
+      { "component": "QuickSight dashboard deployment", "priority": "week2" },
+      { "component": "Executive readout template", "priority": "pilot" }
+    ],
+    "gapRemediation": [
+      {
+        "gap": "#1",
+        "category": "AI Observability (scanner)",
+        "score": "1/10 (10%)",
+        "action": "Deploy the EventBridge-Timestream metrics pipeline. Enable token tracking, cost attribution, and latency monitoring."
+      },
+      {
+        "gap": "#2",
+        "category": "Eval & Quality (scanner)",
+        "score": "2/10 (20%)",
+        "action": "Define quality rubrics for AI-generated code. Implement automated scoring. Establish minimum acceptance thresholds."
+      },
+      {
+        "gap": "#3",
+        "category": "Agent Workflows (scanner)",
+        "score": "1/5 (20%)",
+        "action": "Identify first candidate for multi-step agent workflow. Start with low-risk automation. Document the workflow pattern."
+      }
+    ],
+    "successMetrics": [
+      { "metric": "AI acceptance rate", "target": "30%+", "measureBy": "Week 4 checkpoint" },
+      { "metric": "Eval gate active in CI", "target": "At least 1 pipeline", "measureBy": "Week 2 of pilot" },
+      { "metric": "Weekly executive readout", "target": "Active and reviewed", "measureBy": "Week 3 of pilot" },
+      { "metric": "PRISM D1 level improvement", "target": "+0.5 levels", "measureBy": "Week 8 of pilot" },
+      { "metric": "Dashboard data freshness", "target": "Within 1 hour", "measureBy": "Week 2 of pilot" }
+    ],
+    "milestones": [
+      { "week": 1, "milestone": "Bootstrapper fully deployed", "measurable": "All components live, first metrics flowing" },
+      { "week": 2, "milestone": "Eval gate in CI, dashboards active", "measurable": "PR pipeline includes eval step, QuickSight live" },
+      { "week": 4, "milestone": "Midpoint checkpoint passed", "measurable": "AI acceptance rate 30%+, exec readout active" },
+      { "week": 6, "milestone": "Governance model documented", "measurable": "Policy document published to team wiki" },
+      { "week": 8, "milestone": "Pilot readout delivered", "measurable": "L3.0+ achieved, Track C eligible" },
+      { "week": 12, "milestone": "90-day sustained adoption", "measurable": "Metrics stable, no regression below L2.5" }
+    ],
+    "saTouchpoints": [
+      { "week": -1, "type": "Pre-work kick-off call", "duration": "30 min", "agenda": "Review pre-work checklist, confirm AWS access, workshop logistics" },
+      { "week": 0, "type": "Workshop delivery", "duration": "4 hr", "agenda": "Deliver all 6 modules, hands-on exercises, bootstrapper deployment" },
+      { "week": 1, "type": "Video call", "duration": "45 min", "agenda": "Verify bootstrapper deployment, review first metrics, troubleshoot" },
+      { "week": 2, "type": "Async check-in", "duration": "15 min (Slack)", "agenda": "Review dashboard data quality, flag any pipeline issues" },
+      { "week": 4, "type": "Checkpoint call", "duration": "1 hr", "agenda": "Midpoint review, acceptance rate check, adjust pilot targets" },
+      { "week": 6, "type": "Async check-in", "duration": "15 min (Slack)", "agenda": "Review progress toward 8-week goals, flag risks" },
+      { "week": 8, "type": "Pilot readout call", "duration": "1 hr", "agenda": "Final pilot metrics, L3 readiness determination, next steps" }
+    ]
+  }
+}

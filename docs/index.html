@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PRISM D1 Velocity — AI Development Lifecycle</title>
+  <meta name="description" content="A framework for measuring and scaling AI-assisted software development across your engineering org.">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== Sticky Nav ===== -->
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="#top">
+        <!-- Prism icon -->
+        <svg class="prism-icon" width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGrad)" stroke="#0550ae" stroke-width="1.5" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="30" y2="10" stroke="#d1242f" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="23" y1="20" x2="30" y2="14" stroke="#bf5700" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24" y1="22" x2="30" y2="18" stroke="#1a7f37" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24.5" y1="24" x2="30" y2="22" stroke="#0969da" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="25" y1="26" x2="30" y2="26" stroke="#8250df" stroke-width="1.2" stroke-linecap="round"/>
+          <defs>
+            <linearGradient id="prismGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#ddf4ff"/>
+              <stop offset="100%" stop-color="#eddeff"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        PRISM <span>D1 Velocity</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#top">Overview</a></li>
+        <li><a href="#journey">The Journey</a></li>
+        <li><a href="#bootstrapper">What You Get</a></li>
+        <li><a href="#integrations">Integrations</a></li>
+        <li><a href="#metrics">Metrics</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="agents.html">Agents</a></li>
+        <li><a href="dashboard.html" class="nav-demo">Demo</a></li>
+        <li><a href="competitive-landscape.html">Landscape</a></li>
+        <li><a href="roadmap.html">Roadmap</a></li>
+        <li><a href="data-architecture.html">Data</a></li>
+        <li><a href="https://github.com/sunilpp/prism-d1-velocity" target="_blank" rel="noopener noreferrer" class="nav-github" title="View on GitHub">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        </a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ===== MAIN LANDING — Full Viewport ===== -->
+  <section class="landing" id="top">
+
+    <!-- Hero banner -->
+    <div class="hero-banner">
+      <p class="hero-text">A framework for measuring and scaling AI-DLC &mdash; from ad-hoc tool usage to a governed, observable lifecycle with ROI visibility.</p>
+    </div>
+
+    <!-- Maturity Levels -->
+    <div class="landing-section">
+      <div class="landing-section-header">
+        <h2>
+          <svg class="sh-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+          AI-DLC Maturity Levels
+        </h2>
+        <p>Most teams use AI but can't measure the impact. The workshop takes you from L1 to L3. Advanced engagements target L4&ndash;L5.</p>
+      </div>
+      <div class="maturity-scale">
+        <div class="level-card" data-color="gray">
+          <div class="level-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#848d97" stroke-width="2" stroke-linecap="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          </div>
+          <div class="level-badge">L1</div>
+          <div class="level-name">Experimental</div>
+          <div class="level-desc">Ad-hoc AI use. No shared tooling, no metrics, no governance.</div>
+        </div>
+        <div class="level-card" data-color="orange">
+          <div class="level-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#bf5700" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          </div>
+          <div class="level-badge">L2</div>
+          <div class="level-name">Structured</div>
+          <div class="level-desc">Spec-driven development. Metrics flowing. Basic eval gates in place.</div>
+        </div>
+        <div class="level-card active" data-color="blue">
+          <div class="level-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          </div>
+          <div class="level-badge">L3</div>
+          <div class="level-name">Integrated</div>
+          <div class="level-desc">Full pipeline operational. Executive visibility. Iterating on thresholds.</div>
+        </div>
+        <div class="level-card" data-color="purple">
+          <div class="level-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8250df" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          </div>
+          <div class="level-badge">L4</div>
+          <div class="level-name">Orchestrated</div>
+          <div class="level-desc">Multi-team platform. AI FinOps. Governed agent scope across the org.</div>
+        </div>
+        <div class="level-card" data-color="green">
+          <div class="level-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a7f37" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </div>
+          <div class="level-badge">L5</div>
+          <div class="level-name">Autonomous</div>
+          <div class="level-desc">Agents contributing to architecture. 20%+ autonomous deployments.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Divider -->
+    <div class="landing-divider"></div>
+
+    <!-- 7 Steps with Arrows -->
+    <div class="landing-section" id="journey">
+      <div class="landing-section-header">
+        <h2>
+          <svg class="sh-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          7 Steps to Get There
+        </h2>
+        <p>Each step builds on the last. By the end, every AI-assisted action is tracked, validated, and visible.</p>
+      </div>
+
+      <!-- Row 1: Steps 0-3 -->
+      <div class="steps-row">
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/assessment" target="_blank" rel="noopener noreferrer" data-color="teal">
+          <div class="step-num teal">0</div>
+          <div class="step-name">Assessment</div>
+          <div class="step-desc">Repo scan + SA interview maps you to a maturity level and onboarding track.</div>
+        </a>
+        <div class="step-arrow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </div>
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/01-ai-sdlc-foundations" target="_blank" rel="noopener noreferrer" data-color="blue">
+          <div class="step-num blue">1</div>
+          <div class="step-name">Foundations</div>
+          <div class="step-desc">Claude Code via Bedrock, CLAUDE.md rules, Kiro IDE. AI stays in your AWS account.</div>
+        </a>
+        <div class="step-arrow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </div>
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/03-spec-driven-development" target="_blank" rel="noopener noreferrer" data-color="purple">
+          <div class="step-num purple">2</div>
+          <div class="step-name">Spec-Driven Dev</div>
+          <div class="step-desc">Write specs before code. Acceptance criteria in markdown. AI implements against them.</div>
+        </a>
+        <div class="step-arrow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </div>
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/04-instrumenting-ai-metrics" target="_blank" rel="noopener noreferrer" data-color="orange">
+          <div class="step-num orange">3</div>
+          <div class="step-name">AI Metrics</div>
+          <div class="step-desc">Git hooks auto-tag commits. GitHub Actions emit events to EventBridge.</div>
+        </a>
+      </div>
+
+      <!-- Wrap arrow -->
+      <div class="step-row-connector">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 8l-6 6-6-6"/></svg>
+      </div>
+
+      <!-- Row 2: Steps 4-6 -->
+      <div class="steps-row">
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/05-eval-gates-cicd" target="_blank" rel="noopener noreferrer" data-color="green">
+          <div class="step-num green">4</div>
+          <div class="step-name">Eval Gates</div>
+          <div class="step-desc">LLM-as-Judge validates AI output against specs before merge.</div>
+        </a>
+        <div class="step-arrow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </div>
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/06-dashboards-visibility" target="_blank" rel="noopener noreferrer" data-color="blue">
+          <div class="step-num blue">5</div>
+          <div class="step-name">Dashboards</div>
+          <div class="step-desc">CloudWatch for engineers, QuickSight for leadership. Real metrics, not vibes.</div>
+        </a>
+        <div class="step-arrow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </div>
+        <a class="step-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper" target="_blank" rel="noopener noreferrer" data-color="teal">
+          <div class="step-num teal">6</div>
+          <div class="step-name">Adopt &amp; Scale</div>
+          <div class="step-desc">Teams inherit the bootstrapper. Plug into any repo. Weekly DORA tracks progress.</div>
+        </a>
+      </div>
+
+      <div class="journey-detail-link">
+        <a href="journey.html">View detailed journey &rarr;</a>
+      </div>
+    </div>
+
+    <div class="scroll-hint">
+      <a href="#bootstrapper">Explore what you get &darr;</a>
+    </div>
+
+  </section>
+
+  <!-- ===== What You Get ===== -->
+  <section class="bootstrapper section" id="bootstrapper">
+    <div class="section-inner">
+      <div class="section-heading">
+        <svg class="sh-icon-lg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3h-8l-2 4h12l-2-4z"/></svg>
+        <div>
+          <span class="section-label">What You Get</span>
+          <h2 class="section-title">The PRISM Bootstrapper</h2>
+        </div>
+      </div>
+      <p class="section-subtitle">Everything your team needs to sustain AI-DLC practices after the workshop. Copy into any repo and go.</p>
+      <div class="bootstrap-grid">
+        <a class="bootstrap-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper/claude-code" target="_blank" rel="noopener noreferrer">
+          <div class="card-icon teal"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0f7b82" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+          <h3>CLAUDE.md Templates</h3>
+          <p>Pre-built project configs for backend, frontend, and platform teams.</p>
+        </a>
+        <a class="bootstrap-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper/spec-templates" target="_blank" rel="noopener noreferrer">
+          <div class="card-icon purple"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8250df" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+          <h3>Spec Templates</h3>
+          <p>Kiro-compatible specs for APIs, data models, integrations, and agent workflows.</p>
+        </a>
+        <a class="bootstrap-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper/eval-harness" target="_blank" rel="noopener noreferrer">
+          <div class="card-icon green"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1a7f37" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <h3>Eval Harness</h3>
+          <p>Bedrock Evaluation runner with pre-built rubrics for API, code, and security quality.</p>
+        </a>
+        <a class="bootstrap-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper/github-workflows" target="_blank" rel="noopener noreferrer">
+          <div class="card-icon blue"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+          <h3>GitHub Workflows</h3>
+          <p>Reusable Actions for AI metrics, eval gates, and weekly DORA assessments.</p>
+        </a>
+        <a class="bootstrap-card" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper/metric-hooks" target="_blank" rel="noopener noreferrer">
+          <div class="card-icon orange"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#bf5700" stroke-width="2" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
+          <h3>Git Hooks</h3>
+          <p>Auto-install prepare-commit-msg, post-commit, and post-merge hooks for metadata tagging.</p>
+        </a>
+      </div>
+      <div class="adoption-timeline">
+        <div class="adoption-step"><strong>Day 1</strong><span>Install hooks + CLAUDE.md. AI-origin tagging starts immediately.</span></div>
+        <div class="adoption-step"><strong>Week 1</strong><span>Add GitHub workflows. AI-to-merge ratio and lead time tracked.</span></div>
+        <div class="adoption-step"><strong>Week 2</strong><span>Configure eval harness. Automated quality checks on every PR.</span></div>
+        <div class="adoption-step"><strong>Ongoing</strong><span>Weekly DORA assessments. Full dashboards. Continuous improvement.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Integrations ===== -->
+  <section class="integrations section" id="integrations">
+    <div class="section-inner">
+      <div class="section-heading">
+        <svg class="sh-icon-lg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        <div>
+          <span class="section-label">Integrations</span>
+          <h2 class="section-title">Connects to Your Existing SDLC</h2>
+        </div>
+      </div>
+      <p class="section-subtitle">PRISM layers on top of tools your team already uses &mdash; no rip-and-replace required.</p>
+      <div class="integrations-grid">
+        <div class="integration-group">
+          <div class="ig-icon blue">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+          </div>
+          <div class="ig-content">
+            <h3>Project &amp; Agile Tools</h3>
+            <p>Jira, Linear, VersionOne, Azure Boards, Shortcut, and other sprint/kanban trackers. PRISM correlates AI metrics with story throughput and sprint velocity.</p>
+          </div>
+        </div>
+        <div class="integration-group">
+          <div class="ig-icon purple">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8250df" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>
+          </div>
+          <div class="ig-content">
+            <h3>Source Control &amp; CI/CD</h3>
+            <p>GitHub, GitLab, Bitbucket, CodePipeline, Jenkins, CircleCI. Git trailers and webhook collectors work with any Git-based workflow.</p>
+          </div>
+        </div>
+        <div class="integration-group">
+          <div class="ig-icon green">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a7f37" stroke-width="2" stroke-linecap="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+          </div>
+          <div class="ig-content">
+            <h3>Observability &amp; Reporting</h3>
+            <p>CloudWatch, QuickSight, Grafana, Datadog, Jellyfish, Swarmia. Export metrics via EventBridge to any downstream analytics platform.</p>
+          </div>
+        </div>
+        <div class="integration-group">
+          <div class="ig-icon orange">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#bf5700" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          </div>
+          <div class="ig-content">
+            <h3>AI Platforms</h3>
+            <p>Amazon Bedrock, Claude Code, Kiro, Q Developer. Track which models, tools, and sessions contribute to each commit and PR.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Metrics That Matter ===== -->
+  <section class="metrics section" id="metrics">
+    <div class="section-inner">
+      <div class="section-heading">
+        <svg class="sh-icon-lg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+        <div>
+          <span class="section-label">Metrics That Matter</span>
+          <h2 class="section-title">Traditional DORA + AI-Native Dimensions</h2>
+        </div>
+      </div>
+      <p class="section-subtitle">10 metrics tracked end-to-end, from commit to executive dashboard.</p>
+
+      <!-- Dashboard-style metric visualization -->
+      <div class="metrics-dashboard">
+        <svg class="metrics-svg" viewBox="0 0 880 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+          <!-- DORA panel -->
+          <rect x="0" y="0" width="430" height="420" rx="12" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <text x="20" y="30" font-size="13" font-weight="700" fill="#1f2328">DORA Metrics</text>
+          <rect x="130" y="16" width="44" height="18" rx="9" fill="#dafbe1"/>
+          <text x="152" y="29" text-anchor="middle" font-size="9" fill="#1a7f37" font-weight="600">Elite</text>
+
+          <!-- Deployment Frequency - bar chart -->
+          <text x="20" y="62" font-size="10" fill="#59636e">Deployment Frequency</text>
+          <text x="410" y="62" text-anchor="end" font-size="12" font-weight="700" fill="#1f2328">4.2/day</text>
+          <rect x="20" y="70" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="20" y="70" width="330" height="8" rx="4" fill="#0969da"/>
+
+          <!-- Lead Time - bar chart -->
+          <text x="20" y="106" font-size="10" fill="#59636e">Lead Time for Changes</text>
+          <text x="410" y="106" text-anchor="end" font-size="12" font-weight="700" fill="#1f2328">2.1 hrs</text>
+          <rect x="20" y="114" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="20" y="114" width="360" height="8" rx="4" fill="#1a7f37"/>
+
+          <!-- Change Failure Rate - bar chart -->
+          <text x="20" y="150" font-size="10" fill="#59636e">Change Failure Rate</text>
+          <text x="410" y="150" text-anchor="end" font-size="12" font-weight="700" fill="#1f2328">3.2%</text>
+          <rect x="20" y="158" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="20" y="158" width="50" height="8" rx="4" fill="#1a7f37"/>
+
+          <!-- MTTR - bar chart -->
+          <text x="20" y="194" font-size="10" fill="#59636e">Mean Time to Recovery</text>
+          <text x="410" y="194" text-anchor="end" font-size="12" font-weight="700" fill="#1f2328">28 min</text>
+          <rect x="20" y="202" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="20" y="202" width="85" height="8" rx="4" fill="#0969da"/>
+
+          <!-- Sparkline chart area -->
+          <text x="20" y="242" font-size="10" font-weight="600" fill="#59636e">Weekly Trend (8 wk)</text>
+          <rect x="20" y="252" width="390" height="155" rx="8" fill="#f6f8fa" stroke="#e3e8ee" stroke-width="1"/>
+          <!-- Grid lines -->
+          <line x1="20" y1="290" x2="410" y2="290" stroke="#e3e8ee" stroke-width="0.5"/>
+          <line x1="20" y1="330" x2="410" y2="330" stroke="#e3e8ee" stroke-width="0.5"/>
+          <line x1="20" y1="370" x2="410" y2="370" stroke="#e3e8ee" stroke-width="0.5"/>
+          <!-- Deploy freq line -->
+          <polyline points="40,370 90,355 140,340 190,330 240,310 290,295 340,280 390,268" stroke="#0969da" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <polyline points="40,370 90,355 140,340 190,330 240,310 290,295 340,280 390,268" stroke="none" fill="url(#blueGrad)" opacity="0.15"/>
+          <!-- Lead time line -->
+          <polyline points="40,340 90,335 140,320 190,315 240,300 290,290 340,278 390,272" stroke="#1a7f37" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Legend -->
+          <circle cx="40" cy="397" r="4" fill="#0969da"/>
+          <text x="50" y="401" font-size="9" fill="#59636e">Deploy Freq</text>
+          <circle cx="130" cy="397" r="4" fill="#1a7f37"/>
+          <text x="140" y="401" font-size="9" fill="#59636e">Lead Time</text>
+
+          <defs>
+            <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#0969da"/>
+              <stop offset="100%" stop-color="#0969da" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="purpleGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#8250df"/>
+              <stop offset="100%" stop-color="#8250df" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+
+          <!-- ===== AI-DORA panel ===== -->
+          <rect x="450" y="0" width="430" height="420" rx="12" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+          <text x="470" y="30" font-size="13" font-weight="700" fill="#1f2328">AI-DORA Extensions</text>
+          <rect x="610" y="16" width="32" height="18" rx="9" fill="#eddeff"/>
+          <text x="626" y="29" text-anchor="middle" font-size="9" fill="#8250df" font-weight="600">AI</text>
+
+          <!-- Gauge row: 3 gauges -->
+          <!-- AI Acceptance Rate gauge -->
+          <text x="530" y="62" text-anchor="middle" font-size="9" fill="#59636e">AI Acceptance</text>
+          <circle cx="530" cy="108" r="36" fill="none" stroke="#f0f3f6" stroke-width="7"/>
+          <circle cx="530" cy="108" r="36" fill="none" stroke="#0969da" stroke-width="7" stroke-dasharray="192 226" stroke-dashoffset="0" transform="rotate(-90 530 108)" stroke-linecap="round"/>
+          <text x="530" y="114" text-anchor="middle" font-size="18" font-weight="800" fill="#0969da">85%</text>
+
+          <!-- AI-to-Merge Ratio gauge -->
+          <text x="680" y="62" text-anchor="middle" font-size="9" fill="#59636e">AI-to-Merge</text>
+          <circle cx="680" cy="108" r="36" fill="none" stroke="#f0f3f6" stroke-width="7"/>
+          <circle cx="680" cy="108" r="36" fill="none" stroke="#8250df" stroke-width="7" stroke-dasharray="158 226" stroke-dashoffset="0" transform="rotate(-90 680 108)" stroke-linecap="round"/>
+          <text x="680" y="114" text-anchor="middle" font-size="18" font-weight="800" fill="#8250df">70%</text>
+
+          <!-- Eval Gate Pass gauge -->
+          <text x="830" y="62" text-anchor="middle" font-size="9" fill="#59636e">Eval Gate Pass</text>
+          <circle cx="830" cy="108" r="36" fill="none" stroke="#f0f3f6" stroke-width="7"/>
+          <circle cx="830" cy="108" r="36" fill="none" stroke="#1a7f37" stroke-width="7" stroke-dasharray="204 226" stroke-dashoffset="0" transform="rotate(-90 830 108)" stroke-linecap="round"/>
+          <text x="830" y="114" text-anchor="middle" font-size="18" font-weight="800" fill="#1a7f37">91%</text>
+
+          <!-- Metric bars below gauges -->
+          <text x="470" y="172" font-size="10" fill="#59636e">Spec-to-Code Turnaround</text>
+          <text x="860" y="172" text-anchor="end" font-size="12" font-weight="700" fill="#1f2328">1.8 hrs</text>
+          <rect x="470" y="180" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="470" y="180" width="310" height="8" rx="4" fill="#8250df"/>
+
+          <text x="470" y="216" font-size="10" fill="#59636e">Post-Merge Defect Rate</text>
+          <text x="860" y="216" text-anchor="end" font-size="12" font-weight="700" fill="#1a7f37">1.4%</text>
+          <rect x="470" y="224" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="470" y="224" width="22" height="8" rx="4" fill="#1a7f37"/>
+
+          <text x="470" y="260" font-size="10" fill="#59636e">AI Test Coverage Delta</text>
+          <text x="860" y="260" text-anchor="end" font-size="12" font-weight="700" fill="#1f2328">+12.3%</text>
+          <rect x="470" y="268" width="390" height="8" rx="4" fill="#f0f3f6"/>
+          <rect x="470" y="268" width="195" height="8" rx="4" fill="#0f7b82"/>
+
+          <!-- AI Contribution trend -->
+          <text x="470" y="308" font-size="10" font-weight="600" fill="#59636e">AI Contribution Trend (8 wk)</text>
+          <rect x="470" y="318" width="390" height="90" rx="8" fill="#f6f8fa" stroke="#e3e8ee" stroke-width="1"/>
+          <!-- Stacked bar chart -->
+          <rect x="495" y="355" width="26" height="45" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="495" y="340" width="26" height="15" rx="3" fill="#eddeff"/>
+          <rect x="535" y="345" width="26" height="55" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="535" y="325" width="26" height="20" rx="3" fill="#eddeff"/>
+          <rect x="575" y="340" width="26" height="60" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="575" y="318" width="26" height="22" rx="3" fill="#eddeff"/>
+          <rect x="615" y="338" width="26" height="62" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="615" y="312" width="26" height="26" rx="3" fill="#eddeff"/>
+          <rect x="655" y="335" width="26" height="65" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="655" y="308" width="26" height="27" rx="3" fill="#eddeff"/>
+          <rect x="695" y="330" width="26" height="70" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="695" y="302" width="26" height="28" rx="3" fill="#eddeff"/>
+          <rect x="735" y="325" width="26" height="75" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="735" y="296" width="26" height="29" rx="3" fill="#eddeff"/>
+          <rect x="775" y="320" width="26" height="80" rx="3" fill="#0969da" opacity="0.7"/>
+          <rect x="775" y="288" width="26" height="32" rx="3" fill="#eddeff"/>
+          <!-- Legend -->
+          <rect x="490" y="396" width="10" height="10" rx="2" fill="#0969da" opacity="0.7"/>
+          <text x="506" y="405" font-size="9" fill="#59636e">Human</text>
+          <rect x="555" y="396" width="10" height="10" rx="2" fill="#eddeff"/>
+          <text x="571" y="405" font-size="9" fill="#59636e">AI-Assisted</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Architecture ===== -->
+  <section class="architecture section" id="architecture">
+    <div class="section-inner">
+      <div class="section-heading">
+        <svg class="sh-icon-lg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        <div>
+          <span class="section-label">Architecture</span>
+          <h2 class="section-title">AWS-Native Metrics Pipeline</h2>
+        </div>
+      </div>
+      <p class="section-subtitle">No third-party observability dependencies. Everything stays in your AWS account.</p>
+      <div class="arch-diagram">
+        <svg class="arch-svg" viewBox="0 0 960 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Background zones -->
+          <rect x="0" y="0" width="200" height="420" rx="12" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+          <rect x="220" y="0" width="260" height="420" rx="12" fill="#f0f6ff" stroke="#c8d8f0" stroke-width="1"/>
+          <rect x="500" y="0" width="200" height="420" rx="12" fill="#f0fff4" stroke="#c8e6d0" stroke-width="1"/>
+          <rect x="720" y="0" width="240" height="420" rx="12" fill="#f5f0ff" stroke="#d8c8f0" stroke-width="1"/>
+
+          <!-- Zone labels -->
+          <text x="100" y="28" text-anchor="middle" font-size="11" font-weight="700" fill="#59636e" letter-spacing="0.08em" text-transform="uppercase">DEVELOPER</text>
+          <text x="350" y="28" text-anchor="middle" font-size="11" font-weight="700" fill="#0969da" letter-spacing="0.08em">INGESTION</text>
+          <text x="600" y="28" text-anchor="middle" font-size="11" font-weight="700" fill="#1a7f37" letter-spacing="0.08em">STORAGE</text>
+          <text x="840" y="28" text-anchor="middle" font-size="11" font-weight="700" fill="#8250df" letter-spacing="0.08em">VISIBILITY</text>
+
+          <!-- ===== Developer boxes ===== -->
+          <!-- Claude Code -->
+          <rect x="20" y="55" width="160" height="52" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <circle cx="42" cy="81" r="10" fill="#ddf4f6"/>
+          <text x="38" y="85" font-size="11" fill="#0f7b82" font-weight="700" text-anchor="middle">CC</text>
+          <text x="62" y="85" font-size="12.5" font-weight="600" fill="#1f2328">Claude Code</text>
+
+          <!-- Kiro Specs -->
+          <rect x="20" y="120" width="160" height="52" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <circle cx="42" cy="146" r="10" fill="#eddeff"/>
+          <text x="38" y="150" font-size="11" fill="#8250df" font-weight="700" text-anchor="middle">K</text>
+          <text x="62" y="150" font-size="12.5" font-weight="600" fill="#1f2328">Kiro Specs</text>
+
+          <!-- Git Hooks -->
+          <rect x="20" y="185" width="160" height="52" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <circle cx="42" cy="211" r="10" fill="#fff1e5"/>
+          <text x="62" y="215" font-size="12.5" font-weight="600" fill="#1f2328">Git Hooks</text>
+          <text x="42" y="215" font-size="9" fill="#bf5700" font-weight="700" text-anchor="middle">GH</text>
+
+          <!-- GitHub Actions -->
+          <rect x="20" y="250" width="160" height="52" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <circle cx="42" cy="276" r="10" fill="#1f2328"/>
+          <text x="42" y="280" font-size="9" fill="#ffffff" font-weight="700" text-anchor="middle">GA</text>
+          <text x="62" y="280" font-size="12.5" font-weight="600" fill="#1f2328">GitHub Actions</text>
+
+          <!-- Bedrock Evals -->
+          <rect x="20" y="315" width="160" height="52" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <circle cx="42" cy="341" r="10" fill="#dafbe1"/>
+          <text x="42" y="345" font-size="9" fill="#1a7f37" font-weight="700" text-anchor="middle">BE</text>
+          <text x="62" y="345" font-size="12.5" font-weight="600" fill="#1f2328">Bedrock Evals</text>
+
+          <!-- ===== Arrows: Dev → Ingestion ===== -->
+          <line x1="185" y1="81" x2="235" y2="120" stroke="#848d97" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="185" y1="146" x2="235" y2="160" stroke="#848d97" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="185" y1="211" x2="235" y2="200" stroke="#848d97" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="185" y1="276" x2="235" y2="240" stroke="#848d97" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <line x1="185" y1="341" x2="235" y2="310" stroke="#848d97" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+          <!-- ===== Ingestion boxes ===== -->
+          <!-- API Gateway -->
+          <rect x="240" y="80" width="220" height="56" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+          <rect x="254" y="96" width="28" height="24" rx="5" fill="#ddf4ff"/>
+          <text x="268" y="113" font-size="10" fill="#0969da" font-weight="700" text-anchor="middle">API</text>
+          <text x="294" y="108" font-size="13" font-weight="600" fill="#1f2328">API Gateway</text>
+          <text x="294" y="124" font-size="10" fill="#59636e">REST endpoint for metric ingestion</text>
+
+          <!-- EventBridge -->
+          <rect x="240" y="152" width="220" height="56" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+          <rect x="254" y="168" width="28" height="24" rx="5" fill="#ddf4ff"/>
+          <text x="268" y="185" font-size="10" fill="#0969da" font-weight="700" text-anchor="middle">EB</text>
+          <text x="294" y="180" font-size="13" font-weight="600" fill="#1f2328">EventBridge</text>
+          <text x="294" y="196" font-size="10" fill="#59636e">Event bus for metric routing</text>
+
+          <!-- Lambda -->
+          <rect x="240" y="224" width="220" height="56" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+          <rect x="254" y="240" width="28" height="24" rx="5" fill="#fff1e5"/>
+          <text x="268" y="257" font-size="10" fill="#bf5700" font-weight="700" text-anchor="middle">&lambda;</text>
+          <text x="294" y="252" font-size="13" font-weight="600" fill="#1f2328">Lambda</text>
+          <text x="294" y="268" font-size="10" fill="#59636e">Enrich, normalize, transform</text>
+
+          <!-- CloudTrail -->
+          <rect x="240" y="296" width="220" height="56" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1" stroke-dasharray="4 3"/>
+          <rect x="254" y="312" width="28" height="24" rx="5" fill="#f6f8fa"/>
+          <text x="268" y="329" font-size="10" fill="#59636e" font-weight="700" text-anchor="middle">CT</text>
+          <text x="294" y="324" font-size="13" font-weight="600" fill="#59636e">CloudTrail</text>
+          <text x="294" y="340" font-size="10" fill="#848d97">Audit trail for all AI actions</text>
+
+          <!-- ===== Arrows: Ingestion → Storage ===== -->
+          <!-- API GW → EventBridge -->
+          <path d="M 350 136 L 350 152" stroke="#0969da" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+          <!-- EventBridge → Lambda -->
+          <path d="M 350 208 L 350 224" stroke="#0969da" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+          <!-- Lambda → Storage -->
+          <line x1="465" y1="180" x2="515" y2="120" stroke="#1a7f37" stroke-width="1.5"/>
+          <line x1="465" y1="252" x2="515" y2="200" stroke="#1a7f37" stroke-width="1.5"/>
+          <line x1="465" y1="252" x2="515" y2="290" stroke="#1a7f37" stroke-width="1.5"/>
+
+          <!-- ===== Storage boxes ===== -->
+          <!-- DynamoDB -->
+          <rect x="515" y="80" width="170" height="56" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
+          <rect x="529" y="96" width="28" height="24" rx="5" fill="#dafbe1"/>
+          <text x="543" y="113" font-size="10" fill="#1a7f37" font-weight="700" text-anchor="middle">DB</text>
+          <text x="569" y="108" font-size="13" font-weight="600" fill="#1f2328">DynamoDB</text>
+          <text x="569" y="124" font-size="10" fill="#59636e">Raw event storage</text>
+
+          <!-- CloudWatch Metrics -->
+          <rect x="515" y="160" width="170" height="56" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
+          <rect x="529" y="176" width="28" height="24" rx="5" fill="#dafbe1"/>
+          <text x="543" y="193" font-size="10" fill="#1a7f37" font-weight="700" text-anchor="middle">CW</text>
+          <text x="569" y="188" font-size="13" font-weight="600" fill="#1f2328">CloudWatch</text>
+          <text x="569" y="204" font-size="10" fill="#59636e">Time-series metrics</text>
+
+          <!-- S3 -->
+          <rect x="515" y="240" width="170" height="56" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
+          <rect x="529" y="256" width="28" height="24" rx="5" fill="#dafbe1"/>
+          <text x="543" y="273" font-size="10" fill="#1a7f37" font-weight="700" text-anchor="middle">S3</text>
+          <text x="569" y="268" font-size="13" font-weight="600" fill="#1f2328">S3</text>
+          <text x="569" y="284" font-size="10" fill="#59636e">Spec &amp; eval artifacts</text>
+
+          <!-- ===== Arrows: Storage → Visibility ===== -->
+          <line x1="690" y1="108" x2="735" y2="108" stroke="#8250df" stroke-width="1.5"/>
+          <line x1="690" y1="188" x2="735" y2="188" stroke="#8250df" stroke-width="1.5"/>
+          <line x1="690" y1="188" x2="735" y2="276" stroke="#8250df" stroke-width="1.5"/>
+          <line x1="690" y1="108" x2="735" y2="190" stroke="#8250df" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+          <!-- ===== Visibility boxes ===== -->
+          <!-- CloudWatch Dashboards -->
+          <rect x="735" y="65" width="210" height="70" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+          <rect x="749" y="80" width="28" height="24" rx="5" fill="#eddeff"/>
+          <text x="763" y="96" font-size="9" fill="#8250df" font-weight="700" text-anchor="middle">CW</text>
+          <text x="789" y="93" font-size="13" font-weight="600" fill="#1f2328">Team Dashboard</text>
+          <text x="789" y="110" font-size="10" fill="#59636e">Real-time velocity per repo</text>
+          <rect x="880" y="80" width="52" height="18" rx="9" fill="#dafbe1"/>
+          <text x="906" y="93" font-size="9" fill="#1a7f37" font-weight="600" text-anchor="middle">Live</text>
+
+          <!-- QuickSight -->
+          <rect x="735" y="155" width="210" height="70" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+          <rect x="749" y="170" width="28" height="24" rx="5" fill="#eddeff"/>
+          <text x="763" y="186" font-size="9" fill="#8250df" font-weight="700" text-anchor="middle">QS</text>
+          <text x="789" y="183" font-size="13" font-weight="600" fill="#1f2328">Exec Readout</text>
+          <text x="789" y="200" font-size="10" fill="#59636e">Weekly trends &amp; ROI for CTO</text>
+          <rect x="880" y="170" width="52" height="18" rx="9" fill="#fff1e5"/>
+          <text x="906" y="183" font-size="9" fill="#bf5700" font-weight="600" text-anchor="middle">Weekly</text>
+
+          <!-- CloudWatch Alarms -->
+          <rect x="735" y="245" width="210" height="70" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+          <rect x="749" y="260" width="28" height="24" rx="5" fill="#ffebe9"/>
+          <text x="763" y="276" font-size="9" fill="#d1242f" font-weight="700" text-anchor="middle">AL</text>
+          <text x="789" y="273" font-size="13" font-weight="600" fill="#1f2328">Alarms</text>
+          <text x="789" y="290" font-size="10" fill="#59636e">AI acceptance &lt; 70% triggers</text>
+          <rect x="880" y="260" width="52" height="18" rx="9" fill="#ffebe9"/>
+          <text x="906" y="273" font-size="9" fill="#d1242f" font-weight="600" text-anchor="middle">Alert</text>
+
+          <!-- ===== Flow summary at bottom ===== -->
+          <rect x="20" y="385" width="920" height="28" rx="6" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+          <text x="480" y="404" text-anchor="middle" font-size="11" fill="#59636e">
+            <tspan font-weight="600" fill="#1f2328">Git Commit</tspan>
+            <tspan fill="#848d97"> &rarr; </tspan>
+            <tspan font-weight="600" fill="#1f2328">AI Trailer</tspan>
+            <tspan fill="#848d97"> &rarr; </tspan>
+            <tspan font-weight="600" fill="#0969da">EventBridge</tspan>
+            <tspan fill="#848d97"> &rarr; </tspan>
+            <tspan font-weight="600" fill="#1a7f37">DynamoDB + CloudWatch</tspan>
+            <tspan fill="#848d97"> &rarr; </tspan>
+            <tspan font-weight="600" fill="#8250df">Dashboard &amp; Alerts</tspan>
+          </text>
+
+          <!-- Arrow markers -->
+          <defs>
+            <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#0969da"/>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Footer ===== -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a href="https://github.com/sunilpp/prism-d1-velocity" target="_blank" rel="noopener noreferrer" class="cta-button">Get Started on GitHub</a>
+      <div class="footer-links">
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop" target="_blank" rel="noopener noreferrer">Workshop Modules</a>
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/assessment" target="_blank" rel="noopener noreferrer">Assessment Tools</a>
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper" target="_blank" rel="noopener noreferrer">Bootstrapper</a>
+        <a href="competitive-landscape.html">Competitive Landscape</a>
+        <a href="roadmap.html">Community Roadmap</a>
+        <a href="data-architecture.html">Data Architecture</a>
+      </div>
+      <div class="footer-brand-row">
+        <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGradFoot)" stroke="#0550ae" stroke-width="1" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="31" y2="9" stroke="#d1242f" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="23" y1="20" x2="31" y2="13" stroke="#bf5700" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="24" y1="22" x2="31" y2="17" stroke="#1a7f37" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="24.5" y1="24" x2="31" y2="21" stroke="#0969da" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="25" y1="26" x2="31" y2="25" stroke="#8250df" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <defs>
+            <linearGradient id="prismGradFoot" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#ddf4ff"/>
+              <stop offset="100%" stop-color="#eddeff"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <p class="footer-brand">PRISM D1 Velocity &mdash; AI Development Lifecycle Framework<br>Built with Amazon Bedrock, Claude Code &amp; Kiro</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

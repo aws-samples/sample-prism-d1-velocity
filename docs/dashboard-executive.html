@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Executive Readout — PRISM D1 Velocity</title>
+  <meta name="description" content="Executive dashboard showing AI adoption, DORA metrics, security posture, and cost intelligence.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="dashboard.css">
+  <style>
+    .dash-kpis.three { grid-template-columns: repeat(3, 1fr); }
+    .dash-kpis.five { grid-template-columns: repeat(5, 1fr); }
+    .dash-kpis.six { grid-template-columns: repeat(6, 1fr); }
+    .kpi-value.red { color: var(--cs-red-600); }
+    .kpi-value.orange { color: var(--cs-orange-600); }
+    .kpi-trend.down { background: var(--cs-red-100); color: var(--cs-red-600); }
+    .kpi-trend.neutral { background: var(--cs-grey-100); color: var(--cs-grey-600); }
+    .dash-panels.three { grid-template-columns: repeat(3, 1fr); }
+    .dsh-icon.red { background: var(--cs-red-100); }
+    .dsh-icon.teal { background: #e6f7f7; }
+    .gauge-ring { fill: none; stroke-width: 8; stroke-linecap: round; }
+    .tab-switcher { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab-switcher a {
+      font-size: 13px; font-weight: 600; padding: 6px 16px;
+      border-radius: 4px; text-decoration: none; color: var(--cs-grey-600);
+      background: var(--cs-grey-100); border: 1px solid var(--cs-border-divider);
+    }
+    .tab-switcher a.active { background: var(--cs-blue-100); color: var(--cs-blue-600); border-color: var(--cs-blue-600); }
+    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+    .status-dot.green { background: var(--cs-green-600); }
+    .status-dot.red { background: var(--cs-red-600); }
+    .status-dot.orange { background: var(--cs-orange-600); }
+    /* Info tooltip */
+    .info-tip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--cs-grey-200); color: var(--cs-grey-600);
+      font-size: 9px; font-weight: 700; font-style: italic; font-family: Georgia, serif;
+      cursor: help; position: relative; vertical-align: middle; margin-left: 4px;
+      line-height: 1;
+    }
+    .info-tip::after {
+      content: attr(data-tip);
+      position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+      background: var(--aws-navy); color: var(--cs-white); font-family: var(--cs-font);
+      font-size: 11px; font-weight: 400; font-style: normal;
+      padding: 8px 12px; border-radius: 6px; white-space: normal;
+      width: 240px; line-height: 15px; text-align: left;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      opacity: 0; pointer-events: none; transition: opacity 0.15s;
+      z-index: 100;
+    }
+    .info-tip:hover::after { opacity: 1; }
+    @media (max-width: 768px) {
+      .dash-kpis.three, .dash-kpis.five, .dash-kpis.six { grid-template-columns: repeat(2, 1fr); }
+      .dash-panels.three { grid-template-columns: 1fr; }
+      .info-tip::after { width: 180px; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="index.html#top">
+        <svg class="prism-icon" width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#pg)" stroke="#0550ae" stroke-width="1.5" stroke-linejoin="round"/>
+          <defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        PRISM <span>D1 Velocity</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="dashboard-team.html">Team Dashboard</a></li>
+        <li><a href="#strategic">Strategic</a></li>
+        <li><a href="#security">Security</a></li>
+        <li><a href="#cost">Cost</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Header -->
+  <header class="dash-header" id="dash-top">
+    <div class="dash-header-inner">
+      <div class="dash-header-left">
+        <div class="dash-org">
+          <span class="dash-org-badge">Executive Readout</span>
+          <h1>PRISM D1 &mdash; Executive Dashboard</h1>
+        </div>
+        <p class="dash-period">AI Engineering Leadership View &mdash; 30-Day Rolling &middot; Updated Apr 27, 2026</p>
+      </div>
+      <div class="dash-header-right">
+        <div class="dash-prism-level">
+          <span class="dash-level-label">PRISM Level</span>
+          <span class="dash-level-value">L3.0</span>
+          <span class="dash-level-name">Integrated</span>
+        </div>
+        <div class="dash-team-count">
+          <span class="dash-tc-num">8</span>
+          <span class="dash-tc-label">Teams<br>Active</span>
+        </div>
+        <div class="dash-team-count">
+          <span class="dash-tc-num">64</span>
+          <span class="dash-tc-label">Active<br>Engineers</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================================
+       1. STRATEGIC OVERVIEW
+       ============================================ -->
+  <section class="dash-section" id="strategic">
+    <div class="dash-section-inner">
+      <div class="dash-section-head">
+        <div class="dsh-icon blue"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+        <div>
+          <h2>Enhanced DORA Summary</h2>
+          <p>7-day snapshot of deployment velocity and reliability metrics.</p>
+        </div>
+      </div>
+
+      <div class="dash-kpis five">
+        <div class="dash-kpi">
+          <div class="kpi-value blue">12</div>
+          <div class="kpi-label">Deploys / Week <span class="info-tip" data-tip="Number of production deployments in the past 7 days. Core DORA metric measuring delivery velocity. L3 target: daily deploys.">i</span></div>
+          <div class="kpi-trend up">+3 vs prior week</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value green">4.2<span class="kpi-unit">hrs</span></div>
+          <div class="kpi-label">Avg Lead Time <span class="info-tip" data-tip="Average time from PR creation to production deploy. Core DORA metric. Shorter = faster feedback loops. L3 target: < 1 day.">i</span></div>
+          <div class="kpi-trend up">-1.8h vs prior week</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value green">8.3<span class="kpi-unit">%</span></div>
+          <div class="kpi-label">Change Failure Rate <span class="info-tip" data-tip="Percentage of deployments causing a rollback, hotfix, or incident. Core DORA reliability metric. Alarm triggers above 20%.">i</span></div>
+          <div class="kpi-trend up">-2.1% vs prior week</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value green">42<span class="kpi-unit">min</span></div>
+          <div class="kpi-label">Avg MTTR <span class="info-tip" data-tip="Mean Time to Recovery. Average time from incident detection to resolution. Core DORA metric measuring operational resilience.">i</span></div>
+          <div class="kpi-trend up">-18m vs prior week</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value purple">6.4<span class="kpi-unit">hrs</span></div>
+          <div class="kpi-label">Spec-to-Code Avg <span class="info-tip" data-tip="Average hours from spec approval to code PR merge. Measures AI impact on the full feature lifecycle. Declining trend = AI accelerating development.">i</span></div>
+          <div class="kpi-trend up">-2.1h vs prior week</div>
+        </div>
+      </div>
+
+      <!-- AI Contribution Trend + Feature Cycle Time -->
+      <div class="dash-panels two">
+        <div class="dash-panel">
+          <div class="panel-head"><h3>AI Contribution Trend <span class="info-tip" data-tip="Tracks three AI adoption signals: Acceptance Rate (% of AI suggestions taken), Merge Ratio (% of merged code from AI), and Test Coverage Delta (AI contribution to test coverage). All trending up = healthy AI adoption.">i</span></h3><span class="panel-period">30 Days</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 160" fill="none">
+            <text x="0" y="10" font-size="9" fill="#687078">100%</text>
+            <text x="0" y="80" font-size="9" fill="#687078">50%</text>
+            <text x="0" y="150" font-size="9" fill="#687078">0%</text>
+            <line x1="30" y1="0" x2="30" y2="155" stroke="#eaeded" stroke-width="0.5"/>
+            <line x1="30" y1="78" x2="375" y2="78" stroke="#eaeded" stroke-width="0.5" stroke-dasharray="4"/>
+            <!-- AI Acceptance Rate -->
+            <polyline points="30,105 72,98 114,90 156,82 198,75 240,68 282,62 324,58 366,52" stroke="#0969da" stroke-width="2" fill="none"/>
+            <text x="370" y="49" font-size="8" fill="#0969da" font-weight="600">68%</text>
+            <!-- AI-to-Merge Ratio -->
+            <polyline points="30,120 72,115 114,108 156,102 198,95 240,90 282,85 324,80 366,76" stroke="#8250df" stroke-width="2" fill="none" stroke-dasharray="6 3"/>
+            <text x="370" y="73" font-size="8" fill="#8250df" font-weight="600">52%</text>
+            <!-- Test Coverage Delta -->
+            <polyline points="30,132 72,128 114,125 156,120 198,116 240,112 282,108 324,105 366,100" stroke="#1a7f37" stroke-width="2" fill="none" stroke-dasharray="2 2"/>
+            <text x="370" y="97" font-size="8" fill="#1a7f37" font-weight="600">38%</text>
+            <!-- Legend -->
+            <line x1="30" y1="155" x2="48" y2="155" stroke="#0969da" stroke-width="2"/>
+            <text x="52" y="158" font-size="8" fill="#414d5c">Acceptance Rate</text>
+            <line x1="140" y1="155" x2="158" y2="155" stroke="#8250df" stroke-width="2" stroke-dasharray="6 3"/>
+            <text x="162" y="158" font-size="8" fill="#414d5c">Merge Ratio</text>
+            <line x1="235" y1="155" x2="253" y2="155" stroke="#1a7f37" stroke-width="2" stroke-dasharray="2 2"/>
+            <text x="257" y="158" font-size="8" fill="#414d5c">Test Coverage</text>
+          </svg>
+        </div>
+        <div class="dash-panel">
+          <div class="panel-head"><h3>Feature Cycle Time <span class="info-tip" data-tip="Dual trend showing Spec-to-Code (hours from spec approval to PR) and Lead Time (hours from PR to deploy). Both should trend down as AI adoption matures.">i</span></h3><span class="panel-period">30 Days</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 160" fill="none">
+            <text x="0" y="10" font-size="9" fill="#687078">24h</text>
+            <text x="0" y="80" font-size="9" fill="#687078">12h</text>
+            <text x="0" y="150" font-size="9" fill="#687078">0h</text>
+            <line x1="30" y1="78" x2="375" y2="78" stroke="#eaeded" stroke-width="0.5" stroke-dasharray="4"/>
+            <!-- Spec-to-Code Hours (trending down) -->
+            <polyline points="30,40 72,48 114,52 156,55 198,62 240,68 282,75 324,82 366,90" stroke="#ec7211" stroke-width="2" fill="none"/>
+            <text x="370" y="87" font-size="8" fill="#ec7211" font-weight="600">6.4h</text>
+            <!-- Lead Time (trending down) -->
+            <polyline points="30,30 72,38 114,45 156,50 198,58 240,65 282,72 324,80 366,88" stroke="#0969da" stroke-width="2" fill="none" stroke-dasharray="6 3"/>
+            <text x="370" y="95" font-size="8" fill="#0969da" font-weight="600">4.2h</text>
+            <line x1="30" y1="155" x2="48" y2="155" stroke="#ec7211" stroke-width="2"/>
+            <text x="52" y="158" font-size="8" fill="#414d5c">Spec-to-Code</text>
+            <line x1="140" y1="155" x2="158" y2="155" stroke="#0969da" stroke-width="2" stroke-dasharray="6 3"/>
+            <text x="162" y="158" font-size="8" fill="#414d5c">Lead Time</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Quality row -->
+      <div class="dash-kpis three" style="margin-top:16px;">
+        <div class="dash-panel" style="text-align:center; padding:24px;">
+          <div style="font-size:11px; font-weight:700; color:var(--cs-grey-600); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Eval Gate Pass Rate <span class="info-tip" data-tip="Percentage of AI-generated code files passing Bedrock evaluation before merge. Below 70% triggers an alarm. Measures AI output quality via automated code review.">i</span></div>
+          <svg width="100" height="100" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="40" class="gauge-ring" stroke="#eaeded"/>
+            <circle cx="50" cy="50" r="40" class="gauge-ring" stroke="#1d8102" stroke-dasharray="226" stroke-dashoffset="32" transform="rotate(-90 50 50)"/>
+            <text x="50" y="48" text-anchor="middle" font-size="22" font-weight="300" fill="#1d8102">87%</text>
+            <text x="50" y="62" text-anchor="middle" font-size="9" fill="#687078">7-day avg</text>
+          </svg>
+        </div>
+        <div class="dash-panel">
+          <div class="panel-head"><h3>Post-Merge Defect Rate <span class="info-tip" data-tip="Percentage of deployments with failures across all code. Should decrease as eval gates catch issues pre-merge. Tracked via deployment status events.">i</span></h3><span class="panel-period">30 Days</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 100" fill="none">
+            <text x="0" y="10" font-size="9" fill="#687078">10%</text>
+            <text x="0" y="95" font-size="9" fill="#687078">0%</text>
+            <polyline points="30,65 72,60 114,55 156,52 198,48 240,45 282,42 324,40 366,38" stroke="#d13212" stroke-width="2" fill="none"/>
+            <text x="370" y="35" font-size="8" fill="#d13212" font-weight="600">3.8%</text>
+          </svg>
+        </div>
+        <div class="dash-panel">
+          <div class="panel-head"><h3>Deployment Frequency <span class="info-tip" data-tip="Weekly deployment count. Visual proof of velocity improvement over time. Growth indicates faster delivery cadence.">i</span></h3><span class="panel-period">Weekly</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 100" fill="none">
+            <rect x="20" y="65" width="40" height="30" rx="3" fill="#d5dbdb"/>
+            <rect x="68" y="55" width="40" height="40" rx="3" fill="#d5dbdb"/>
+            <rect x="116" y="45" width="40" height="50" rx="3" fill="#d5dbdb"/>
+            <rect x="164" y="40" width="40" height="55" rx="3" fill="#0969da"/>
+            <rect x="212" y="30" width="40" height="65" rx="3" fill="#0969da"/>
+            <rect x="260" y="25" width="40" height="70" rx="3" fill="#0969da"/>
+            <rect x="308" y="15" width="40" height="80" rx="3" fill="#0969da"/>
+            <text x="40" y="95" text-anchor="middle" font-size="7" fill="#687078">W1</text>
+            <text x="88" y="95" text-anchor="middle" font-size="7" fill="#687078">W2</text>
+            <text x="136" y="95" text-anchor="middle" font-size="7" fill="#687078">W3</text>
+            <text x="184" y="95" text-anchor="middle" font-size="7" fill="#687078">W4</text>
+            <text x="232" y="95" text-anchor="middle" font-size="7" fill="#687078">W5</text>
+            <text x="280" y="95" text-anchor="middle" font-size="7" fill="#687078">W6</text>
+            <text x="328" y="95" text-anchor="middle" font-size="7" fill="#687078">W7</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================
+       2. SECURITY & COMPLIANCE
+       ============================================ -->
+  <section class="dash-section alt" id="security">
+    <div class="dash-section-inner">
+      <div class="dash-section-head">
+        <div class="dsh-icon red"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d13212" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <div>
+          <h2>Security &amp; Compliance</h2>
+          <p>Guardrail enforcement, MCP tool governance, and data protection posture.</p>
+        </div>
+      </div>
+
+      <div class="dash-kpis four">
+        <div class="dash-kpi">
+          <div class="kpi-value red">23</div>
+          <div class="kpi-label">Guardrail Blocks (7d) <span class="info-tip" data-tip="Content blocked by Bedrock Guardrails in the past 7 days. Includes hate speech, prompt attacks, and denied topics. High count may indicate prompt injection attempts.">i</span></div>
+          <div class="kpi-trend neutral"><span class="status-dot green"></span>Within threshold</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value orange">147</div>
+          <div class="kpi-label">PII Anonymized (7d) <span class="info-tip" data-tip="Personally identifiable information (emails, phone numbers) automatically scrubbed by guardrails before reaching the model. SSNs and credit cards are fully blocked.">i</span></div>
+          <div class="kpi-trend neutral">Emails: 89 | Phones: 58</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value blue">3</div>
+          <div class="kpi-label">MCP Auth Denied (7d) <span class="info-tip" data-tip="Unauthorized MCP tool call attempts by AI agents. Non-zero means agents tried to access tools beyond their granted scopes. Shows tool governance is enforcing boundaries.">i</span></div>
+          <div class="kpi-trend neutral">delete_task: 2 | admin_tool: 1</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value green">0</div>
+          <div class="kpi-label">Exfiltration Alerts (7d) <span class="info-tip" data-tip="Data exfiltration pattern detections. Monitors for anomalous read volumes on PRISM DynamoDB tables via CloudTrail. Any non-zero triggers an immediate alarm.">i</span></div>
+          <div class="kpi-trend up"><span class="status-dot green"></span>No anomalies detected</div>
+        </div>
+      </div>
+
+      <div class="dash-panels two">
+        <div class="dash-panel">
+          <div class="panel-head"><h3>Guardrail Trigger Trend <span class="info-tip" data-tip="Daily count of all guardrail activations split by type: content filters (hate, violence, prompt attacks) and sensitive info (PII detection). Sustained increase warrants investigation.">i</span></h3><span class="panel-period">30 Days</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 120" fill="none">
+            <text x="0" y="10" font-size="9" fill="#687078">20</text>
+            <text x="0" y="58" font-size="9" fill="#687078">10</text>
+            <text x="0" y="110" font-size="9" fill="#687078">0</text>
+            <line x1="30" y1="58" x2="375" y2="58" stroke="#eaeded" stroke-width="0.5" stroke-dasharray="4"/>
+            <!-- Stacked area: content filter + PII + denied topic -->
+            <polygon points="30,85 72,78 114,82 156,75 198,70 240,72 282,68 324,65 366,60 366,110 30,110" fill="rgba(209,50,18,0.15)" stroke="none"/>
+            <polyline points="30,85 72,78 114,82 156,75 198,70 240,72 282,68 324,65 366,60" stroke="#d13212" stroke-width="1.5" fill="none"/>
+            <polygon points="30,95 72,90 114,93 156,88 198,85 240,86 282,83 324,80 366,78 366,110 30,110" fill="rgba(236,114,17,0.15)" stroke="none"/>
+            <polyline points="30,95 72,90 114,93 156,88 198,85 240,86 282,83 324,80 366,78" stroke="#ec7211" stroke-width="1.5" fill="none"/>
+            <line x1="30" y1="115" x2="48" y2="115" stroke="#d13212" stroke-width="2"/>
+            <text x="52" y="118" font-size="8" fill="#414d5c">Content Filter</text>
+            <line x1="140" y1="115" x2="158" y2="115" stroke="#ec7211" stroke-width="2"/>
+            <text x="162" y="118" font-size="8" fill="#414d5c">PII / Sensitive</text>
+          </svg>
+        </div>
+        <div class="dash-panel">
+          <div class="panel-head"><h3>AI vs Human Defect Rate <span class="info-tip" data-tip="Side-by-side post-merge defect comparison. Defects are attributed proportionally to AI vs human commits in failed deployments. Answers: is AI code as reliable as human code?">i</span></h3><span class="panel-period">7-Day Avg</span></div>
+          <div style="display:flex; justify-content:center; gap:40px; padding:20px 0;">
+            <div style="text-align:center;">
+              <div style="font-size:36px; font-weight:300; color:#0969da;">3.2%</div>
+              <div style="font-size:12px; font-weight:700; color:var(--cs-grey-600); text-transform:uppercase;">AI Code</div>
+              <div style="font-size:11px; color:var(--cs-grey-500);">Based on 312 AI commits</div>
+            </div>
+            <div style="text-align:center;">
+              <div style="font-size:36px; font-weight:300; color:#ec7211;">4.8%</div>
+              <div style="font-size:12px; font-weight:700; color:var(--cs-grey-600); text-transform:uppercase;">Human Code</div>
+              <div style="font-size:11px; color:var(--cs-grey-500);">Based on 188 human commits</div>
+            </div>
+          </div>
+          <div style="text-align:center; font-size:12px; color:var(--cs-green-600); font-weight:600;">AI code has 33% lower defect rate</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================
+       3. COST INTELLIGENCE
+       ============================================ -->
+  <section class="dash-section" id="cost">
+    <div class="dash-section-inner">
+      <div class="dash-section-head">
+        <div class="dsh-icon orange"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ec7211" stroke-width="2" stroke-linecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+        <div>
+          <h2>Cost Intelligence</h2>
+          <p>Bedrock token consumption, per-commit costs, and budget tracking.</p>
+        </div>
+      </div>
+
+      <div class="dash-kpis four">
+        <div class="dash-kpi">
+          <div class="kpi-value purple">$2,847</div>
+          <div class="kpi-label">Weekly Bedrock Cost <span class="info-tip" data-tip="Total Bedrock API spend for the past 7 days across all models. Captured via CloudTrail token counts multiplied by model pricing rates.">i</span></div>
+          <div class="kpi-trend up">-12% vs prior week</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value blue">$0.42</div>
+          <div class="kpi-label">Avg Cost / Commit <span class="info-tip" data-tip="Average Bedrock cost per AI-assisted commit. Calculated by correlating token usage within a 5-minute window before each commit. Rising trend = inefficient prompting.">i</span></div>
+          <div class="kpi-trend up">-$0.08 vs prior week</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value green">187</div>
+          <div class="kpi-label">Tokens / Line Changed <span class="info-tip" data-tip="Token efficiency: total Bedrock tokens consumed divided by lines of code changed. Lower is better. Above 500 triggers an alarm indicating context bloat or excessive iteration.">i</span></div>
+          <div class="kpi-trend up">Within efficient range</div>
+        </div>
+        <div class="dash-kpi">
+          <div class="kpi-value green">68<span class="kpi-unit">%</span></div>
+          <div class="kpi-label">Budget Consumed (MTD) <span class="info-tip" data-tip="Month-to-date Bedrock spend as a percentage of the monthly budget allocation. Helps finance track AI infrastructure burn rate.">i</span></div>
+          <div class="kpi-trend neutral">$8,420 / $12,400 monthly</div>
+        </div>
+      </div>
+
+      <div class="dash-panels two">
+        <div class="dash-panel">
+          <div class="panel-head"><h3>Weekly Bedrock Cost <span class="info-tip" data-tip="Week-over-week Bedrock spend trend. Shows whether AI costs are growing linearly with adoption or exhibiting super-linear spikes that need investigation.">i</span></h3><span class="panel-period">8 Weeks</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 120" fill="none">
+            <rect x="20" y="60" width="36" height="50" rx="3" fill="#d5dbdb"/>
+            <rect x="64" y="50" width="36" height="60" rx="3" fill="#d5dbdb"/>
+            <rect x="108" y="40" width="36" height="70" rx="3" fill="#d5dbdb"/>
+            <rect x="152" y="35" width="36" height="75" rx="3" fill="#d5dbdb"/>
+            <rect x="196" y="30" width="36" height="80" rx="3" fill="#ec7211"/>
+            <rect x="240" y="25" width="36" height="85" rx="3" fill="#ec7211"/>
+            <rect x="284" y="22" width="36" height="88" rx="3" fill="#ec7211"/>
+            <rect x="328" y="28" width="36" height="82" rx="3" fill="#ec7211"/>
+            <text x="38" y="115" text-anchor="middle" font-size="7" fill="#687078">$2.1K</text>
+            <text x="82" y="115" text-anchor="middle" font-size="7" fill="#687078">$2.4K</text>
+            <text x="126" y="115" text-anchor="middle" font-size="7" fill="#687078">$2.7K</text>
+            <text x="170" y="115" text-anchor="middle" font-size="7" fill="#687078">$2.9K</text>
+            <text x="214" y="115" text-anchor="middle" font-size="7" fill="#687078">$3.1K</text>
+            <text x="258" y="115" text-anchor="middle" font-size="7" fill="#687078">$3.2K</text>
+            <text x="302" y="115" text-anchor="middle" font-size="7" fill="#687078">$3.3K</text>
+            <text x="346" y="115" text-anchor="middle" font-size="7" fill="#687078">$2.8K</text>
+          </svg>
+        </div>
+        <div class="dash-panel">
+          <div class="panel-head"><h3>Cost by Model <span class="info-tip" data-tip="Bedrock cost breakdown by model. Helps optimize model selection: use Haiku for simple tasks, Sonnet for coding, Opus for complex reasoning. Shift toward cheaper models = cost optimization.">i</span></h3><span class="panel-period">This Week</span></div>
+          <svg class="panel-chart" viewBox="0 0 380 120" fill="none">
+            <text x="12" y="24" font-size="10" font-weight="600" fill="#16191f">Claude Sonnet 4</text>
+            <text x="370" y="24" text-anchor="end" font-size="10" fill="#0969da" font-weight="700">$1,890</text>
+            <rect x="12" y="30" width="358" height="10" rx="5" fill="#f0f3f6"/>
+            <rect x="12" y="30" width="238" height="10" rx="5" fill="#0969da"/>
+
+            <text x="12" y="60" font-size="10" font-weight="600" fill="#16191f">Claude Haiku 4.5</text>
+            <text x="370" y="60" text-anchor="end" font-size="10" fill="#8250df" font-weight="700">$624</text>
+            <rect x="12" y="66" width="358" height="10" rx="5" fill="#f0f3f6"/>
+            <rect x="12" y="66" width="79" height="10" rx="5" fill="#8250df"/>
+
+            <text x="12" y="96" font-size="10" font-weight="600" fill="#16191f">Claude Opus 4</text>
+            <text x="370" y="96" text-anchor="end" font-size="10" fill="#ec7211" font-weight="700">$333</text>
+            <rect x="12" y="102" width="358" height="10" rx="5" fill="#f0f3f6"/>
+            <rect x="12" y="102" width="42" height="10" rx="5" fill="#ec7211"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="site-footer" style="background:var(--aws-navy); padding:16px 32px; text-align:center;">
+    <p style="color:var(--cs-grey-400); font-size:12px; margin:0;">
+      PRISM D1 Velocity &mdash; Mock Dashboard with Sample Data &middot; <a href="dashboard-team.html" style="color:var(--aws-squid);">View Team Dashboard</a>
+    </p>
+  </footer>
+
+</body>
+</html>

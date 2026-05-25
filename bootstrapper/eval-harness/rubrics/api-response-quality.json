@@ -1,0 +1,45 @@
+{
+  "rubric_name": "api_spec_compliance",
+  "description": "Evaluates whether API endpoint implementations match their specs",
+  "global_threshold": 0.8,
+  "criteria": [
+    {
+      "name": "acceptance_criteria_coverage",
+      "description": "Every acceptance criterion in the spec must have a corresponding implementation. Check each Given/When/Then statement and verify the code handles that exact scenario.",
+      "scoring": "Count the acceptance criteria in the spec. For each one, determine if the code implements it (1) or not (0). Score = implemented / total.",
+      "threshold": 1.0,
+      "weight": 0.35,
+      "requires_spec": true
+    },
+    {
+      "name": "api_contract_fidelity",
+      "description": "The implemented endpoint must match the spec's API contract exactly: correct HTTP method, path, request body schema, response body schema, and status codes.",
+      "scoring": "Check 5 elements: method, path, request schema, response schema, status codes. Score 0.2 for each correct element.",
+      "threshold": 0.8,
+      "weight": 0.25,
+      "requires_spec": true
+    },
+    {
+      "name": "error_handling",
+      "description": "All error cases defined in the spec must be handled with the correct HTTP status code and response format (RFC 7807 Problem Details).",
+      "scoring": "For each error case in the spec, check: (a) is it handled? (b) correct status code? (c) Problem Details format? Score = correct_checks / (total_error_cases * 3)",
+      "threshold": 0.7,
+      "weight": 0.20,
+      "requires_spec": true
+    },
+    {
+      "name": "no_hallucinated_dependencies",
+      "description": "The code must not import modules, call functions, or reference APIs that do not exist in the project. Every import must resolve to a real file or installed package.",
+      "scoring": "Binary: 1.0 if all imports and function calls reference real modules/packages, 0.0 if any hallucinated dependency is found.",
+      "threshold": 1.0,
+      "weight": 0.10
+    },
+    {
+      "name": "type_safety",
+      "description": "The code must use proper TypeScript types. No 'any' types, no type assertions without justification, all function parameters and return types annotated.",
+      "scoring": "Count type violations: any usage, missing annotations, unsafe assertions. Score = max(0, 1.0 - (violations * 0.1))",
+      "threshold": 0.8,
+      "weight": 0.10
+    }
+  ]
+}

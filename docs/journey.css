@@ -1,0 +1,200 @@
+/* ============================================
+   Journey detail page — vertical timeline
+   ============================================ */
+
+/* Hero */
+.j-hero {
+  background: linear-gradient(135deg, #1e293b 0%, #1e3a5f 50%, #2d1b4e 100%);
+  padding: 3rem 2rem 2.5rem;
+  text-align: center;
+  position: relative;
+}
+.j-hero::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #d1242f, #bf5700, #1a7f37, #0969da, #8250df);
+}
+.j-hero h1 {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.5rem;
+}
+.j-hero p {
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.75);
+  max-width: 600px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Timeline */
+.j-timeline {
+  padding: 3rem 2rem 4rem;
+  background: var(--bg);
+}
+.j-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  position: relative;
+  padding-left: 3.5rem;
+}
+
+/* Vertical line */
+.j-inner::before {
+  content: '';
+  position: absolute;
+  left: 1.2rem;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+  border-radius: 2px;
+}
+
+/* Step */
+.j-step {
+  position: relative;
+  margin-bottom: 2.25rem;
+}
+.j-step:last-child { margin-bottom: 0; }
+
+/* Marker */
+.j-marker {
+  position: absolute;
+  left: -3.5rem;
+  top: 1.25rem;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  z-index: 1;
+  border: 2px solid;
+}
+.j-marker.teal   { background: var(--teal-light); color: var(--teal); border-color: var(--teal); }
+.j-marker.blue   { background: var(--blue-light); color: var(--blue); border-color: var(--blue); }
+.j-marker.purple { background: var(--purple-light); color: var(--purple); border-color: var(--purple); }
+.j-marker.orange { background: var(--orange-light); color: var(--orange); border-color: var(--orange); }
+.j-marker.green  { background: var(--green-light); color: var(--green); border-color: var(--green); }
+
+/* Card */
+.j-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem 1.75rem;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.j-step:hover .j-card {
+  box-shadow: var(--shadow-md);
+}
+.j-step:hover .j-marker {
+  transform: scale(1.08);
+  transition: transform 0.2s;
+}
+
+/* Card heading with icon */
+.j-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.5rem;
+}
+.j-card-icon {
+  width: 38px; height: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.j-card-icon.teal   { background: var(--teal-light); }
+.j-card-icon.blue   { background: var(--blue-light); }
+.j-card-icon.purple { background: var(--purple-light); }
+.j-card-icon.orange { background: var(--orange-light); }
+.j-card-icon.green  { background: var(--green-light); }
+
+.j-card h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 0;
+  letter-spacing: -0.01em;
+}
+.j-card p {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-bottom: 1rem;
+}
+
+/* Outcome pill */
+.j-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 100px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.j-outcome svg { flex-shrink: 0; }
+.j-outcome.teal   { background: var(--teal-light); color: var(--teal); }
+.j-outcome.blue   { background: var(--blue-light); color: var(--blue); }
+.j-outcome.purple { background: var(--purple-light); color: var(--purple); }
+.j-outcome.orange { background: var(--orange-light); color: var(--orange); }
+.j-outcome.green  { background: var(--green-light); color: var(--green); }
+
+/* Repo link */
+.j-link {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+.j-link:hover { text-decoration: underline; }
+.j-links-row {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+.j-link-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--purple);
+}
+.j-link-pdf:hover { color: var(--purple); }
+
+/* Back link in footer */
+.j-back-link {
+  display: inline-block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 1.5rem;
+}
+.j-back-link:hover { text-decoration: underline; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .j-hero h1 { font-size: 1.5rem; }
+  .j-hero p { font-size: 0.9rem; }
+  .j-hero { padding: 2rem 1.25rem 1.75rem; }
+  .j-timeline { padding: 2rem 1.25rem 3rem; }
+  .j-inner { padding-left: 3rem; }
+  .j-marker {
+    left: -3rem;
+    width: 2rem; height: 2rem;
+    font-size: 0.75rem;
+  }
+  .j-card { padding: 1.25rem; }
+  .j-card h2 { font-size: 1.1rem; }
+  .j-card p { font-size: 0.875rem; }
+}

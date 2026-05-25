@@ -1,0 +1,83 @@
+{
+  "_comment": "Bedrock Guardrails configuration template. Defines content safety policies for agent interactions. Replace all <PLACEHOLDER> values.",
+  "name": "<AGENT_NAME>-guardrails",
+  "description": "Content safety guardrails for the <AGENT_NAME> agent. Enforces topic boundaries, content filters, and sensitive information protection.",
+  "content_filters": {
+    "_comment": "Filter strengths: NONE, LOW, MEDIUM, HIGH. Set based on your agent's domain and risk profile.",
+    "input_filters": [
+      { "type": "HATE", "strength": "HIGH" },
+      { "type": "INSULTS", "strength": "HIGH" },
+      { "type": "SEXUAL", "strength": "HIGH" },
+      { "type": "VIOLENCE", "strength": "HIGH" },
+      { "type": "MISCONDUCT", "strength": "HIGH" },
+      { "type": "PROMPT_ATTACK", "strength": "HIGH" }
+    ],
+    "output_filters": [
+      { "type": "HATE", "strength": "HIGH" },
+      { "type": "INSULTS", "strength": "HIGH" },
+      { "type": "SEXUAL", "strength": "HIGH" },
+      { "type": "VIOLENCE", "strength": "HIGH" },
+      { "type": "MISCONDUCT", "strength": "HIGH" }
+    ]
+  },
+  "denied_topics": [
+    {
+      "name": "competitor-recommendations",
+      "description": "The agent must not recommend or promote competitor products or services.",
+      "examples": [
+        "You should use [competitor product] instead.",
+        "A better alternative would be [competitor service]."
+      ]
+    },
+    {
+      "name": "financial-advice",
+      "description": "The agent must not provide specific financial, investment, or tax advice.",
+      "examples": [
+        "You should invest in these stocks.",
+        "Based on your income, you should claim these deductions."
+      ],
+      "_comment": "Remove this topic if your agent is specifically designed for financial use cases."
+    },
+    {
+      "name": "<CUSTOM_DENIED_TOPIC>",
+      "description": "<DESCRIPTION_OF_TOPIC_TO_DENY>",
+      "examples": [
+        "<EXAMPLE_1>",
+        "<EXAMPLE_2>"
+      ]
+    }
+  ],
+  "word_filters": {
+    "managed_word_lists": ["PROFANITY"],
+    "custom_words": [
+      "<ADD_CUSTOM_BLOCKED_WORDS>"
+    ],
+    "_comment": "Custom words are exact-match blocked in both input and output. Use for brand-specific terms, internal codenames, etc."
+  },
+  "sensitive_info_filters": {
+    "pii_entities": [
+      { "type": "EMAIL", "action": "ANONYMIZE" },
+      { "type": "PHONE", "action": "ANONYMIZE" },
+      { "type": "SSN", "action": "BLOCK" },
+      { "type": "CREDIT_DEBIT_CARD_NUMBER", "action": "BLOCK" },
+      { "type": "AWS_ACCESS_KEY", "action": "BLOCK" },
+      { "type": "AWS_SECRET_KEY", "action": "BLOCK" }
+    ],
+    "regex_filters": [
+      {
+        "name": "internal-api-key",
+        "pattern": "sk-[a-zA-Z0-9]{32,}",
+        "action": "BLOCK",
+        "_comment": "Block any string that looks like an API key from appearing in agent output."
+      }
+    ],
+    "_comment": "ANONYMIZE replaces the value with a placeholder. BLOCK prevents the entire response. Choose based on whether partial output is acceptable."
+  },
+  "blocked_input_messaging": "I cannot process this request as it falls outside my operational boundaries.",
+  "blocked_output_messaging": "I generated a response that was filtered by safety guardrails. Please rephrase your request.",
+  "tags": {
+    "prism:pillar": "d1-velocity",
+    "prism:component": "agent-guardrails",
+    "prism:team": "<TEAM_ID>"
+  }
+}

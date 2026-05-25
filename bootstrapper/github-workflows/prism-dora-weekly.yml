@@ -1,0 +1,334 @@
+# prism-dora-weekly.yml — Weekly DORA + AI-DORA metrics assessment.
+#
+# Copy this file to .github/workflows/prism-dora-weekly.yml in your repo.
+#
+# Methodology:
+#   - Deployment Frequency: merged PRs to main (proxy for deploys)
+#   - Lead Time: avg hours from PR open to merge
+#   - Change Failure Rate: PRs with "revert|hotfix|rollback" in title / total merged
+#   - MTTR: avg lead time of revert/hotfix PRs
+#   - AI metrics: derived from AI-Origin commit trailers
+#
+# Required setup:
+#   - OIDC provider configured for GitHub Actions in your AWS account
+#   - IAM role with events:PutEvents and cloudwatch:PutMetricData permissions
+#   - Repository secret PRISM_METRICS_ROLE_ARN set to the OIDC role ARN
+#   - .prism/config.json committed to the repo (created by: bash prism-cli bootstrapper install-git-hooks)
+
+name: PRISM DORA Weekly Assessment
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 09:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  dora-assessment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Read team ID from .prism/config.json
+        id: prism-config
+        run: |
+          if [[ -f .prism/config.json ]]; then
+            TEAM_ID=$(jq -r '.team_id' .prism/config.json)
+          else
+            echo "::error::.prism/config.json not found. Run bootstrapper/metric-hooks/install.sh first."
+            exit 1
+          fi
+          echo "team_id=${TEAM_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate DORA metrics (past 7 days)
+        id: dora
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          SINCE=$(date -u -d '7 days ago' +"%Y-%m-%dT%H:%M:%SZ")
+          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          REPO="${{ github.repository }}"
+
+          echo "Assessment period: ${SINCE} to ${NOW}"
+
+          # ---------------------------------------------------------------
+          # 1. Deployment Frequency — merged PRs to main (proxy for deploys)
+          # ---------------------------------------------------------------
+          MERGED_PRS=$(gh pr list --repo "${REPO}" --state merged --base main \
+            --search "merged:>=${SINCE}" --json number,title,mergedAt --limit 200 2>/dev/null || echo "[]")
+          DEPLOY_COUNT=$(echo "${MERGED_PRS}" | jq 'length')
+          DEPLOY_FREQUENCY=$(echo "scale=2; ${DEPLOY_COUNT} / 7" | bc -l | sed 's/^\./0./')
+
+          # ---------------------------------------------------------------
+          # 2. Lead Time for Changes — avg time from PR open to merge
+          # ---------------------------------------------------------------
+          LEAD_TIMES=$(gh pr list --repo "${REPO}" --state merged --base main \
+            --search "merged:>=${SINCE}" --json createdAt,mergedAt --limit 200 2>/dev/null || echo "[]")
+
+          AVG_LEAD_TIME_HOURS=$(echo "${LEAD_TIMES}" | jq '
+            if length == 0 then 0
+            else
+              [.[] |
+                (((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) -
+                  (.createdAt | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime)) / 3600)
+              ] | add / length | . * 100 | round / 100
+            end
+          ')
+
+          # ---------------------------------------------------------------
+          # 3. Change Failure Rate — PRs with "revert" or "hotfix" in title
+          # ---------------------------------------------------------------
+          FAILURE_PRS=$(echo "${MERGED_PRS}" | jq '[.[] | select(.title? // "" | test("revert|hotfix|rollback"; "i"))] | length' 2>/dev/null || echo "0")
+          if [[ "${DEPLOY_COUNT}" -gt 0 ]]; then
+            CHANGE_FAILURE_RATE=$(echo "scale=4; ${FAILURE_PRS} / ${DEPLOY_COUNT}" | bc -l | sed 's/^\./0./')
+          else
+            CHANGE_FAILURE_RATE="0"
+          fi
+
+          # ---------------------------------------------------------------
+          # 4. Mean Time to Recovery — avg time for hotfix/revert PRs
+          # ---------------------------------------------------------------
+          RECOVERY_TIMES=$(gh pr list --repo "${REPO}" --state merged --base main \
+            --search "merged:>=${SINCE}" --json title,createdAt,mergedAt --limit 200 2>/dev/null \
+            | jq '[.[] | select(.title | test("revert|hotfix|rollback"; "i"))]')
+
+          MTTR_HOURS=$(echo "${RECOVERY_TIMES}" | jq '
+            if length == 0 then 0
+            else
+              [.[] |
+                (((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) -
+                  (.createdAt | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime)) / 3600)
+              ] | add / length | . * 100 | round / 100
+            end
+          ')
+
+          echo "deploy_count=${DEPLOY_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "deploy_frequency=${DEPLOY_FREQUENCY}" >> "$GITHUB_OUTPUT"
+          echo "avg_lead_time_hours=${AVG_LEAD_TIME_HOURS}" >> "$GITHUB_OUTPUT"
+          echo "change_failure_rate=${CHANGE_FAILURE_RATE}" >> "$GITHUB_OUTPUT"
+          echo "mttr_hours=${MTTR_HOURS}" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate AI-DORA metrics (past 7 days)
+        id: ai-dora
+        run: |
+          set -o pipefail
+          SINCE_DATE=$(date -u -d '7 days ago' +"%Y-%m-%d")
+
+          # All commits in the past 7 days on main
+          TOTAL_COMMITS=$(git log --since="${SINCE_DATE}" --oneline main 2>/dev/null | wc -l | tr -d ' ')
+
+          # AI-origin breakdown — count per-commit to avoid overcounting
+          AI_GENERATED=0
+          AI_ASSISTED=0
+          HUMAN_ONLY=0
+          SPEC_REFS=0
+          CLAUDE_CODE_COUNT=0
+          KIRO_COUNT=0
+          Q_DEV_COUNT=0
+
+          for SHA in $(git log --since="${SINCE_DATE}" --format='%H' main 2>/dev/null); do
+            MSG=$(git log -1 --format='%B' "${SHA}")
+            if echo "${MSG}" | grep -q '^AI-Origin: ai-generated'; then
+              AI_GENERATED=$((AI_GENERATED + 1))
+            elif echo "${MSG}" | grep -q '^AI-Origin: ai-assisted'; then
+              AI_ASSISTED=$((AI_ASSISTED + 1))
+            elif echo "${MSG}" | grep -q '^AI-Origin: human'; then
+              HUMAN_ONLY=$((HUMAN_ONLY + 1))
+            fi
+            echo "${MSG}" | grep -q '^Spec-Ref:' && SPEC_REFS=$((SPEC_REFS + 1))
+            TOOL=$(echo "${MSG}" | grep -oP '(?<=^AI-Tool: ).+' || true)
+            case "${TOOL}" in
+              *claude-code*) CLAUDE_CODE_COUNT=$((CLAUDE_CODE_COUNT + 1)) ;;
+              *kiro*)        KIRO_COUNT=$((KIRO_COUNT + 1)) ;;
+              *q-developer*) Q_DEV_COUNT=$((Q_DEV_COUNT + 1)) ;;
+            esac
+          done
+
+          UNTAGGED=$((TOTAL_COMMITS - AI_GENERATED - AI_ASSISTED - HUMAN_ONLY))
+          [[ "${UNTAGGED}" -lt 0 ]] && UNTAGGED=0
+
+          AI_TOTAL=$((AI_GENERATED + AI_ASSISTED))
+          if [[ "${TOTAL_COMMITS}" -gt 0 ]]; then
+            AI_ADOPTION_RATE=$(echo "scale=4; ${AI_TOTAL} / ${TOTAL_COMMITS}" | bc -l | sed 's/^\./0./')
+          else
+            AI_ADOPTION_RATE="0"
+          fi
+
+          AI_TO_MERGE_RATIO="${AI_ADOPTION_RATE}"
+
+          if [[ "${TOTAL_COMMITS}" -gt 0 ]]; then
+            SPEC_COVERAGE=$(echo "scale=4; ${SPEC_REFS} / ${TOTAL_COMMITS}" | bc -l | sed 's/^\./0./')
+          else
+            SPEC_COVERAGE="0"
+          fi
+
+          echo "total_commits=${TOTAL_COMMITS}" >> "$GITHUB_OUTPUT"
+          echo "ai_generated=${AI_GENERATED}" >> "$GITHUB_OUTPUT"
+          echo "ai_assisted=${AI_ASSISTED}" >> "$GITHUB_OUTPUT"
+          echo "human_only=${HUMAN_ONLY}" >> "$GITHUB_OUTPUT"
+          echo "untagged=${UNTAGGED}" >> "$GITHUB_OUTPUT"
+          echo "ai_adoption_rate=${AI_ADOPTION_RATE}" >> "$GITHUB_OUTPUT"
+          echo "ai_to_merge_ratio=${AI_TO_MERGE_RATIO}" >> "$GITHUB_OUTPUT"
+          echo "spec_coverage=${SPEC_COVERAGE}" >> "$GITHUB_OUTPUT"
+          echo "claude_code_count=${CLAUDE_CODE_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "kiro_count=${KIRO_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "q_dev_count=${Q_DEV_COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Emit prism.d1.assessment event
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          ASSESSMENT_EVENT=$(jq -n \
+            --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg timestamp "${TIMESTAMP}" \
+            --argjson deploy_count "${{ steps.dora.outputs.deploy_count }}" \
+            --argjson deploy_frequency "${{ steps.dora.outputs.deploy_frequency }}" \
+            --argjson avg_lead_time_hours "${{ steps.dora.outputs.avg_lead_time_hours }}" \
+            --argjson change_failure_rate "${{ steps.dora.outputs.change_failure_rate }}" \
+            --argjson mttr_hours "${{ steps.dora.outputs.mttr_hours }}" \
+            --argjson total_commits "${{ steps.ai-dora.outputs.total_commits }}" \
+            --argjson ai_generated "${{ steps.ai-dora.outputs.ai_generated }}" \
+            --argjson ai_assisted "${{ steps.ai-dora.outputs.ai_assisted }}" \
+            --argjson human_only "${{ steps.ai-dora.outputs.human_only }}" \
+            --argjson untagged "${{ steps.ai-dora.outputs.untagged }}" \
+            --argjson ai_adoption_rate "${{ steps.ai-dora.outputs.ai_adoption_rate }}" \
+            --argjson ai_to_merge_ratio "${{ steps.ai-dora.outputs.ai_to_merge_ratio }}" \
+            --argjson spec_coverage "${{ steps.ai-dora.outputs.spec_coverage }}" \
+            --argjson claude_code_count "${{ steps.ai-dora.outputs.claude_code_count }}" \
+            --argjson kiro_count "${{ steps.ai-dora.outputs.kiro_count }}" \
+            --argjson q_dev_count "${{ steps.ai-dora.outputs.q_dev_count }}" \
+            '{
+              "team_id": $team_id,
+              "repo": $repo,
+              "timestamp": $timestamp,
+              "prism_level": 2,
+              "metric": {
+                "name": "weekly_assessment",
+                "value": 1,
+                "unit": "assessment"
+              },
+              "dora": {
+                "deployment_frequency": $deploy_frequency,
+                "deployments": $deploy_count,
+                "lead_time_hours": $avg_lead_time_hours,
+                "change_failure_rate": $change_failure_rate,
+                "mttr_hours": $mttr_hours
+              },
+              "ai_dora": {
+                "ai_adoption_rate": $ai_adoption_rate,
+                "ai_to_merge_ratio": $ai_to_merge_ratio,
+                "total_commits": $total_commits,
+                "ai_generated_commits": $ai_generated,
+                "ai_assisted_commits": $ai_assisted,
+                "human_commits": $human_only,
+                "untagged_commits": $untagged,
+                "spec_coverage": $spec_coverage,
+                "tool_breakdown": {
+                  "claude_code": $claude_code_count,
+                  "kiro": $kiro_count,
+                  "q_developer": $q_dev_count
+                }
+              }
+            }')
+
+          aws events put-events \
+            --region us-west-2 \
+            --entries "[{
+              \"Source\": \"prism.d1.velocity\",
+              \"DetailType\": \"prism.d1.assessment\",
+              \"EventBusName\": \"prism-d1-metrics\",
+              \"Detail\": $(echo "${ASSESSMENT_EVENT}" | jq -c '.' | jq -Rs '.')
+            }]"
+
+          echo "Weekly DORA assessment emitted successfully."
+
+      - name: Emit tool breakdown and adoption metrics to CloudWatch
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          TEAM_ID="${{ steps.prism-config.outputs.team_id }}"
+          REPO="${{ github.repository }}"
+          NAMESPACE="PRISM/D1/Velocity"
+
+          # AI Adoption Rate
+          aws cloudwatch put-metric-data \
+            --region us-west-2 \
+            --namespace "${NAMESPACE}" \
+            --metric-data "[{
+              \"MetricName\": \"AIAdoptionRate\",
+              \"Value\": ${{ steps.ai-dora.outputs.ai_adoption_rate }},
+              \"Unit\": \"Percent\",
+              \"Timestamp\": \"${TIMESTAMP}\",
+              \"Dimensions\": [
+                {\"Name\": \"TeamId\", \"Value\": \"${TEAM_ID}\"},
+                {\"Name\": \"Repository\", \"Value\": \"${REPO}\"}
+              ]
+            }]"
+
+          # Spec Coverage
+          aws cloudwatch put-metric-data \
+            --region us-west-2 \
+            --namespace "${NAMESPACE}" \
+            --metric-data "[{
+              \"MetricName\": \"SpecCoverage\",
+              \"Value\": ${{ steps.ai-dora.outputs.spec_coverage }},
+              \"Unit\": \"Percent\",
+              \"Timestamp\": \"${TIMESTAMP}\",
+              \"Dimensions\": [
+                {\"Name\": \"TeamId\", \"Value\": \"${TEAM_ID}\"},
+                {\"Name\": \"Repository\", \"Value\": \"${REPO}\"}
+              ]
+            }]"
+
+          # Tool breakdown — one metric per tool
+          for TOOL_DATA in \
+            "ClaudeCodeCommits:${{ steps.ai-dora.outputs.claude_code_count }}" \
+            "KiroCommits:${{ steps.ai-dora.outputs.kiro_count }}" \
+            "QDeveloperCommits:${{ steps.ai-dora.outputs.q_dev_count }}" \
+            "UntaggedCommits:${{ steps.ai-dora.outputs.untagged }}"; do
+
+            METRIC_NAME="${TOOL_DATA%%:*}"
+            METRIC_VALUE="${TOOL_DATA##*:}"
+
+            aws cloudwatch put-metric-data \
+              --region us-west-2 \
+              --namespace "${NAMESPACE}" \
+              --metric-data "[{
+                \"MetricName\": \"${METRIC_NAME}\",
+                \"Value\": ${METRIC_VALUE},
+                \"Unit\": \"Count\",
+                \"Timestamp\": \"${TIMESTAMP}\",
+                \"Dimensions\": [
+                  {\"Name\": \"TeamId\", \"Value\": \"${TEAM_ID}\"},
+                  {\"Name\": \"Repository\", \"Value\": \"${REPO}\"}
+                ]
+              }]"
+          done
+
+          echo "Tool breakdown and adoption metrics emitted to CloudWatch."
+          echo ""
+          echo "=== DORA Metrics ==="
+          echo "Deployment Frequency: ${{ steps.dora.outputs.deploy_frequency }}/day"
+          echo "Lead Time: ${{ steps.dora.outputs.avg_lead_time_hours }} hours"
+          echo "Change Failure Rate: ${{ steps.dora.outputs.change_failure_rate }}"
+          echo "MTTR: ${{ steps.dora.outputs.mttr_hours }} hours"
+          echo ""
+          echo "=== AI-DORA Metrics ==="
+          echo "AI Adoption Rate: ${{ steps.ai-dora.outputs.ai_adoption_rate }}"
+          echo "AI-to-Merge Ratio: ${{ steps.ai-dora.outputs.ai_to_merge_ratio }}"
+          echo "Spec Coverage: ${{ steps.ai-dora.outputs.spec_coverage }}"
+          echo "Total Commits: ${{ steps.ai-dora.outputs.total_commits }}"

@@ -1,0 +1,12 @@
+{
+  "app": "npx ts-node bin/app.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "dist/**", "node_modules/**", "cdk.out/**"]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}

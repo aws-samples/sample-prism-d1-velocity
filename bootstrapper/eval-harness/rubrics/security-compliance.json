@@ -1,0 +1,145 @@
+{
+  "rubric_name": "security-compliance",
+  "version": "2.0.0",
+  "description": "Evaluates code for security best practices and compliance requirements. Aligned with AWS AI-DLC Security Baseline (SECURITY-01 through SECURITY-08).",
+  "criteria": [
+    {
+      "name": "authentication_authorization",
+      "weight": 0.16,
+      "description": "Access control is properly implemented and enforced.",
+      "references": ["SECURITY-01"],
+      "scoring": {
+        "5": "All endpoints enforce authentication. Authorization checks verify resource ownership. No privilege escalation paths.",
+        "4": "Auth properly implemented with minor gaps in edge case authorization.",
+        "3": "Basic auth present but some endpoints or operations lack proper authorization checks.",
+        "2": "Auth inconsistently applied. Some endpoints accessible without proper credentials.",
+        "1": "No authentication or authorization. Resources accessible by anyone."
+      }
+    },
+    {
+      "name": "injection_prevention",
+      "weight": 0.16,
+      "description": "Code is protected against injection attacks (SQL, NoSQL, command, XSS). All API parameters validated for type, length, and format.",
+      "references": ["SECURITY-05"],
+      "scoring": {
+        "5": "All queries use parameterized statements. All user input validated (type, length, format) and sanitized for output context. Request body size limits configured.",
+        "4": "Parameterized queries used consistently. Input validation present with minor gaps in format checking.",
+        "3": "Most queries parameterized but some string interpolation present. Inconsistent input validation.",
+        "2": "Inconsistent use of parameterized queries. Missing input validation on some endpoints.",
+        "1": "Raw string concatenation in queries or commands. No input validation."
+      }
+    },
+    {
+      "name": "secret_management",
+      "weight": 0.15,
+      "description": "Secrets are stored securely and never exposed in code, logs, or errors.",
+      "references": ["SECURITY-03", "SECURITY-07"],
+      "scoring": {
+        "5": "No secrets in code. Credentials from Secrets Manager/SSM. Secrets excluded from logs and error responses. No PII in log output.",
+        "4": "Secrets properly managed with minor logging gaps.",
+        "3": "Secrets not in code but may appear in verbose logs or error messages.",
+        "2": "Some secrets hard-coded or in configuration files.",
+        "1": "Secrets visible in source code, logs, or error responses."
+      }
+    },
+    {
+      "name": "data_protection",
+      "weight": 0.15,
+      "description": "Sensitive data is encrypted in transit (TLS 1.2+) and at rest (KMS). PII is handled per policy.",
+      "references": ["SECURITY-01"],
+      "scoring": {
+        "5": "All data encrypted in transit (TLS 1.2+). Sensitive data encrypted at rest with KMS. PII identified and handled per policy. No unnecessary data retention. Object storage rejects non-TLS requests.",
+        "4": "Encryption properly configured. Minor gaps in PII handling or data retention.",
+        "3": "Basic encryption present. PII handling incomplete. Some stores missing encryption config.",
+        "2": "Encryption inconsistent. Some sensitive data unprotected.",
+        "1": "No encryption. Sensitive data stored or transmitted in plaintext."
+      }
+    },
+    {
+      "name": "least_privilege",
+      "weight": 0.10,
+      "description": "IAM roles and permissions follow least-privilege principle with specific resource ARNs and actions.",
+      "references": ["SECURITY-06"],
+      "scoring": {
+        "5": "All IAM policies scoped to specific resources and actions. No wildcard permissions. Roles are service-specific. Read and write permissions separated.",
+        "4": "Mostly least-privilege. Minor over-permission in non-critical areas.",
+        "3": "Some wildcard actions or broad resource scopes present. No documented exceptions.",
+        "2": "Over-permissive policies. Wildcard actions on broad resource sets.",
+        "1": "Admin-level permissions or *:* policies."
+      }
+    },
+    {
+      "name": "error_information_leakage",
+      "weight": 0.07,
+      "description": "Error responses do not leak internal implementation details, stack traces, or technology identifiers.",
+      "references": ["SECURITY-07"],
+      "scoring": {
+        "5": "All errors return generic messages to clients. Stack traces, file paths, version numbers, and internal details logged server-side only. No technology identifiers in responses.",
+        "4": "Errors generally safe. Minor information leakage in edge cases.",
+        "3": "Some error responses include internal details like file paths or library names.",
+        "2": "Stack traces or database errors exposed to clients in some cases.",
+        "1": "Detailed stack traces, SQL errors, or internal paths exposed to clients."
+      }
+    },
+    {
+      "name": "http_security_headers",
+      "weight": 0.04,
+      "description": "HTTP security headers are set on all HTML-serving endpoints (CSP, HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy).",
+      "references": ["SECURITY-04"],
+      "scoring": {
+        "5": "All required headers set: CSP (no inline or eval directives), HSTS (max-age >= 31536000), X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Referrer-Policy: strict-origin-when-cross-origin.",
+        "4": "Most headers set. Minor gaps in CSP strictness.",
+        "3": "Some security headers present. CSP or HSTS missing.",
+        "2": "Only 1-2 security headers configured.",
+        "1": "No security headers set."
+      }
+    },
+    {
+      "name": "structured_logging",
+      "weight": 0.04,
+      "description": "Application uses structured logging with correlation IDs, directed to a centralized log service.",
+      "references": ["SECURITY-02", "SECURITY-03"],
+      "scoring": {
+        "5": "Structured logging framework configured. Every log entry has timestamp, correlation ID, log level. Output directed to CloudWatch/centralized service. Access logging enabled on all network intermediaries.",
+        "4": "Structured logging present. Minor gaps in correlation ID propagation.",
+        "3": "Logging present but not structured. Missing correlation IDs or centralized routing.",
+        "2": "Ad-hoc console.log/print used as primary logging. No centralized routing.",
+        "1": "No logging infrastructure. Ad-hoc print statements only."
+      }
+    },
+    {
+      "name": "dependency_security",
+      "weight": 0.04,
+      "description": "No known vulnerable dependencies. Versions pinned. Unused dependencies removed.",
+      "references": ["SECURITY-08"],
+      "scoring": {
+        "5": "No known vulnerabilities in dependencies. All versions pinned in lockfile. Unused dependencies removed. Transitive deps reviewed.",
+        "4": "No critical vulnerabilities. Versions mostly pinned. Minor unused deps remain.",
+        "3": "Some moderate vulnerabilities present. Lockfile exists but not all versions pinned.",
+        "2": "Known vulnerabilities in dependencies. No lockfile or unpinned versions.",
+        "1": "Critical vulnerabilities in dependencies. No dependency management."
+      }
+    },
+    {
+      "name": "security_agent_findings",
+      "weight": 0.09,
+      "description": "No unresolved Critical/High findings from AWS Security Agent on this codebase.",
+      "references": ["SECURITY-09"],
+      "scoring": {
+        "5": "No open findings from Security Agent. All historical findings remediated within SLA.",
+        "4": "No Critical/High findings. Minor (LOW/MEDIUM) findings with active remediation plans.",
+        "3": "Open HIGH findings with remediation in progress. No Critical.",
+        "2": "Open CRITICAL findings or HIGH findings past remediation SLA.",
+        "1": "Multiple CRITICAL findings or validated pen test exploits unresolved."
+      }
+    }
+  ],
+  "pass_threshold": 0.82,
+  "output_format": {
+    "overall_score": "float 0-1 (weighted average of criteria scores normalized to 0-1)",
+    "criteria_scores": "object mapping criteria name to { score: 1-5, reasoning: string }",
+    "pass": "boolean",
+    "summary": "string",
+    "security_findings": "array of { rule_id: string, severity: string, description: string }"
+  }
+}

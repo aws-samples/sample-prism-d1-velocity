@@ -1,0 +1,310 @@
+# prism-eval-gate.yml — Evaluate AI-generated code quality on PRs.
+#
+# Copy this file to .github/workflows/prism-eval-gate.yml in your repo.
+#
+# Required setup:
+#   - OIDC provider configured for GitHub Actions in your AWS account
+#   - IAM role with bedrock:InvokeModel and events:PutEvents permissions
+#   - Repository secret PRISM_METRICS_ROLE_ARN set to the OIDC role ARN
+#   - .prism/eval-harness/ directory in your repo (run: bash prism-cli bootstrapper install-eval-harness)
+#   - At least one rubric JSON in .prism/eval-harness/rubrics/
+
+name: PRISM Eval Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, master]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Read team ID
+        id: prism-config
+        run: |
+          TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
+          echo "team_id=${TEAM_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq bc
+
+      - name: Identify AI-generated changes
+        id: detect-ai
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+
+          AI_SHAS=""
+          for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
+            if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
+              AI_SHAS="${AI_SHAS} ${SHA}"
+            fi
+          done
+          AI_SHAS=$(echo "${AI_SHAS}" | xargs)
+
+          if [[ -z "${AI_SHAS}" ]]; then
+            echo "has_ai_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_ai_changes=true" >> "$GITHUB_OUTPUT"
+          echo "ai_shas=${AI_SHAS}" >> "$GITHUB_OUTPUT"
+
+          # Collect changed source files from AI commits
+          CHANGED_FILES=""
+          for SHA in ${AI_SHAS}; do
+            FILES=$(git diff-tree --no-commit-id --name-only -r "${SHA}" \
+              | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' | grep -v '\.test\.\|\.spec\.' || true)
+            CHANGED_FILES="${CHANGED_FILES}\n${FILES}"
+          done
+
+          echo -e "${CHANGED_FILES}" | sort -u | grep -v '^$' > /tmp/ai-changed-files.txt || true
+          FILE_COUNT=$(wc -l < /tmp/ai-changed-files.txt | tr -d ' ')
+          echo "file_count=${FILE_COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Run evaluations
+        id: eval
+        if: steps.detect-ai.outputs.has_ai_changes == 'true'
+        run: |
+          set -o pipefail
+          chmod +x .prism/eval-harness/run-eval.sh
+
+          # Find spec from commit trailers
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+          SPEC_REF=$(git log "${BASE_SHA}..${HEAD_SHA}" --format='%(trailers:key=Spec,valueonly)' | head -1 | tr -d '[:space:]' || true)
+          SPEC_FLAG=""
+          [[ -n "${SPEC_REF}" && -f "${SPEC_REF}" ]] && SPEC_FLAG="--spec ${SPEC_REF}"
+
+          PASS_COUNT=0
+          FAIL_COUNT=0
+          TOTAL_SCORE=0
+          TOTAL_HALLUCINATIONS=0
+          RESULTS=""
+
+          while IFS= read -r FILE; do
+            [[ -z "${FILE}" || ! -f "${FILE}" ]] && continue
+
+            # Auto-select rubric based on file path
+            if echo "${FILE}" | grep -qiE '(agent|assistant|orchestrat|workflow|chain)'; then
+              RUBRIC=".prism/eval-harness/rubrics/agent-quality.json"
+            elif echo "${FILE}" | grep -qiE '(auth|security|guard|policy|iam|permission|crypto)'; then
+              RUBRIC=".prism/eval-harness/rubrics/security-compliance.json"
+            elif echo "${FILE}" | grep -qiE '(api|handler|route|controller)'; then
+              RUBRIC=".prism/eval-harness/rubrics/api-response-quality.json"
+            else
+              RUBRIC=".prism/eval-harness/rubrics/code-quality.json"
+            fi
+
+            # Fall back to first available rubric if selected doesn't exist
+            [[ -f "${RUBRIC}" ]] || RUBRIC=$(ls .prism/eval-harness/rubrics/*.json 2>/dev/null | head -1)
+            [[ -f "${RUBRIC}" ]] || { echo "No rubrics found"; exit 1; }
+
+            echo "Evaluating: ${FILE} (rubric: $(basename "${RUBRIC}" .json))"
+
+            set +e
+            OUTPUT=$(./.prism/eval-harness/run-eval.sh "${RUBRIC}" "${FILE}" ${SPEC_FLAG} 2>&1)
+            EXIT_CODE=$?
+            set -e
+
+            SCORE=$(echo "${OUTPUT}" | grep '^Score:' | awk '{print $2}' || echo "0")
+            RESULT=$(echo "${OUTPUT}" | grep '^Result:' | awk '{print $2}' || echo "UNKNOWN")
+            HALLUC=$(echo "${OUTPUT}" | grep '^Hallucinations:' | awk '{print $2}' || echo "0")
+
+            TOTAL_SCORE=$(echo "${TOTAL_SCORE} + ${SCORE}" | bc -l)
+            TOTAL_HALLUCINATIONS=$((TOTAL_HALLUCINATIONS + HALLUC))
+
+            if [[ "${RESULT}" == "SKIP" ]]; then
+              continue
+            elif [[ "${RESULT}" == "PASS" ]]; then
+              PASS_COUNT=$((PASS_COUNT + 1))
+            else
+              FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+
+            RESULTS="${RESULTS}\n| \`${FILE}\` | $(basename "${RUBRIC}" .json) | ${SCORE} | ${RESULT} |"
+          done < /tmp/ai-changed-files.txt
+
+          TOTAL_FILES=$((PASS_COUNT + FAIL_COUNT))
+          AVG_SCORE="0"
+          [[ "${TOTAL_FILES}" -gt 0 ]] && AVG_SCORE=$(echo "scale=4; ${TOTAL_SCORE} / ${TOTAL_FILES}" | bc -l)
+
+          echo "pass_count=${PASS_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "fail_count=${FAIL_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "avg_score=${AVG_SCORE}" >> "$GITHUB_OUTPUT"
+          echo "total_files=${TOTAL_FILES}" >> "$GITHUB_OUTPUT"
+          echo "hallucinations=${TOTAL_HALLUCINATIONS}" >> "$GITHUB_OUTPUT"
+          echo -e "${RESULTS}" > /tmp/eval-results-table.txt
+
+          [[ "${FAIL_COUNT}" -gt 0 ]] && echo "overall_result=FAIL" >> "$GITHUB_OUTPUT" || echo "overall_result=PASS" >> "$GITHUB_OUTPUT"
+
+      - name: Post PR comment
+        if: always()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const hasAI = '${{ steps.detect-ai.outputs.has_ai_changes }}' === 'true';
+
+            let body;
+            if (!hasAI) {
+              body = ':white_check_mark: **PRISM Eval Gate** — No AI-generated code detected. Skipped.';
+            } else {
+              const avg = '${{ steps.eval.outputs.avg_score }}';
+              const pass = '${{ steps.eval.outputs.pass_count }}';
+              const fail = '${{ steps.eval.outputs.fail_count }}';
+              const total = '${{ steps.eval.outputs.total_files }}';
+              const result = '${{ steps.eval.outputs.overall_result }}';
+              const halluc = '${{ steps.eval.outputs.hallucinations }}';
+              const emoji = result === 'PASS' ? ':white_check_mark:' : ':x:';
+              const table = fs.existsSync('/tmp/eval-results-table.txt')
+                ? fs.readFileSync('/tmp/eval-results-table.txt', 'utf8').trim() : '';
+
+              body = `## ${emoji} PRISM Eval Gate — ${result}\n\n` +
+                `**Score**: ${avg} | **Files**: ${total} | **Pass**: ${pass} | **Fail**: ${fail} | **Hallucinations**: ${halluc}\n\n` +
+                `| File | Rubric | Score | Result |\n|---|---|---|---|\n${table}\n\n` +
+                `> Threshold: 0.82 | Model: claude-sonnet-4-20250514`;
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number
+            });
+            const existing = comments.find(c => c.body.includes('PRISM Eval Gate'));
+            const params = { owner: context.repo.owner, repo: context.repo.repo, body };
+
+            if (existing) {
+              await github.rest.issues.updateComment({ ...params, comment_id: existing.id });
+            } else {
+              await github.rest.issues.createComment({ ...params, issue_number: context.issue.number });
+            }
+
+      - name: Emit prism.d1.eval event
+        if: steps.detect-ai.outputs.has_ai_changes == 'true'
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          EVAL_EVENT=$(jq -n \
+            --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg timestamp "${TIMESTAMP}" \
+            --argjson score "${{ steps.eval.outputs.avg_score }}" \
+            --arg result "${{ steps.eval.outputs.overall_result }}" \
+            --argjson total_files "${{ steps.eval.outputs.total_files }}" \
+            --argjson pass_count "${{ steps.eval.outputs.pass_count }}" \
+            --argjson fail_count "${{ steps.eval.outputs.fail_count }}" \
+            --argjson hallucinations "${{ steps.eval.outputs.hallucinations }}" \
+            --arg pr_number "${{ github.event.pull_request.number }}" \
+            '{
+              team_id: $team_id, repo: $repo, timestamp: $timestamp, prism_level: 2,
+              metric: {name: "eval_score", value: $score, unit: "score"},
+              ai_context: {tool: "bedrock-eval", model: "anthropic.claude-sonnet-4-20250514", origin: "ai-generated"},
+              eval: {total_files: $total_files, pass_count: $pass_count, fail_count: $fail_count,
+                     result: $result, pr_number: ($pr_number | tonumber), hallucinations_caught: $hallucinations}
+            }')
+          aws events put-events --region us-west-2 --entries "[{
+            \"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",
+            \"EventBusName\":\"prism-d1-metrics\",
+            \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
+
+      - name: Wait for Security Agent
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        id: security-gate
+        with:
+          script: |
+            const pr = context.issue.number;
+            const opts = { owner: context.repo.owner, repo: context.repo.repo };
+
+            // Phase 1: Wait for Security Agent to start (2 min)
+            let reviewingComment = null;
+            for (let i = 0; i < 12; i++) {
+              const { data: comments } = await github.rest.issues.listComments({ ...opts, issue_number: pr });
+              reviewingComment = comments.find(c => c.user.login === 'aws-security-agent[bot]' && c.body.includes('reviewing your pull request'));
+              if (reviewingComment) break;
+              await new Promise(r => setTimeout(r, 10000));
+            }
+            if (!reviewingComment) { core.setOutput('findings', '0'); return; }
+
+            // Phase 2: Wait for completion (10 min) — look after the "reviewing" comment
+            const since = reviewingComment.created_at;
+            for (let i = 0; i < 40; i++) {
+              // Check for completed review submission (summary appears as review body, not issue comment)
+              const { data: reviews } = await github.rest.pulls.listReviews({ ...opts, pull_number: pr });
+              const botReview = reviews.find(r => r.user.login === 'aws-security-agent[bot]' && new Date(r.submitted_at) >= new Date(since));
+              // Check for inline review comments
+              const { data: reviewComments } = await github.rest.pulls.listReviewComments({ ...opts, pull_number: pr });
+              const findings = reviewComments.filter(c => c.user.login === 'aws-security-agent[bot]' && new Date(c.created_at) >= new Date(since));
+              if (botReview || findings.length > 0) {
+                core.setOutput('findings', String(findings.length));
+                return;
+              }
+              await new Promise(r => setTimeout(r, 15000));
+            }
+            core.setOutput('findings', '0');
+
+      - name: Forward Security Agent findings
+        if: steps.security-gate.outputs.findings != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          TEAM_ID="${{ steps.prism-config.outputs.team_id }}"
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+
+          AI_ORIGIN="human"
+          for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
+            if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
+              AI_ORIGIN="ai-assisted"; break
+            fi
+          done
+
+          REVIEW_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate 2>/dev/null || echo "[]")
+
+          ENTRIES=$(echo "${REVIEW_COMMENTS}" | jq --arg team_id "${TEAM_ID}" --arg repo "${REPO}" \
+            --arg ai_origin "${AI_ORIGIN}" --argjson pr_number "${PR_NUMBER}" '
+            def cwe_severity:
+              {"89":"CRITICAL","78":"CRITICAL","94":"CRITICAL","502":"CRITICAL","798":"CRITICAL",
+               "79":"HIGH","22":"HIGH","918":"HIGH","352":"HIGH","287":"HIGH","862":"HIGH",
+               "200":"MEDIUM","532":"MEDIUM","601":"MEDIUM"};
+            [.[] | select(.user.login == "aws-security-agent[bot]")] |
+            to_entries | map(.value as $c |
+              ($c.body | capture("CWE-(?<id>[0-9]+)") // {id: null}).id as $cwe_id |
+              (if $cwe_id then (cwe_severity[$cwe_id] // "MEDIUM") else "MEDIUM" end) as $severity |
+              {Source:"prism.d1.velocity", DetailType:"prism.d1.security.code_review",
+               EventBusName:"prism-d1-metrics",
+               Detail:({team_id:$team_id, repo:$repo, timestamp:$c.created_at, prism_level:3,
+                 metric:{name:"security_finding",value:1,unit:"count"},
+                 ai_context:{tool:"security-agent",model:"aws-security-agent",origin:$ai_origin},
+                 security_agent_finding:{finding_id:"sa-pr\($pr_number)-\($c.id)", phase:"code_review",
+                   severity:$severity, cwe_id:(if $cwe_id then "CWE-\($cwe_id)" else null end),
+                   ai_origin:$ai_origin, found_at:$c.created_at}
+               } | tostring)})' 2>/dev/null || echo "[]")
+
+          TOTAL=$(echo "${ENTRIES}" | jq 'length')
+          for i in $(seq 0 10 $((TOTAL - 1))); do
+            aws events put-events --region us-west-2 --entries "$(echo "${ENTRIES}" | jq ".[$i:$((i+10))]")"
+          done
+
+      - name: Fail on eval or security issues
+        if: steps.eval.outputs.overall_result == 'FAIL' || steps.security-gate.outputs.findings != '0'
+        run: |
+          [[ "${{ steps.eval.outputs.overall_result }}" == "FAIL" ]] && echo "❌ Eval gate failed"
+          [[ "${{ steps.security-gate.outputs.findings }}" != "0" ]] && echo "❌ Security Agent found ${{ steps.security-gate.outputs.findings }} issues"
+          exit 1

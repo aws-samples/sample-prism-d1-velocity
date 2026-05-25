@@ -1,0 +1,348 @@
+{
+  "widgets": [
+    {
+      "type": "text",
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 1,
+      "properties": {
+        "markdown": "# PRISM D1 Velocity — Team Dashboard\n**DORA Metrics** (top) | **AI-DORA Metrics** (bottom) — All metrics use daily (86400s) periods"
+      }
+    },
+
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 1,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "Deployment Frequency",
+        "view": "bar",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "DeploymentCount",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Sum",
+              "period": 86400,
+              "color": "#2196F3",
+              "label": "Deploys/Day"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "label": "Deployments" }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8,
+      "y": 1,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "Lead Time for Changes",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "LeadTimeSeconds",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#1565C0",
+              "label": "Lead Time (avg)"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "label": "Seconds" }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16,
+      "y": 1,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "Change Failure Rate",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "ChangeFailureRate",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#0D47A1",
+              "label": "CFR %"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "max": 100, "label": "Percent" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "value": 15, "color": "#FF9800", "label": "L3 Target (15%)" },
+            { "value": 5, "color": "#4CAF50", "label": "L4 Target (5%)" }
+          ]
+        }
+      }
+    },
+
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 7,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "MTTR (Mean Time to Recovery)",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "MTTRSeconds",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#1976D2",
+              "label": "MTTR (avg)"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "label": "Seconds" }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8,
+      "y": 7,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "AI Acceptance Rate",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "AIAcceptanceRate",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#9C27B0",
+              "label": "AI Acceptance %"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "max": 100, "label": "Percent" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "value": 30, "color": "#FF9800", "label": "L2 Target (30%)" },
+            { "value": 50, "color": "#4CAF50", "label": "L3 Target (50%)" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16,
+      "y": 7,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "AI-to-Merge Ratio",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "AIToMergeRatio",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#7B1FA2",
+              "label": "AI/Merge Ratio"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "label": "Ratio" }
+        }
+      }
+    },
+
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 13,
+      "width": 6,
+      "height": 4,
+      "properties": {
+        "title": "Eval Gate Pass Rate",
+        "view": "singleValue",
+        "metrics": [
+          [
+            "PRISM/D1",
+            "EvalGatePassRate",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#AB47BC",
+              "label": "Pass Rate %"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "sparkline": true
+      }
+    },
+    {
+      "type": "metric",
+      "x": 6,
+      "y": 13,
+      "width": 10,
+      "height": 6,
+      "properties": {
+        "title": "Spec-to-Code Turnaround",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "SpecToCodeHours",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#CE93D8",
+              "label": "Hours"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "label": "Hours" }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16,
+      "y": 13,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "title": "Post-Merge Defect Rate (AI vs Human)",
+        "view": "timeSeries",
+        "stacked": true,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "DefectRateAI",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#9C27B0",
+              "label": "AI Defect Rate"
+            }
+          ],
+          [
+            "PRISM/D1",
+            "DefectRateHuman",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#2196F3",
+              "label": "Human Defect Rate"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "min": 0, "label": "Defects per Merge" }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 17,
+      "width": 6,
+      "height": 4,
+      "properties": {
+        "title": "AI Test Coverage Delta",
+        "view": "timeSeries",
+        "stacked": false,
+        "metrics": [
+          [
+            "PRISM/D1",
+            "AITestCoverageDelta",
+            "TeamId", "REPLACE_TEAM_ID",
+            "Repo", "REPLACE_REPO",
+            {
+              "stat": "Average",
+              "period": 86400,
+              "color": "#E040FB",
+              "label": "Coverage Delta %"
+            }
+          ]
+        ],
+        "region": "${AWS::Region}",
+        "period": 86400,
+        "yAxis": {
+          "left": { "label": "Percentage Points" }
+        }
+      }
+    }
+  ]
+}

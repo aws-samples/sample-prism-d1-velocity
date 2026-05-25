@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Journey — PRISM D1 Velocity</title>
+  <meta name="description" content="7 steps to a disciplined AI development lifecycle, explained in detail.">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="journey.css">
+</head>
+<body>
+
+  <!-- ===== Nav ===== -->
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="index.html#top">
+        <svg class="prism-icon" width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGradN)" stroke="#0550ae" stroke-width="1.5" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="30" y2="10" stroke="#d1242f" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="23" y1="20" x2="30" y2="14" stroke="#bf5700" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24" y1="22" x2="30" y2="18" stroke="#1a7f37" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24.5" y1="24" x2="30" y2="22" stroke="#0969da" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="25" y1="26" x2="30" y2="26" stroke="#8250df" stroke-width="1.2" stroke-linecap="round"/>
+          <defs><linearGradient id="prismGradN" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        PRISM <span>D1 Velocity</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html#top">Overview</a></li>
+        <li><a href="#journey-top">The Journey</a></li>
+        <li><a href="index.html#bootstrapper">What You Get</a></li>
+        <li><a href="index.html#metrics">Metrics</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ===== Hero ===== -->
+  <section class="j-hero" id="journey-top">
+    <h1>7 Steps to a Disciplined AI Development Lifecycle</h1>
+    <p>Each step builds on the last. By the end, every AI-assisted action in your org is tracked, validated, and visible to leadership.</p>
+  </section>
+
+  <!-- ===== Timeline ===== -->
+  <section class="j-timeline">
+    <div class="j-inner">
+
+      <!-- Step 0 -->
+      <div class="j-step">
+        <div class="j-marker teal">0</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon teal"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0f7b82" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+            <h2>Assessment</h2>
+          </div>
+          <p>An automated scanner analyzes your repos for existing AI tooling, git hooks, CI workflows, and eval infrastructure. A structured SA interview captures organizational context. Together, they map you to a PRISM maturity level (L1&ndash;L5) and route you to the right onboarding track.</p>
+          <div class="j-outcome teal">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Know exactly where you stand and get a personalized roadmap
+          </div>
+          <div class="j-links-row">
+            <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/assessment" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+            <a class="j-link j-link-pdf" href="https://github.com/sunilpp/prism-d1-velocity/blob/main/assessment/reports/sample-reports/pdf/arcline-health-l2.5-assessment.pdf" target="_blank" rel="noopener noreferrer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              Sample assessment (PDF)
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 1 -->
+      <div class="j-step">
+        <div class="j-marker blue">1</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon blue"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+            <h2>Environment &amp; Foundations</h2>
+          </div>
+          <p>Set up Claude Code backed by Amazon Bedrock &mdash; every AI interaction stays inside your AWS account with CloudTrail audit logging. Configure CLAUDE.md project rules so the AI follows your team's conventions. Install Kiro IDE for spec authoring.</p>
+          <div class="j-outcome blue">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Secure, governed AI toolchain ready for your entire team
+          </div>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/01-ai-sdlc-foundations" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="j-step">
+        <div class="j-marker purple">2</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon purple"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8250df" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+            <h2>Spec-Driven Development</h2>
+          </div>
+          <p>Write specs before code. Kiro-format specs define requirements, acceptance criteria, and API contracts in markdown. Claude Code implements against the spec. The result: reproducible AI output, reviewable artifacts in git, and no more prompt-iterate-revert cycles.</p>
+          <div class="j-outcome purple">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Reproducible AI output with reviewable, git-tracked specifications
+          </div>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/03-spec-driven-development" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="j-step">
+        <div class="j-marker orange">3</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon orange"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#bf5700" stroke-width="2" stroke-linecap="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg></div>
+            <h2>Instrument AI Metrics</h2>
+          </div>
+          <p>Git hooks auto-tag every commit with AI-origin metadata (tool, model, confidence, session ID). GitHub Actions extract trailers on push and emit structured events to Amazon EventBridge. You get traditional DORA metrics plus 6 AI-native dimensions from day one.</p>
+          <div class="j-outcome orange">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Every AI-assisted action is tracked and measurable immediately
+          </div>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/04-instrumenting-ai-metrics" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="j-step">
+        <div class="j-marker green">4</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon green"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1a7f37" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+            <h2>Eval Gates in CI/CD</h2>
+          </div>
+          <p>An LLM-as-Judge pattern using Bedrock Evaluations validates AI output against your specs before merge. Structured rubrics catch hallucinated APIs, spec mismatches, missing error handling, and logic errors &mdash; automatically, in every PR.</p>
+          <div class="j-outcome green">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Quality gates that block bad AI-generated code before it ships
+          </div>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/05-eval-gates-cicd" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="j-step">
+        <div class="j-marker blue">5</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon blue"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0969da" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg></div>
+            <h2>Dashboards &amp; Visibility</h2>
+          </div>
+          <p>Two dashboards for two audiences. Team velocity dashboards in CloudWatch give engineers real-time, per-repo drill-downs. Executive readout dashboards in QuickSight give leadership weekly trends, cost efficiency, and AI ROI &mdash; real metrics, not vibes.</p>
+          <div class="j-outcome blue">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            A board-ready ROI story backed by real data within weeks
+          </div>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/06-dashboards-visibility" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+        </div>
+      </div>
+
+      <!-- Step 6 -->
+      <div class="j-step">
+        <div class="j-marker teal">6</div>
+        <div class="j-card">
+          <div class="j-card-head">
+            <div class="j-card-icon teal"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0f7b82" stroke-width="2" stroke-linecap="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></div>
+            <h2>Adopt &amp; Scale</h2>
+          </div>
+          <p>Teams inherit the PRISM bootstrapper: CLAUDE.md templates, spec templates, eval harness, GitHub workflows, and git hooks. Plug it into any repo. Weekly DORA assessments track maturity progression automatically as practices spread across your org.</p>
+          <div class="j-outcome teal">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>
+            A self-sustaining AI-DLC that grows with your organization
+          </div>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper" target="_blank" rel="noopener noreferrer">View in repo &rarr;</a>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ===== Footer ===== -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a href="index.html#top" class="j-back-link">&larr; Back to overview</a>
+      <div class="footer-brand-row">
+        <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGradFJ)" stroke="#0550ae" stroke-width="1" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="31" y2="9" stroke="#d1242f" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="23" y1="20" x2="31" y2="13" stroke="#bf5700" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="24" y1="22" x2="31" y2="17" stroke="#1a7f37" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="24.5" y1="24" x2="31" y2="21" stroke="#0969da" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="25" y1="26" x2="31" y2="25" stroke="#8250df" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <defs><linearGradient id="prismGradFJ" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        <p class="footer-brand">PRISM D1 Velocity &mdash; AI Development Lifecycle Framework<br>Built with Amazon Bedrock, Claude Code &amp; Kiro</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

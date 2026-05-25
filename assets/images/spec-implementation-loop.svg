@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" font-family="'Open Sans', -apple-system, sans-serif">
+  <defs>
+    <filter id="s"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.12"/></filter>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#414d5c"/></marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d13212"/></marker>
+    <marker id="arrGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#1d8102"/></marker>
+  </defs>
+
+  <rect width="600" height="400" rx="12" fill="#f8f9fa"/>
+  <text x="300" y="28" text-anchor="middle" font-size="15" font-weight="700" fill="#232f3e">Spec-Implementation Loop</text>
+
+  <!-- Step 1: Write Spec -->
+  <rect x="200" y="50" width="200" height="55" rx="10" fill="#ec7211" filter="url(#s)"/>
+  <text x="300" y="75" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Write Spec</text>
+  <text x="300" y="93" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">requirements + ACs + constraints</text>
+
+  <!-- Arrow down -->
+  <line x1="300" y1="105" x2="300" y2="130" stroke="#414d5c" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- Step 2: AI Implement -->
+  <rect x="200" y="135" width="200" height="55" rx="10" fill="#0073bb" filter="url(#s)"/>
+  <text x="300" y="160" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">AI Implements</text>
+  <text x="300" y="178" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">Kiro | Claude Code IDE | CLI</text>
+
+  <!-- Arrow down -->
+  <line x1="300" y1="190" x2="300" y2="215" stroke="#414d5c" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- Step 3: Validate -->
+  <rect x="200" y="220" width="200" height="55" rx="10" fill="#414d5c" filter="url(#s)"/>
+  <text x="300" y="245" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Validate vs. ACs</text>
+  <text x="300" y="263" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">check each acceptance criterion</text>
+
+  <!-- Fail path: back to spec -->
+  <path d="M 200 248 L 120 248 L 120 78 L 200 78" stroke="#d13212" stroke-width="2" fill="none" stroke-dasharray="6 3" marker-end="url(#arrRed)"/>
+  <rect x="50" y="155" width="90" height="36" rx="5" fill="#fdf3f1" stroke="#d13212"/>
+  <text x="95" y="171" text-anchor="middle" font-size="9" font-weight="600" fill="#d13212">Spec gaps</text>
+  <text x="95" y="183" text-anchor="middle" font-size="9" font-weight="600" fill="#d13212">revealed</text>
+
+  <!-- Pass path: down to commit -->
+  <line x1="300" y1="275" x2="300" y2="300" stroke="#1d8102" stroke-width="2" marker-end="url(#arrGreen)"/>
+  <text x="340" y="292" font-size="9" font-weight="600" fill="#1d8102">All ACs pass</text>
+
+  <!-- Step 4: Commit -->
+  <rect x="200" y="305" width="200" height="55" rx="10" fill="#1d8102" filter="url(#s)"/>
+  <text x="300" y="330" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Commit</text>
+  <text x="300" y="348" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">AI-Origin + Spec-Ref trailers</text>
+
+  <!-- Metrics callout -->
+  <rect x="430" y="305" width="155" height="55" rx="8" fill="white" stroke="#ec7211" filter="url(#s)"/>
+  <text x="507" y="323" text-anchor="middle" font-size="9" font-weight="600" fill="#ec7211">Metrics emitted:</text>
+  <text x="507" y="337" text-anchor="middle" font-size="8" fill="#687078">spec-to-code hours</text>
+  <text x="507" y="349" text-anchor="middle" font-size="8" fill="#687078">AI origin + eval score</text>
+  <line x1="400" y1="332" x2="430" y2="332" stroke="#ec7211" stroke-width="1.5"/>
+
+  <!-- Security Agent callout -->
+  <rect x="430" y="50" width="155" height="55" rx="8" fill="white" stroke="#d13212" filter="url(#s)"/>
+  <text x="507" y="68" text-anchor="middle" font-size="9" font-weight="600" fill="#d13212">Security Agent</text>
+  <text x="507" y="82" text-anchor="middle" font-size="8" fill="#687078">design review before</text>
+  <text x="507" y="94" text-anchor="middle" font-size="8" fill="#687078">code generation</text>
+  <line x1="400" y1="78" x2="430" y2="78" stroke="#d13212" stroke-width="1.5" stroke-dasharray="4"/>
+</svg>

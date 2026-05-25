@@ -1,0 +1,580 @@
+{
+  "_comment": [
+    "QuickSight CreateAnalysis API request body for PRISM Level Tracker.",
+    "Tracks maturity level progression across teams and shows D1 sub-dimension breakdown.",
+    "Customization required:",
+    "  1. Replace REPLACE_AWS_ACCOUNT_ID with your 12-digit AWS account ID",
+    "  2. Replace REPLACE_DATA_SET_ARN with your Timestream-backed DataSet ARN",
+    "  3. Update benchmark values in reference lines to match your cohort data",
+    "Deploy via: aws quicksight create-analysis --cli-input-json file://prism-level-tracker.json"
+  ],
+
+  "AwsAccountId": "REPLACE_AWS_ACCOUNT_ID",
+  "AnalysisId": "prism-d1-level-tracker",
+  "Name": "PRISM D1 — Level Tracker",
+
+  "Definition": {
+    "DataSetIdentifierDeclarations": [
+      {
+        "Identifier": "prism_d1_metrics",
+        "DataSetArn": "REPLACE_DATA_SET_ARN"
+      },
+      {
+        "Identifier": "prism_benchmarks",
+        "DataSetArn": "REPLACE_BENCHMARK_DATA_SET_ARN",
+        "_comment": "Optional second dataset with cohort benchmark data. Remove if not available."
+      }
+    ],
+
+    "CalculatedFields": [
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "PRISMLevelLabel",
+        "Expression": "ifelse({PRISMLevel} = 1, 'L1 Ad Hoc', {PRISMLevel} = 2, 'L2 Emerging', {PRISMLevel} = 3, 'L3 Scaling', {PRISMLevel} = 4, 'L4 Optimized', 'L5 Transformative')"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "NormalizedAcceptanceRate",
+        "Expression": "min({AIAcceptanceRate} / 70 * 100, 100)",
+        "_comment": "Normalize AI acceptance rate to 0-100 scale for radar chart (70% = L5 max)"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "NormalizedCycleTime",
+        "Expression": "max(0, 100 - ({LeadTimeSeconds} / 2592000 * 100))",
+        "_comment": "Invert and normalize: 0 sec = 100, 30 days = 0"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "NormalizedEvalCoverage",
+        "Expression": "min({EvalGatePassRate}, 100)"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "NormalizedDeployFreq",
+        "Expression": "min({DeploymentCount} / 5 * 100, 100)",
+        "_comment": "Normalize: 5+ deploys/day = 100"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "NormalizedDefectDelta",
+        "Expression": "max(0, 100 - ({DefectRateAI} * 1000))",
+        "_comment": "Lower defect rate = higher score"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "NormalizedSpecSpeed",
+        "Expression": "max(0, 100 - ({SpecToCodeHours} / 72 * 100))",
+        "_comment": "Normalize: 0h = 100, 72h+ = 0"
+      }
+    ],
+
+    "ParameterDeclarations": [
+      {
+        "StringParameterDeclaration": {
+          "ParameterValueType": "MULTI_VALUED",
+          "Name": "SelectedTeams",
+          "DefaultValues": {
+            "StaticValues": ["ALL"]
+          },
+          "ValueWhenUnset": { "ValueWhenUnsetOption": "RECOMMENDED_VALUE" }
+        }
+      },
+      {
+        "DateTimeParameterDeclaration": {
+          "Name": "StartDate",
+          "DefaultValues": {
+            "RollingDate": {
+              "Expression": "truncDate('DD', now() - 180d)"
+            }
+          },
+          "TimeGranularity": "DAY"
+        }
+      },
+      {
+        "DateTimeParameterDeclaration": {
+          "Name": "EndDate",
+          "DefaultValues": {
+            "RollingDate": {
+              "Expression": "truncDate('DD', now())"
+            }
+          },
+          "TimeGranularity": "DAY"
+        }
+      }
+    ],
+
+    "FilterGroups": [
+      {
+        "FilterGroupId": "date-range",
+        "Filters": [
+          {
+            "RelativeDatesFilter": {
+              "FilterId": "level-date-range",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "measure_date"
+              },
+              "AnchorDateConfiguration": { "AnchorOption": "NOW" },
+              "RelativeDateType": "PREVIOUS",
+              "RelativeDateValue": 180,
+              "TimeGranularity": "DAY",
+              "NullOption": "NON_NULLS_ONLY"
+            }
+          }
+        ],
+        "ScopeConfiguration": { "AllSheets": {} },
+        "CrossDataset": "ALL_DATASETS"
+      },
+      {
+        "FilterGroupId": "team-selection",
+        "Filters": [
+          {
+            "CategoryFilter": {
+              "FilterId": "team-cat",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "TeamId"
+              },
+              "Configuration": {
+                "FilterListConfiguration": {
+                  "MatchOperator": "CONTAINS",
+                  "SelectAllOptions": "FILTER_ALL_VALUES"
+                }
+              }
+            }
+          }
+        ],
+        "ScopeConfiguration": { "AllSheets": {} },
+        "CrossDataset": "ALL_DATASETS"
+      }
+    ],
+
+    "Sheets": [
+      {
+        "SheetId": "level-overview",
+        "Name": "Level Overview",
+        "Visuals": [
+          {
+            "GaugeChartVisual": {
+              "VisualId": "gauge-current-level",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Current PRISM Level" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "Values": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "level-val",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "PRISMLevel" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "MAX" }
+                      }
+                    }
+                  ],
+                  "TargetValues": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "level-target",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "PRISMLevel" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "MAX" },
+                        "_comment": "Replace with a target level field or hardcode via calculated field"
+                      }
+                    }
+                  ]
+                },
+                "GaugeChartOptions": {
+                  "Arc": { "ArcAngle": 270, "ArcThickness": "MEDIUM" },
+                  "ArcAxis": {
+                    "Range": {
+                      "Min": 1,
+                      "Max": 5
+                    }
+                  },
+                  "PrimaryValueDisplayType": "ACTUAL"
+                }
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "Arc": {
+                      "ForegroundColor": {
+                        "Solid": {
+                          "Expression": "ifelse({PRISMLevel} >= 4, '#4CAF50', {PRISMLevel} >= 3, '#2196F3', {PRISMLevel} >= 2, '#FF9800', '#F44336')"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "TableVisual": {
+              "VisualId": "table-level-by-team",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Current Level by Team" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "TableAggregatedFieldWells": {
+                    "GroupBy": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "team-col",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "level-col",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "PRISMLevel" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "MAX" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "ai-accept-col",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "AIAcceptanceRate" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "deploy-col",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DeploymentCount" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "SUM" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "SortConfiguration": {
+                  "RowSort": [
+                    {
+                      "FieldSort": {
+                        "FieldId": "level-col",
+                        "Direction": "DESC"
+                      }
+                    }
+                  ]
+                }
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "Row": {
+                      "BackgroundColor": {
+                        "Gradient": {
+                          "Expression": "{PRISMLevel}",
+                          "Color": {
+                            "Stops": [
+                              { "GradientOffset": 0, "DataValue": 1, "Color": "#FFEBEE" },
+                              { "GradientOffset": 50, "DataValue": 3, "Color": "#E3F2FD" },
+                              { "GradientOffset": 100, "DataValue": 5, "Color": "#E8F5E9" }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "LineChartVisual": {
+              "VisualId": "level-history",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "PRISM Level History" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "LineChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "DateDimensionField": {
+                          "FieldId": "history-date",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                          "DateGranularity": "WEEK"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "history-level",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "PRISMLevel" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "MAX" }
+                        }
+                      }
+                    ],
+                    "Colors": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "history-team",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "PrimaryYAxisDisplayOptions": {
+                  "AxisOptions": {
+                    "AxisLineVisibility": "VISIBLE"
+                  },
+                  "MissingDataConfigurations": [
+                    { "TreatmentOption": "INTERPOLATE" }
+                  ]
+                },
+                "ReferenceLines": [
+                  {
+                    "DataConfiguration": { "StaticConfiguration": { "Value": 3 } },
+                    "StyleConfiguration": { "Color": "#2196F3" },
+                    "LabelConfiguration": { "ValueLabelConfiguration": { "FormatConfiguration": { "NumberDisplayFormatConfiguration": { "Suffix": " — L3 Scaling" } } } }
+                  },
+                  {
+                    "DataConfiguration": { "StaticConfiguration": { "Value": 4 } },
+                    "StyleConfiguration": { "Color": "#4CAF50" },
+                    "LabelConfiguration": { "ValueLabelConfiguration": { "FormatConfiguration": { "NumberDisplayFormatConfiguration": { "Suffix": " — L4 Optimized" } } } }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+
+      {
+        "SheetId": "domain-breakdown",
+        "Name": "Domain Breakdown",
+        "Visuals": [
+          {
+            "RadarChartVisual": {
+              "VisualId": "radar-d1-dimensions",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "D1 Sub-Dimension Radar" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "RadarChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "radar-dim",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "SubDimension" },
+                          "_comment": "SubDimension column should contain: AcceptanceRate, CycleTime, EvalCoverage, DeployFrequency, DefectRate, SpecSpeed"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "radar-score",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedScore" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" },
+                          "_comment": "If SubDimension column is not available, use the individual normalized calculated fields instead"
+                        }
+                      }
+                    ],
+                    "Colors": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "radar-team",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "Shape": "POLYGON",
+                "AlternateBandColorsVisibility": "VISIBLE"
+              }
+            }
+          },
+          {
+            "_comment": "Alternative if radar chart data is not pre-shaped. Use a table showing each sub-dimension normalized score.",
+            "TableVisual": {
+              "VisualId": "table-subdimension-scores",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "D1 Sub-Dimension Scores (Normalized 0-100)" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "TableAggregatedFieldWells": {
+                    "GroupBy": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "subdim-team",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "norm-accept",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedAcceptanceRate" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "norm-cycle",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedCycleTime" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "norm-eval",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedEvalCoverage" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "norm-deploy",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedDeployFreq" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "norm-defect",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedDefectDelta" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "norm-spec",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedSpecSpeed" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+
+      {
+        "SheetId": "benchmarks",
+        "Name": "Benchmarks",
+        "Visuals": [
+          {
+            "BarChartVisual": {
+              "VisualId": "benchmark-comparison",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Team vs Cohort Benchmarks" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "BarChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "bench-metric",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "MetricName" },
+                          "_comment": "If data is wide format, this chart needs pivoting. Adjust column name to match your schema."
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "bench-team-val",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "NormalizedScore" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ],
+                    "Colors": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "bench-source",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DataSource" },
+                          "_comment": "Expected values: 'Your Team', 'Cohort Average'. If not available, use two separate bar series."
+                        }
+                      }
+                    ]
+                  }
+                },
+                "Orientation": "HORIZONTAL",
+                "BarsArrangement": "CLUSTERED",
+                "ReferenceLines": [
+                  {
+                    "DataConfiguration": { "StaticConfiguration": { "Value": 60 } },
+                    "StyleConfiguration": { "Color": "#FF9800" },
+                    "LabelConfiguration": { "ValueLabelConfiguration": { "FormatConfiguration": { "NumberDisplayFormatConfiguration": { "Suffix": " — Cohort Median" } } } }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "TableVisual": {
+              "VisualId": "benchmark-stage-table",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Benchmarks by Funding Stage" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "TableAggregatedFieldWells": {
+                    "GroupBy": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "stage-col",
+                          "Column": { "DataSetIdentifier": "prism_benchmarks", "ColumnName": "FundingStage" },
+                          "_comment": "Expected: Seed, Series A, Series B, Series C+, Public"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "stage-level",
+                          "Column": { "DataSetIdentifier": "prism_benchmarks", "ColumnName": "AvgPRISMLevel" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "stage-ai",
+                          "Column": { "DataSetIdentifier": "prism_benchmarks", "ColumnName": "AvgAIAcceptanceRate" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "stage-df",
+                          "Column": { "DataSetIdentifier": "prism_benchmarks", "ColumnName": "AvgDeployFrequency" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "stage-eval",
+                          "Column": { "DataSetIdentifier": "prism_benchmarks", "ColumnName": "AvgEvalPassRate" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "SortConfiguration": {
+                  "RowSort": [
+                    {
+                      "FieldSort": {
+                        "FieldId": "stage-level",
+                        "Direction": "ASC"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+
+  "Tags": [
+    { "Key": "Project", "Value": "PRISM" },
+    { "Key": "Dimension", "Value": "D1-Velocity" },
+    { "Key": "ManagedBy", "Value": "prism-d1-velocity-dashboards" }
+  ]
+}

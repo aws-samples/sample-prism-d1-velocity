@@ -1,0 +1,67 @@
+{
+  "rubric_name": "spec-compliance",
+  "version": "1.0.0",
+  "description": "Evaluates whether generated code faithfully implements the requirements defined in a spec.",
+  "criteria": [
+    {
+      "name": "requirement_coverage",
+      "weight": 0.35,
+      "description": "All requirements and acceptance criteria from the spec are implemented.",
+      "scoring": {
+        "5": "Every requirement and acceptance criterion is implemented. No gaps.",
+        "4": "All major requirements implemented. Minor acceptance criteria partially addressed.",
+        "3": "Most requirements implemented. Some acceptance criteria missing.",
+        "2": "Significant requirements missing. Only happy path covered.",
+        "1": "Most requirements unimplemented or fundamentally misunderstood."
+      },
+      "requires_spec": true
+    },
+    {
+      "name": "interface_adherence",
+      "weight": 0.25,
+      "description": "Code matches the interfaces, signatures, and contracts defined in the spec.",
+      "scoring": {
+        "5": "All function signatures, API contracts, and data structures exactly match the spec.",
+        "4": "Interfaces match with minor naming or type differences that don't break contracts.",
+        "3": "Most interfaces match. Some deviations from spec'd contracts.",
+        "2": "Significant deviations from specified interfaces.",
+        "1": "Interfaces bear little resemblance to the spec."
+      },
+      "requires_spec": true
+    },
+    {
+      "name": "edge_case_handling",
+      "weight": 0.20,
+      "description": "Edge cases and error scenarios described in the spec are handled.",
+      "scoring": {
+        "5": "All edge cases and error scenarios from the spec are handled gracefully.",
+        "4": "Most edge cases handled. Minor spec-defined scenarios missed.",
+        "3": "Common edge cases handled. Some spec-defined error paths missing.",
+        "2": "Only happy path. Most spec-defined edge cases unhandled.",
+        "1": "No edge case handling despite spec requirements."
+      },
+      "requires_spec": true
+    },
+    {
+      "name": "spec_intent_fidelity",
+      "weight": 0.20,
+      "description": "Implementation captures the intent and spirit of the spec, not just the letter.",
+      "scoring": {
+        "5": "Implementation fully captures the spec's intent, including implied behaviors and user expectations.",
+        "4": "Captures intent well. Minor misalignment with spec's broader goals.",
+        "3": "Technically meets requirements but misses some of the spec's intent.",
+        "2": "Follows spec literally but misses the underlying purpose.",
+        "1": "Implementation contradicts the spec's intent."
+      },
+      "requires_spec": true
+    }
+  ],
+  "pass_threshold": 0.82,
+  "output_format": {
+    "overall_score": "float 0-1 (weighted average of criteria scores normalized to 0-1)",
+    "criteria_scores": "object mapping criteria name to { score: 1-5, reasoning: string }",
+    "pass": "boolean",
+    "summary": "string",
+    "spec_gaps": "array of strings describing unimplemented requirements"
+  }
+}

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRISM D1 Assessment -- {{CUSTOMER_NAME}}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    color: #1e293b;
+    background: #f8fafc;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 24px;
+  }
+
+  /* -- Header -- */
+  .header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: #fff;
+    padding: 48px 40px;
+    border-radius: 12px;
+    margin-bottom: 32px;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .header .subtitle {
+    font-size: 15px;
+    color: #94a3b8;
+    margin-bottom: 24px;
+  }
+  .header-grid {
+    display: grid;
+    grid-template-columns: 140px 1fr 140px 1fr;
+    gap: 10px 16px;
+    font-size: 14px;
+  }
+  .header-grid .label { color: #94a3b8; }
+  .header-grid .value { color: #e2e8f0; font-weight: 500; }
+
+  /* -- Cards -- */
+  .card {
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    padding: 32px;
+    margin-bottom: 24px;
+  }
+  .card h2 {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #e2e8f0;
+  }
+  .card h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #334155;
+    margin-top: 20px;
+    margin-bottom: 12px;
+  }
+
+  /* -- Level display -- */
+  .level-display {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    margin-bottom: 20px;
+  }
+  .level-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #0066ff, #7c3aed);
+    color: #fff;
+    font-size: 28px;
+    font-weight: 800;
+    flex-shrink: 0;
+  }
+  .level-label {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1a1a2e;
+  }
+  .level-band {
+    font-size: 14px;
+    color: #64748b;
+    margin-bottom: 6px;
+  }
+  .verdict-badge {
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .verdict-ready { background: #22c55e; }
+  .verdict-foundations { background: #f59e0b; }
+  .verdict-notqualified { background: #ef4444; }
+
+  /* -- Score cards -- */
+  .scores-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .score-card {
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .score-card .score-value {
+    font-size: 32px;
+    font-weight: 800;
+    color: #0066ff;
+  }
+  .score-card .score-max {
+    font-size: 14px;
+    color: #94a3b8;
+  }
+  .score-card .score-label {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 4px;
+  }
+
+  /* -- Narrative -- */
+  .narrative {
+    font-size: 15px;
+    color: #334155;
+    line-height: 1.7;
+  }
+
+  /* -- Tables -- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th {
+    background: #f1f5f9;
+    color: #475569;
+    font-weight: 600;
+    text-align: left;
+    padding: 10px 12px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f1f5f9;
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+
+  /* -- Radar chart -- */
+  .radar-container {
+    text-align: center;
+    margin: 20px 0;
+  }
+
+  /* -- Track badge -- */
+  .track-badge {
+    display: inline-block;
+    padding: 6px 18px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #0066ff, #7c3aed);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  /* -- Status dots -- */
+  .status-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .status-green { background: #22c55e; }
+  .status-amber { background: #f59e0b; }
+  .status-red { background: #ef4444; }
+
+  /* -- Progress bars -- */
+  .progress-bg {
+    background: #e2e8f0;
+    border-radius: 4px;
+    height: 8px;
+    width: 100%;
+  }
+  .progress-fill {
+    border-radius: 4px;
+    height: 8px;
+  }
+  .fill-green { background: #22c55e; }
+  .fill-amber { background: #f59e0b; }
+  .fill-red { background: #ef4444; }
+
+  /* -- Footer -- */
+  .footer {
+    text-align: center;
+    padding: 24px;
+    color: #94a3b8;
+    font-size: 13px;
+  }
+
+  /* -- Print -- */
+  @media print {
+    body { background: #fff; font-size: 12px; }
+    .page { padding: 0; max-width: 100%; }
+    .header {
+      border-radius: 0;
+      margin-bottom: 16px;
+      padding: 20px 24px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .card {
+      box-shadow: none;
+      border: 1px solid #e2e8f0;
+      break-inside: avoid;
+      margin-bottom: 12px;
+      padding: 16px;
+    }
+    .card h2 { font-size: 16px; }
+    .scores-grid { gap: 8px; }
+    .score-card .score-value { font-size: 24px; }
+    .level-badge { width: 64px; height: 64px; font-size: 20px; }
+    table { font-size: 11px; }
+    th, td { padding: 6px 8px; }
+    .status-dot, .progress-bg {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>PRISM D1 Velocity Assessment</h1>
+    <div class="subtitle">AI-Assisted Development Maturity Report</div>
+    <div class="header-grid">
+      <div class="label">Customer</div>
+      <div class="value">{{CUSTOMER_NAME}}</div>
+      <div class="label">Team Size</div>
+      <div class="value">{{TEAM_SIZE}} engineers</div>
+      <div class="label">Funding Stage</div>
+      <div class="value">{{FUNDING_STAGE}}</div>
+      <div class="label">Assessment Date</div>
+      <div class="value">{{ASSESSMENT_DATE}}</div>
+      <div class="label">Solutions Architect</div>
+      <div class="value">{{SA_NAME}}</div>
+      <div class="label">Repository</div>
+      <div class="value" style="font-family:monospace;font-size:13px">{{REPO_ANALYZED}}</div>
+    </div>
+  </div>
+
+  <!-- Executive Summary -->
+  <div class="card">
+    <h2>Executive Summary</h2>
+    <div class="level-display">
+      <div class="level-badge">L{{PRISM_LEVEL}}</div>
+      <div>
+        <div class="level-label">PRISM D1 Level {{PRISM_LEVEL}}</div>
+        <div class="level-band">{{LEVEL_BAND}}</div>
+        <!-- Verdict badge: replace class based on {{VERDICT_RAW}} -->
+        <span class="verdict-badge verdict-ready">{{VERDICT}}</span>
+      </div>
+    </div>
+    <p class="narrative">{{EXECUTIVE_SUMMARY}}</p>
+    <div class="scores-grid">
+      <div class="score-card">
+        <div class="score-value">{{SCANNER_TOTAL}}</div>
+        <div class="score-max">/ 100</div>
+        <div class="score-label">Scanner Score (40%)</div>
+      </div>
+      <div class="score-card">
+        <div class="score-value">{{INTERVIEW_TOTAL}}</div>
+        <div class="score-max">/ 100</div>
+        <div class="score-label">Interview Score (40%)</div>
+      </div>
+      <div class="score-card">
+        <div class="score-value">{{ORG_READINESS_TOTAL}}</div>
+        <div class="score-max">/ 20</div>
+        <div class="score-label">Org Readiness (20%)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scanner Breakdown -->
+  <div class="card">
+    <h2>Scanner Category Breakdown</h2>
+    <div class="radar-container">
+      {{RADAR_CHART_SVG}}
+    </div>
+    <!-- Category table is populated by the report generator -->
+    <p style="color:#94a3b8;font-size:13px;text-align:center;margin-top:12px">
+      Detailed category table is generated programmatically. See the full report output.
+    </p>
+  </div>
+
+  <!-- Onboarding Recommendation -->
+  <div class="card">
+    <h2>Onboarding Recommendation</h2>
+    <div style="margin-bottom:20px">
+      <span class="track-badge">Track {{TRACK_LETTER}}: {{TRACK_NAME}}</span>
+    </div>
+    <p style="color:#64748b;font-size:14px">
+      Workshop modules, pre-work assignments, and milestone targets are included in the
+      programmatically generated version of this report.
+    </p>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>PRISM D1 Velocity Assessment Report &mdash; Generated {{ASSESSMENT_DATE}}</p>
+    <p>Solutions Architect: {{SA_NAME}}</p>
+  </div>
+
+</div>
+</body>
+</html>

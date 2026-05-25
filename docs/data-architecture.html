@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Architecture — PRISM D1 Velocity</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .doc-page { padding: 32px; background: var(--white); min-height: calc(100vh - 51px); }
+    .doc-inner { max-width: 1080px; margin: 0 auto; }
+    .doc-inner h1 { font-size: 28px; font-weight: 700; color: var(--text); margin-bottom: 4px; line-height: 36px; }
+    .doc-inner .doc-subtitle { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
+    .doc-inner h2 {
+      font-size: 20px; font-weight: 700; color: var(--text); margin: 36px 0 12px;
+      padding-bottom: 8px; border-bottom: 1px solid var(--border-muted);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .doc-inner h3 { font-size: 16px; font-weight: 700; color: var(--text); margin: 24px 0 8px; }
+    .doc-inner h4 { font-size: 14px; font-weight: 700; color: var(--text); margin: 16px 0 6px; }
+    .doc-inner p { font-size: 14px; color: var(--text); line-height: 22px; margin-bottom: 12px; }
+    .doc-inner ul, .doc-inner ol { font-size: 14px; color: var(--text); line-height: 22px; margin: 0 0 12px 20px; }
+    .doc-inner li { margin-bottom: 4px; }
+    .doc-inner code {
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      font-size: 12px; background: var(--bg); padding: 2px 6px; border-radius: 3px;
+      border: 1px solid var(--border-muted);
+    }
+    .doc-inner pre {
+      background: var(--aws-navy); color: #d5dbdb; padding: 16px; border-radius: var(--radius);
+      overflow-x: auto; margin: 12px 0 16px; font-size: 12px; line-height: 20px;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    }
+    .doc-inner pre code { background: none; border: none; padding: 0; color: inherit; }
+
+    /* Summary box */
+    .summary-box {
+      background: var(--blue-light); border: 1px solid #c8d8f0; border-left: 4px solid var(--accent);
+      border-radius: var(--radius); padding: 16px 20px; margin-bottom: 24px;
+    }
+    .summary-box p { margin-bottom: 0; }
+
+    /* Tables */
+    .doc-table-wrap { overflow-x: auto; margin: 12px 0 20px; }
+    .doc-table {
+      width: 100%; border-collapse: collapse; font-size: 13px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .doc-table th {
+      background: var(--aws-navy); color: var(--white); font-weight: 700;
+      padding: 10px 12px; text-align: left; white-space: nowrap;
+      border-bottom: 2px solid var(--aws-squid);
+    }
+    .doc-table td {
+      padding: 8px 12px; border-bottom: 1px solid var(--border-muted);
+      vertical-align: top;
+    }
+    .doc-table tr:last-child td { border-bottom: none; }
+    .doc-table tr:hover td { background: var(--bg); }
+    .doc-table .highlight { background: var(--blue-light); font-weight: 600; }
+
+    /* Badges */
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 700;
+      padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+    }
+    .badge-source { background: #ddf4ff; color: var(--blue); }
+    .badge-hook { background: #fff1e5; color: var(--orange); }
+    .badge-webhook { background: #eddeff; color: #8250df; }
+    .badge-ci { background: #dafbe1; color: var(--green); }
+    .badge-api { background: var(--bg); color: var(--text-secondary); }
+    .badge-cw { background: #ddf4ff; color: var(--blue); }
+    .badge-ddb { background: #dafbe1; color: var(--green); }
+    .badge-gap { background: #ffebe9; color: var(--red); }
+
+    /* Callout boxes */
+    .callout-warning {
+      background: #fff1e5; border: 1px solid #f5c489; border-left: 4px solid var(--orange);
+      border-radius: var(--radius); padding: 14px 18px; margin: 16px 0;
+    }
+    .callout-info {
+      background: #f5f0ff; border: 1px solid #d8c8f0; border-left: 4px solid #8250df;
+      border-radius: var(--radius); padding: 14px 18px; margin: 16px 0;
+    }
+    .callout-gap {
+      background: #ffebe9; border: 1px solid #f5a8a8; border-left: 4px solid var(--red);
+      border-radius: var(--radius); padding: 14px 18px; margin: 16px 0;
+    }
+
+    /* Source cards */
+    .source-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 16px 0 24px; }
+    .source-card {
+      background: var(--white); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow-sm);
+    }
+    .source-card h4 { margin: 0 0 4px 0; font-size: 14px; }
+    .source-card .source-detail { font-size: 12px; color: var(--text-secondary); line-height: 18px; }
+    .source-card .source-file { font-size: 11px; color: var(--text-muted); font-family: monospace; margin-top: 6px; }
+
+    /* Flow diagram */
+    .flow-diagram {
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; margin: 16px 0; overflow-x: auto;
+    }
+
+    /* Metric cards */
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0 20px; }
+    .metric-card {
+      background: var(--white); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px; text-align: center;
+    }
+    .metric-card .metric-name { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+    .metric-card .metric-unit { font-size: 11px; color: var(--text-muted); }
+
+    @media (max-width: 768px) {
+      .doc-page { padding: 16px; }
+      .source-grid { grid-template-columns: 1fr; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .doc-inner h1 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="index.html">
+        <svg class="prism-icon" width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGrad)" stroke="#0550ae" stroke-width="1.5" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="30" y2="10" stroke="#d1242f" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="23" y1="20" x2="30" y2="14" stroke="#bf5700" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24" y1="22" x2="30" y2="18" stroke="#1a7f37" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24.5" y1="24" x2="30" y2="22" stroke="#0969da" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="25" y1="26" x2="30" y2="26" stroke="#8250df" stroke-width="1.2" stroke-linecap="round"/>
+          <defs><linearGradient id="prismGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        PRISM <span>D1 Velocity</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="agents.html">Agents</a></li>
+        <li><a href="dashboard.html" class="nav-demo">Demo</a></li>
+        <li><a href="competitive-landscape.html">Landscape</a></li>
+        <li><a href="roadmap.html">Roadmap</a></li>
+        <li><a href="data-architecture.html" style="color:#fff;border-bottom:2px solid var(--aws-squid)">Data</a></li>
+        <li><a href="https://github.com/sunilpp/prism-d1-velocity" target="_blank" rel="noopener noreferrer" class="nav-github" title="View on GitHub">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        </a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="doc-page">
+    <div class="doc-inner">
+
+      <h1>Data Architecture &amp; Metrics Pipeline</h1>
+      <p class="doc-subtitle">How every AI-assisted action becomes a measurable metric &mdash; from git commit to executive dashboard</p>
+
+      <div class="summary-box">
+        <p><strong>7 data sources</strong> feed into <strong>EventBridge</strong>, processed by <strong>Lambda</strong>, triple-written to <strong>DynamoDB</strong> (events + metadata) and <strong>CloudWatch</strong> (time-series). Dashboards read from CloudWatch (real-time) and DynamoDB (historical queries). <strong>8 event types</strong> carry <strong>6 AI-DORA metrics</strong> across every commit, PR, deploy, and eval gate.</p>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- SECTION 1: End-to-End Data Flow              -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        End-to-End Data Flow
+      </h2>
+
+      <div class="flow-diagram">
+        <svg viewBox="0 0 960 520" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;min-width:700px;font-family:var(--font-sans);">
+          <!-- Source zone -->
+          <rect x="0" y="0" width="280" height="520" rx="10" fill="#f6f8fa" stroke="#d1d9e0"/>
+          <text x="140" y="24" text-anchor="middle" font-size="11" font-weight="700" fill="#59636e" letter-spacing="0.08em">DATA SOURCES</text>
+
+          <!-- Source boxes -->
+          <rect x="14" y="40" width="252" height="54" rx="6" fill="#fff" stroke="#bf5700" stroke-width="1.5"/>
+          <text x="28" y="62" font-size="12" font-weight="700" fill="#bf5700">Git Hooks</text>
+          <text x="28" y="80" font-size="10" fill="#59636e">prepare-commit-msg, post-commit, post-merge</text>
+
+          <rect x="14" y="104" width="252" height="54" rx="6" fill="#fff" stroke="#8250df" stroke-width="1.5"/>
+          <text x="28" y="126" font-size="12" font-weight="700" fill="#8250df">GitHub Webhooks</text>
+          <text x="28" y="144" font-size="10" fill="#59636e">push, pull_request, deployment, check_run</text>
+
+          <rect x="14" y="168" width="252" height="54" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="1.5"/>
+          <text x="28" y="190" font-size="12" font-weight="700" fill="#1a7f37">GitHub Actions CI</text>
+          <text x="28" y="208" font-size="10" fill="#59636e">ai-metrics, dora-weekly, agent-eval workflows</text>
+
+          <rect x="14" y="232" width="252" height="54" rx="6" fill="#fff" stroke="#59636e" stroke-width="1.5"/>
+          <text x="28" y="254" font-size="12" font-weight="700" fill="#59636e">Direct API</text>
+          <text x="28" y="272" font-size="10" fill="#59636e">POST /metrics &mdash; any system can push events</text>
+
+          <!-- AI tool detection box -->
+          <rect x="14" y="310" width="252" height="130" rx="6" fill="#fff" stroke="#0969da" stroke-width="1.5"/>
+          <text x="28" y="332" font-size="12" font-weight="700" fill="#0969da">AI Tool Detection</text>
+          <text x="28" y="352" font-size="10" fill="#59636e">CLAUDE_CODE / CLAUDE_SESSION_ID env &rarr; claude-code</text>
+          <text x="28" y="368" font-size="10" fill="#59636e">KIRO_SESSION env &rarr; kiro</text>
+          <text x="28" y="384" font-size="10" fill="#59636e">Q_DEVELOPER_SESSION env &rarr; q-developer</text>
+          <text x="28" y="400" font-size="10" fill="#59636e">Co-Authored-By / generated by &rarr; ai-generated</text>
+          <text x="28" y="416" font-size="10" fill="#59636e">Spec files in staged changes &rarr; Spec-Ref trailer</text>
+          <text x="28" y="432" font-size="10" fill="#848d97">No AI signals detected &rarr; human</text>
+
+          <!-- Arrows from sources -->
+          <line x1="270" y1="67" x2="310" y2="130" stroke="#bf5700" stroke-width="1.5"/>
+          <line x1="270" y1="131" x2="310" y2="140" stroke="#8250df" stroke-width="1.5"/>
+          <line x1="270" y1="195" x2="310" y2="155" stroke="#1a7f37" stroke-width="1.5"/>
+          <line x1="270" y1="259" x2="310" y2="165" stroke="#59636e" stroke-width="1.5"/>
+
+          <!-- Ingestion zone -->
+          <rect x="300" y="40" width="200" height="200" rx="10" fill="#f0f6ff" stroke="#c8d8f0"/>
+          <text x="400" y="60" text-anchor="middle" font-size="11" font-weight="700" fill="#0969da" letter-spacing="0.08em">INGESTION</text>
+
+          <rect x="314" y="76" width="172" height="46" rx="6" fill="#fff" stroke="#0969da" stroke-width="1.5"/>
+          <text x="400" y="100" text-anchor="middle" font-size="12" font-weight="700" fill="#0969da">API Gateway</text>
+          <text x="400" y="114" text-anchor="middle" font-size="9" fill="#59636e">50 req/s &bull; 100K/month</text>
+
+          <path d="M400 122 L400 138" stroke="#0969da" stroke-width="1.5" marker-end="url(#arrowB)"/>
+
+          <rect x="314" y="140" width="172" height="46" rx="6" fill="#fff" stroke="#0969da" stroke-width="1.5"/>
+          <text x="400" y="164" text-anchor="middle" font-size="12" font-weight="700" fill="#0969da">EventBridge</text>
+          <text x="400" y="178" text-anchor="middle" font-size="9" fill="#59636e">prism-d1-metrics bus</text>
+
+          <path d="M400 186 L400 268" stroke="#0969da" stroke-width="1.5" marker-end="url(#arrowB)"/>
+
+          <!-- Processing zone -->
+          <rect x="300" y="270" width="200" height="100" rx="10" fill="#fff1e5" stroke="#f5c489"/>
+          <text x="400" y="290" text-anchor="middle" font-size="11" font-weight="700" fill="#bf5700" letter-spacing="0.08em">PROCESSING</text>
+
+          <rect x="314" y="306" width="172" height="50" rx="6" fill="#fff" stroke="#bf5700" stroke-width="1.5"/>
+          <text x="400" y="328" text-anchor="middle" font-size="12" font-weight="700" fill="#bf5700">Lambda</text>
+          <text x="400" y="342" text-anchor="middle" font-size="9" fill="#59636e">Normalize &bull; Enrich &bull; Triple-write</text>
+
+          <!-- Arrows to storage -->
+          <line x1="490" y1="310" x2="540" y2="80" stroke="#1a7f37" stroke-width="1.5"/>
+          <line x1="490" y1="330" x2="540" y2="200" stroke="#1a7f37" stroke-width="1.5"/>
+          <line x1="490" y1="350" x2="540" y2="330" stroke="#0969da" stroke-width="1.5"/>
+
+          <!-- Storage zone -->
+          <rect x="530" y="40" width="200" height="340" rx="10" fill="#f0fff4" stroke="#c8e6d0"/>
+          <text x="630" y="60" text-anchor="middle" font-size="11" font-weight="700" fill="#1a7f37" letter-spacing="0.08em">STORAGE</text>
+
+          <rect x="544" y="76" width="172" height="56" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="1.5"/>
+          <text x="630" y="98" text-anchor="middle" font-size="12" font-weight="700" fill="#1a7f37">DynamoDB Events</text>
+          <text x="630" y="114" text-anchor="middle" font-size="9" fill="#59636e">prism-d1-events &bull; TTL 365d</text>
+          <text x="630" y="126" text-anchor="middle" font-size="9" fill="#848d97">PK: team#repo &bull; SK: timestamp</text>
+
+          <rect x="544" y="148" width="172" height="56" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="1.5"/>
+          <text x="630" y="170" text-anchor="middle" font-size="12" font-weight="700" fill="#1a7f37">DynamoDB Metadata</text>
+          <text x="630" y="186" text-anchor="middle" font-size="9" fill="#59636e">prism-team-metadata</text>
+          <text x="630" y="198" text-anchor="middle" font-size="9" fill="#848d97">Latest snapshot per team/repo</text>
+
+          <rect x="544" y="316" width="172" height="50" rx="6" fill="#fff" stroke="#0969da" stroke-width="1.5"/>
+          <text x="630" y="338" text-anchor="middle" font-size="12" font-weight="700" fill="#0969da">CloudWatch</text>
+          <text x="630" y="352" text-anchor="middle" font-size="9" fill="#59636e">PRISM/D1/Velocity namespace</text>
+
+          <!-- Arrows to dashboards -->
+          <line x1="720" y1="104" x2="760" y2="184" stroke="#8250df" stroke-width="1.5"/>
+          <line x1="720" y1="341" x2="760" y2="100" stroke="#8250df" stroke-width="1.5"/>
+          <line x1="720" y1="341" x2="760" y2="256" stroke="#8250df" stroke-width="1.5"/>
+
+          <!-- Dashboard zone -->
+          <rect x="750" y="40" width="200" height="340" rx="10" fill="#f5f0ff" stroke="#d8c8f0"/>
+          <text x="850" y="60" text-anchor="middle" font-size="11" font-weight="700" fill="#8250df" letter-spacing="0.08em">DASHBOARDS</text>
+
+          <rect x="764" y="76" width="172" height="46" rx="6" fill="#fff" stroke="#8250df" stroke-width="1.5"/>
+          <text x="850" y="98" text-anchor="middle" font-size="12" font-weight="700" fill="#8250df">Team Velocity</text>
+          <text x="850" y="110" text-anchor="middle" font-size="9" fill="#59636e">CloudWatch &bull; Real-time</text>
+
+          <rect x="764" y="136" width="172" height="46" rx="6" fill="#fff" stroke="#8250df" stroke-width="1.5"/>
+          <text x="850" y="158" text-anchor="middle" font-size="12" font-weight="700" fill="#8250df">Executive Readout</text>
+          <text x="850" y="170" text-anchor="middle" font-size="9" fill="#59636e">QuickSight &bull; Weekly</text>
+
+          <rect x="764" y="196" width="172" height="46" rx="6" fill="#fff" stroke="#8250df" stroke-width="1.5"/>
+          <text x="850" y="218" text-anchor="middle" font-size="12" font-weight="700" fill="#8250df">API Queries</text>
+          <text x="850" y="230" text-anchor="middle" font-size="9" fill="#59636e">GET /metrics/{team_id}</text>
+
+          <rect x="764" y="256" width="172" height="46" rx="6" fill="#fff" stroke="#8250df" stroke-width="1.5"/>
+          <text x="850" y="278" text-anchor="middle" font-size="12" font-weight="700" fill="#8250df">Alarms</text>
+          <text x="850" y="290" text-anchor="middle" font-size="9" fill="#59636e">4 CloudWatch alarms</text>
+
+          <!-- Event types legend -->
+          <rect x="300" y="400" width="650" height="110" rx="8" fill="#fff" stroke="#d1d9e0"/>
+          <text x="316" y="422" font-size="11" font-weight="700" fill="#1f2328">8 Event Types on EventBridge</text>
+          <text x="316" y="442" font-size="11" fill="#0969da" font-weight="600">prism.d1.commit</text>
+          <text x="476" y="442" font-size="10" fill="#59636e">Every git commit with AI context</text>
+          <text x="316" y="458" font-size="11" fill="#0969da" font-weight="600">prism.d1.pr</text>
+          <text x="476" y="458" font-size="10" fill="#59636e">PR open/merge with lead time &amp; acceptance rate</text>
+          <text x="316" y="474" font-size="11" fill="#0969da" font-weight="600">prism.d1.deploy</text>
+          <text x="476" y="474" font-size="10" fill="#59636e">Deployment frequency &amp; change failure rate</text>
+          <text x="316" y="490" font-size="11" fill="#0969da" font-weight="600">prism.d1.eval</text>
+          <text x="476" y="490" font-size="10" fill="#59636e">Bedrock eval gate pass/fail</text>
+          <text x="680" y="442" font-size="11" fill="#0969da" font-weight="600">prism.d1.incident</text>
+          <text x="680" y="458" font-size="11" fill="#0969da" font-weight="600">prism.d1.assessment</text>
+          <text x="680" y="474" font-size="11" fill="#0969da" font-weight="600">prism.d1.agent</text>
+          <text x="680" y="490" font-size="11" fill="#0969da" font-weight="600">prism.d1.agent.eval</text>
+
+          <defs>
+            <marker id="arrowB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#0969da"/>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- SECTION 2: Data Sources Deep Dive            -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        Data Sources
+      </h2>
+
+      <!-- Git Hooks -->
+      <h3>1. Git Hooks (Local Machine)</h3>
+      <p>Installed via <code>bootstrapper/metric-hooks/install.sh</code>. Fire automatically on every commit and merge.</p>
+
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Hook</th><th>Trigger</th><th>Data Captured</th><th>Output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>prepare-commit-msg</strong></td>
+              <td>Before commit message editor</td>
+              <td>Detects AI tool via env vars, scans for Co-Authored-By, detects spec files in staged changes</td>
+              <td>Adds trailers: <code>AI-Origin</code>, <code>AI-Tool</code>, <code>AI-Model</code>, <code>Spec-Ref</code></td>
+            </tr>
+            <tr>
+              <td><strong>post-commit</strong></td>
+              <td>After successful commit</td>
+              <td>SHA, author, files changed, lines added/removed, all trailers from message</td>
+              <td>JSON to <code>.prism/metrics/</code> + async emit to EventBridge</td>
+            </tr>
+            <tr>
+              <td><strong>post-merge</strong></td>
+              <td>After merge or git pull</td>
+              <td>AI commits vs human commits on branch, lead time (first commit &rarr; merge), AI-to-merge ratio</td>
+              <td>JSON to <code>.prism/metrics/</code> + async emit to EventBridge</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout-info">
+        <p><strong>AI Tool Detection Logic:</strong> The prepare-commit-msg hook checks environment variables in this order: <code>CLAUDE_CODE</code> / <code>CLAUDE_SESSION_ID</code> &rarr; claude-code, <code>KIRO_SESSION</code> &rarr; kiro, <code>Q_DEVELOPER_SESSION</code> &rarr; q-developer. If none match, it scans the commit message for AI indicators. Default: <code>AI-Origin: human</code>.</p>
+      </div>
+
+      <!-- GitHub Webhooks -->
+      <h3>2. GitHub Webhooks</h3>
+      <p>The webhook handler at <code>collector/github-webhook-handler/index.ts</code> processes 5 event types with HMAC-SHA256 signature verification.</p>
+
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>GitHub Event</th><th>Event Type Emitted</th><th>Key Data Extracted</th></tr></thead>
+          <tbody>
+            <tr><td><strong>push</strong></td><td><code>prism.d1.commit</code></td><td>Files changed per commit, AI trailers parsed from each commit message, aggregate AI ratio for the push</td></tr>
+            <tr><td><strong>pull_request</strong> (merged)</td><td><code>prism.d1.pr</code></td><td>Lead time (created_at &rarr; merged_at), lines changed (additions + deletions), AI-to-merge ratio</td></tr>
+            <tr><td><strong>deployment</strong></td><td><code>prism.d1.deploy</code></td><td>Deployment frequency count (1 per event), deployment timestamp</td></tr>
+            <tr><td><strong>deployment_status</strong></td><td><code>prism.d1.deploy</code></td><td>Change failure rate: 1 if failure/error, 0 if success</td></tr>
+            <tr><td><strong>check_run</strong> (eval-*)</td><td><code>prism.d1.eval</code></td><td>Eval gate pass/fail (checks for names starting with <code>eval-</code> or <code>prism-eval-</code>), duration</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- GitHub Actions Workflows -->
+      <h3>3. GitHub Actions Workflows</h3>
+      <p>Three workflows in <code>bootstrapper/github-workflows/</code> emit structured events on specific triggers.</p>
+
+      <div class="source-grid">
+        <div class="source-card" style="border-left: 3px solid var(--green);">
+          <h4>prism-ai-metrics.yml</h4>
+          <div class="source-detail">
+            <strong>Trigger:</strong> PR merged to main<br>
+            <strong>Calculates:</strong> AI-to-merge ratio (counts AI vs human commits), lead time (PR created &rarr; merged), acceptance rate (approved reviews / total reviews)<br>
+            <strong>Emits:</strong> <code>prism.d1.pr</code> + <code>prism.d1.deploy</code>
+          </div>
+        </div>
+        <div class="source-card" style="border-left: 3px solid var(--blue);">
+          <h4>prism-dora-weekly.yml</h4>
+          <div class="source-detail">
+            <strong>Trigger:</strong> Monday 09:00 UTC (+ manual)<br>
+            <strong>Calculates:</strong> 7-day DORA snapshot (deploy freq, avg lead time, CFR via revert/hotfix detection, MTTR). AI adoption rate, spec coverage, tool breakdown (Claude Code / Kiro / Q Dev)<br>
+            <strong>Emits:</strong> <code>prism.d1.assessment</code>
+          </div>
+        </div>
+        <div class="source-card" style="border-left: 3px solid var(--orange);">
+          <h4>prism-agent-eval.yml</h4>
+          <div class="source-detail">
+            <strong>Trigger:</strong> PR modifying agent paths<br>
+            <strong>Calculates:</strong> Agent quality scores (task_completion, tool_efficiency, guardrail_compliance, reasoning_quality, error_recovery) via Bedrock evaluation rubric<br>
+            <strong>Emits:</strong> <code>prism.d1.agent.eval</code>
+          </div>
+        </div>
+        <div class="source-card" style="border-left: 3px solid var(--text-muted);">
+          <h4>Direct API Ingestion</h4>
+          <div class="source-detail">
+            <strong>Endpoint:</strong> POST /metrics<br>
+            <strong>Auth:</strong> API key + usage plan<br>
+            <strong>Rate:</strong> 50 req/s burst, 100K/month quota<br>
+            <strong>Use case:</strong> Custom integrations, third-party CI, manual metric submission
+          </div>
+        </div>
+      </div>
+
+      <!-- CI Metadata Emitter -->
+      <h3>4. CI Metadata Emitter</h3>
+      <p>The shell script at <code>collector/ci-metadata-emitter/emit-metrics.sh</code> runs inside GitHub Actions to emit deploy/PR events. It parses the git log from base ref to HEAD, counts commits by AI origin, calculates AI-to-merge ratio, and emits to EventBridge.</p>
+
+      <pre><code># Environment variables the emitter reads
+PRISM_EVENT_TYPE=deploy|pr     PRISM_TEAM_ID=team-alpha
+PRISM_EVENT_BUS=prism-d1-metrics   PRISM_REPO=owner/repo
+PRISM_BASE_REF=origin/main    PRISM_SHA=abc123
+PRISM_PR_CREATED_AT=2026-04-20T10:00:00Z   # for lead time calc</code></pre>
+
+      <!-- ============================================ -->
+      <!-- SECTION 3: Event Schema                     -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Event Schema
+      </h2>
+
+      <p>Every event follows this structure on EventBridge:</p>
+
+      <pre><code>{
+  "source": "prism.d1.velocity",
+  "detail-type": "prism.d1.commit | .pr | .deploy | .eval | .incident | .assessment | .agent | .agent.eval",
+  "detail": {
+    "team_id": "team-alpha",
+    "repo": "owner/repo-name",
+    "timestamp": "2026-04-22T14:30:00Z",
+    "prism_level": 3,
+    "metric": {
+      "name": "commit.files_changed",     // primary metric name
+      "value": 5,                          // numeric value
+      "unit": "files"                      // count | percent | seconds | hours | files | lines
+    },
+    "ai_context": {
+      "tool": "claude-code",               // claude-code | kiro | q-developer | none
+      "model": "claude-sonnet-4",          // model identifier
+      "session_id": "sess_abc123",         // optional session ID
+      "origin": "ai-assisted"              // ai-assisted | ai-generated | human
+    },
+    "dora": {
+      "deployment_frequency": 1,           // count per event
+      "lead_time_seconds": 3600,           // PR created &rarr; merged
+      "change_failure_rate": 0.0,          // 0 or 1 per event, averaged over time
+      "mttr_seconds": null                 // incident &rarr; resolution
+    },
+    "ai_dora": {
+      "ai_acceptance_rate": 0.85,          // approved reviews / total reviews
+      "ai_to_merge_ratio": 0.70,           // AI commits / total commits
+      "spec_to_code_hours": 1.8,           // spec approved &rarr; code ready
+      "post_merge_defect_rate": 0.014,     // defects per AI-assisted merge
+      "eval_gate_pass_rate": 1.0,          // 1 if pass, 0 if fail
+      "ai_test_coverage_delta": 0.123      // coverage change from AI tests
+    }
+  }
+}</code></pre>
+
+      <!-- ============================================ -->
+      <!-- SECTION 4: Processing &amp; Storage          -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        Processing &amp; Storage
+      </h2>
+
+      <p>The Lambda processor (<code>infra/lib/lambda/metrics-processor.ts</code>) does a <strong>triple-write</strong> for every event:</p>
+
+      <h3>Write 1: DynamoDB Events Table</h3>
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Field</th><th>Value</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Table</strong></td><td><code>prism-d1-events</code></td><td>Immutable event log</td></tr>
+            <tr><td><strong>Partition Key</strong></td><td><code>{team_id}#{repo}</code></td><td>Team+repo scoping</td></tr>
+            <tr><td><strong>Sort Key</strong></td><td><code>{timestamp}</code> ISO 8601</td><td>Time-ordered within partition</td></tr>
+            <tr><td><strong>GSI</strong></td><td><code>by-detail-type</code> (PK: detail_type, SK: timestamp)</td><td>Query by event type across teams</td></tr>
+            <tr><td><strong>TTL</strong></td><td>365 days</td><td>Auto-expire old events</td></tr>
+            <tr><td><strong>Data</strong></td><td>Full event detail (JSON stringified)</td><td>Complete audit trail</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Write 2: DynamoDB Metadata Table</h3>
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Field</th><th>Value</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Table</strong></td><td><code>prism-team-metadata</code></td><td>Latest snapshot per team/repo</td></tr>
+            <tr><td><strong>Key</strong></td><td><code>team_id</code> + <code>repo</code></td><td>Fast lookup for current state</td></tr>
+            <tr><td><strong>Updated</strong></td><td>Every event overwrites latest values</td><td>Always-current DORA + AI-DORA numbers</td></tr>
+            <tr><td><strong>TTL</strong></td><td>None</td><td>Persists until team is removed</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Write 3: CloudWatch Metrics</h3>
+      <p>Published to namespace <code>PRISM/D1/Velocity</code> with dimensions:</p>
+
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Dimension</th><th>Source</th><th>Required</th></tr></thead>
+          <tbody>
+            <tr><td><strong>TeamId</strong></td><td><code>detail.team_id</code></td><td>Yes</td></tr>
+            <tr><td><strong>Repository</strong></td><td><code>detail.repo</code></td><td>Yes</td></tr>
+            <tr><td><strong>AIOrigin</strong></td><td><code>detail.ai_context.origin</code></td><td>Optional &mdash; enables filtering by ai-generated / ai-assisted / human</td></tr>
+            <tr><td><strong>AgentName</strong></td><td><code>detail.agent.name</code></td><td>Optional &mdash; for agent metrics only</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout-info">
+        <p><strong>Dimensionless publishing:</strong> Every metric is also published <em>without</em> dimensions, enabling aggregate queries across all teams and repos in a single dashboard widget.</p>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- SECTION 5: CloudWatch Metrics Catalog        -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+        CloudWatch Metrics Catalog
+      </h2>
+
+      <h3>DORA Metrics</h3>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="metric-name">DeploymentFrequency</div><div class="metric-unit">Count</div></div>
+        <div class="metric-card"><div class="metric-name">LeadTimeForChanges</div><div class="metric-unit">Seconds</div></div>
+        <div class="metric-card"><div class="metric-name">ChangeFailureRate</div><div class="metric-unit">Percent</div></div>
+        <div class="metric-card"><div class="metric-name">MTTR</div><div class="metric-unit">Seconds</div></div>
+      </div>
+
+      <h3>AI-DORA Metrics</h3>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="metric-name">AIAcceptanceRate</div><div class="metric-unit">Percent</div></div>
+        <div class="metric-card"><div class="metric-name">AIToMergeRatio</div><div class="metric-unit">Percent</div></div>
+        <div class="metric-card"><div class="metric-name">EvalGatePassRate</div><div class="metric-unit">Percent</div></div>
+        <div class="metric-card"><div class="metric-name">SpecToCodeHours</div><div class="metric-unit">Hours</div></div>
+        <div class="metric-card"><div class="metric-name">PostMergeDefectRate</div><div class="metric-unit">Percent</div></div>
+        <div class="metric-card"><div class="metric-name">AITestCoverageDelta</div><div class="metric-unit">Percent</div></div>
+      </div>
+
+      <h3>Agent Metrics</h3>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="metric-name">AgentInvocationCount</div><div class="metric-unit">Count</div></div>
+        <div class="metric-card"><div class="metric-name">AgentStepCount</div><div class="metric-unit">Count</div></div>
+        <div class="metric-card"><div class="metric-name">AgentDurationMs</div><div class="metric-unit">Milliseconds</div></div>
+        <div class="metric-card"><div class="metric-name">AgentTokensUsed</div><div class="metric-unit">Count</div></div>
+        <div class="metric-card"><div class="metric-name">AgentToolInvocationCount</div><div class="metric-unit">Count</div></div>
+        <div class="metric-card"><div class="metric-name">AgentGuardrailTriggerCount</div><div class="metric-unit">Count</div></div>
+        <div class="metric-card"><div class="metric-name">AgentSuccessRate</div><div class="metric-unit">Percent</div></div>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- SECTION 6: What Dashboards Read From         -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+        What Dashboards Read From
+      </h2>
+
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Dashboard</th><th>Data Source</th><th>Refresh</th><th>Audience</th></tr></thead>
+          <tbody>
+            <tr><td><strong>CloudWatch Team Velocity</strong></td><td>CloudWatch metrics (PRISM/D1/Velocity)</td><td>Real-time</td><td>Engineering teams, tech leads</td></tr>
+            <tr><td><strong>CloudWatch Executive Readout</strong></td><td>CloudWatch metrics (PRISM/D1/Velocity)</td><td>Real-time</td><td>CTOs, VPEs, directors</td></tr>
+            <tr><td><strong>QuickSight AI-DORA Analysis</strong></td><td>Timestream (fed from CloudWatch)</td><td>Near real-time</td><td>Engineering leaders</td></tr>
+            <tr><td><strong>QuickSight PRISM Level Tracker</strong></td><td>Timestream + DynamoDB metadata</td><td>Near real-time</td><td>Executive review</td></tr>
+            <tr><td><strong>API: GET /metrics/{team_id}</strong></td><td>DynamoDB events table</td><td>On-demand</td><td>Custom integrations</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- SECTION 7: CloudWatch Alarms                 -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Active Alarms
+      </h2>
+
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Alarm</th><th>Metric</th><th>Threshold</th><th>Period</th></tr></thead>
+          <tbody>
+            <tr><td>AI Acceptance Rate Low</td><td>AIAcceptanceRate</td><td>&lt; 20%</td><td>6 hours</td></tr>
+            <tr><td>Eval Gate Pass Rate Low</td><td>EvalGatePassRate</td><td>&lt; 70%</td><td>6 hours</td></tr>
+            <tr><td>Change Failure Rate High</td><td>ChangeFailureRate</td><td>&gt; 20%</td><td>6 hours</td></tr>
+            <tr><td>Agent Success Rate Low</td><td>AgentSuccessRate</td><td>&lt; 80%</td><td>1 hour</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ============================================ -->
+      <!-- SECTION 8: Current Gaps - Token & Cost       -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Current Gap: Token Usage &amp; Cost Tracking
+      </h2>
+
+      <div class="callout-gap">
+        <p><strong>Claude Code, Kiro, and Q Developer token consumption is NOT tracked today.</strong> The pipeline captures <em>which</em> tool was used and <em>what</em> it produced (commits, PRs), but not <em>how many tokens</em> it consumed or <em>what it cost</em>. Agent token usage (<code>AgentTokensUsed</code>) is tracked for Strands agents, but not for interactive developer tool sessions.</p>
+      </div>
+
+      <h3>What's tracked vs. what's missing</h3>
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Dimension</th><th>Today</th><th>Missing</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Tool identity</strong></td><td><span class="badge badge-cw">Tracked</span> via env var detection</td><td>&mdash;</td></tr>
+            <tr><td><strong>Model used</strong></td><td><span class="badge badge-cw">Tracked</span> via AI-Model trailer</td><td>&mdash;</td></tr>
+            <tr><td><strong>Code output</strong></td><td><span class="badge badge-cw">Tracked</span> lines/files per commit</td><td>&mdash;</td></tr>
+            <tr><td><strong>Token consumption</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>Input tokens, output tokens, total tokens per session/commit</td></tr>
+            <tr><td><strong>Session duration</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>How long each Claude Code / Kiro session lasted</td></tr>
+            <tr><td><strong>Cost per session</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>Dollar cost of each AI interaction</td></tr>
+            <tr><td><strong>Cost per commit</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>Correlation of token cost to code output</td></tr>
+            <tr><td><strong>Cost per PR/feature</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>Aggregate cost across a feature's lifecycle</td></tr>
+            <tr><td><strong>Developer-level cost</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>Per-developer AI consumption patterns</td></tr>
+            <tr><td><strong>License spend</strong></td><td><span class="badge badge-gap">Not tracked</span></td><td>Monthly tool subscription costs</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Why it's hard today</h3>
+      <ul>
+        <li><strong>Claude Code</strong> doesn't expose token counts via environment variables or files that git hooks can read. Session data lives in <code>~/.claude/</code> local storage.</li>
+        <li><strong>Bedrock API calls</strong> are logged in CloudTrail with token counts, but they're not automatically correlated to specific commits or PRs.</li>
+        <li><strong>Kiro and Q Developer</strong> session token data is similarly siloed in their respective backends.</li>
+        <li><strong>Multi-turn sessions</strong> may span multiple commits, making 1:1 correlation non-trivial.</li>
+      </ul>
+
+      <h3>Proposed solution: Bedrock CloudTrail &rarr; Token Pipeline</h3>
+      <p>See the <a href="roadmap.html#phase-token-cost"><strong>Token &amp; Cost Intelligence</strong></a> phase in the Community Roadmap for the full implementation plan.</p>
+
+      <pre><code>Bedrock InvokeModel API calls
+         |
+         v
+CloudTrail (logs every call with input_tokens, output_tokens, model_id)
+         |
+         v
+EventBridge Rule (matches bedrock.amazonaws.com InvokeModel events)
+         |
+         v
+Lambda: token-cost-processor
+  - Extract: model_id, input_tokens, output_tokens, timestamp, IAM user/role
+  - Look up cost: model pricing table (DynamoDB)
+  - Correlate: timestamp proximity to commits (within 5-min window)
+  - Correlate: IAM role &rarr; developer identity
+  - Aggregate: per-session, per-commit, per-PR, per-feature
+         |
+         v
+CloudWatch: PRISM/D1/Velocity namespace
+  - BedrockTokensInput (by TeamId, Developer, Model)
+  - BedrockTokensOutput (by TeamId, Developer, Model)
+  - BedrockCostUSD (by TeamId, Developer, Model)
+  - CostPerCommit (by TeamId, AITool)
+  - CostPerPR (by TeamId)
+         |
+         v
+Dashboards: Token usage trends, cost overlays, ROI calculation</code></pre>
+
+      <!-- ============================================ -->
+      <!-- SECTION 9: Key Files Reference               -->
+      <!-- ============================================ -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+        Key Files Reference
+      </h2>
+
+      <div class="doc-table-wrap">
+        <table class="doc-table">
+          <thead><tr><th>Component</th><th>Location</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>Git hooks</td><td><code>bootstrapper/metric-hooks/</code></td><td>Local commit metadata capture + AI tool detection</td></tr>
+            <tr><td>GitHub webhook handler</td><td><code>collector/github-webhook-handler/index.ts</code></td><td>Process push, PR, deploy, check_run events</td></tr>
+            <tr><td>CI metric emitter</td><td><code>collector/ci-metadata-emitter/emit-metrics.sh</code></td><td>Shell script for GitHub Actions metric emission</td></tr>
+            <tr><td>Commit analyzer</td><td><code>collector/git-hooks/prism-commit-analyzer.ts</code></td><td>Standalone commit analysis tool</td></tr>
+            <tr><td>Metrics processor Lambda</td><td><code>infra/lib/lambda/metrics-processor.ts</code></td><td>EventBridge &rarr; DynamoDB + CloudWatch triple-write</td></tr>
+            <tr><td>API handler Lambda</td><td><code>infra/lib/lambda/api-handler.ts</code></td><td>REST API for ingestion + queries</td></tr>
+            <tr><td>Metrics pipeline stack</td><td><code>infra/lib/metrics-pipeline-stack.ts</code></td><td>EventBridge bus + DynamoDB tables + Lambda</td></tr>
+            <tr><td>API stack</td><td><code>infra/lib/api-stack.ts</code></td><td>API Gateway + Lambda + usage plans</td></tr>
+            <tr><td>Dashboard stack</td><td><code>infra/lib/dashboard-stack.ts</code></td><td>CloudWatch dashboards + alarms</td></tr>
+            <tr><td>AI metrics workflow</td><td><code>bootstrapper/github-workflows/prism-ai-metrics.yml</code></td><td>PR merge &rarr; AI-DORA event emission</td></tr>
+            <tr><td>DORA weekly workflow</td><td><code>bootstrapper/github-workflows/prism-dora-weekly.yml</code></td><td>Weekly DORA + AI adoption assessment</td></tr>
+            <tr><td>Agent eval workflow</td><td><code>bootstrapper/github-workflows/prism-agent-eval.yml</code></td><td>Agent quality gate on PRs</td></tr>
+            <tr><td>Workshop module</td><td><code>workshop/04-instrumenting-ai-metrics/</code></td><td>Hands-on exercises for metric instrumentation</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a href="https://github.com/sunilpp/prism-d1-velocity" target="_blank" rel="noopener noreferrer" class="cta-button">Get Started on GitHub</a>
+      <div class="footer-links">
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop" target="_blank" rel="noopener noreferrer">Workshop Modules</a>
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/assessment" target="_blank" rel="noopener noreferrer">Assessment Tools</a>
+        <a href="competitive-landscape.html">Competitive Landscape</a>
+        <a href="roadmap.html">Community Roadmap</a>
+        <a href="data-architecture.html">Data Architecture</a>
+      </div>
+      <div class="footer-brand-row">
+        <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGradFoot)" stroke="#0550ae" stroke-width="1" stroke-linejoin="round"/>
+          <defs><linearGradient id="prismGradFoot" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        <p class="footer-brand">PRISM D1 Velocity &mdash; AI Development Lifecycle Framework<br>Built with Amazon Bedrock, Claude Code &amp; Kiro</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

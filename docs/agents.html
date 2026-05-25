@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Development — PRISM D1 Velocity</title>
+  <meta name="description" content="Build AI agents on AWS with Strands SDK, MCP, and Amazon Bedrock AgentCore.">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="journey.css">
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="index.html#top">
+        <svg class="prism-icon" width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#pg)" stroke="#0550ae" stroke-width="1.5" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="30" y2="10" stroke="#d1242f" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="23" y1="20" x2="30" y2="14" stroke="#bf5700" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24" y1="22" x2="30" y2="18" stroke="#1a7f37" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24.5" y1="24" x2="30" y2="22" stroke="#0969da" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="25" y1="26" x2="30" y2="26" stroke="#8250df" stroke-width="1.2" stroke-linecap="round"/>
+          <defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        PRISM <span>D1 Velocity</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html#top">Overview</a></li>
+        <li><a href="#agents-top">Agents</a></li>
+        <li><a href="dashboard.html" class="nav-demo">Demo</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="j-hero" id="agents-top">
+    <h1>AI Agent Development on AWS</h1>
+    <p>Build, deploy, and operate AI agents using Strands SDK, MCP, and Amazon Bedrock AgentCore.</p>
+  </section>
+
+  <!-- Architecture -->
+  <section class="j-timeline" style="padding-top: 2.5rem;">
+    <div class="j-inner" style="padding-left: 0; max-width: 860px;">
+
+      <!-- Architecture Diagram -->
+      <div class="j-card" style="margin-bottom: 2rem;">
+        <div class="j-card-head">
+          <div class="j-card-icon blue">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0073bb" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          </div>
+          <h2>Architecture Stack</h2>
+        </div>
+        <svg viewBox="0 0 700 160" fill="none" style="width:100%;height:auto;font-family:'Open Sans',sans-serif;">
+          <!-- Boxes -->
+          <rect x="0" y="50" width="140" height="60" rx="8" fill="#f1faff" stroke="#0073bb" stroke-width="1.5"/>
+          <text x="70" y="75" text-anchor="middle" font-size="12" font-weight="700" fill="#16191f">Your Application</text>
+          <text x="70" y="92" text-anchor="middle" font-size="10" fill="#545b64">CLI / API / Chat</text>
+
+          <rect x="185" y="50" width="140" height="60" rx="8" fill="#fef6ed" stroke="#ec7211" stroke-width="1.5"/>
+          <text x="255" y="75" text-anchor="middle" font-size="12" font-weight="700" fill="#16191f">Strands SDK</text>
+          <text x="255" y="92" text-anchor="middle" font-size="10" fill="#545b64">Agent logic + tools</text>
+
+          <rect x="370" y="50" width="140" height="60" rx="8" fill="#f2f8f0" stroke="#1d8102" stroke-width="1.5"/>
+          <text x="440" y="75" text-anchor="middle" font-size="12" font-weight="700" fill="#16191f">MCP</text>
+          <text x="440" y="92" text-anchor="middle" font-size="10" fill="#545b64">Tool integration</text>
+
+          <rect x="555" y="50" width="140" height="60" rx="8" fill="#f1faff" stroke="#0073bb" stroke-width="1.5"/>
+          <text x="625" y="75" text-anchor="middle" font-size="12" font-weight="700" fill="#16191f">AgentCore</text>
+          <text x="625" y="92" text-anchor="middle" font-size="10" fill="#545b64">Runtime + Ops</text>
+
+          <!-- Arrows -->
+          <line x1="142" y1="80" x2="183" y2="80" stroke="#687078" stroke-width="1.5" marker-end="url(#arrowA)"/>
+          <line x1="327" y1="80" x2="368" y2="80" stroke="#687078" stroke-width="1.5" marker-end="url(#arrowA)"/>
+          <line x1="512" y1="80" x2="553" y2="80" stroke="#687078" stroke-width="1.5" marker-end="url(#arrowA)"/>
+
+          <!-- Labels above -->
+          <text x="70" y="38" text-anchor="middle" font-size="9" fill="#687078" font-weight="600">USER-FACING</text>
+          <text x="255" y="38" text-anchor="middle" font-size="9" fill="#687078" font-weight="600">FRAMEWORK</text>
+          <text x="440" y="38" text-anchor="middle" font-size="9" fill="#687078" font-weight="600">PROTOCOL</text>
+          <text x="625" y="38" text-anchor="middle" font-size="9" fill="#687078" font-weight="600">PLATFORM</text>
+
+          <!-- Sub-items -->
+          <text x="625" y="128" text-anchor="middle" font-size="9" fill="#545b64">Runtime | Memory | Gateway</text>
+          <text x="625" y="142" text-anchor="middle" font-size="9" fill="#545b64">Identity | Observability</text>
+
+          <defs><marker id="arrowA" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#687078"/></marker></defs>
+        </svg>
+      </div>
+
+      <!-- Strands SDK -->
+      <div class="j-card" style="margin-bottom: 1.5rem;">
+        <div class="j-card-head">
+          <div class="j-card-icon orange">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ec7211" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </div>
+          <h2>Strands Agents SDK</h2>
+        </div>
+        <p>Open-source Python/TypeScript SDK for building AI agents. Model-driven approach: the LLM decides what to do, not fixed code logic.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+            <strong style="font-size:13px;">Single Agent</strong>
+            <p style="font-size:12px;color:var(--text-secondary);margin-top:4px;">One agent with focused role, clear tools, straightforward prompts. Start here.</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+            <strong style="font-size:13px;">Agents-as-Tools</strong>
+            <p style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Wrap agents as callable tools. Parent agent invokes specialized child agents.</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+            <strong style="font-size:13px;">Swarms &amp; Graphs</strong>
+            <p style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Parallel execution (swarms) or DAG-based workflows (graphs) for complex tasks.</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+            <strong style="font-size:13px;">Agent Handoffs</strong>
+            <p style="font-size:12px;color:var(--text-secondary);margin-top:4px;">A2A protocol for seamless delegation between agents with context transfer.</p>
+          </div>
+        </div>
+        <a class="j-link" href="https://strandsagents.com/" target="_blank" rel="noopener noreferrer" style="margin-top:12px;display:inline-block;">Strands SDK docs &rarr;</a>
+      </div>
+
+      <!-- MCP -->
+      <div class="j-card" style="margin-bottom: 1.5rem;">
+        <div class="j-card-head">
+          <div class="j-card-icon green">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1d8102" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          </div>
+          <h2>Model Context Protocol (MCP)</h2>
+        </div>
+        <p>An open standard for AI systems to communicate with tools, data sources, and services. Build tools once, integrate anywhere.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px;">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;">
+            <strong style="font-size:13px;">Tools</strong>
+            <p style="font-size:11px;color:var(--text-secondary);margin-top:4px;">Callable actions with JSON schemas</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;">
+            <strong style="font-size:13px;">Resources</strong>
+            <p style="font-size:11px;color:var(--text-secondary);margin-top:4px;">Read-only persistent data</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;">
+            <strong style="font-size:13px;">Prompts</strong>
+            <p style="font-size:11px;color:var(--text-secondary);margin-top:4px;">Reusable instruction templates</p>
+          </div>
+        </div>
+        <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/sample-app/src/mcp" target="_blank" rel="noopener noreferrer" style="margin-top:12px;display:inline-block;">Sample MCP server &rarr;</a>
+      </div>
+
+      <!-- AgentCore -->
+      <div class="j-card" style="margin-bottom: 1.5rem;">
+        <div class="j-card-head">
+          <div class="j-card-icon blue">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0073bb" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3h-8l-2 4h12l-2-4z"/></svg>
+          </div>
+          <h2>Amazon Bedrock AgentCore</h2>
+        </div>
+        <p>Fully managed platform for deploying and operating AI agents at enterprise scale. Framework-agnostic, model-agnostic.</p>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:16px;">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;">
+            <strong style="font-size:11px;">Runtime</strong>
+            <p style="font-size:10px;color:var(--text-secondary);margin-top:2px;">Serverless execution</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;">
+            <strong style="font-size:11px;">Memory</strong>
+            <p style="font-size:10px;color:var(--text-secondary);margin-top:2px;">Session state</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;">
+            <strong style="font-size:11px;">Gateway</strong>
+            <p style="font-size:10px;color:var(--text-secondary);margin-top:2px;">Tool mediation</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;">
+            <strong style="font-size:11px;">Identity</strong>
+            <p style="font-size:10px;color:var(--text-secondary);margin-top:2px;">Access control</p>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center;">
+            <strong style="font-size:11px;">Observability</strong>
+            <p style="font-size:10px;color:var(--text-secondary);margin-top:2px;">OpenTelemetry</p>
+          </div>
+        </div>
+        <a class="j-link" href="https://aws.amazon.com/bedrock/agentcore/" target="_blank" rel="noopener noreferrer" style="margin-top:12px;display:inline-block;">AgentCore docs &rarr;</a>
+      </div>
+
+      <!-- Getting Started -->
+      <div class="j-card" style="margin-bottom: 1.5rem;">
+        <div class="j-card-head">
+          <div class="j-card-icon teal">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#067f68" stroke-width="2" stroke-linecap="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>
+          </div>
+          <h2>Get Started</h2>
+        </div>
+        <p>The sample app includes a complete, working agent you can run in under 5 minutes.</p>
+        <pre style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;font-size:13px;overflow-x:auto;margin-top:12px;line-height:1.6;">
+<code># 1. Start the task API
+cd sample-app && npm install && npm run dev
+
+# 2. Install agent dependencies
+cd agent && pip install -e ".[dev]"
+
+# 3. Run the demo (no AWS needed)
+python scripts/run-demo.py --mock
+
+# 4. Or run interactively
+python scripts/run-agent.py --mock</code></pre>
+        <div style="display:flex;gap:16px;margin-top:12px;">
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/sample-app/agent" target="_blank" rel="noopener noreferrer">Agent code &rarr;</a>
+          <a class="j-link" href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop/02-agent-development" target="_blank" rel="noopener noreferrer">Workshop Module 06 &rarr;</a>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a href="index.html#top" class="j-back-link">&larr; Back to overview</a>
+      <div class="footer-brand-row">
+        <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#pfga)" stroke="#0550ae" stroke-width="1" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="31" y2="9" stroke="#d1242f" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="23" y1="20" x2="31" y2="13" stroke="#bf5700" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="24" y1="22" x2="31" y2="17" stroke="#1a7f37" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="24.5" y1="24" x2="31" y2="21" stroke="#0969da" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <line x1="25" y1="26" x2="31" y2="25" stroke="#8250df" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+          <defs><linearGradient id="pfga" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        <p class="footer-brand">PRISM D1 Velocity &mdash; AI Development Lifecycle Framework<br>Built with Amazon Bedrock, Claude Code &amp; Kiro</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

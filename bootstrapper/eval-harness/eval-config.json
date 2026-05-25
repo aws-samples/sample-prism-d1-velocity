@@ -1,0 +1,10 @@
+{
+  "pass_threshold": 0.82,
+  "model_id": "anthropic.claude-sonnet-4-20250514",
+  "eval_model_id": "anthropic.claude-sonnet-4-20250514",
+  "event_bus": "prism-d1-metrics",
+  "aws_region": "us-west-2",
+  "rubrics_dir": "rubrics",
+  "output_dir": ".prism/eval-results",
+  "emit_to_eventbridge": true
+}

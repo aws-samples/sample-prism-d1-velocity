@@ -1,0 +1,798 @@
+{
+  "_comment": [
+    "QuickSight CreateAnalysis API request body for PRISM D1 AI-DORA deep analysis.",
+    "This template requires customization before deployment:",
+    "  1. Replace REPLACE_AWS_ACCOUNT_ID with your 12-digit AWS account ID",
+    "  2. Replace REPLACE_DATA_SET_ARN with your Timestream-backed DataSet ARN",
+    "  3. Replace REPLACE_REGION with your deployment region (e.g., us-west-2)",
+    "  4. Adjust ThresholdValues in ConditionalFormatting to match your PRISM level targets",
+    "Deploy via: aws quicksight create-analysis --cli-input-json file://ai-dora-analysis.json"
+  ],
+
+  "AwsAccountId": "REPLACE_AWS_ACCOUNT_ID",
+  "AnalysisId": "prism-d1-ai-dora-analysis",
+  "Name": "PRISM D1 — AI-DORA Analysis",
+
+  "SourceEntity": {
+    "SourceTemplate": null
+  },
+
+  "Definition": {
+    "DataSetIdentifierDeclarations": [
+      {
+        "Identifier": "prism_d1_metrics",
+        "DataSetArn": "REPLACE_DATA_SET_ARN"
+      }
+    ],
+
+    "CalculatedFields": [
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "LeadTimeHours",
+        "Expression": "{LeadTimeSeconds} / 3600"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "MTTRHours",
+        "Expression": "{MTTRSeconds} / 3600"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "WoW_DeploymentChange",
+        "Expression": "percentDifference({DeploymentCount}, [{measure_date} ASC], 7)"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "WoW_AIAcceptanceChange",
+        "Expression": "percentDifference({AIAcceptanceRate}, [{measure_date} ASC], 7)"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "DefectRateDelta",
+        "Expression": "{DefectRateAI} - {DefectRateHuman}"
+      },
+      {
+        "DataSetIdentifier": "prism_d1_metrics",
+        "Name": "PRISMLevelLabel",
+        "Expression": "ifelse({PRISMLevel} = 1, 'L1 Ad Hoc', {PRISMLevel} = 2, 'L2 Emerging', {PRISMLevel} = 3, 'L3 Scaling', {PRISMLevel} = 4, 'L4 Optimized', 'L5 Transformative')"
+      }
+    ],
+
+    "FilterGroups": [
+      {
+        "FilterGroupId": "date-range-filter",
+        "Filters": [
+          {
+            "RelativeDatesFilter": {
+              "FilterId": "date-range-relative",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "measure_date"
+              },
+              "AnchorDateConfiguration": {
+                "AnchorOption": "NOW"
+              },
+              "RelativeDateType": "PREVIOUS",
+              "RelativeDateValue": 90,
+              "TimeGranularity": "DAY",
+              "NullOption": "NON_NULLS_ONLY"
+            }
+          }
+        ],
+        "ScopeConfiguration": {
+          "AllSheets": {}
+        },
+        "CrossDataset": "ALL_DATASETS"
+      },
+      {
+        "FilterGroupId": "team-filter",
+        "Filters": [
+          {
+            "CategoryFilter": {
+              "FilterId": "team-filter-category",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "TeamId"
+              },
+              "Configuration": {
+                "FilterListConfiguration": {
+                  "MatchOperator": "CONTAINS",
+                  "SelectAllOptions": "FILTER_ALL_VALUES"
+                }
+              }
+            }
+          }
+        ],
+        "ScopeConfiguration": {
+          "AllSheets": {}
+        },
+        "CrossDataset": "ALL_DATASETS"
+      },
+      {
+        "FilterGroupId": "repo-filter",
+        "Filters": [
+          {
+            "CategoryFilter": {
+              "FilterId": "repo-filter-category",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "Repo"
+              },
+              "Configuration": {
+                "FilterListConfiguration": {
+                  "MatchOperator": "CONTAINS",
+                  "SelectAllOptions": "FILTER_ALL_VALUES"
+                }
+              }
+            }
+          }
+        ],
+        "ScopeConfiguration": {
+          "AllSheets": {}
+        },
+        "CrossDataset": "ALL_DATASETS"
+      },
+      {
+        "FilterGroupId": "ai-tool-filter",
+        "Filters": [
+          {
+            "CategoryFilter": {
+              "FilterId": "ai-tool-filter-category",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "AITool"
+              },
+              "Configuration": {
+                "FilterListConfiguration": {
+                  "MatchOperator": "CONTAINS",
+                  "SelectAllOptions": "FILTER_ALL_VALUES",
+                  "_comment": "Expected values: ClaudeCode, Kiro, QDeveloper, Other"
+                }
+              }
+            }
+          }
+        ],
+        "ScopeConfiguration": {
+          "AllSheets": {}
+        },
+        "CrossDataset": "ALL_DATASETS"
+      },
+      {
+        "FilterGroupId": "prism-level-filter",
+        "Filters": [
+          {
+            "NumericRangeFilter": {
+              "FilterId": "prism-level-range",
+              "Column": {
+                "DataSetIdentifier": "prism_d1_metrics",
+                "ColumnName": "PRISMLevel"
+              },
+              "RangeMinimum": { "StaticValue": 1 },
+              "RangeMaximum": { "StaticValue": 5 },
+              "NullOption": "NON_NULLS_ONLY"
+            }
+          }
+        ],
+        "ScopeConfiguration": {
+          "AllSheets": {}
+        },
+        "CrossDataset": "ALL_DATASETS"
+      }
+    ],
+
+    "Sheets": [
+      {
+        "SheetId": "dora-overview",
+        "Name": "DORA Overview",
+        "Visuals": [
+          {
+            "KPIVisual": {
+              "VisualId": "kpi-deployment-frequency",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Deployment Frequency" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "Values": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "df-value",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DeploymentCount" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "SUM" }
+                      }
+                    }
+                  ],
+                  "TrendGroups": [
+                    {
+                      "DateDimensionField": {
+                        "FieldId": "df-date",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                        "DateGranularity": "WEEK"
+                      }
+                    }
+                  ]
+                },
+                "KPIOptions": {
+                  "TrendVisibility": "VISIBLE",
+                  "ComparisonConfiguration": {
+                    "ComparisonMethod": "PERCENT_DIFFERENCE"
+                  }
+                }
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "PrimaryValue": {
+                      "Icon": {
+                        "IconSet": {
+                          "Expression": "ifelse({DeploymentCount} >= 7, 'ARROW_UP', {DeploymentCount} >= 2, 'ARROW_RIGHT', 'ARROW_DOWN')"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "KPIVisual": {
+              "VisualId": "kpi-lead-time",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Lead Time for Changes" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "Values": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "lt-value",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "LeadTimeHours" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                      }
+                    }
+                  ],
+                  "TrendGroups": [
+                    {
+                      "DateDimensionField": {
+                        "FieldId": "lt-date",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                        "DateGranularity": "WEEK"
+                      }
+                    }
+                  ]
+                },
+                "KPIOptions": {
+                  "TrendVisibility": "VISIBLE",
+                  "ComparisonConfiguration": {
+                    "ComparisonMethod": "PERCENT_DIFFERENCE"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "KPIVisual": {
+              "VisualId": "kpi-cfr",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Change Failure Rate" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "Values": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "cfr-value",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "ChangeFailureRate" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                      }
+                    }
+                  ],
+                  "TrendGroups": [
+                    {
+                      "DateDimensionField": {
+                        "FieldId": "cfr-date",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                        "DateGranularity": "WEEK"
+                      }
+                    }
+                  ]
+                }
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "PrimaryValue": {
+                      "TextColor": {
+                        "Solid": {
+                          "Expression": "ifelse({ChangeFailureRate} <= 5, '#4CAF50', {ChangeFailureRate} <= 15, '#FF9800', '#F44336')",
+                          "Color": "#4CAF50"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "KPIVisual": {
+              "VisualId": "kpi-mttr",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "MTTR" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "Values": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "mttr-value",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "MTTRHours" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                      }
+                    }
+                  ],
+                  "TrendGroups": [
+                    {
+                      "DateDimensionField": {
+                        "FieldId": "mttr-date",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                        "DateGranularity": "WEEK"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "LineChartVisual": {
+              "VisualId": "dora-trends",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "DORA Metrics — Daily Trend" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "LineChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "DateDimensionField": {
+                          "FieldId": "trend-date",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                          "DateGranularity": "DAY"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "trend-df",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DeploymentCount" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "SUM" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "trend-cfr",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "ChangeFailureRate" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "PrimaryYAxisDisplayOptions": {
+                  "AxisOptions": { "AxisLineVisibility": "VISIBLE" }
+                }
+              }
+            }
+          }
+        ]
+      },
+
+      {
+        "SheetId": "ai-contribution",
+        "Name": "AI Contribution",
+        "Visuals": [
+          {
+            "BarChartVisual": {
+              "VisualId": "ai-acceptance-by-team",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "AI Acceptance Rate by Team" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "BarChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "team-dim",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "ai-accept-val",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "AIAcceptanceRate" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "Orientation": "HORIZONTAL",
+                "BarsArrangement": "CLUSTERED",
+                "ColorLabelOptions": {
+                  "_comment": "Purple palette for AI metrics"
+                }
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "Bar": {
+                      "FieldId": "ai-accept-val",
+                      "Color": {
+                        "Gradient": {
+                          "Expression": "{AIAcceptanceRate}",
+                          "Color": {
+                            "Stops": [
+                              { "GradientOffset": 0, "DataValue": 0, "Color": "#F44336" },
+                              { "GradientOffset": 50, "DataValue": 35, "Color": "#FF9800" },
+                              { "GradientOffset": 100, "DataValue": 70, "Color": "#4CAF50" }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "LineChartVisual": {
+              "VisualId": "ai-merge-ratio-trend",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "AI-to-Merge Ratio Trend" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "LineChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "DateDimensionField": {
+                          "FieldId": "merge-date",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                          "DateGranularity": "DAY"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "merge-ratio",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "AIToMergeRatio" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "PieChartVisual": {
+              "VisualId": "ai-tool-breakdown",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "AI Tool Breakdown" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "PieChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "tool-dim",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "AITool" },
+                          "_comment": "Expected values: ClaudeCode, Kiro, QDeveloper"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "tool-count",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DeploymentCount" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "SUM" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "DonutOptions": {
+                  "ArcOptions": { "ArcThickness": "MEDIUM" }
+                }
+              }
+            }
+          }
+        ]
+      },
+
+      {
+        "SheetId": "quality-evals",
+        "Name": "Quality & Evals",
+        "Visuals": [
+          {
+            "KPIVisual": {
+              "VisualId": "kpi-eval-pass",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Eval Gate Pass Rate" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "Values": [
+                    {
+                      "NumericalMeasureField": {
+                        "FieldId": "eval-val",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "EvalGatePassRate" },
+                        "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                      }
+                    }
+                  ],
+                  "TrendGroups": [
+                    {
+                      "DateDimensionField": {
+                        "FieldId": "eval-date",
+                        "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                        "DateGranularity": "WEEK"
+                      }
+                    }
+                  ]
+                },
+                "KPIOptions": {
+                  "TrendVisibility": "VISIBLE"
+                }
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "PrimaryValue": {
+                      "TextColor": {
+                        "Solid": {
+                          "Expression": "ifelse({EvalGatePassRate} >= 95, '#4CAF50', {EvalGatePassRate} >= 80, '#FF9800', '#F44336')"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "LineChartVisual": {
+              "VisualId": "defect-rate-comparison",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Post-Merge Defect Rate: AI vs Human" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "LineChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "DateDimensionField": {
+                          "FieldId": "defect-date",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                          "DateGranularity": "DAY"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "defect-ai",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DefectRateAI" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      },
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "defect-human",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "DefectRateHuman" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "Series": [
+                  { "FieldSeriesItem": { "FieldId": "defect-ai", "Settings": { "Color": "#9C27B0" } } },
+                  { "FieldSeriesItem": { "FieldId": "defect-human", "Settings": { "Color": "#2196F3" } } }
+                ]
+              }
+            }
+          },
+          {
+            "LineChartVisual": {
+              "VisualId": "test-coverage-trend",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "AI Test Coverage Delta" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "LineChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "DateDimensionField": {
+                          "FieldId": "cov-date",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                          "DateGranularity": "DAY"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "cov-val",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "AITestCoverageDelta" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "Series": [
+                  { "FieldSeriesItem": { "FieldId": "cov-val", "Settings": { "Color": "#E040FB" } } }
+                ],
+                "ReferenceLines": [
+                  {
+                    "DataConfiguration": {
+                      "StaticConfiguration": {
+                        "Value": 0
+                      }
+                    },
+                    "StyleConfiguration": {
+                      "Color": "#9E9E9E"
+                    },
+                    "LabelConfiguration": {
+                      "ValueLabelConfiguration": { "FormatConfiguration": { "NumberDisplayFormatConfiguration": { "Suffix": "% baseline" } } }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+
+      {
+        "SheetId": "spec-efficiency",
+        "Name": "Spec Efficiency",
+        "Visuals": [
+          {
+            "BarChartVisual": {
+              "VisualId": "spec-turnaround-by-team",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Spec-to-Code Turnaround by Team" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "BarChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "spec-team",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "spec-hours",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "SpecToCodeHours" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "Orientation": "HORIZONTAL",
+                "BarsArrangement": "CLUSTERED"
+              },
+              "ConditionalFormatting": {
+                "ConditionalFormattingOptions": [
+                  {
+                    "Bar": {
+                      "FieldId": "spec-hours",
+                      "Color": {
+                        "Gradient": {
+                          "Expression": "{SpecToCodeHours}",
+                          "Color": {
+                            "Stops": [
+                              { "GradientOffset": 0, "DataValue": 8, "Color": "#4CAF50" },
+                              { "GradientOffset": 50, "DataValue": 24, "Color": "#FF9800" },
+                              { "GradientOffset": 100, "DataValue": 72, "Color": "#F44336" }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "LineChartVisual": {
+              "VisualId": "spec-turnaround-trend",
+              "Title": { "Visibility": "VISIBLE", "FormatText": { "PlainText": "Spec-to-Code Turnaround Trend" } },
+              "ChartConfiguration": {
+                "FieldWells": {
+                  "LineChartAggregatedFieldWells": {
+                    "Category": [
+                      {
+                        "DateDimensionField": {
+                          "FieldId": "spec-trend-date",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "measure_date" },
+                          "DateGranularity": "DAY"
+                        }
+                      }
+                    ],
+                    "Values": [
+                      {
+                        "NumericalMeasureField": {
+                          "FieldId": "spec-trend-hours",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "SpecToCodeHours" },
+                          "AggregationFunction": { "SimpleNumericalAggregation": "AVERAGE" }
+                        }
+                      }
+                    ],
+                    "Colors": [
+                      {
+                        "CategoricalDimensionField": {
+                          "FieldId": "spec-trend-team",
+                          "Column": { "DataSetIdentifier": "prism_d1_metrics", "ColumnName": "TeamId" }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "ReferenceLines": [
+                  {
+                    "DataConfiguration": { "StaticConfiguration": { "Value": 24 } },
+                    "StyleConfiguration": { "Color": "#FF9800" },
+                    "LabelConfiguration": { "ValueLabelConfiguration": { "FormatConfiguration": { "NumberDisplayFormatConfiguration": { "Suffix": "h — L3 Target" } } } }
+                  },
+                  {
+                    "DataConfiguration": { "StaticConfiguration": { "Value": 8 } },
+                    "StyleConfiguration": { "Color": "#4CAF50" },
+                    "LabelConfiguration": { "ValueLabelConfiguration": { "FormatConfiguration": { "NumberDisplayFormatConfiguration": { "Suffix": "h — L4 Target" } } } }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+
+    "ParameterDeclarations": [
+      {
+        "StringParameterDeclaration": {
+          "ParameterValueType": "MULTI_VALUED",
+          "Name": "TeamSelection",
+          "DefaultValues": {
+            "StaticValues": ["ALL"]
+          },
+          "ValueWhenUnset": { "ValueWhenUnsetOption": "RECOMMENDED_VALUE" }
+        }
+      },
+      {
+        "DateTimeParameterDeclaration": {
+          "Name": "StartDate",
+          "DefaultValues": {
+            "RollingDate": {
+              "Expression": "truncDate('DD', now() - 90d)"
+            }
+          },
+          "TimeGranularity": "DAY"
+        }
+      },
+      {
+        "DateTimeParameterDeclaration": {
+          "Name": "EndDate",
+          "DefaultValues": {
+            "RollingDate": {
+              "Expression": "truncDate('DD', now())"
+            }
+          },
+          "TimeGranularity": "DAY"
+        }
+      }
+    ]
+  },
+
+  "Tags": [
+    { "Key": "Project", "Value": "PRISM" },
+    { "Key": "Dimension", "Value": "D1-Velocity" },
+    { "Key": "ManagedBy", "Value": "prism-d1-velocity-dashboards" }
+  ]
+}

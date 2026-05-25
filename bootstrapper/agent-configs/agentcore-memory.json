@@ -1,0 +1,38 @@
+{
+  "_comment": "AgentCore Memory configuration template. Defines how agent session state is stored and managed. Replace all <PLACEHOLDER> values.",
+  "memory_name": "<AGENT_NAME>-memory",
+  "session_ttl": {
+    "value": 3600,
+    "unit": "SECONDS",
+    "_comment": "How long a session remains active after the last interaction. Default: 1 hour."
+  },
+  "max_sessions": {
+    "per_user": 5,
+    "global": 10000,
+    "_comment": "Maximum concurrent sessions per user and globally. Prevents runaway session creation."
+  },
+  "branching_enabled": false,
+  "branching_config": {
+    "_comment": "Set branching_enabled to true to allow conversation branching (e.g., exploring alternative plans). Useful for reviewer agent patterns.",
+    "max_branches": 3,
+    "branch_ttl_seconds": 1800
+  },
+  "storage_backend": {
+    "type": "DYNAMODB",
+    "table_name": "<AGENT_NAME>-sessions",
+    "region": "us-west-2",
+    "encryption": "AWS_OWNED_KEY",
+    "_comment": "DynamoDB is the default and recommended storage backend. For high-throughput agents, consider enabling on-demand capacity."
+  },
+  "context_window_management": {
+    "strategy": "SLIDING_WINDOW",
+    "max_messages": 50,
+    "summarize_on_overflow": true,
+    "_comment": "When the context window fills, older messages are summarized to preserve key context while staying within token limits."
+  },
+  "tags": {
+    "prism:pillar": "d1-velocity",
+    "prism:component": "agent-memory",
+    "prism:team": "<TEAM_ID>"
+  }
+}

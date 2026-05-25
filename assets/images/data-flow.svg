@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 450" font-family="'Open Sans', -apple-system, sans-serif">
+  <defs>
+    <filter id="ds"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.12"/></filter>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#687078"/></marker>
+  </defs>
+
+  <rect width="900" height="450" rx="12" fill="#f8f9fa"/>
+  <text x="450" y="28" text-anchor="middle" font-size="16" font-weight="700" fill="#232f3e">End-to-End Data Flow</text>
+
+  <!-- Data Sources (top row) -->
+  <text x="450" y="55" text-anchor="middle" font-size="11" font-weight="600" fill="#687078">DATA SOURCES</text>
+
+  <rect x="15" y="65" width="105" height="40" rx="6" fill="#232f3e" filter="url(#ds)"/>
+  <text x="67" y="88" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">Git Hooks</text>
+
+  <rect x="130" y="65" width="105" height="40" rx="6" fill="#232f3e" filter="url(#ds)"/>
+  <text x="182" y="88" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">GitHub Webhooks</text>
+
+  <rect x="245" y="65" width="105" height="40" rx="6" fill="#232f3e" filter="url(#ds)"/>
+  <text x="297" y="88" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">CI Workflows</text>
+
+  <rect x="360" y="65" width="105" height="40" rx="6" fill="#232f3e" filter="url(#ds)"/>
+  <text x="412" y="88" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">Direct API</text>
+
+  <rect x="475" y="65" width="105" height="40" rx="6" fill="#6a1b9a" filter="url(#ds)"/>
+  <text x="527" y="83" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">CloudTrail</text>
+  <text x="527" y="95" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">(Bedrock)</text>
+
+  <rect x="590" y="65" width="105" height="40" rx="6" fill="#0073bb" filter="url(#ds)"/>
+  <text x="642" y="83" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">MCP Audit</text>
+  <text x="642" y="95" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">Logger</text>
+
+  <rect x="705" y="65" width="105" height="40" rx="6" fill="#1d8102" filter="url(#ds)"/>
+  <text x="757" y="83" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">Agent Runtime</text>
+  <text x="757" y="95" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">Metrics</text>
+
+  <rect x="820" y="65" width="65" height="40" rx="6" fill="#d13212" filter="url(#ds)"/>
+  <text x="852" y="83" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">Security</text>
+  <text x="852" y="95" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">Agent</text>
+
+  <!-- Arrows to EventBridge -->
+  <line x1="67" y1="105" x2="67" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="182" y1="105" x2="182" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="297" y1="105" x2="297" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="412" y1="105" x2="412" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="527" y1="105" x2="527" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="642" y1="105" x2="642" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="757" y1="105" x2="757" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="852" y1="105" x2="852" y2="130" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+
+  <!-- EventBridge -->
+  <rect x="30" y="135" width="840" height="45" rx="8" fill="#ec7211" filter="url(#ds)"/>
+  <text x="450" y="158" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">EventBridge: prism-d1-metrics</text>
+  <text x="450" y="173" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.8)">18 event types routed by detail-type rules</text>
+
+  <!-- Arrow to processors -->
+  <line x1="250" y1="180" x2="250" y2="210" stroke="#687078" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="650" y1="180" x2="650" y2="210" stroke="#687078" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Core Processor -->
+  <rect x="100" y="215" width="300" height="50" rx="8" fill="#0073bb" filter="url(#ds)"/>
+  <text x="250" y="238" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">metrics-processor (triple-write)</text>
+  <text x="250" y="255" text-anchor="middle" font-size="8" fill="rgba(255,255,255,0.8)">normalize → DynamoDB + CloudWatch</text>
+
+  <!-- Specialized Processors -->
+  <rect x="500" y="215" width="300" height="50" rx="8" fill="#37475a" filter="url(#ds)"/>
+  <text x="650" y="238" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Specialized Processors (7)</text>
+  <text x="650" y="255" text-anchor="middle" font-size="8" fill="#aab7b8">token, cost, defect, spec, security, exfiltration, remediation</text>
+
+  <!-- Arrow: specialized back to EB -->
+  <path d="M 800 230 L 840 230 L 840 157 L 870 157" stroke="#687078" stroke-width="1" stroke-dasharray="4" fill="none"/>
+  <text x="855" y="195" font-size="7" fill="#687078" transform="rotate(90 855 195)">derived events</text>
+
+  <!-- Storage layer -->
+  <line x1="200" y1="265" x2="200" y2="295" stroke="#687078" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="300" y1="265" x2="450" y2="295" stroke="#687078" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="80" y="300" width="180" height="55" rx="8" fill="#0073bb" filter="url(#ds)"/>
+  <text x="170" y="323" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">DynamoDB</text>
+  <text x="170" y="339" text-anchor="middle" font-size="8" fill="rgba(255,255,255,0.8)">events + metadata</text>
+  <text x="170" y="351" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">KMS encrypted | 365-day TTL</text>
+
+  <rect x="370" y="300" width="180" height="55" rx="8" fill="#1d8102" filter="url(#ds)"/>
+  <text x="460" y="323" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">CloudWatch</text>
+  <text x="460" y="339" text-anchor="middle" font-size="8" fill="rgba(255,255,255,0.8)">30+ metrics | 12 alarms</text>
+  <text x="460" y="351" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">PRISM/D1/Velocity namespace</text>
+
+  <!-- Dashboards -->
+  <line x1="170" y1="355" x2="170" y2="385" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+  <line x1="460" y1="355" x2="460" y2="385" stroke="#687078" stroke-width="1" marker-end="url(#a)"/>
+
+  <rect x="30" y="390" width="180" height="40" rx="6" fill="#232f3e" filter="url(#ds)"/>
+  <text x="120" y="412" text-anchor="middle" font-size="9" font-weight="600" fill="#ff9900">Team Velocity</text>
+  <text x="120" y="424" text-anchor="middle" font-size="7" fill="#aab7b8">developers | hourly</text>
+
+  <rect x="220" y="390" width="180" height="40" rx="6" fill="#232f3e" filter="url(#ds)"/>
+  <text x="310" y="412" text-anchor="middle" font-size="9" font-weight="600" fill="#ff9900">Executive Readout</text>
+  <text x="310" y="424" text-anchor="middle" font-size="7" fill="#aab7b8">CTOs / VPEs | weekly</text>
+
+  <rect x="410" y="390" width="180" height="40" rx="6" fill="#d13212" filter="url(#ds)"/>
+  <text x="500" y="412" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">CISO Compliance</text>
+  <text x="500" y="424" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">security leaders | monthly</text>
+
+  <rect x="600" y="390" width="180" height="40" rx="6" fill="#6a1b9a" filter="url(#ds)"/>
+  <text x="690" y="412" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">QuickSight</text>
+  <text x="690" y="424" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">AI-DORA + Level Tracker</text>
+</svg>

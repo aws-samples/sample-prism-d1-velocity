@@ -1,0 +1,46 @@
+{
+  "_comment": "AgentCore Gateway configuration template. Defines how the agent is exposed as an API endpoint. Replace all <PLACEHOLDER> values.",
+  "gateway_name": "<AGENT_NAME>-gateway",
+  "endpoint_path": "/agents/<AGENT_NAME>/invoke",
+  "auth_type": {
+    "type": "IAM",
+    "_comment": "Supported types: IAM, API_KEY, COGNITO. IAM is recommended for service-to-service. COGNITO for user-facing agents.",
+    "cognito_config": {
+      "user_pool_id": "<COGNITO_USER_POOL_ID>",
+      "app_client_id": "<COGNITO_APP_CLIENT_ID>",
+      "scopes": ["agents/invoke"]
+    }
+  },
+  "rate_limit": {
+    "requests_per_second": 10,
+    "burst_limit": 20,
+    "_comment": "Rate limits protect the agent from overload and control cost. Adjust based on expected traffic."
+  },
+  "mcp_servers": [
+    {
+      "name": "<MCP_SERVER_NAME>",
+      "transport": "stdio",
+      "command": "<COMMAND_TO_START_SERVER>",
+      "args": [],
+      "env": {},
+      "_comment": "For production, use streamable-http transport with a deployed server URL instead of stdio."
+    }
+  ],
+  "cors_origins": [
+    "https://<YOUR_DOMAIN>",
+    "http://localhost:3000"
+  ],
+  "logging": {
+    "level": "INFO",
+    "destination": "CLOUDWATCH",
+    "log_group": "/prism/agents/<AGENT_NAME>",
+    "include_request_body": false,
+    "include_response_body": false,
+    "_comment": "Set include_request/response_body to true only in development. Never log request/response bodies in production with sensitive data."
+  },
+  "tags": {
+    "prism:pillar": "d1-velocity",
+    "prism:component": "agent-gateway",
+    "prism:team": "<TEAM_ID>"
+  }
+}

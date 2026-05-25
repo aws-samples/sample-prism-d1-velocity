@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="'Open Sans', -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="navy" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#37475a"/><stop offset="100%" stop-color="#232f3e"/></linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ff9900"/><stop offset="100%" stop-color="#ec7211"/></linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#2196f3"/><stop offset="100%" stop-color="#0073bb"/></linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4caf50"/><stop offset="100%" stop-color="#1d8102"/></linearGradient>
+    <linearGradient id="purple" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9c27b0"/><stop offset="100%" stop-color="#6a1b9a"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.15"/></filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="520" rx="12" fill="#f8f9fa"/>
+
+  <!-- Title -->
+  <text x="450" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#232f3e">PRISM D1 Velocity — Architecture Overview</text>
+
+  <!-- Left: Developer Workstation -->
+  <rect x="20" y="55" width="280" height="310" rx="10" fill="url(#navy)" filter="url(#shadow)"/>
+  <text x="160" y="80" text-anchor="middle" font-size="13" font-weight="700" fill="#ff9900">Developer Workstation</text>
+
+  <!-- AI Surfaces -->
+  <rect x="35" y="95" width="250" height="70" rx="6" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+  <text x="160" y="113" text-anchor="middle" font-size="10" font-weight="600" fill="#aab7b8">AI Surfaces (Choose One)</text>
+  <rect x="42" y="122" width="72" height="28" rx="4" fill="#ec7211"/>
+  <text x="78" y="140" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Kiro IDE</text>
+  <rect x="120" y="122" width="90" height="28" rx="4" fill="#0073bb"/>
+  <text x="165" y="140" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Claude Code</text>
+  <text x="165" y="152" text-anchor="middle" font-size="7" fill="#ddd">VS Code / JetBrains</text>
+  <rect x="216" y="122" width="62" height="28" rx="4" fill="#1d8102"/>
+  <text x="247" y="140" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">CLI</text>
+
+  <!-- Dev tools -->
+  <rect x="35" y="175" width="120" height="30" rx="5" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)"/>
+  <text x="95" y="194" text-anchor="middle" font-size="10" fill="#ddd">Git Hooks</text>
+  <rect x="165" y="175" width="120" height="30" rx="5" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)"/>
+  <text x="225" y="194" text-anchor="middle" font-size="10" fill="#ddd">Specs</text>
+
+  <rect x="35" y="215" width="120" height="30" rx="5" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)"/>
+  <text x="95" y="234" text-anchor="middle" font-size="10" fill="#ddd">MCP Server</text>
+  <rect x="165" y="215" width="120" height="30" rx="5" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)"/>
+  <text x="225" y="234" text-anchor="middle" font-size="10" fill="#ddd">Strands Agents</text>
+
+  <rect x="35" y="255" width="120" height="30" rx="5" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)"/>
+  <text x="95" y="274" text-anchor="middle" font-size="10" fill="#ddd">Bedrock Evals</text>
+  <rect x="165" y="255" width="120" height="30" rx="5" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.2)"/>
+  <text x="225" y="274" text-anchor="middle" font-size="10" fill="#ddd">GitHub Actions</text>
+
+  <rect x="35" y="295" width="250" height="30" rx="5" fill="rgba(255,153,0,0.15)" stroke="#ec7211" stroke-width="1"/>
+  <text x="160" y="314" text-anchor="middle" font-size="10" font-weight="600" fill="#ff9900">Security Agent (Design / Code / Pen Test)</text>
+
+  <!-- Arrow: Workstation → API Gateway -->
+  <path d="M 300 210 L 360 210" stroke="#ec7211" stroke-width="2.5" fill="none" marker-end="url(#arrowOrange)"/>
+  <defs><marker id="arrowOrange" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ec7211"/></marker></defs>
+  <text x="330" y="200" text-anchor="middle" font-size="8" fill="#687078">API GW</text>
+
+  <!-- Center: AWS Metrics Platform -->
+  <rect x="370" y="55" width="510" height="310" rx="10" fill="white" filter="url(#shadow)" stroke="#d5dbdb"/>
+  <text x="625" y="80" text-anchor="middle" font-size="13" font-weight="700" fill="#232f3e">AWS Metrics Platform</text>
+
+  <!-- EventBridge -->
+  <rect x="390" y="95" width="160" height="45" rx="6" fill="url(#orange)" filter="url(#shadow)"/>
+  <text x="470" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">EventBridge</text>
+  <text x="470" y="132" text-anchor="middle" font-size="8" fill="rgba(255,255,255,0.8)">18 event types</text>
+
+  <!-- Lambda processors -->
+  <rect x="390" y="155" width="160" height="40" rx="6" fill="url(#blue)" filter="url(#shadow)"/>
+  <text x="470" y="176" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">Lambda Processors (8)</text>
+  <text x="470" y="188" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">enrich, correlate, triple-write</text>
+
+  <!-- Arrow EB → Lambda -->
+  <line x1="470" y1="140" x2="470" y2="155" stroke="#0073bb" stroke-width="1.5"/>
+
+  <!-- DynamoDB -->
+  <rect x="390" y="210" width="100" height="50" rx="6" fill="url(#blue)" filter="url(#shadow)"/>
+  <text x="440" y="233" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">DynamoDB</text>
+  <text x="440" y="247" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">events + metadata</text>
+  <text x="440" y="257" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">KMS encrypted</text>
+
+  <!-- CloudWatch -->
+  <rect x="500" y="210" width="100" height="50" rx="6" fill="url(#green)" filter="url(#shadow)"/>
+  <text x="550" y="233" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">CloudWatch</text>
+  <text x="550" y="247" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">30+ metrics</text>
+  <text x="550" y="257" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">12 alarms</text>
+
+  <!-- Arrows Lambda → storage -->
+  <line x1="440" y1="195" x2="440" y2="210" stroke="#0073bb" stroke-width="1.5"/>
+  <line x1="500" y1="195" x2="550" y2="210" stroke="#1d8102" stroke-width="1.5"/>
+
+  <!-- Specialized Lambdas -->
+  <rect x="620" y="95" width="245" height="100" rx="6" fill="#f0f3f6" stroke="#d5dbdb"/>
+  <text x="742" y="113" text-anchor="middle" font-size="9" font-weight="700" fill="#414d5c">Specialized Processors</text>
+  <text x="742" y="130" text-anchor="middle" font-size="8" fill="#687078">token-processor (cost tracking)</text>
+  <text x="742" y="143" text-anchor="middle" font-size="8" fill="#687078">defect-correlator (AI vs human)</text>
+  <text x="742" y="156" text-anchor="middle" font-size="8" fill="#687078">spec-to-code-calculator</text>
+  <text x="742" y="169" text-anchor="middle" font-size="8" fill="#687078">security-agent-processor</text>
+  <text x="742" y="182" text-anchor="middle" font-size="8" fill="#687078">exfiltration-detector</text>
+
+  <!-- Arrow EB → Specialized -->
+  <line x1="550" y1="117" x2="620" y2="117" stroke="#ec7211" stroke-width="1.5"/>
+
+  <!-- Bedrock -->
+  <rect x="620" y="210" width="120" height="50" rx="6" fill="url(#purple)" filter="url(#shadow)"/>
+  <text x="680" y="233" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">Bedrock</text>
+  <text x="680" y="247" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">inference + evals</text>
+  <text x="680" y="257" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">guardrails</text>
+
+  <!-- Security Agent CDK -->
+  <rect x="750" y="210" width="120" height="50" rx="6" fill="#d13212" filter="url(#shadow)"/>
+  <text x="810" y="233" text-anchor="middle" font-size="10" font-weight="600" fill="#fff">Security Agent</text>
+  <text x="810" y="247" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">AgentSpace + pen test</text>
+
+  <!-- Dashboards -->
+  <rect x="390" y="280" width="120" height="45" rx="6" fill="url(#navy)" filter="url(#shadow)"/>
+  <text x="450" y="300" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Team Velocity</text>
+  <text x="450" y="314" text-anchor="middle" font-size="7" fill="#aab7b8">developers</text>
+
+  <rect x="520" y="280" width="120" height="45" rx="6" fill="url(#navy)" filter="url(#shadow)"/>
+  <text x="580" y="300" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Executive Readout</text>
+  <text x="580" y="314" text-anchor="middle" font-size="7" fill="#aab7b8">CTOs / VPEs</text>
+
+  <rect x="650" y="280" width="120" height="45" rx="6" fill="#d13212" filter="url(#shadow)"/>
+  <text x="710" y="300" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">CISO Compliance</text>
+  <text x="710" y="314" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">security leaders</text>
+
+  <!-- Arrows storage → dashboards -->
+  <line x1="440" y1="260" x2="450" y2="280" stroke="#0073bb" stroke-width="1"/>
+  <line x1="550" y1="260" x2="580" y2="280" stroke="#1d8102" stroke-width="1"/>
+
+  <!-- Bottom: Key stats -->
+  <rect x="20" y="385" width="860" height="55" rx="8" fill="white" stroke="#d5dbdb" filter="url(#shadow)"/>
+  <text x="110" y="408" text-anchor="middle" font-size="11" font-weight="700" fill="#0073bb">18</text>
+  <text x="110" y="425" text-anchor="middle" font-size="9" fill="#687078">Event Types</text>
+  <text x="250" y="408" text-anchor="middle" font-size="11" font-weight="700" fill="#1d8102">30+</text>
+  <text x="250" y="425" text-anchor="middle" font-size="9" fill="#687078">CloudWatch Metrics</text>
+  <text x="390" y="408" text-anchor="middle" font-size="11" font-weight="700" fill="#ec7211">12</text>
+  <text x="390" y="425" text-anchor="middle" font-size="9" fill="#687078">Alarms</text>
+  <text x="520" y="408" text-anchor="middle" font-size="11" font-weight="700" fill="#6a1b9a">3</text>
+  <text x="520" y="425" text-anchor="middle" font-size="9" fill="#687078">Dashboards</text>
+  <text x="650" y="408" text-anchor="middle" font-size="11" font-weight="700" fill="#d13212">8</text>
+  <text x="650" y="425" text-anchor="middle" font-size="9" fill="#687078">Lambda Processors</text>
+  <text x="790" y="408" text-anchor="middle" font-size="11" font-weight="700" fill="#232f3e">L1-L5</text>
+  <text x="790" y="425" text-anchor="middle" font-size="9" fill="#687078">Maturity Model</text>
+
+  <!-- Bottom: PRISM badge -->
+  <rect x="20" y="460" width="860" height="45" rx="8" fill="url(#navy)"/>
+  <text x="450" y="480" text-anchor="middle" font-size="10" fill="#aab7b8">All AI surfaces → same Bedrock backend → same git hooks → same eval gates → same PRISM metrics</text>
+  <text x="450" y="496" text-anchor="middle" font-size="11" font-weight="700" fill="#ff9900">PRISM is the unifying measurement layer</text>
+</svg>

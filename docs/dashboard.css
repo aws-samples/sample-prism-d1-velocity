@@ -1,0 +1,238 @@
+/* ============================================
+   Executive Dashboard — Cloudscape Design
+   AWS-native look and feel
+   ============================================ */
+
+/* AWS Console tokens */
+:root {
+  --cs-font: 'Open Sans', 'Amazon Ember', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --cs-mono: Monaco, Menlo, Consolas, 'Courier New', monospace;
+  /* AWS Console palette */
+  --aws-squid: #ec7211;
+  --aws-squid-dark: #eb5f07;
+  --aws-navy: #232f3e;
+  --aws-navy-light: #37475a;
+  --cs-blue-600: #0073bb;
+  --cs-blue-500: #0073bb;
+  --cs-blue-100: #f1faff;
+  --cs-green-600: #1d8102;
+  --cs-green-100: #f2f8f0;
+  --cs-red-600: #d13212;
+  --cs-red-100: #fdf3f1;
+  --cs-orange-600: #ec7211;
+  --cs-orange-100: #fef6ed;
+  --cs-grey-900: #16191f;
+  --cs-grey-700: #414d5c;
+  --cs-grey-600: #545b64;
+  --cs-grey-500: #687078;
+  --cs-grey-400: #aab7b8;
+  --cs-grey-200: #d5dbdb;
+  --cs-grey-150: #eaeded;
+  --cs-grey-100: #f2f3f3;
+  --cs-grey-050: #fafafa;
+  --cs-white: #ffffff;
+  --cs-bg: #f2f3f3;
+  --cs-border: #d5dbdb;
+  --cs-border-divider: #eaeded;
+  --cs-shadow: 0 1px 1px 0 rgba(0, 28, 36, 0.3), 1px 1px 1px 0 rgba(0, 28, 36, 0.15);
+  --cs-shadow-hover: 0 1px 4px 0 rgba(0, 28, 36, 0.5);
+  --cs-radius: 8px;
+  --cs-radius-sm: 4px;
+}
+
+/* Override body font for dashboard */
+.dash-header, .dash-section, .site-footer {
+  font-family: var(--cs-font);
+}
+
+/* ===== Dashboard Header ===== */
+.dash-header {
+  background: var(--aws-navy);
+  padding: 1.25rem 2rem;
+  position: relative;
+  border-bottom: 3px solid var(--aws-squid);
+}
+.dash-header-inner {
+  max-width: 1280px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 2rem;
+}
+.dash-org-badge {
+  display: inline-block;
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--aws-squid);
+  background: rgba(236, 114, 17, 0.12); border: 1px solid rgba(236, 114, 17, 0.4);
+  border-radius: 4px; padding: 1px 8px; margin-bottom: 6px;
+}
+.dash-header h1 {
+  font-size: 24px; font-weight: 700; color: var(--cs-white);
+  line-height: 30px; margin-bottom: 2px;
+}
+.dash-period { font-size: 12px; color: var(--cs-grey-400); line-height: 16px; }
+.dash-header-right { display: flex; gap: 16px; align-items: center; }
+.dash-prism-level {
+  text-align: center; padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15);
+  border-top: 2px solid var(--aws-squid);
+  border-radius: var(--cs-radius-sm);
+}
+.dash-level-label {
+  display: block; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--cs-grey-400);
+}
+.dash-level-value { display: block; font-size: 24px; font-weight: 700; color: var(--aws-squid); line-height: 30px; }
+.dash-level-name { display: block; font-size: 12px; font-weight: 400; color: var(--cs-grey-400); }
+.dash-team-count { display: flex; align-items: center; gap: 6px; }
+.dash-tc-num { font-size: 24px; font-weight: 700; color: var(--cs-white); line-height: 1; }
+.dash-tc-label { font-size: 11px; color: var(--cs-grey-500); line-height: 14px; }
+
+/* ===== Dashboard Sections ===== */
+.dash-section { padding: 24px 32px 32px; background: var(--cs-bg); }
+.dash-section.alt { background: var(--cs-white); }
+.dash-section-inner { max-width: 1280px; margin: 0 auto; }
+
+/* Section header — Cloudscape container header style */
+.dash-section-head {
+  display: flex; align-items: flex-start; gap: 12px; margin-bottom: 20px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--cs-border-divider);
+}
+.dsh-icon {
+  width: 32px; height: 32px; border-radius: var(--cs-radius-sm);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.dsh-icon.blue   { background: var(--cs-blue-100); }
+.dsh-icon.green  { background: var(--cs-green-100); }
+.dsh-icon.orange { background: var(--cs-orange-100); }
+.dsh-icon.purple { background: var(--cs-orange-100); }
+
+.dash-section-head h2 {
+  font-size: 20px; font-weight: 700; color: var(--cs-grey-900);
+  line-height: 24px; margin-bottom: 2px;
+}
+.dash-section-head p { font-size: 14px; color: var(--cs-grey-600); line-height: 20px; }
+
+/* ===== KPI Cards — Cloudscape value-with-trend ===== */
+.dash-kpis { display: grid; gap: 12px; margin-bottom: 20px; }
+.dash-kpis.four { grid-template-columns: repeat(4, 1fr); }
+
+.dash-kpi {
+  background: var(--cs-white);
+  border: 1px solid var(--cs-border);
+  border-radius: var(--cs-radius);
+  padding: 16px 20px;
+  box-shadow: var(--cs-shadow);
+}
+.kpi-value {
+  font-size: 36px; font-weight: 300; color: var(--cs-grey-900); line-height: 42px;
+}
+.kpi-value.green  { color: var(--cs-green-600); }
+.kpi-value.blue   { color: var(--cs-blue-600); }
+.kpi-value.purple { color: var(--aws-squid); }
+.kpi-value.teal   { color: #0f7b82; }
+.kpi-frac { font-size: 18px; font-weight: 400; color: var(--cs-grey-500); }
+.kpi-unit { font-size: 14px; font-weight: 400; color: var(--cs-grey-500); }
+.kpi-label {
+  font-size: 12px; font-weight: 700; color: var(--cs-grey-600);
+  margin: 4px 0; text-transform: uppercase; letter-spacing: 0.04em; line-height: 16px;
+}
+.kpi-trend {
+  font-size: 12px; font-weight: 400; border-radius: 4px;
+  padding: 2px 8px; display: inline-block; line-height: 16px;
+}
+.kpi-trend.up { background: var(--cs-green-100); color: var(--cs-green-600); }
+.kpi-trend.warn { background: var(--cs-orange-100); color: var(--cs-orange-600); }
+
+/* ===== Panels — Cloudscape Container ===== */
+.dash-panels { display: grid; gap: 12px; }
+.dash-panels.two { grid-template-columns: repeat(2, 1fr); }
+
+.dash-panel {
+  background: var(--cs-white);
+  border: 1px solid var(--cs-border);
+  border-radius: var(--cs-radius);
+  padding: 20px;
+  box-shadow: var(--cs-shadow);
+}
+
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 16px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--cs-border-divider);
+}
+.panel-head h3 {
+  font-size: 16px; font-weight: 700; color: var(--cs-grey-900); line-height: 20px;
+}
+.panel-period {
+  font-size: 12px; font-weight: 400; color: var(--cs-grey-500);
+  background: var(--cs-grey-100); border-radius: 4px; padding: 2px 8px; line-height: 16px;
+}
+
+.panel-chart {
+  width: 100%; height: auto; display: block;
+  font-family: var(--cs-font);
+}
+
+/* ===== ROI Grid ===== */
+.roi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.roi-card {
+  background: var(--cs-grey-050); border: 1px solid var(--cs-border-divider);
+  border-radius: var(--cs-radius-sm); padding: 16px; text-align: center;
+}
+.roi-card.highlight {
+  border-color: var(--cs-green-600);
+  background: var(--cs-green-100);
+}
+.roi-value {
+  font-size: 28px; font-weight: 300; line-height: 36px; margin-bottom: 4px;
+}
+.roi-value.green  { color: var(--cs-green-600); }
+.roi-value.blue   { color: var(--cs-blue-600); }
+.roi-value.purple { color: var(--aws-squid); }
+.roi-label { font-size: 12px; font-weight: 700; color: var(--cs-grey-700); margin-bottom: 2px; line-height: 16px; }
+.roi-sub { font-size: 12px; color: var(--cs-grey-500); line-height: 16px; }
+
+/* ===== Agent Stats ===== */
+.agent-stats {
+  display: flex; gap: 32px; justify-content: center; padding: 12px 0;
+}
+.agent-stat { text-align: center; }
+.agent-stat-value {
+  font-size: 28px; font-weight: 300; color: var(--cs-grey-900); line-height: 36px;
+}
+.agent-stat-value.green { color: var(--cs-green-600); }
+.agent-stat-value.red { color: var(--cs-red-600); }
+.agent-stat-value.blue { color: var(--cs-blue-600); }
+.agent-stat-value.purple { color: var(--aws-squid); }
+.agent-stat-label {
+  font-size: 12px; font-weight: 700; color: var(--cs-grey-600);
+  margin-top: 2px; text-transform: uppercase; letter-spacing: 0.03em; line-height: 16px;
+}
+
+/* ===== Disclaimer ===== */
+.dash-disclaimer {
+  font-size: 12px; color: var(--cs-grey-500);
+  font-style: italic; margin-bottom: 20px;
+  max-width: 600px; margin-left: auto; margin-right: auto;
+  line-height: 16px;
+}
+.j-back-link {
+  display: inline-block; font-size: 14px; font-weight: 700;
+  color: var(--cs-blue-600); margin-bottom: 20px; line-height: 20px; text-decoration: none;
+}
+.j-back-link:hover { text-decoration: underline; }
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .dash-header-inner { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .dash-header-right { flex-wrap: wrap; }
+  .dash-kpis.four { grid-template-columns: repeat(2, 1fr); }
+  .dash-panels.two { grid-template-columns: 1fr; }
+  .agent-stats { flex-wrap: wrap; gap: 16px; }
+  .roi-grid { grid-template-columns: 1fr; }
+  .dash-section { padding: 20px 16px 24px; }
+  .dash-header { padding: 16px; }
+}
+
+@media (max-width: 480px) {
+  .dash-kpis.four { grid-template-columns: 1fr; }
+  .agent-stats { flex-direction: column; }
+}

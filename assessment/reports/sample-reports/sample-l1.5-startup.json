@@ -1,0 +1,191 @@
+{
+  "metadata": {
+    "description": "Sample assessment for NovaPay, an L1.5 Series A fintech startup. Early-stage AI adoption with ad-hoc tool usage, no standards, no metrics. Verdict: NEEDS_FOUNDATIONS, Track A.",
+    "generatedBy": "PRISM D1 Velocity Assessment Engine",
+    "samplePurpose": "Demonstrates Track A routing for teams in the Emerging band"
+  },
+  "customer": {
+    "name": "NovaPay",
+    "teamSize": 6,
+    "fundingStage": "Series A"
+  },
+  "assessment": {
+    "assessmentDate": "2026-04-10",
+    "saName": "Jordan Mitchell",
+    "repoAnalyzed": "github.com/novapay/nova-core",
+    "scannerScores": [
+      { "id": "ai_tool_config", "name": "AI Tool Config", "score": 3, "maxScore": 10 },
+      { "id": "spec_driven_dev", "name": "Spec-Driven Dev", "score": 1, "maxScore": 10 },
+      { "id": "commit_hygiene", "name": "Commit Hygiene", "score": 4, "maxScore": 15 },
+      { "id": "cicd_integration", "name": "CI/CD Integration", "score": 5, "maxScore": 15 },
+      { "id": "eval_quality", "name": "Eval & Quality", "score": 0, "maxScore": 10 },
+      { "id": "testing_maturity", "name": "Testing Maturity", "score": 3, "maxScore": 10 },
+      { "id": "ai_observability", "name": "AI Observability", "score": 0, "maxScore": 10 },
+      { "id": "governance", "name": "Governance", "score": 0, "maxScore": 5 },
+      { "id": "agent_workflows", "name": "Agent Workflows", "score": 0, "maxScore": 5 },
+      { "id": "platform_reuse", "name": "Platform Reuse", "score": 1, "maxScore": 5 },
+      { "id": "documentation", "name": "Documentation", "score": 1, "maxScore": 3 },
+      { "id": "dependencies", "name": "Dependencies", "score": 1, "maxScore": 2 }
+    ],
+    "scannerTotal": 19,
+    "interviewScores": [
+      {
+        "id": "ai_tooling_landscape",
+        "name": "AI Tooling Landscape",
+        "score": 6,
+        "maxScore": 15,
+        "keyFindings": [
+          "Three developers use Claude Code but with personal configurations",
+          "No CLAUDE.md or shared AI tool configuration",
+          "Two developers still using ChatGPT copy-paste workflow",
+          "No Kiro IDE adoption"
+        ]
+      },
+      {
+        "id": "dev_workflow_specs",
+        "name": "Development Workflow & Specs",
+        "score": 3,
+        "maxScore": 20,
+        "keyFindings": [
+          "No spec-driven development practice in place",
+          "AI prompts are ad-hoc, not documented or reused",
+          "Feature requirements exist in Jira but are not formatted as AI specs",
+          "Team lead expressed strong interest in structured AI workflows"
+        ]
+      },
+      {
+        "id": "cicd_quality",
+        "name": "CI/CD & Quality",
+        "score": 8,
+        "maxScore": 20,
+        "keyFindings": [
+          "GitHub Actions pipeline exists with basic lint and test steps",
+          "No eval gates or AI-specific quality checks",
+          "Test coverage at 42%, below industry average",
+          "No differentiation between AI-generated and human-written code in CI"
+        ]
+      },
+      {
+        "id": "metrics_visibility",
+        "name": "Metrics & Visibility",
+        "score": 1,
+        "maxScore": 15,
+        "keyFindings": [
+          "No AI-specific metrics tracked at all",
+          "No dashboard or executive visibility into AI usage",
+          "Cannot distinguish AI-assisted commits from manual ones",
+          "Team lead estimates 30-40% of code is AI-assisted but has no data"
+        ]
+      },
+      {
+        "id": "governance_security",
+        "name": "Governance & Security",
+        "score": 2,
+        "maxScore": 15,
+        "keyFindings": [
+          "No formal AI usage policy",
+          "No data handling guidelines for AI tools",
+          "PII occasionally passed to AI tools without awareness",
+          "No approval process for new AI tool adoption"
+        ]
+      },
+      {
+        "id": "org_culture",
+        "name": "Org & Culture",
+        "score": 8,
+        "maxScore": 15,
+        "keyFindings": [
+          "CTO is enthusiastic about AI-assisted development",
+          "Most developers are eager to adopt structured AI workflows",
+          "One developer is resistant but open to evidence-based persuasion",
+          "Small team size makes adoption changes easier"
+        ]
+      }
+    ],
+    "interviewTotal": 28,
+    "orgReadiness": {
+      "executiveSponsor": true,
+      "dedicatedChampion": false,
+      "teamWillingness": true,
+      "budgetApproved": false,
+      "timelineCommitment": true,
+      "totalScore": 12
+    },
+    "blendedScore": 30.8,
+    "prismLevel": 1.5,
+    "verdict": "NEEDS_FOUNDATIONS"
+  },
+  "onboardingPlan": {
+    "track": "A",
+    "trackName": "Foundations",
+    "customer": {
+      "name": "NovaPay",
+      "teamSize": 6,
+      "fundingStage": "Series A"
+    },
+    "prismLevel": 1.5,
+    "verdict": "NEEDS_FOUNDATIONS",
+    "workshopModules": [
+      { "id": "M00", "name": "Environment Setup", "included": true, "reason": "Foundation for everything else" },
+      { "id": "M01", "name": "CLAUDE.md & Standards", "included": true, "reason": "Standardize AI tool configuration" },
+      { "id": "M02", "name": "Spec-Driven Development", "included": true, "reason": "Introduce structured AI workflows" },
+      { "id": "M03", "name": "CI/CD & Eval Gates", "included": false, "reason": "Too early -- no baseline to gate against" },
+      { "id": "M04", "name": "Metrics & Dashboards", "included": false, "reason": "Too early -- need data flowing first" },
+      { "id": "M05", "name": "Governance & Scaling", "included": false, "reason": "Too early -- need adoption first" }
+    ],
+    "preWork": [
+      { "task": "Install Claude Code and configure for AWS Bedrock", "deadline": "Before workshop", "owner": "Each developer" },
+      { "task": "Install Kiro IDE", "deadline": "Before workshop", "owner": "Each developer" },
+      { "task": "Run verify-setup.sh and confirm green output", "deadline": "Before workshop", "owner": "Team lead" },
+      { "task": "Read 'Why Spec-Driven Development' (Module 02 primer)", "deadline": "1 week before workshop", "owner": "Each developer" },
+      { "task": "Identify 2 features the team will build during the workshop", "deadline": "3 days before workshop", "owner": "Team lead" }
+    ],
+    "bootstrapperComponents": [
+      { "component": "CLAUDE.md configuration file", "priority": "immediate" },
+      { "component": "Git hooks for AI-origin trailers", "priority": "immediate" },
+      { "component": "Spec templates (feature, bug, refactor)", "priority": "week1" },
+      { "component": ".kiro/settings for Kiro IDE", "priority": "week1" }
+    ],
+    "gapRemediation": [
+      {
+        "gap": "#1",
+        "category": "Eval & Quality (scanner)",
+        "score": "0/10 (0%)",
+        "action": "Define quality rubrics for AI-generated code. Implement automated scoring. Establish minimum acceptance thresholds."
+      },
+      {
+        "gap": "#2",
+        "category": "AI Observability (scanner)",
+        "score": "0/10 (0%)",
+        "action": "Deploy the EventBridge-Timestream metrics pipeline. Enable token tracking, cost attribution, and latency monitoring."
+      },
+      {
+        "gap": "#3",
+        "category": "Governance (scanner)",
+        "score": "0/5 (0%)",
+        "action": "Create an AI usage governance charter. Define approval workflows for agent autonomy levels. Document data handling policies."
+      }
+    ],
+    "successMetrics": [
+      { "metric": "AI-origin commit trailers", "target": "30%+ of commits", "measureBy": "2 weeks post-workshop" },
+      { "metric": "CLAUDE.md deployment", "target": "100% of active repos", "measureBy": "1 week post-workshop" },
+      { "metric": "Spec adoption", "target": "2+ specs per developer", "measureBy": "2 weeks post-workshop" },
+      { "metric": "Team tool satisfaction", "target": "7+ NPS score", "measureBy": "2 weeks post-workshop" }
+    ],
+    "milestones": [
+      { "week": 1, "milestone": "CLAUDE.md deployed, hooks active", "measurable": "100% of repos have CLAUDE.md" },
+      { "week": 2, "milestone": "First spec-driven features completed", "measurable": "2+ features built via spec workflow" },
+      { "week": 3, "milestone": "Commit trailer adoption steady", "measurable": "30%+ of commits have AI-origin trailers" },
+      { "week": 4, "milestone": "Re-assessment complete", "measurable": "Scanner re-run, L2.0+ achieved for Track B upgrade" },
+      { "week": 8, "milestone": "Track B started or extended coaching", "measurable": "Full workshop scheduled or coaching plan in place" },
+      { "week": 12, "milestone": "L2.5+ achieved", "measurable": "Blended assessment score confirms L2.5+" }
+    ],
+    "saTouchpoints": [
+      { "week": -2, "type": "Pre-work kick-off call", "duration": "30 min", "agenda": "Walk through pre-work checklist, answer setup questions, confirm workshop date" },
+      { "week": 0, "type": "Workshop delivery", "duration": "4 hr", "agenda": "Deliver Modules 00-02, hands-on exercises, first spec-driven build" },
+      { "week": 1, "type": "Async check-in", "duration": "15 min (Slack)", "agenda": "Review commit trailer adoption rates, troubleshoot blockers" },
+      { "week": 2, "type": "Video call", "duration": "30 min", "agenda": "Review first 2-week metrics, adjust approach if needed" },
+      { "week": 4, "type": "Re-assessment session", "duration": "1 hr", "agenda": "Re-run scanner, conduct brief interview, determine Track B readiness" }
+    ]
+  }
+}

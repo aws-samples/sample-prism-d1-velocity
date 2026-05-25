@@ -1,0 +1,98 @@
+{
+  "rubric_name": "code-quality",
+  "version": "1.0.0",
+  "description": "Evaluates the overall quality of generated or modified code.",
+  "criteria": [
+    {
+      "name": "correctness",
+      "weight": 0.25,
+      "description": "Code produces correct results for all specified inputs and edge cases.",
+      "scoring": {
+        "5": "Correct for all inputs including edge cases. Handles all specified error conditions.",
+        "4": "Correct for all normal inputs. Minor edge case gaps.",
+        "3": "Correct for happy path. Some error conditions unhandled.",
+        "2": "Partially correct. Fails for some normal inputs.",
+        "1": "Fundamentally incorrect. Does not produce expected results."
+      }
+    },
+    {
+      "name": "readability",
+      "weight": 0.15,
+      "description": "Code is easy to read, understand, and maintain.",
+      "scoring": {
+        "5": "Clear naming, consistent style, appropriate comments, well-structured. A new developer could understand it quickly.",
+        "4": "Generally readable with minor style inconsistencies.",
+        "3": "Readable but requires some effort. Missing context in complex sections.",
+        "2": "Hard to follow. Inconsistent naming or structure.",
+        "1": "Very difficult to read. No clear structure or naming convention."
+      }
+    },
+    {
+      "name": "maintainability",
+      "weight": 0.15,
+      "description": "Code is modular, follows SOLID principles, and is easy to extend.",
+      "scoring": {
+        "5": "Well-decomposed into small functions/classes. Clear separation of concerns. Easy to extend.",
+        "4": "Good structure with minor coupling issues.",
+        "3": "Reasonable structure but some tight coupling or large functions.",
+        "2": "Monolithic or tightly coupled. Changes would require touching many files.",
+        "1": "No modularity. Everything in one function or deeply entangled."
+      }
+    },
+    {
+      "name": "error_handling",
+      "weight": 0.15,
+      "description": "Errors are handled gracefully without swallowing, leaking, or crashing.",
+      "scoring": {
+        "5": "All error paths handled with appropriate actions. No swallowed errors. Clear error propagation.",
+        "4": "Most errors handled. Minor gaps in edge case error handling.",
+        "3": "Common errors handled. Some paths may swallow or ignore errors.",
+        "2": "Inconsistent error handling. Some unhandled exceptions.",
+        "1": "Minimal or no error handling."
+      }
+    },
+    {
+      "name": "testing",
+      "weight": 0.15,
+      "description": "Code is accompanied by meaningful tests.",
+      "scoring": {
+        "5": "Comprehensive tests covering happy path, errors, and edge cases. Tests are readable and maintainable.",
+        "4": "Good test coverage with minor gaps in edge cases.",
+        "3": "Basic tests covering happy path and some error cases.",
+        "2": "Minimal tests. Only happy path or superficial assertions.",
+        "1": "No tests."
+      }
+    },
+    {
+      "name": "performance",
+      "weight": 0.10,
+      "description": "Code does not introduce unnecessary performance issues.",
+      "scoring": {
+        "5": "Efficient algorithms and data structures. No N+1 queries, unnecessary allocations, or blocking calls.",
+        "4": "Generally efficient with minor optimization opportunities.",
+        "3": "Acceptable performance but some inefficiencies (e.g., redundant computations).",
+        "2": "Noticeable performance issues that would affect production.",
+        "1": "Severe performance problems (infinite loops, O(n^3) where O(n) suffices, etc.)."
+      }
+    },
+    {
+      "name": "documentation",
+      "weight": 0.05,
+      "description": "Public interfaces are documented; complex logic has explanatory comments.",
+      "scoring": {
+        "5": "All public functions/methods documented. Complex logic explained. No obvious missing docs.",
+        "4": "Most public interfaces documented. Minor gaps.",
+        "3": "Some documentation present but incomplete.",
+        "2": "Minimal documentation.",
+        "1": "No documentation."
+      }
+    }
+  ],
+  "pass_threshold": 0.82,
+  "output_format": {
+    "overall_score": "float 0-1 (weighted average of criteria scores normalized to 0-1)",
+    "criteria_scores": "object mapping criteria name to { score: 1-5, reasoning: string }",
+    "pass": "boolean",
+    "summary": "string"
+  }
+}

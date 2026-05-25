@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Community Roadmap — PRISM D1 Velocity</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .doc-page { padding: 32px; background: var(--white); min-height: calc(100vh - 51px); }
+    .doc-inner { max-width: 1080px; margin: 0 auto; }
+    .doc-inner h1 { font-size: 28px; font-weight: 700; color: var(--text); margin-bottom: 4px; line-height: 36px; }
+    .doc-inner .doc-subtitle { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
+    .doc-inner h2 {
+      font-size: 20px; font-weight: 700; color: var(--text); margin: 36px 0 8px;
+      padding-bottom: 8px; border-bottom: 1px solid var(--border-muted);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .doc-inner h3 { font-size: 16px; font-weight: 700; color: var(--text); margin: 20px 0 8px; }
+    .doc-inner p { font-size: 14px; color: var(--text); line-height: 22px; margin-bottom: 12px; }
+    .doc-inner ul, .doc-inner ol { font-size: 14px; color: var(--text); line-height: 22px; margin: 0 0 12px 20px; }
+    .doc-inner li { margin-bottom: 6px; }
+
+    /* Summary box */
+    .summary-box {
+      background: var(--blue-light); border: 1px solid #c8d8f0; border-left: 4px solid var(--accent);
+      border-radius: var(--radius); padding: 16px 20px; margin-bottom: 24px;
+    }
+    .summary-box p { margin-bottom: 0; }
+
+    /* Phase header */
+    .phase-header {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--aws-navy); color: var(--white);
+      padding: 12px 16px; border-radius: var(--radius) var(--radius) 0 0;
+      margin-top: 24px;
+    }
+    .phase-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: 50%;
+      font-size: 14px; font-weight: 700; flex-shrink: 0;
+    }
+    .phase-num.p1 { background: var(--red); }
+    .phase-num.p2 { background: var(--orange); }
+    .phase-num.p3 { background: var(--teal); }
+    .phase-num.p4 { background: var(--blue); }
+    .phase-num.p5 { background: var(--green); }
+    .phase-num.p6 { background: #8250df; }
+    .phase-num.p7 { background: var(--accent); }
+    .phase-num.p8 { background: var(--aws-squid); }
+    .phase-title { font-size: 16px; font-weight: 700; }
+    .phase-goal { font-size: 12px; color: #aab7b8; }
+
+    /* Roadmap table */
+    .roadmap-table-wrap {
+      overflow-x: auto; margin-bottom: 20px;
+      border: 1px solid var(--border); border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+    }
+    .roadmap-table {
+      width: 100%; border-collapse: collapse; font-size: 13px;
+    }
+    .roadmap-table th {
+      background: var(--bg); font-weight: 700; color: var(--text);
+      padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border);
+      position: sticky; top: 0;
+    }
+    .roadmap-table td {
+      padding: 10px 12px; border-bottom: 1px solid var(--border-muted);
+      vertical-align: top;
+    }
+    .roadmap-table tr:last-child td { border-bottom: none; }
+    .roadmap-table tr:hover td { background: #f6f8fa; }
+
+    /* Badges */
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 700;
+      padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+    }
+    .badge-p0 { background: #ffebe9; color: var(--red); }
+    .badge-p1 { background: #fff1e5; color: var(--orange); }
+    .badge-p2 { background: var(--bg); color: var(--text-muted); }
+    .badge-s { background: #dafbe1; color: var(--green); }
+    .badge-m { background: #ddf4ff; color: var(--blue); }
+    .badge-l { background: #fff1e5; color: var(--orange); }
+    .badge-xl { background: #ffebe9; color: var(--red); }
+    .badge-label { background: var(--bg); color: var(--text-secondary); font-size: 10px; padding: 1px 6px; margin-right: 2px; }
+    .badge-novel { background: #eddeff; color: #8250df; }
+
+    /* Priority summary */
+    .priority-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0 24px;
+    }
+    .priority-card {
+      background: var(--white); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px; text-align: center;
+      box-shadow: var(--shadow-sm);
+    }
+    .priority-card .count { font-size: 32px; font-weight: 700; line-height: 40px; }
+    .priority-card .label { font-size: 12px; color: var(--text-secondary); }
+    .priority-card.p0 { border-top: 3px solid var(--red); }
+    .priority-card.p0 .count { color: var(--red); }
+    .priority-card.p1 { border-top: 3px solid var(--orange); }
+    .priority-card.p1 .count { color: var(--orange); }
+    .priority-card.p2 { border-top: 3px solid var(--text-muted); }
+    .priority-card.p2 .count { color: var(--text-muted); }
+    .priority-card.novel { border-top: 3px solid #8250df; }
+    .priority-card.novel .count { color: #8250df; }
+
+    /* Contributing callout */
+    .contribute-box {
+      background: #f5f0ff; border: 1px solid #d8c8f0; border-left: 4px solid #8250df;
+      border-radius: var(--radius); padding: 16px 20px; margin: 16px 0 20px;
+    }
+
+    /* Good first issues */
+    .gfi-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0 20px;
+    }
+    .gfi-card {
+      background: var(--white); border: 1px solid var(--border); border-left: 3px solid var(--green);
+      border-radius: var(--radius); padding: 12px;
+    }
+    .gfi-card .gfi-id { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 2px; }
+    .gfi-card .gfi-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .gfi-card .gfi-why { font-size: 11px; color: var(--text-secondary); line-height: 15px; }
+
+    @media (max-width: 768px) {
+      .doc-page { padding: 16px; }
+      .priority-grid { grid-template-columns: repeat(2, 1fr); }
+      .gfi-grid { grid-template-columns: 1fr; }
+      .doc-inner h1 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <a class="nav-brand" href="index.html">
+        <svg class="prism-icon" width="20" height="20" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGrad)" stroke="#0550ae" stroke-width="1.5" stroke-linejoin="round"/>
+          <line x1="22" y1="18" x2="30" y2="10" stroke="#d1242f" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="23" y1="20" x2="30" y2="14" stroke="#bf5700" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24" y1="22" x2="30" y2="18" stroke="#1a7f37" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="24.5" y1="24" x2="30" y2="22" stroke="#0969da" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="25" y1="26" x2="30" y2="26" stroke="#8250df" stroke-width="1.2" stroke-linecap="round"/>
+          <defs><linearGradient id="prismGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        PRISM <span>D1 Velocity</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="index.html">Overview</a></li>
+        <li><a href="agents.html">Agents</a></li>
+        <li><a href="dashboard.html" class="nav-demo">Demo</a></li>
+        <li><a href="competitive-landscape.html">Landscape</a></li>
+        <li><a href="roadmap.html" style="color:#fff;border-bottom:2px solid var(--aws-squid)">Roadmap</a></li>
+        <li><a href="data-architecture.html">Data</a></li>
+        <li><a href="https://github.com/sunilpp/prism-d1-velocity" target="_blank" rel="noopener noreferrer" class="nav-github" title="View on GitHub">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        </a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="doc-page">
+    <div class="doc-inner">
+
+      <h1>Community Roadmap</h1>
+      <p class="doc-subtitle">35 backlog items across 8 phases &mdash; open for contributions &mdash; <a href="competitive-landscape.html">see the gap analysis</a> driving these priorities</p>
+
+      <div class="summary-box">
+        <p><strong>Recommended execution order:</strong> Phase 1 (Dashboard Gaps) &rarr; 2 (Cost &amp; ROI) &rarr; 3 (Developer Sentiment) &rarr; 7 (Key Integrations) &rarr; 4 (Benchmarking) &rarr; 5 (Scale) &rarr; 6 (Analytics) &rarr; 8 (Novel)</p>
+      </div>
+
+      <!-- Priority summary cards -->
+      <div class="priority-grid">
+        <div class="priority-card p0">
+          <div class="count">12</div>
+          <div class="label">P0 &mdash; Critical Gaps</div>
+        </div>
+        <div class="priority-card p1">
+          <div class="count">25</div>
+          <div class="label">P1 &mdash; High Value</div>
+        </div>
+        <div class="priority-card p2">
+          <div class="count">10</div>
+          <div class="label">P2 &mdash; Nice to Have</div>
+        </div>
+        <div class="priority-card novel">
+          <div class="count">7</div>
+          <div class="label">Novel &mdash; No 3P equivalent</div>
+        </div>
+      </div>
+
+      <!-- ===== PHASE 1 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p1">1</div>
+        <div>
+          <div class="phase-title">Close Critical Dashboard Gaps</div>
+          <div class="phase-goal">Make both dashboard tiers complete so executives and developers see the full picture.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-101</td><td><strong>Bubble quality metrics to Executive dashboard</strong> &mdash; Add Defect Rate (AI vs Human), AI Test Coverage Delta, Spec-to-Code Hours widgets</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">dashboard</span></td><td>Internal gap</td></tr>
+            <tr><td>R-102</td><td><strong>Add PRISM Level widget to Team Velocity</strong> &mdash; Show current maturity level + dimension breakdown</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">dashboard</span></td><td>Internal gap</td></tr>
+            <tr><td>R-103</td><td><strong>Cross-team comparison for developers</strong> &mdash; Let devs see how their team compares on key metrics</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">dashboard</span></td><td>Swarmia, Jellyfish</td></tr>
+            <tr><td>R-104</td><td><strong>Incident/alert panel on both dashboards</strong> &mdash; Surface active alarms, recent incidents, MTTR trends</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">dashboard</span> <span class="badge badge-label">pipeline</span></td><td>All 3P tools</td></tr>
+            <tr><td>R-105</td><td><strong>Expand alerting</strong> &mdash; Alarms for deploy frequency drops, lead time spikes, defect anomalies</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">infra</span> <span class="badge badge-label">dashboard</span></td><td>All 3P tools</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 2 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p2">2</div>
+        <div>
+          <div class="phase-title">Cost Intelligence & ROI</div>
+          <div class="phase-goal">Enable true ROI calculation by ingesting AI tool costs alongside productivity metrics.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-201</td><td><strong>AI tool cost ingestion pipeline</strong> &mdash; New EventBridge event type for per-tool, per-seat cost data</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">new-metric</span></td><td>Jellyfish, DX, Faros</td></tr>
+            <tr><td>R-202</td><td><strong>True ROI dashboard widget</strong> &mdash; Calculate (productivity_gain x avg_eng_salary) / tool_cost</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">dashboard</span></td><td>Jellyfish, DX</td></tr>
+            <tr><td>R-203</td><td><strong>License utilization tracking</strong> &mdash; Active vs provisioned seats per AI tool, flag underutilization</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">dashboard</span></td><td>Swarmia, Faros</td></tr>
+            <tr><td>R-204</td><td><strong>Cost-per-deploy and cost-per-feature metrics</strong> &mdash; Derived metrics combining deployment events with cost data</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">dashboard</span> <span class="badge badge-label">new-metric</span></td><td>Jellyfish</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 2B: Token & Cost Intelligence ===== -->
+      <div class="phase-header" id="phase-token-cost">
+        <div class="phase-num p2" style="background:var(--red)">2B</div>
+        <div>
+          <div class="phase-title">Token Usage &amp; Cost Intelligence (Bedrock)</div>
+          <div class="phase-goal">Capture Bedrock token consumption from Claude Code, Kiro, and Q Developer. Correlate to developers, commits, PRs, and features. Overlay cost.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Details</th></tr></thead>
+          <tbody>
+            <tr><td>R-210</td><td><strong>CloudTrail &rarr; EventBridge token pipeline</strong> &mdash; EventBridge rule matching <code>bedrock.amazonaws.com</code> InvokeModel/Converse calls in CloudTrail. Lambda extracts model_id, input_tokens, output_tokens, timestamp, IAM principal.</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">infra</span></td><td>Foundation for all token/cost metrics. Requires CloudTrail data events enabled for Bedrock.</td></tr>
+            <tr><td>R-211</td><td><strong>Model pricing table</strong> &mdash; DynamoDB table mapping model_id to per-1K-token cost (input/output). Updatable via API or manual config. Covers Claude Opus/Sonnet/Haiku, Amazon Titan, and future models.</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">infra</span> <span class="badge badge-label">new-metric</span></td><td>Prerequisite for cost calculation. Include on-demand and provisioned throughput pricing.</td></tr>
+            <tr><td>R-212</td><td><strong>IAM principal &rarr; Developer identity mapping</strong> &mdash; Resolve IAM role/user ARNs from CloudTrail to developer identities. Support mapping table (IAM ARN &rarr; developer email &rarr; team_id) and SSO/Identity Center federation.</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">infra</span></td><td>Critical for per-developer attribution. Without this, tokens are only trackable at the IAM role level.</td></tr>
+            <tr><td>R-213</td><td><strong>Token-to-commit correlation</strong> &mdash; Match Bedrock API calls to git commits using timestamp proximity (configurable window, default 5 min). When a commit with <code>AI-Tool: claude-code</code> lands, look back at Bedrock calls from the same developer in the preceding window.</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">new-metric</span></td><td>Enables cost-per-commit. Challenge: multi-turn sessions may span multiple commits. Use session grouping heuristic (gap &gt; 15 min = new session).</td></tr>
+            <tr><td>R-214</td><td><strong>Token-to-PR aggregation</strong> &mdash; Sum all correlated token usage across commits in a PR. Link to PR metadata (author, feature branch, labels). Calculate cost-per-PR.</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">new-metric</span></td><td>Depends on R-213. Enables feature-level cost visibility when PRs are tagged with feature labels.</td></tr>
+            <tr><td>R-215</td><td><strong>Token-to-feature/epic mapping</strong> &mdash; Aggregate PR-level costs up to feature/epic level using Jira/Linear issue keys extracted from PR titles, branch names, or commit messages. Optional: label-based grouping.</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">integration</span></td><td>Depends on R-214. Answers &ldquo;how much AI spend went into Feature X?&rdquo; Requires issue key extraction regex.</td></tr>
+            <tr><td>R-216</td><td><strong>Developer session analytics</strong> &mdash; Group Bedrock API calls into developer sessions (gap-based: &gt;15 min idle = new session). Track: session duration, turns, total tokens (in/out), models used, cost. Publish as <code>prism.d1.session</code> event.</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">new-metric</span></td><td>New event type. Enables &ldquo;avg session cost&rdquo;, &ldquo;tokens per session&rdquo;, &ldquo;sessions per developer per day&rdquo; metrics.</td></tr>
+            <tr><td>R-217</td><td><strong>CloudWatch token &amp; cost metrics</strong> &mdash; New metrics in PRISM/D1/Velocity namespace: <code>BedrockTokensInput</code>, <code>BedrockTokensOutput</code>, <code>BedrockCostUSD</code>, <code>CostPerCommit</code>, <code>CostPerPR</code>, <code>CostPerSession</code>, <code>TokenEfficiency</code> (output tokens / lines of code). Dimensions: TeamId, Developer, Model, AITool.</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">new-metric</span></td><td>Depends on R-210. Core metric publication for all downstream dashboards and alarms.</td></tr>
+            <tr><td>R-218</td><td><strong>Token &amp; cost dashboards</strong> &mdash; Add to both Team Velocity and Executive Readout: daily/weekly token consumption trends, cost by tool/model/developer, cost-per-commit trend, cost-per-PR distribution, token efficiency (tokens per line of code), budget burn rate with threshold lines.</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">dashboard</span></td><td>Depends on R-217. Exec dashboard: cost trends + budget. Dev dashboard: per-developer breakdown + efficiency.</td></tr>
+            <tr><td>R-219</td><td><strong>Cost anomaly alarms</strong> &mdash; CloudWatch alarms for: daily spend exceeds 2x 7-day average, single developer exceeds team P90, token efficiency drops below threshold. SNS notification to team channel.</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">infra</span> <span class="badge badge-label">dashboard</span></td><td>Depends on R-217. Prevents runaway costs from unattended agent loops or inefficient prompting.</td></tr>
+            <tr><td>R-220</td><td><strong>Multi-tool cost normalization</strong> &mdash; Unified cost view across Bedrock (pay-per-token), Copilot (flat subscription), Cursor (subscription + usage), and other tools. Normalize to cost-per-developer-day for apples-to-apples comparison.</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">dashboard</span></td><td>Extends R-201. Different pricing models make comparison hard. Cost-per-developer-day is the common unit.</td></tr>
+            <tr><td>R-221</td><td><strong>ROI calculator with token cost input</strong> &mdash; Enhance the Executive ROI Multiplier widget: <code>(time_saved_hours &times; avg_hourly_eng_cost) / (token_cost + license_cost)</code>. Show break-even point and marginal ROI per additional AI-assisted commit.</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">dashboard</span> <span class="badge badge-label">new-metric</span></td><td>Depends on R-218 + R-202. The &ldquo;is AI worth it?&rdquo; answer for CFOs.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 3 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p3">3</div>
+        <div>
+          <div class="phase-title">Developer Experience & Sentiment</div>
+          <div class="phase-goal">Add qualitative measurement to complement systems data &mdash; the biggest gap vs DX and Faros.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-301</td><td><strong>Developer sentiment survey framework</strong> &mdash; Lightweight pulse surveys via CLI or Slack, stored in DynamoDB</td><td><span class="badge badge-p0">P0</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">new-metric</span> <span class="badge badge-label">integration</span></td><td>DX (core)</td></tr>
+            <tr><td>R-302</td><td><strong>Survey results dashboard</strong> &mdash; Sentiment trends, correlation with DORA, satisfaction by AI tool</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">dashboard</span></td><td>DX, Faros</td></tr>
+            <tr><td>R-303</td><td><strong>Developer Experience Index</strong> &mdash; Composite score combining systems metrics + survey responses</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">dashboard</span></td><td>DX</td></tr>
+            <tr><td>R-304</td><td><strong>AI tool satisfaction breakdown</strong> &mdash; Per-tool sentiment (Claude Code vs Copilot vs Kiro)</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">dashboard</span></td><td>DX</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 4 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p4">4</div>
+        <div>
+          <div class="phase-title">Benchmarking & Comparisons</div>
+          <div class="phase-goal">Let teams compare themselves against industry peers &mdash; currently a zero-coverage gap.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-401</td><td><strong>Anonymous benchmark data submission</strong> &mdash; Opt-in pipeline for anonymized metrics to shared dataset (S3 + Athena)</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">infra</span> <span class="badge badge-label">community</span></td><td>LinearB, Jellyfish, DX</td></tr>
+            <tr><td>R-402</td><td><strong>Benchmark comparison widgets</strong> &mdash; Team metrics against community percentiles (P25/P50/P75/P90)</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">dashboard</span></td><td>LinearB, Jellyfish</td></tr>
+            <tr><td>R-403</td><td><strong>PRISM Level distribution</strong> &mdash; Where teams fall on L1-L5 relative to community</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-s">S</span></td><td><span class="badge badge-label">dashboard</span> <span class="badge badge-label">community</span></td><td>DX</td></tr>
+            <tr><td>R-404</td><td><strong>Annual PRISM benchmark report</strong> &mdash; Community-driven equivalent of LinearB's benchmarks</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">docs</span> <span class="badge badge-label">community</span></td><td>LinearB</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 5 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p5">5</div>
+        <div>
+          <div class="phase-title">Scale & Multi-Org Support</div>
+          <div class="phase-goal">Support org-wide rollups, hierarchies, and multi-repo aggregation at scale.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-501</td><td><strong>Org hierarchy model</strong> &mdash; DynamoDB schema for org &gt; division &gt; team &gt; repo with rollup aggregation</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">infra</span></td><td>Jellyfish, Faros</td></tr>
+            <tr><td>R-502</td><td><strong>Executive drill-down dashboards</strong> &mdash; Org-level summary drilling into division, team, repo views</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">dashboard</span></td><td>Jellyfish, Faros</td></tr>
+            <tr><td>R-503</td><td><strong>Multi-repo aggregation</strong> &mdash; Team-level metrics aggregating across all owned repos</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">pipeline</span></td><td>All 3P tools</td></tr>
+            <tr><td>R-504</td><td><strong>QuickSight row-level security</strong> &mdash; Role-based access per org hierarchy level</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">infra</span> <span class="badge badge-label">dashboard</span></td><td>Jellyfish, Faros</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 6 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p6">6</div>
+        <div>
+          <div class="phase-title">Advanced Analytics & Intelligence</div>
+          <div class="phase-goal">Go beyond dashboards into proactive insights &mdash; matching or exceeding Jellyfish/Faros AI copilots.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-601</td><td><strong>Cohort A/B analysis</strong> &mdash; Compare AI-using vs non-AI-using developer cohorts</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">pipeline</span> <span class="badge badge-label">dashboard</span></td><td>DX, Faros</td></tr>
+            <tr><td>R-602</td><td><strong>Anomaly detection</strong> &mdash; ML-based alerts using CloudWatch Anomaly Detection</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">infra</span></td><td>All 3P tools</td></tr>
+            <tr><td>R-603</td><td><strong>Natural-language metrics query</strong> &mdash; Claude-powered conversational interface via Bedrock Agent</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-xl">XL</span></td><td><span class="badge badge-label">infra</span> <span class="badge badge-label">integration</span></td><td>Jellyfish, DX, Faros</td></tr>
+            <tr><td>R-604</td><td><strong>Automated weekly insights digest</strong> &mdash; Bedrock-generated summary delivered via SNS/email</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">infra</span> <span class="badge badge-label">integration</span></td><td>Jellyfish, Faros</td></tr>
+            <tr><td>R-605</td><td><strong>Predictive PRISM leveling</strong> &mdash; ML model predicting when team reaches next level</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">infra</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 7 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p7">7</div>
+        <div>
+          <div class="phase-title">Integrations & Ecosystem</div>
+          <div class="phase-goal">Connect PRISM to the tools teams already use.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Closes Gap vs</th></tr></thead>
+          <tbody>
+            <tr><td>R-701</td><td><strong>Multi-AI tool breakdown dashboard</strong> &mdash; Metrics by tool (Claude Code, Copilot, Kiro, Q Dev, Cursor)</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">dashboard</span></td><td>Jellyfish (10+ tools)</td></tr>
+            <tr><td>R-702</td><td><strong>Slack/Teams notifications</strong> &mdash; Alert summaries and weekly digests to team channels</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">integration</span></td><td>Swarmia, LinearB</td></tr>
+            <tr><td>R-703</td><td><strong>Jira/Linear integration</strong> &mdash; Map issues to deployments for investment allocation</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">integration</span> <span class="badge badge-label">pipeline</span></td><td>Jellyfish, LinearB</td></tr>
+            <tr><td>R-704</td><td><strong>R&D capitalization report</strong> &mdash; Time allocation breakdown for finance teams</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">dashboard</span> <span class="badge badge-label">new-metric</span></td><td>Jellyfish, Swarmia</td></tr>
+            <tr><td>R-705</td><td><strong>GitHub Actions marketplace action</strong> &mdash; One-click PRISM metric emission from any CI/CD</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">integration</span> <span class="badge badge-label">community</span></td><td>Swarmia, LinearB</td></tr>
+            <tr><td>R-706</td><td><strong>GitLab CI integration</strong> &mdash; Equivalent collector for GitLab-based teams</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">integration</span> <span class="badge badge-label">community</span></td><td>Swarmia, Faros</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ===== PHASE 8 ===== -->
+      <div class="phase-header">
+        <div class="phase-num p8">8</div>
+        <div>
+          <div class="phase-title">Beyond Feature Parity (Novel)</div>
+          <div class="phase-goal">Capabilities no 3P tool offers &mdash; PRISM-exclusive innovations.</div>
+        </div>
+      </div>
+      <div class="roadmap-table-wrap">
+        <table class="roadmap-table">
+          <thead><tr><th>ID</th><th>Item</th><th>Priority</th><th>Size</th><th>Labels</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>R-801</td><td><strong>Eval gate marketplace</strong> &mdash; Community-contributed Bedrock Evaluation templates</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">community</span> <span class="badge badge-label">infra</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+            <tr><td>R-802</td><td><strong>Spec quality scoring</strong> &mdash; Rate spec completeness using Bedrock, correlate with code quality</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">pipeline</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+            <tr><td>R-803</td><td><strong>AI pair-programming session analytics</strong> &mdash; Track session duration, tool calls, iteration count</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">pipeline</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+            <tr><td>R-804</td><td><strong>Cross-team knowledge flow</strong> &mdash; Track AI pattern propagation across teams</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-xl">XL</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">pipeline</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+            <tr><td>R-805</td><td><strong>Guardrail effectiveness metrics</strong> &mdash; Bedrock Guardrail trigger rates and false positives</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-m">M</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">pipeline</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+            <tr><td>R-806</td><td><strong>PRISM certification program</strong> &mdash; Automated assessment with badge generation</td><td><span class="badge badge-p2">P2</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">community</span> <span class="badge badge-label">docs</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+            <tr><td>R-807</td><td><strong>AI technical debt tracker</strong> &mdash; Monitor AI code accumulating review comments, fixes, or churn</td><td><span class="badge badge-p1">P1</span></td><td><span class="badge badge-l">L</span></td><td><span class="badge badge-label">new-metric</span> <span class="badge badge-label">pipeline</span></td><td><span class="badge badge-novel">Novel</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Contributing -->
+      <h2>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Contributing
+      </h2>
+
+      <div class="contribute-box">
+        <p><strong>Pick an item, open an issue, submit a PR.</strong> Reference the roadmap ID (e.g., <code>[R-301]</code>) in your issue title. Maintainers will respond within 48 hours.</p>
+      </div>
+
+      <h3>Good First Issues</h3>
+      <div class="gfi-grid">
+        <div class="gfi-card">
+          <div class="gfi-id">R-101</div>
+          <div class="gfi-title">Bubble quality metrics to Exec dashboard</div>
+          <div class="gfi-why">Copy existing widget patterns, just add new metrics to the JSON</div>
+        </div>
+        <div class="gfi-card">
+          <div class="gfi-id">R-102</div>
+          <div class="gfi-title">Add PRISM Level to Team Velocity</div>
+          <div class="gfi-why">Port the widget from executive dashboard JSON</div>
+        </div>
+        <div class="gfi-card">
+          <div class="gfi-id">R-103</div>
+          <div class="gfi-title">Cross-team comparison for devs</div>
+          <div class="gfi-why">Extend existing team comparison pattern</div>
+        </div>
+        <div class="gfi-card">
+          <div class="gfi-id">R-204</div>
+          <div class="gfi-title">Cost-per-deploy metric</div>
+          <div class="gfi-why">Simple derived calculation in dashboard JSON</div>
+        </div>
+        <div class="gfi-card">
+          <div class="gfi-id">R-304</div>
+          <div class="gfi-title">AI tool satisfaction breakdown</div>
+          <div class="gfi-why">Small dashboard widget, depends on R-301</div>
+        </div>
+        <div class="gfi-card">
+          <div class="gfi-id">R-403</div>
+          <div class="gfi-title">PRISM Level distribution</div>
+          <div class="gfi-why">Simple aggregation visualization</div>
+        </div>
+      </div>
+
+      <h3>Guidelines</h3>
+      <ul>
+        <li><strong>Start with a spec</strong> &mdash; For M/L/XL items, write a spec in <code>specs/</code> before coding</li>
+        <li><strong>Tag AI origin</strong> &mdash; Use <code>ai-origin: claude-code</code> or <code>ai-origin: kiro</code> in commit trailers</li>
+        <li><strong>Emit metrics</strong> &mdash; New components must emit structured events per the metrics schema</li>
+        <li><strong>AWS-native only</strong> &mdash; No third-party observability dependencies</li>
+        <li><strong>Test with sample data</strong> &mdash; Use <code>scripts/</code> generators to validate changes</li>
+      </ul>
+
+      <h3>Proposing New Items</h3>
+      <p>Have an idea not on the roadmap? Open an issue with the <code>roadmap-proposal</code> label including: what, why, complexity estimate, and competitive context.</p>
+
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <a href="https://github.com/sunilpp/prism-d1-velocity" target="_blank" rel="noopener noreferrer" class="cta-button">Get Started on GitHub</a>
+      <div class="footer-links">
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/workshop" target="_blank" rel="noopener noreferrer">Workshop Modules</a>
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/assessment" target="_blank" rel="noopener noreferrer">Assessment Tools</a>
+        <a href="https://github.com/sunilpp/prism-d1-velocity/tree/main/bootstrapper" target="_blank" rel="noopener noreferrer">Bootstrapper</a>
+        <a href="competitive-landscape.html">Competitive Landscape</a>
+        <a href="roadmap.html">Community Roadmap</a>
+      </div>
+      <div class="footer-brand-row">
+        <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+          <polygon points="16,2 30,28 2,28" fill="url(#prismGradFoot)" stroke="#0550ae" stroke-width="1" stroke-linejoin="round"/>
+          <defs><linearGradient id="prismGradFoot" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddf4ff"/><stop offset="100%" stop-color="#eddeff"/></linearGradient></defs>
+        </svg>
+        <p class="footer-brand">PRISM D1 Velocity &mdash; AI Development Lifecycle Framework<br>Built with Amazon Bedrock, Claude Code &amp; Kiro</p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
