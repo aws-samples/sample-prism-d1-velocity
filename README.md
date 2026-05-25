@@ -120,7 +120,7 @@ For a CLI-only or fully manual workflow, run the [PRISM Assessment](assessment/R
 
 ### Run the Workshop
 
-The workshop is hosted on AWS Workshop Studio: [TBD — link coming soon](https://workshops.aws/)
+The workshop is hosted on AWS Workshop Studio: [PRISM D1: Velocity Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/d0a8b037-dfe0-4023-9ce2-f5de32ee4c67/en-US)
 
 ### Run the Sample Agent (No AWS Required)
 
