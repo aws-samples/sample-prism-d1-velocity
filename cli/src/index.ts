@@ -27,10 +27,10 @@ export async function registerCommands(program: any) {
       .command(category)
       .description(`${category} commands`);
 
-    const files = readdirSync(categoryDir).filter((f) => f.endsWith('.ts'));
+    const files = readdirSync(categoryDir).filter((f) => f.endsWith('.js') && !f.endsWith('.d.ts'));
 
     for (const file of files) {
-      const commandName = basename(file, '.ts');
+      const commandName = basename(file, '.js');
       const modulePath = pathToFileURL(resolve(categoryDir, file)).href;
       const mod = await import(modulePath);
       const def = mod.default || mod;
