@@ -1,13 +1,26 @@
 {
-  "name": "prism-cli",
+  "name": "@prism-d1/cli",
   "version": "1.0.0",
-  "description": "PRISM D1 Velocity CLI tool",
+  "description": "PRISM D1 Velocity CLI — AI development lifecycle assessment tool",
+  "author": "andklee",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aws-samples/sample-prism-d1-velocity"
+  },
   "type": "module",
   "bin": {
     "prism-cli": "./dist/bin/prism-cli.js"
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "start": "tsx bin/prism-cli.ts",
     "dev": "tsx bin/prism-cli.ts"
   },
