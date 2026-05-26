@@ -4,8 +4,10 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { platform } from 'node:os';
+import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = getRepoRoot(import.meta.url);
 const IS_MAC = platform() === 'darwin';
 
 // --- Colors ---
@@ -445,7 +447,7 @@ async function checkCodeburn(verifyOnly = false) {
 async function checkSampleApp(verifyOnly = false) {
   heading('10. Sample App Dependencies');
 
-  const sampleAppDir = resolve(__dirname, '../../../../sample-app');
+  const sampleAppDir = resolve(REPO_ROOT, 'sample-app');
 
   if (existsSync(resolve(sampleAppDir, 'node_modules'))) {
     pass('Sample app dependencies installed');

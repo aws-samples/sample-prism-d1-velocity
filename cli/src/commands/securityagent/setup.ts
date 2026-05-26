@@ -2,9 +2,11 @@ import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const INFRA_DIR = resolve(__dirname, '../../../../infra');
+const REPO_ROOT = getRepoRoot(import.meta.url);
+const INFRA_DIR = resolve(REPO_ROOT, 'infra');
 
 function runCapture(cmd: string) {
   try {

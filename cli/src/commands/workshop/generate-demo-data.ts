@@ -1,9 +1,10 @@
 import { execSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = resolve(__dirname, '../../../..');
+const ROOT_DIR = getRepoRoot(import.meta.url);
 
 function run(cmd: string): boolean {
   try {

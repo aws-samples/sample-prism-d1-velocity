@@ -2,9 +2,11 @@ import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENT_DIR = resolve(__dirname, '../../../../sample-app/agent');
+const REPO_ROOT = getRepoRoot(import.meta.url);
+const AGENT_DIR = resolve(REPO_ROOT, 'sample-app/agent');
 
 export default {
   description: 'Run the PRISM task assistant agent',

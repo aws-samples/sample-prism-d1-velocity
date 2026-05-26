@@ -4,9 +4,11 @@ import { resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
+import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOKS_SOURCE = resolve(__dirname, '../../../../bootstrapper/metric-hooks');
+const REPO_ROOT = getRepoRoot(import.meta.url);
+const HOOKS_SOURCE = resolve(REPO_ROOT, 'bootstrapper/metric-hooks');
 
 function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });

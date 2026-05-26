@@ -2,8 +2,10 @@ import { execSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
+import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = getRepoRoot(import.meta.url);
 const SHELL = process.platform === 'win32' ? undefined : '/bin/bash';
 
 export default {
@@ -31,7 +33,7 @@ export default {
 
     const cdkDir = resolve(__dirname, 'cdk');
     const webAppDir = resolve(__dirname, 'web-app');
-    const cliDir = resolve(__dirname, '..', '..', '..', '..');
+    const cliDir = resolve(REPO_ROOT, 'cli');
 
     // Bundle web.ts into web-app/web.js for Docker
     console.log('Bundling web app...');
