@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { registerCommands } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8'));
+const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf8'));
 
 program
   .name('prism-cli')
