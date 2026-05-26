@@ -68,4 +68,10 @@ if [ ! -d "$PRISM_CLI_DIR/node_modules" ] || [ "$PRISM_CLI_DIR/package.json" -nt
   (cd "$PRISM_CLI_DIR" && npm install --silent)
 fi
 
-exec npx --prefix "$SCRIPT_DIR/cli" tsx "$SCRIPT_DIR/cli/bin/prism-cli.ts" "$@"
+# Build if dist is missing or source is newer
+if [ ! -d "$PRISM_CLI_DIR/dist" ] || [ "$(find "$PRISM_CLI_DIR/src" "$PRISM_CLI_DIR/bin" -name '*.ts' -newer "$PRISM_CLI_DIR/dist" 2>/dev/null | head -1)" ]; then
+  echo "Building prism-cli..."
+  (cd "$PRISM_CLI_DIR" && npx tsc)
+fi
+
+exec node "$PRISM_CLI_DIR/dist/bin/prism-cli.js" "$@"
