@@ -2,18 +2,18 @@ name: Publish to npm
 on:
   push:
     tags: ['v*']
+permissions:
+  id-token: write
+  contents: read
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22'
           registry-url: https://registry.npmjs.org
       - name: Install and publish
         working-directory: cli
-        run: npm ci && npm publish --access public --provenance
+        run: npm ci && npm publish --access public
