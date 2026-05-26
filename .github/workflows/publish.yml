@@ -14,6 +14,14 @@ jobs:
         with:
           node-version: '22'
           registry-url: https://registry.npmjs.org
+      - name: Debug info
+        working-directory: cli
+        run: |
+          echo "Node: $(node --version)"
+          echo "npm: $(npm --version)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL != '' }}"
+          cat ~/.npmrc || true
+          npm whoami 2>&1 || true
       - name: Install and publish
         working-directory: cli
         run: npm ci && npm publish --access public
