@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { program } from 'commander';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerCommands } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(resolve(__dirname, '..', '..', 'package.json'), 'utf8'));
+// Works from both cli/bin/ (source via tsx) and dist/bin/ (published)
+const pkgPath = existsSync(resolve(__dirname, '..', 'package.json'))
+  ? resolve(__dirname, '..', 'package.json')
+  : resolve(__dirname, '..', '..', 'package.json');
+const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
 
 program
   .name('prism-cli')
