@@ -19,7 +19,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npx tsc",
     "prepublishOnly": "npm run build",
     "start": "tsx bin/prism-cli.ts",
     "dev": "tsx bin/prism-cli.ts"
