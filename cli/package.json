@@ -1,6 +1,6 @@
 {
   "name": "@prism-d1/cli",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "PRISM D1 Velocity CLI — AI development lifecycle assessment tool",
   "author": "andklee",
   "license": "MIT",
@@ -19,7 +19,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "npx tsc",
+    "build": "npx tsc && mkdir -p dist/assets && cp -r ../bootstrapper/metric-hooks dist/assets/",
     "prepublishOnly": "npm run build",
     "start": "tsx bin/prism-cli.ts",
     "dev": "tsx bin/prism-cli.ts"

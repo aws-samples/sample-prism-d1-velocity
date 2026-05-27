@@ -8,7 +8,9 @@ import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = getRepoRoot(import.meta.url);
-const HOOKS_SOURCE = resolve(REPO_ROOT, 'bootstrapper/metric-hooks');
+const repoHooks = resolve(REPO_ROOT, 'bootstrapper/metric-hooks');
+const bundledHooks = resolve(__dirname, '../../assets/metric-hooks');
+const HOOKS_SOURCE = existsSync(repoHooks) ? repoHooks : bundledHooks;
 
 function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
