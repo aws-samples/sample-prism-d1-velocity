@@ -226,8 +226,6 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 | **[AI-DLC Steering Files](bootstrapper/aidlc-steering/)** | Development workflow rules adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows) |
 | **[ROI Model](docs/leader-guide/roi-model.md)** | Defensible ROI calculations for CFO conversations |
 
-**GitHub Pages**: [sunilpp.github.io/prism-d1-velocity](https://sunilpp.github.io/prism-d1-velocity/)
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
