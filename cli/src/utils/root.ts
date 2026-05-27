@@ -15,5 +15,6 @@ export function getRepoRoot(importMetaUrl: string): string {
     }
     dir = resolve(dir, '..');
   }
-  throw new Error('Could not find repository root (looked for prism-cli.sh)');
+  // When installed via npm, no marker exists — return the dist directory as fallback
+  return dirname(fileURLToPath(importMetaUrl));
 }
