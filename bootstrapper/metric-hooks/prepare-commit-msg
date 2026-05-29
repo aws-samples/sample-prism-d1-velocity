@@ -40,8 +40,8 @@ if [[ -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
 fi
 
 # Check for Kiro markers
-# Kiro leaves .kiro/ directory artifacts and may set environment variables
-if [[ -n "${KIRO_SESSION:-}" ]]; then
+# Kiro CLI sets KIRO_SESSION_ID in its terminal sessions
+if [[ -n "${KIRO_SESSION_ID:-}" || -n "${KIRO_SESSION:-}" ]]; then
     AI_ORIGIN="ai-assisted"
     AI_TOOL="kiro"
 fi
