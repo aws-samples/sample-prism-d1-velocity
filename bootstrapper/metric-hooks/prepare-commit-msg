@@ -81,20 +81,18 @@ if [[ -n "${MSG_SPEC}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Track AI token usage via codeburn
+# Track AI token usage via codeburn (per-project snapshot delta)
 # ---------------------------------------------------------------------------
 AI_INPUT_TOKENS=""
 AI_OUTPUT_TOKENS=""
 AI_COST=""
 
 if [[ -n "${AI_TOOL}" ]] && command -v codeburn &>/dev/null; then
+    PROJECT_FILTER=$(echo "$REPO_ROOT" | sed 's|^/||; s|/|-|g')
     TRACKER_DIR="${HOME}/.prism/tokentracker"
-    CURRENT_USER=$(git config user.email 2>/dev/null || whoami)
-    SAFE_USER=$(echo "${CURRENT_USER}" | sed 's/[@.]/_/g')
-    TRACKER_FILE="${TRACKER_DIR}/${SAFE_USER}.json"
+    TRACKER_FILE="${TRACKER_DIR}/${PROJECT_FILTER}.json"
 
-    # Get lifetime token totals from codeburn (all-time, monotonically increasing)
-    CODEBURN_JSON=$(codeburn report -p all --format json 2>/dev/null || echo "")
+    CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_FILTER}" --format json 2>/dev/null || echo "")
 
     if [[ -n "${CODEBURN_JSON}" ]]; then
         CURRENT_INPUT=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.inputTokens // 0] | add // 0' 2>/dev/null || echo "0")
@@ -104,33 +102,19 @@ if [[ -n "${AI_TOOL}" ]] && command -v codeburn &>/dev/null; then
         if [[ -f "${TRACKER_FILE}" ]]; then
             PREV_INPUT=$(jq -r '.inputTokens // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
             PREV_OUTPUT=$(jq -r '.outputTokens // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-            PREV_COST=$(jq -r '.costUSD // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-
+            PREV_COST=$(jq -r '.cost // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
             AI_INPUT_TOKENS=$(( CURRENT_INPUT - PREV_INPUT ))
             AI_OUTPUT_TOKENS=$(( CURRENT_OUTPUT - PREV_OUTPUT ))
             AI_COST=$(echo "${CURRENT_COST} - ${PREV_COST}" | bc 2>/dev/null || echo "0")
-
-            # Guard against negative values (e.g., deleted session files)
-            if [[ "${AI_INPUT_TOKENS}" -lt 0 ]]; then AI_INPUT_TOKENS=0; fi
-            if [[ "${AI_OUTPUT_TOKENS}" -lt 0 ]]; then AI_OUTPUT_TOKENS=0; fi
-            if (( $(echo "${AI_COST} < 0" | bc 2>/dev/null || echo "0") )); then AI_COST="0"; fi
+            [[ "${AI_INPUT_TOKENS}" -lt 0 ]] && AI_INPUT_TOKENS=0
+            [[ "${AI_OUTPUT_TOKENS}" -lt 0 ]] && AI_OUTPUT_TOKENS=0
         else
-            mkdir -p "${TRACKER_DIR}"
-            AI_INPUT_TOKENS=0
-            AI_OUTPUT_TOKENS=0
-            AI_COST="0"
+            AI_INPUT_TOKENS=0; AI_OUTPUT_TOKENS=0; AI_COST="0"
         fi
 
         mkdir -p "${TRACKER_DIR}"
-        cat > "${TRACKER_FILE}" <<SNAPSHOT
-{
-  "inputTokens": ${CURRENT_INPUT},
-  "outputTokens": ${CURRENT_OUTPUT},
-  "costUSD": ${CURRENT_COST},
-  "lastCommit": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "user": "${CURRENT_USER}"
-}
-SNAPSHOT
+        printf '{"inputTokens":%s,"outputTokens":%s,"cost":%s}\n' \
+            "$CURRENT_INPUT" "$CURRENT_OUTPUT" "$CURRENT_COST" > "${TRACKER_FILE}"
     fi
 fi
 
