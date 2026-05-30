@@ -220,7 +220,6 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 | Resource | Description |
 |----------|-------------|
 | **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 3 CloudWatch + 2 QuickSight dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 11 alarms |
-| **[Competitive Landscape](docs/competitive-landscape.md)** | PRISM vs. Swarmia, Jellyfish, LinearB, DX, Faros AI — 9 differentiators |
 | **[Community Roadmap](docs/ROADMAP.md)** | Prioritized backlog across 9 phases |
 | **[Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md)** | 8-step guide: deploy, domain verification, GitHub connection, pen test config, webhook, GitHub variables, verification |
 | **[AI-DLC Steering Files](bootstrapper/aidlc-steering/)** | Development workflow rules adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows) |
