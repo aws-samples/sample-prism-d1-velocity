@@ -81,56 +81,25 @@ if [[ -n "${MSG_SPEC}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Track AI token usage via codeburn
+# Track AI token usage via codeburn (per-project, since last commit)
 # ---------------------------------------------------------------------------
 AI_INPUT_TOKENS=""
 AI_OUTPUT_TOKENS=""
 AI_COST=""
 
 if [[ -n "${AI_TOOL}" ]] && command -v codeburn &>/dev/null; then
-    TRACKER_DIR="${HOME}/.prism/tokentracker"
-    CURRENT_USER=$(git config user.email 2>/dev/null || whoami)
-    SAFE_USER=$(echo "${CURRENT_USER}" | sed 's/[@.]/_/g')
-    TRACKER_FILE="${TRACKER_DIR}/${SAFE_USER}.json"
+    PROJECT_FILTER=$(echo "$REPO_ROOT" | sed 's|^/||; s|/|-|g')
+    LAST_COMMIT_DATE=$(git log -1 --format=%aI 2>/dev/null | cut -dT -f1 || echo "")
 
-    # Get lifetime token totals from codeburn (all-time, monotonically increasing)
-    CODEBURN_JSON=$(codeburn report -p all --format json 2>/dev/null || echo "")
+    CODEBURN_ARGS="-p all --project ${PROJECT_FILTER} --format json"
+    [[ -n "$LAST_COMMIT_DATE" ]] && CODEBURN_ARGS="${CODEBURN_ARGS} --from ${LAST_COMMIT_DATE}"
+
+    CODEBURN_JSON=$(codeburn report ${CODEBURN_ARGS} 2>/dev/null || echo "")
 
     if [[ -n "${CODEBURN_JSON}" ]]; then
-        CURRENT_INPUT=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.inputTokens // 0] | add // 0' 2>/dev/null || echo "0")
-        CURRENT_OUTPUT=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.outputTokens // 0] | add // 0' 2>/dev/null || echo "0")
-        CURRENT_COST=$(echo "${CODEBURN_JSON}" | jq -r '.overview.cost // 0' 2>/dev/null || echo "0")
-
-        if [[ -f "${TRACKER_FILE}" ]]; then
-            PREV_INPUT=$(jq -r '.inputTokens // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-            PREV_OUTPUT=$(jq -r '.outputTokens // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-            PREV_COST=$(jq -r '.costUSD // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-
-            AI_INPUT_TOKENS=$(( CURRENT_INPUT - PREV_INPUT ))
-            AI_OUTPUT_TOKENS=$(( CURRENT_OUTPUT - PREV_OUTPUT ))
-            AI_COST=$(echo "${CURRENT_COST} - ${PREV_COST}" | bc 2>/dev/null || echo "0")
-
-            # Guard against negative values (e.g., deleted session files)
-            if [[ "${AI_INPUT_TOKENS}" -lt 0 ]]; then AI_INPUT_TOKENS=0; fi
-            if [[ "${AI_OUTPUT_TOKENS}" -lt 0 ]]; then AI_OUTPUT_TOKENS=0; fi
-            if (( $(echo "${AI_COST} < 0" | bc 2>/dev/null || echo "0") )); then AI_COST="0"; fi
-        else
-            mkdir -p "${TRACKER_DIR}"
-            AI_INPUT_TOKENS=0
-            AI_OUTPUT_TOKENS=0
-            AI_COST="0"
-        fi
-
-        mkdir -p "${TRACKER_DIR}"
-        cat > "${TRACKER_FILE}" <<SNAPSHOT
-{
-  "inputTokens": ${CURRENT_INPUT},
-  "outputTokens": ${CURRENT_OUTPUT},
-  "costUSD": ${CURRENT_COST},
-  "lastCommit": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "user": "${CURRENT_USER}"
-}
-SNAPSHOT
+        AI_INPUT_TOKENS=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.inputTokens // 0] | add // 0' 2>/dev/null || echo "0")
+        AI_OUTPUT_TOKENS=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.outputTokens // 0] | add // 0' 2>/dev/null || echo "0")
+        AI_COST=$(echo "${CODEBURN_JSON}" | jq -r '.overview.cost // 0' 2>/dev/null || echo "0")
     fi
 fi
 
