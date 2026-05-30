@@ -23,9 +23,10 @@ export default {
     { flags: '--team-id <id>', description: 'Team ID (skips interactive prompt)' },
     { flags: '--max-tokens <n>', description: 'Max tokens per commit (default: 1000000)' },
     { flags: '--max-cost <n>', description: 'Max cost per commit in USD (default: 100)' },
+    { flags: '--global', description: 'Also set git template dir so all future clones get the hook' },
     { flags: '--uninstall', description: 'Remove PRISM hooks' },
   ],
-  async action(opts: { teamId?: string; maxTokens?: string; maxCost?: string; uninstall?: boolean }) {
+  async action(opts: { teamId?: string; maxTokens?: string; maxCost?: string; global?: boolean; uninstall?: boolean }) {
     const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
     const hooksDir = resolve(gitRoot, '.git/hooks');
     const prismDir = resolve(gitRoot, '.prism');
@@ -66,16 +67,14 @@ export default {
     writeFileSync(configFile, JSON.stringify({ team_id: teamId, max_tokens: maxTokens, max_cost: maxCost }, null, 2) + '\n');
     console.log(`Config: ${configFile}`);
 
-    // --- .gitignore ---
+    // --- .gitignore (keep .prism/config.json trackable, no tokentracker in repo) ---
     const gitignore = resolve(gitRoot, '.gitignore');
-    const ignoreEntry = '.prism/tokentracker/';
+    const ignoreEntry = '.prism/';
     if (existsSync(gitignore)) {
       const content = readFileSync(gitignore, 'utf8');
-      if (!content.includes(ignoreEntry)) {
-        writeFileSync(gitignore, content + `\n# PRISM token tracker snapshots\n${ignoreEntry}\n`);
+      if (!content.includes(ignoreEntry) && !content.includes('.prism/tokentracker/')) {
+        // No entry needed — tokentracker is now in ~/.prism/ globally
       }
-    } else {
-      writeFileSync(gitignore, `# PRISM token tracker snapshots\n${ignoreEntry}\n`);
     }
 
     // --- Install hook ---
@@ -96,6 +95,17 @@ export default {
     copyFileSync(source, target);
     chmodSync(target, 0o755);
     console.log('Installed prepare-commit-msg hook.');
+
+    // --- Global template dir (--global flag) ---
+    if (opts.global) {
+      const home = homedir();
+      const templateHooksDir = resolve(home, '.git-templates/hooks');
+      mkdirSync(templateHooksDir, { recursive: true });
+      copyFileSync(source, resolve(templateHooksDir, 'prepare-commit-msg'));
+      chmodSync(resolve(templateHooksDir, 'prepare-commit-msg'), 0o755);
+      execSync(`git config --global init.templateDir "${resolve(home, '.git-templates')}"`, { encoding: 'utf8' });
+      console.log('Global template dir set — all future clones will get the hook automatically.');
+    }
 
     // --- Summary ---
     console.log(`\nTeam: ${teamId}`);

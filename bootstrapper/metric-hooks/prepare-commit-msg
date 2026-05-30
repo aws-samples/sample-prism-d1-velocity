@@ -88,7 +88,7 @@ AI_OUTPUT_TOKENS=""
 AI_COST=""
 
 if [[ -n "${AI_TOOL}" ]] && command -v codeburn &>/dev/null; then
-    TRACKER_DIR="${REPO_ROOT}/.prism/tokentracker"
+    TRACKER_DIR="${HOME}/.prism/tokentracker"
     CURRENT_USER=$(git config user.email 2>/dev/null || whoami)
     SAFE_USER=$(echo "${CURRENT_USER}" | sed 's/[@.]/_/g')
     TRACKER_FILE="${TRACKER_DIR}/${SAFE_USER}.json"
