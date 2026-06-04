@@ -47,10 +47,10 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 Install the PRISM CLI globally:
 
 ```bash
-npm install -g @prism-d1/cli
+npm install -g @prism-d1/cli codeburn
 ```
 
-This installs both `prism-cli` and `codeburn` (AI token tracker). Then verify your setup:
+This installs `prism-cli` (assessment + bootstrapper) and `codeburn` (AI token tracker for git hooks). Then verify your setup:
 
 ```bash
 prism-cli workshop verify-setup

@@ -447,7 +447,7 @@ async function checkCodeburn(verifyOnly = false) {
 async function checkSampleApp(verifyOnly = false) {
   heading('10. Sample App Dependencies');
 
-  const sampleAppDir = resolve(REPO_ROOT, 'sample-app');
+  const sampleAppDir = resolve(process.cwd(), 'sample-app');
 
   if (existsSync(resolve(sampleAppDir, 'node_modules'))) {
     pass('Sample app dependencies installed');
