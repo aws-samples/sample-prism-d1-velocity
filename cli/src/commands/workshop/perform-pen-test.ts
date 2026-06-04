@@ -181,8 +181,19 @@ exports.handler = (event, context) => {
     console.log(`   Health:  ${apiUrl}/health`);
 
     // 4. Domain verification for Security Agent pen testing
-    const agentSpaceId = 'as-99cff7dd-90fa-4065-9d39-0b8dfff11c6c';
-    console.log(`\n🔐 Setting up domain verification for pen testing...`);
+    // Discover agent space dynamically (same as securityagent setup)
+    const spacesResult = runCapture(`aws securityagent list-agent-spaces ${env} --output json`);
+    if (!spacesResult.ok || !spacesResult.stdout) {
+      console.error('   ⚠️  Failed to list agent spaces. Run "prism-cli securityagent setup" first.');
+      return;
+    }
+    const spaceList = JSON.parse(spacesResult.stdout).agentSpaceSummaries || [];
+    if (spaceList.length === 0) {
+      console.error('   ⚠️  No agent space found. Run "prism-cli securityagent setup" first.');
+      return;
+    }
+    const agentSpaceId = spaceList[0].agentSpaceId;
+    console.log(`\n🔐 Setting up domain verification for pen testing (agent space: ${agentSpaceId})...`);
 
     // Check if domain already exists and is verified
     const domainsResult = runCapture(`aws securityagent list-target-domains ${env} --query "targetDomainSummaries[?domainName=='${apiDomain}']" --output json`);
