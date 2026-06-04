@@ -97,10 +97,11 @@ exports.handler = (event, context) => {
     const functionName = 'prism-d1-sample-app';
     const roleName = 'prism-d1-sample-app-lambda-role';
     const apiName = 'prism-d1-sample-app-api';
-    const env = `--profile ${profile} --region ${region}`;
+    const profileFlag = profile === 'default' ? '' : `--profile ${profile}`;
+    const env = `${profileFlag} --region ${region}`.trim();
 
     // Get account ID
-    const acct = runCapture(`aws sts get-caller-identity --profile ${profile} --query Account --output text`);
+    const acct = runCapture(`aws sts get-caller-identity ${profileFlag} --query Account --output text`.trim());
     if (!acct.ok) {
       console.error('Failed to get AWS account. Check credentials.');
       process.exit(1);
@@ -109,15 +110,15 @@ exports.handler = (event, context) => {
 
     // Create/update IAM role
     const roleArn = `arn:aws:iam::${accountId}:role/${roleName}`;
-    const roleCheck = runCapture(`aws iam get-role --role-name ${roleName} --profile ${profile} 2>&1`);
+    const roleCheck = runCapture(`aws iam get-role --role-name ${roleName} ${profileFlag} 2>&1`);
     if (!roleCheck.ok) {
       console.log('Creating Lambda execution role...');
       const trustPolicy = JSON.stringify({
         Version: '2012-10-17',
         Statement: [{ Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' }, Action: 'sts:AssumeRole' }],
       });
-      run(`aws iam create-role --role-name ${roleName} --assume-role-policy-document '${trustPolicy}' --profile ${profile}`);
-      run(`aws iam attach-role-policy --role-name ${roleName} --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole --profile ${profile}`);
+      run(`aws iam create-role --role-name ${roleName} --assume-role-policy-document '${trustPolicy}' ${profileFlag}`);
+      run(`aws iam attach-role-policy --role-name ${roleName} --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole ${profileFlag}`);
       // Wait for role propagation
       console.log('Waiting for IAM role propagation...');
       execSync('sleep 10');
