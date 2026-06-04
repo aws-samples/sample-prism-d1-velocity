@@ -1,8 +1,11 @@
 {
   "name": "@prism-d1/cli",
-  "version": "1.0.16",
+  "version": "1.0.18",
   "description": "PRISM D1 Velocity CLI — AI development lifecycle assessment tool",
   "author": "andklee",
+  "engines": {
+    "node": ">=22"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -27,7 +30,6 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.700.0",
     "chalk": "^4.1.2",
-    "codeburn": "^0.9.11",
     "commander": "^12.1.0",
     "glob": "^13.0.6",
     "simple-git": "^3.36.0"

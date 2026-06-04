@@ -153,7 +153,7 @@ cp .prism/claude-code/CLAUDE.md ./CLAUDE.md
 ## Key Conventions
 
 - TypeScript for all CDK and Lambda code
-- Node.js 20.x runtime for Lambdas
+- Node.js 22.x runtime for Lambdas
 - CDK v2 with constructs library
 - GitHub Actions for CI/CD (with reusable workflows)
 - All dashboard definitions are JSON (infrastructure-as-code)

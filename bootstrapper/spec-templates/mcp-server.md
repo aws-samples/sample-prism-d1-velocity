@@ -116,7 +116,7 @@ _One-paragraph description of the MCP server — what capabilities it exposes, w
 
 ## Dependencies
 
-- **Runtime**: Node.js 20.x / Python 3.12+
+- **Runtime**: Node.js 22.x / Python 3.12+
 - **MCP SDK**: `@modelcontextprotocol/sdk` (TypeScript) or `mcp` (Python)
 - **External Services**: _[List APIs, databases, or services the tools interact with]_
 - **Auth**: _[How the server authenticates to external services — IAM role, API key, etc.]_
