@@ -23,13 +23,13 @@ Everything your team needs to adopt AI-native software development practices. In
 ```bash
 cd your-repo
 
-bash prism-cli.sh bootstrapper install-git-hooks --team-id your-team
+prism-cli bootstrapper install-git-hooks --team-id your-team
 ```
 
 Optional: configure token/cost bounds per commit (defaults: 1M tokens, $100):
 
 ```bash
-bash prism-cli.sh bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
+prism-cli bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
 ```
 
 This installs the `prepare-commit-msg` hook and creates the `.prism/` configuration directory. Every commit will now be tagged with AI-origin metadata.
@@ -69,7 +69,7 @@ Configure the required repository secret (`PRISM_METRICS_ROLE_ARN`). See `github
 ### Step 4: Configure Eval Harness
 
 ```bash
-bash prism-cli.sh bootstrapper install-eval-harness --with-rubrics
+prism-cli bootstrapper install-eval-harness --with-rubrics
 ```
 
 Edit `.prism/eval-harness/eval-config.json` to set your pass threshold and AWS region.

@@ -23,7 +23,7 @@ Findings flow into the PRISM pipeline where they're:
 Deploys the CDK stack with Security Agent enabled, creates the application, and attaches the IAM role:
 
 ```bash
-bash prism-cli.sh securityagent setup --profile your-profile --region us-west-2
+prism-cli securityagent setup --profile your-profile --region us-west-2
 ```
 
 This handles:

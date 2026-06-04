@@ -47,7 +47,7 @@ There are two paths depending on who conducts the interview:
 Run the repo scanner yourself, then send the results to an SA who conducts the interview.
 
 ```bash
-./prism-cli.sh assessment run \
+prism-cli assessment run \
   --repo ~/customer-repos/acme-app \
   --output json \
   --output-file acme-scan.json \
@@ -61,7 +61,7 @@ The SA imports `acme-scan.json` into the web UI, conducts the interview, and gen
 Run the entire assessment yourself — scan, interview, scoring, and report — through the interactive web app:
 
 ```bash
-./prism-cli.sh assessment web
+prism-cli assessment web
 ```
 
 Open `http://localhost:3120`, paste the customer's repo path (or import a JSON scan), then walk through the AI-guided interview. The app scores everything in real-time and generates a downloadable report at the end.
@@ -71,7 +71,7 @@ Open `http://localhost:3120`, paste the customer's repo path (or import a JSON s
 ## CLI Commands
 
 ```bash
-./prism-cli.sh <category> <command> [options]
+prism-cli <category> <command> [options]
 ```
 
 ### `assessment run`
@@ -79,7 +79,7 @@ Open `http://localhost:3120`, paste the customer's repo path (or import a JSON s
 Run the repo scanner against a customer's codebase.
 
 ```bash
-./prism-cli.sh assessment run --repo /path/to/repo --output json --output-file report.json
+prism-cli assessment run --repo /path/to/repo --output json --output-file report.json
 ```
 
 | Option | Description | Default |
@@ -94,7 +94,7 @@ Run the repo scanner against a customer's codebase.
 Launch the interactive assessment web UI.
 
 ```bash
-./prism-cli.sh assessment web --port 3120
+prism-cli assessment web --port 3120
 ```
 
 | Option | Description | Default |
