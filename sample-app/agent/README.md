@@ -23,7 +23,7 @@ User (CLI / API)
 ### Prerequisites
 
 - Python 3.11+
-- Node.js 20+ (for the MCP server / task API)
+- Node.js 22+ (for the MCP server / task API)
 - AWS credentials with Bedrock access (or use `--mock` flag)
 
 ### Setup
