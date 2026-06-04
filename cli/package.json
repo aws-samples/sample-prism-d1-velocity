@@ -1,10 +1,6 @@
 {
   "name": "@prism-d1/cli",
-<<<<<<< HEAD
-  "version": "1.0.17",
-=======
   "version": "1.0.18",
->>>>>>> 57a2c057 (docs: update all references from prism-cli.sh to npm-installed prism-cli)
   "description": "PRISM D1 Velocity CLI — AI development lifecycle assessment tool",
   "author": "andklee",
   "engines": {
