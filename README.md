@@ -171,7 +171,44 @@ prism-cli bootstrapper install-eval-harness --with-rubrics
 cp /path/to/bootstrapper/agent-configs/ ./agent-configs/
 
 # For Security Agent:
-bash /path/to/prism-cli securityagent setup
+prism-cli securityagent setup
+```
+
+## Commit Metadata (AI Attribution)
+
+The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
+
+**Trailers injected:**
+
+| Trailer | Example | Description |
+|---------|---------|-------------|
+| `AI-Origin` | `ai-generated` or `human` | Whether an AI tool was detected |
+| `AI-Tool` | `claude-code`, `kiro`, `q-developer` | Which tool was active (omitted for human commits) |
+| `AI-Model` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Model used (Claude Code only) |
+| `AI-Input-Tokens` | `12450` | Input tokens since last commit (via codeburn) |
+| `AI-Output-Tokens` | `3200` | Output tokens since last commit |
+| `AI-Cost` | `$0.42` | Estimated cost since last commit |
+| `Spec-Ref` | `.kiro/specs/auth.md` | Spec file if staged or declared |
+
+**Tool support:**
+
+| Tool | Detection Method | Status |
+|------|-----------------|--------|
+| Claude Code | `CLAUDE_CODE_SESSION_ID` env var | ✅ Supported |
+| Kiro IDE | `TERM_PROGRAM=kiro` env var | ✅ Supported |
+| Kiro CLI | `KIRO_SESSION_ID` env var | ✅ Supported |
+| Amazon Q Developer | `Q_DEVELOPER_SESSION` env var | ✅ Supported |
+| Cursor | `VSCODE_SHELL_INTEGRATION=1` (agent mode) | 🔜 Planned |
+| GitHub Copilot | codeburn session correlation | 🔜 Planned |
+| Windsurf | Process tree or codeburn | 🔜 Planned |
+| Codex (OpenAI) | Process tree detection | 🔜 Planned |
+| Aider | Process tree or codeburn | 🔜 Planned |
+| Cline / Roo Code | codeburn session correlation | 🔜 Planned |
+
+Install the hooks globally so all future repos get attribution automatically:
+
+```bash
+prism-cli bootstrapper install-git-hooks --team-id your-team --global
 ```
 
 ## Enhanced AI-DORA Metrics
