@@ -1,6 +1,10 @@
 {
   "name": "@prism-d1/cli",
+<<<<<<< HEAD
   "version": "1.0.17",
+=======
+  "version": "1.0.18",
+>>>>>>> 57a2c057 (docs: update all references from prism-cli.sh to npm-installed prism-cli)
   "description": "PRISM D1 Velocity CLI — AI development lifecycle assessment tool",
   "author": "andklee",
   "engines": {
@@ -30,7 +34,6 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.700.0",
     "chalk": "^4.1.2",
-    "codeburn": "^0.9.11",
     "commander": "^12.1.0",
     "glob": "^13.0.6",
     "simple-git": "^3.36.0"
