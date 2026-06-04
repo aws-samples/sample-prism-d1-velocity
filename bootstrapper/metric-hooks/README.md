@@ -85,7 +85,7 @@ The installer creates `.prism/config.json`:
 Set custom bounds at install time:
 
 ```bash
-bash prism-cli.sh bootstrapper install-git-hooks --team-id my-team --max-tokens 500000 --max-cost 50
+prism-cli bootstrapper install-git-hooks --team-id my-team --max-tokens 500000 --max-cost 50
 ```
 
 Values exceeding bounds are clamped to the configured maximum. The workflow (`prism-ai-metrics.yml`) applies a second layer of enforcement, discarding values above 1M tokens / $100 to zero.

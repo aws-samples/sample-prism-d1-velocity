@@ -44,10 +44,16 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ### Prerequisites
 
-Run the prism-cli command to verify and setup everything:
+Install the PRISM CLI globally:
 
 ```bash
-bash prism-cli.sh workshop verify-setup
+npm install -g @prism-d1/cli
+```
+
+This installs both `prism-cli` and `codeburn` (AI token tracker). Then verify your setup:
+
+```bash
+prism-cli workshop verify-setup
 ```
 
 Or install manually:
@@ -75,7 +81,7 @@ npx cdk deploy --all
 
 This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table.
 
-> **For Security Agent:** Add `--context enableSecurityAgent=true` or use `bash prism-cli.sh securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
+> **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
 ### Assess a Customer
 
@@ -84,14 +90,14 @@ This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypt
 The prism-cli includes a local web interface for running the full assessment flow — scan, interview, and report generation — in a browser.
 
 ```bash
-bash prism-cli.sh assessment web
+prism-cli assessment web
 # Opens http://localhost:3120
 ```
 
 The web tool supports two workflows:
 
 **Self-service (customer runs it themselves):**
-1. Customer clones this repo and runs `bash prism-cli.sh assessment web`
+1. Customer installs `npm install -g @prism-d1/cli` and runs `prism-cli assessment web`
 2. Scans their own repository from the web UI
 3. Exports the scan results as JSON and sends the file to you
 4. Optionally completes the interview themselves and sends the final HTML report
@@ -139,10 +145,13 @@ python scripts/run-demo.py --mock   # Run agent demo with mock model
 cd ~/your-repo
 
 # Install git hooks (creates .prism/ config directory)
-bash /path/to/prism-cli.sh bootstrapper install-git-hooks --team-id your-team
+prism-cli bootstrapper install-git-hooks --team-id your-team
 
 # Optional: set custom token/cost bounds (defaults: 1M tokens, $100/commit)
-bash /path/to/prism-cli.sh bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
+prism-cli bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
+
+# Optional: install globally so all future clones get the hook automatically
+prism-cli bootstrapper install-git-hooks --team-id your-team --global
 
 # Choose a CLAUDE.md template for your team
 cp /path/to/bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
@@ -156,13 +165,50 @@ cp /path/to/bootstrapper/github-workflows/prism-agent-eval.yml .github/workflows
 cp /path/to/bootstrapper/github-workflows/prism-dora-weekly.yml .github/workflows/
 
 # Install eval harness
-bash /path/to/prism-cli.sh bootstrapper install-eval-harness --with-rubrics
+prism-cli bootstrapper install-eval-harness --with-rubrics
 
 # For agent projects:
 cp /path/to/bootstrapper/agent-configs/ ./agent-configs/
 
 # For Security Agent:
-bash /path/to/prism-cli.sh securityagent setup
+bash /path/to/prism-cli securityagent setup
+```
+
+## Commit Metadata (AI Attribution)
+
+The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
+
+**Trailers injected:**
+
+| Trailer | Example | Description |
+|---------|---------|-------------|
+| `AI-Origin` | `ai-generated` or `human` | Whether an AI tool was detected |
+| `AI-Tool` | `claude-code`, `kiro`, `q-developer` | Which tool was active (omitted for human commits) |
+| `AI-Model` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Model used (Claude Code only) |
+| `AI-Input-Tokens` | `12450` | Input tokens since last commit (via codeburn) |
+| `AI-Output-Tokens` | `3200` | Output tokens since last commit |
+| `AI-Cost` | `$0.42` | Estimated cost since last commit |
+| `Spec-Ref` | `.kiro/specs/auth.md` | Spec file if staged or declared |
+
+**Tool support:**
+
+| Tool | Detection Method | Status |
+|------|-----------------|--------|
+| Claude Code | `CLAUDE_CODE_SESSION_ID` env var | ✅ Supported |
+| Kiro IDE | `TERM_PROGRAM=kiro` env var | ✅ Supported |
+| Kiro CLI | `KIRO_SESSION_ID` env var | ✅ Supported |
+| Amazon Q Developer | `Q_DEVELOPER_SESSION` env var | ✅ Supported |
+| Cursor | `VSCODE_SHELL_INTEGRATION=1` (agent mode) | 🔜 Planned |
+| GitHub Copilot | codeburn session correlation | 🔜 Planned |
+| Windsurf | Process tree or codeburn | 🔜 Planned |
+| Codex (OpenAI) | Process tree detection | 🔜 Planned |
+| Aider | Process tree or codeburn | 🔜 Planned |
+| Cline / Roo Code | codeburn session correlation | 🔜 Planned |
+
+Install the hooks globally so all future repos get attribution automatically:
+
+```bash
+prism-cli bootstrapper install-git-hooks --team-id your-team --global
 ```
 
 ## Enhanced AI-DORA Metrics

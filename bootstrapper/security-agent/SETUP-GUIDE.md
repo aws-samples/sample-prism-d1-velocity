@@ -11,7 +11,7 @@ You need all of these before proceeding:
 | Requirement | How to Check | If Missing |
 |---|---|---|
 | AWS account with Security Agent access | `aws securityagent list-agent-spaces --region us-west-2` should not error | Request access via your AWS account team |
-| PRISM D1 CDK stack deployed | `aws cloudformation describe-stacks --stack-name PrismD1MetricsPipelineStack --query 'Stacks[0].StackStatus'` should return `CREATE_COMPLETE` or `UPDATE_COMPLETE` | Run `bash prism-cli.sh securityagent setup` |
+| PRISM D1 CDK stack deployed | `aws cloudformation describe-stacks --stack-name PrismD1MetricsPipelineStack --query 'Stacks[0].StackStatus'` should return `CREATE_COMPLETE` or `UPDATE_COMPLETE` | Run `prism-cli securityagent setup` |
 | GitHub repository (private) | Code review requires a private repo | Create one or make existing repo private |
 | Domain you own | For pen testing — you must prove ownership | Use a staging domain |
 | `jq` installed | `jq --version` | `brew install jq` or `apt install jq` |
@@ -45,7 +45,7 @@ echo "API Key:        ${PRISM_API_KEY:0:8}..."
 echo "Agent Space ID: ${AGENT_SPACE_ID}"
 ```
 
-If `AGENT_SPACE_ID` is empty, run `bash prism-cli.sh securityagent setup` first.
+If `AGENT_SPACE_ID` is empty, run `prism-cli securityagent setup` first.
 
 ---
 
@@ -56,7 +56,7 @@ If `AGENT_SPACE_ID` is empty, run `bash prism-cli.sh securityagent setup` first.
 The CLI command handles CDK deployment, application creation, and role attachment in one step:
 
 ```bash
-bash prism-cli.sh securityagent setup --profile your-profile --region us-west-2
+prism-cli securityagent setup --profile your-profile --region us-west-2
 ```
 
 This:
@@ -398,7 +398,7 @@ aws securityagent list-pentest-jobs-for-pentest \
 | Problem | Likely Cause | Fix |
 |---|---|---|
 | `aws securityagent` command not found | AWS CLI too old | Install from [official installer](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) — not package managers |
-| Agent space not found | CDK not deployed with Security Agent | Run `bash prism-cli.sh securityagent setup` |
+| Agent space not found | CDK not deployed with Security Agent | Run `prism-cli securityagent setup` |
 | KMS 403 on agent space creation | `securityagent.amazonaws.com` lacks KMS grants | Add `kms:Encrypt/Decrypt` grant for the service principal |
 | Pen test fails at PREFLIGHT | `logs.amazonaws.com` lacks KMS permissions | Grant `kms:Encrypt/Decrypt/GenerateDataKey*/DescribeKey` with log group ARN condition |
 | Domain verification stuck (DNS) | DNS not propagated | Wait 5 min; verify with `dig TXT _securityagent.yourdomain.com` |
@@ -417,7 +417,7 @@ aws securityagent list-pentest-jobs-for-pentest \
 
 ```bash
 # Deploy Security Agent (recommended first step)
-bash prism-cli.sh securityagent setup --profile your-profile --region us-west-2
+prism-cli securityagent setup --profile your-profile --region us-west-2
 
 # List agent spaces
 aws securityagent list-agent-spaces --region us-west-2
