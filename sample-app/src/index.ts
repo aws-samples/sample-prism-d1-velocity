@@ -38,7 +38,8 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // ---------------------------------------------------------------------------
 // Start server (skip when imported for testing)
 // ---------------------------------------------------------------------------
-if (require.main === module) {
+const isMain = import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
   app.listen(PORT, () => {
     console.log(`PRISM sample-app listening on http://localhost:${PORT}`);
   });
