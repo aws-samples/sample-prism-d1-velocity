@@ -3,11 +3,10 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { getRepoRoot } from '../../utils/root.js';
+import { getAssetPath } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = getRepoRoot(import.meta.url);
-const EVAL_SOURCE = resolve(REPO_ROOT, 'bootstrapper/eval-harness');
+const EVAL_SOURCE = getAssetPath(import.meta.url, 'bootstrapper/eval-harness');
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -74,7 +73,7 @@ export default {
 
     // --- Workflow ---
     const workflowsDir = resolve(gitRoot, '.github/workflows');
-    const workflowSrc = resolve(REPO_ROOT, 'bootstrapper/github-workflows/prism-eval-gate.yml');
+    const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate.yml');
     if (existsSync(workflowSrc)) {
       mkdirSync(workflowsDir, { recursive: true });
       const dest = resolve(workflowsDir, 'prism-eval-gate.yml');

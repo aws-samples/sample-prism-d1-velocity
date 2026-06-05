@@ -2,11 +2,10 @@ import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getRepoRoot } from '../../utils/root.js';
+import { getAssetPath } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = getRepoRoot(import.meta.url);
-const INFRA_DIR = resolve(REPO_ROOT, 'infra');
+const INFRA_DIR = getAssetPath(import.meta.url, 'infra');
 
 function runCapture(cmd: string) {
   try {

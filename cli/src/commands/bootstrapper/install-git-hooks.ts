@@ -4,13 +4,10 @@ import { resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
-import { getRepoRoot } from '../../utils/root.js';
+import { getAssetPath } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = getRepoRoot(import.meta.url);
-const repoHooks = resolve(REPO_ROOT, 'bootstrapper/metric-hooks');
-const bundledHooks = resolve(__dirname, '../../../assets/metric-hooks');
-const HOOKS_SOURCE = existsSync(repoHooks) ? repoHooks : bundledHooks;
+const HOOKS_SOURCE = getAssetPath(import.meta.url, 'bootstrapper/metric-hooks');
 
 function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
