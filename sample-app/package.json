@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --outfile=dist/index.js --format=esm --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --outfile=dist/index.js --format=esm --banner:js=\"import{createRequire}from'module';import{fileURLToPath}from'url';import{dirname}from'path';const require=createRequire(import.meta.url);const __filename=fileURLToPath(import.meta.url);const __dirname=dirname(__filename);\"",
     "start": "node dist/index.js",
     "test": "NODE_OPTIONS='--experimental-vm-modules' jest --verbose",
     "mcp": "ts-node src/mcp/server.ts"
