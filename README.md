@@ -44,7 +44,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ### Prerequisites
 
-Install the PRISM CLI globally:
+Install the PRISM CLI and the codeburn dependency globally:
 
 ```bash
 npm install -g @prism-d1/cli codeburn
