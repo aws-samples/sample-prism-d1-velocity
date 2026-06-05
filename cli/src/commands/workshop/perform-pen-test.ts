@@ -62,21 +62,12 @@ export default {
 
     console.log('Packaging for Lambda...');
 
-    // Create Lambda handler wrapper
+    // Create Lambda handler wrapper (ESM — package.json has "type": "module")
     const handler = `
-const serverlessExpress = require('@codegenie/serverless-express');
-const app = require('./dist/index').app || require('./dist/index').default;
-let serverlessExpressInstance;
-
-async function setup(event, context) {
-  serverlessExpressInstance = serverlessExpress({ app });
-  return serverlessExpressInstance(event, context);
-}
-
-exports.handler = (event, context) => {
-  if (serverlessExpressInstance) return serverlessExpressInstance(event, context);
-  return setup(event, context);
-};
+import serverlessExpress from '@codegenie/serverless-express';
+import app from './dist/index.js';
+const instance = serverlessExpress({ app });
+export const handler = (event, context) => instance(event, context);
 `;
     writeFileSync(resolve(bundleDir, 'lambda.js'), handler);
 
