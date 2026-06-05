@@ -1,14 +1,8 @@
 import { execSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { getRepoRoot } from '../../utils/root.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = getRepoRoot(import.meta.url);
 
 function run(cmd: string): boolean {
   try {
-    execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], cwd: ROOT_DIR });
+    execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], cwd: process.cwd() });
     return true;
   } catch {
     return false;
@@ -17,7 +11,7 @@ function run(cmd: string): boolean {
 
 function runCapture(cmd: string): string {
   try {
-    return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], cwd: ROOT_DIR }).trim();
+    return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], cwd: process.cwd() }).trim();
   } catch {
     return '';
   }
@@ -27,7 +21,7 @@ function putEvents(region: string, entries: object[]): boolean {
   try {
     execSync(
       `aws events put-events --region "${region}" --entries '${JSON.stringify(entries)}'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], cwd: ROOT_DIR }
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], cwd: process.cwd() }
     );
     return true;
   } catch {
