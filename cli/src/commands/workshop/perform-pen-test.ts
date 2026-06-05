@@ -222,9 +222,13 @@ export const handler = (event, context) => instance(event, context);
             ${env}`);
           run(`aws lambda wait function-updated --function-name ${functionName} ${env}`);
 
-          // Wait for propagation then verify
+          // Wait for propagation then warm Lambda before verification
+          console.log(`   Warming Lambda before verification...`);
+          execSync('sleep 3');
+          runCapture(`curl -sf ${apiUrl}/health`);
+          runCapture(`curl -sf ${apiUrl}/.well-known/aws/securityagent-domain-verification.json`);
+          execSync('sleep 2');
           console.log(`   Verifying domain ownership...`);
-          execSync('sleep 5');
           const verifyResult = runCapture(`aws securityagent verify-target-domain \
             --target-domain-id ${targetDomainId} \
             ${env} --output json`);
