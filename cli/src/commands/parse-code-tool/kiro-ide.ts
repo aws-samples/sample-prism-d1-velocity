@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -23,9 +24,10 @@ function calculateCost(model: string, input: number, output: number): number {
 }
 
 function getKiroAgentDir(): string {
+  const kiroServer = join(homedir(), '.kiro-server', 'data', 'User', 'globalStorage', 'kiro.kiroagent');
   if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
   if (process.platform === 'win32') return join(homedir(), 'AppData', 'Roaming', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
-  return join(homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+  return existsSync(kiroServer) ? kiroServer : join(homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
 }
 
 function getKiroWorkspaceStorageDir(): string {
@@ -41,6 +43,12 @@ async function readWorkspaceProject(workspaceDir: string): Promise<string> {
     if (data.folder) return basename(decodeURIComponent(data.folder.replace(/^file:\/\//, '')));
   } catch {}
   return basename(workspaceDir);
+}
+
+function extractProjectFromContent(raw: string): string | null {
+  // Look for workspace/project paths in the file content
+  const match = raw.match(/\/(?:local\/)?home\/[^/]+\/(?:workplace|workspace|projects?)\/([^/"\\,\s]+)/);
+  return match ? match[1]! : null;
 }
 
 function normalizeModelId(raw: string): string {
@@ -79,6 +87,9 @@ async function parseSessionFile(filePath: string, project: string): Promise<Pars
   let data: Record<string, unknown>;
   try { data = JSON.parse(raw); } catch { return null; }
   if (!data || typeof data !== 'object') return null;
+
+  // If project is still a hash, try to extract from file paths in the content
+  const resolvedProject = /^[0-9a-f]{32}$/.test(project) ? (extractProjectFromContent(raw) ?? project) : project;
 
   const metadata = data.metadata as Record<string, unknown> | undefined;
 
@@ -126,7 +137,7 @@ async function parseSessionFile(filePath: string, project: string): Promise<Pars
 
   const inputTokens = Math.ceil(inputChars / CHARS_PER_TOKEN);
   const outputTokens = Math.ceil(outputChars / CHARS_PER_TOKEN);
-  return { model: modelId, inputTokens, outputTokens, costUSD: calculateCost(modelId, inputTokens, outputTokens), timestamp: ts, project };
+  return { model: modelId, inputTokens, outputTokens, costUSD: calculateCost(modelId, inputTokens, outputTokens), timestamp: ts, project: resolvedProject };
 }
 
 export default {
