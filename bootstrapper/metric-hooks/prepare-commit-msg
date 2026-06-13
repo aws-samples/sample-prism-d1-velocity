@@ -76,12 +76,24 @@ AI_INPUT_TOKENS=""
 AI_OUTPUT_TOKENS=""
 AI_COST=""
 
-if [[ -n "${AI_TOOL}" ]] && command -v codeburn &>/dev/null; then
+if [[ -n "${AI_TOOL}" ]] && (command -v codeburn &>/dev/null || command -v prism-cli &>/dev/null); then
     PROJECT_FILTER=$(echo "$REPO_ROOT" | sed 's|^/||; s|/|-|g')
+    PROJECT_BASENAME=$(basename "$REPO_ROOT")
     TRACKER_DIR="${HOME}/.prism/tokentracker"
-    TRACKER_FILE="${TRACKER_DIR}/${PROJECT_FILTER}.json"
+    TRACKER_FILE="${TRACKER_DIR}/${PROJECT_BASENAME}.json"
 
-    CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_FILTER}" --format json 2>/dev/null || echo "")
+    # Kiro: use prism-cli parse-code-tool kiro-ide (basename-based project matching)
+    # Everything else: use codeburn
+    if [[ "${AI_TOOL}" == "kiro" ]] && command -v prism-cli &>/dev/null; then
+        CODEBURN_JSON=$(prism-cli parse-code-tool kiro-ide --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
+    elif command -v codeburn &>/dev/null; then
+        CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_FILTER}" --format json 2>/dev/null || echo "")
+        if [[ -z "${CODEBURN_JSON}" || "$(echo "${CODEBURN_JSON}" | jq -r '.overview.calls // 0')" == "0" ]]; then
+            CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
+        fi
+    else
+        CODEBURN_JSON=""
+    fi
 
     if [[ -n "${CODEBURN_JSON}" ]]; then
         CURRENT_INPUT=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.inputTokens // 0] | add // 0' 2>/dev/null || echo "0")
