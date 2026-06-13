@@ -46,9 +46,21 @@ async function readWorkspaceProject(workspaceDir: string): Promise<string> {
 }
 
 function extractProjectFromContent(raw: string): string | null {
-  // Look for workspace/project paths in the file content
-  const match = raw.match(/\/(?:local\/)?home\/[^/]+\/(?:workplace|workspace|projects?)\/([^/"\\,\s]+)/);
-  return match ? match[1]! : null;
+  // Linux/macOS: /home/<user>/workplace/<project>/
+  const unix = raw.match(/\/(?:local\/)?home\/[^/]+\/(?:workplace|workspace|projects?)\/([a-zA-Z0-9_.-]+)/);
+  if (unix) return unix[1]!;
+  // Windows: C:\Users\<user>\projects\<project>\ (known dev parent dirs)
+  const win = raw.match(/[A-Z]:\\\\Users\\\\[^\\]+\\\\(?:projects?|workspace|dev|repos|source)\\\\([a-zA-Z0-9_.-]+)/i);
+  if (win) return win[1]!;
+  // Windows fallback: first non-system folder after Users\<user>\ 
+  const SYSTEM_DIRS = new Set(['appdata', 'desktop', 'documents', 'downloads', 'onedrive', '.vscode', '.config', '.local', '.kiro-server']);
+  const winFallback = raw.match(/[A-Z]:\\\\Users\\\\[^\\]+\\\\([a-zA-Z0-9_.-]+)\\\\([a-zA-Z0-9_.-]+)/i);
+  if (winFallback) {
+    const dir1 = winFallback[1]!.toLowerCase();
+    if (SYSTEM_DIRS.has(dir1)) return null; // skip system dirs
+    return winFallback[1]!;
+  }
+  return null;
 }
 
 function normalizeModelId(raw: string): string {
@@ -81,15 +93,23 @@ function extractText(value: unknown): string {
   return '';
 }
 
-async function parseSessionFile(filePath: string, project: string): Promise<ParsedCall | null> {
+async function parseSessionFile(filePath: string, project: string, sessionProjectMap: Map<string, string>): Promise<ParsedCall | null> {
   let raw: string;
   try { raw = await readFile(filePath, 'utf-8'); } catch { return null; }
   let data: Record<string, unknown>;
   try { data = JSON.parse(raw); } catch { return null; }
   if (!data || typeof data !== 'object') return null;
 
-  // If project is still a hash, try to extract from file paths in the content
-  const resolvedProject = /^[0-9a-f]{32}$/.test(project) ? (extractProjectFromContent(raw) ?? project) : project;
+  // Resolve project: (1) chatSessionId map, (2) content regex, (3) hash fallback
+  let resolvedProject = project;
+  if (/^[0-9a-f]{32}$/.test(project)) {
+    const chatSessionId = typeof data.chatSessionId === 'string' ? data.chatSessionId : '';
+    if (chatSessionId && sessionProjectMap.has(chatSessionId)) {
+      resolvedProject = sessionProjectMap.get(chatSessionId)!;
+    } else {
+      resolvedProject = extractProjectFromContent(raw) ?? project;
+    }
+  }
 
   const metadata = data.metadata as Record<string, unknown> | undefined;
 
@@ -151,6 +171,25 @@ export default {
     const agentDir = getKiroAgentDir();
     const wsStorageDir = getKiroWorkspaceStorageDir();
 
+    // Build chatSessionId -> project name map from workspace-sessions
+    const sessionProjectMap = new Map<string, string>();
+    try {
+      const wsSessionsDir = join(agentDir, 'workspace-sessions');
+      const wsDirs = await readdir(wsSessionsDir).catch(() => [] as string[]);
+      for (const dir of wsDirs) {
+        let decoded = '';
+        try { decoded = Buffer.from(dir.replace(/_/g, '='), 'base64').toString('utf-8'); } catch { continue; }
+        if (!decoded) continue;
+        const projectName = basename(decoded);
+        if (!projectName || projectName === basename(homedir())) continue; // skip bare home dir
+        try {
+          const sessionsJson = await readFile(join(wsSessionsDir, dir, 'sessions.json'), 'utf-8');
+          const sessions = JSON.parse(sessionsJson) as { sessionId?: string }[];
+          if (Array.isArray(sessions)) for (const s of sessions) { if (s.sessionId) sessionProjectMap.set(s.sessionId, projectName); }
+        } catch {}
+      }
+    } catch {}
+
     let workspaceDirs: string[];
     try {
       const entries = await readdir(agentDir, { withFileTypes: true });
@@ -166,7 +205,7 @@ export default {
       const wsPath = join(agentDir, wsHash);
       const project = await readWorkspaceProject(join(wsStorageDir, wsHash));
 
-      if (opts.project && project !== opts.project) continue;
+      if (opts.project && project !== opts.project && !/^[0-9a-f]{32}$/.test(project)) continue;
 
       let entries: Dirent[];
       try { entries = await readdir(wsPath, { withFileTypes: true }); } catch { continue; }
@@ -176,8 +215,8 @@ export default {
         const entryPath = join(wsPath, entry.name);
 
         if (entry.isFile() && (entry.name.endsWith('.chat') || extname(entry.name) === '')) {
-          const call = await parseSessionFile(entryPath, project);
-          if (call) calls.push(call);
+          const call = await parseSessionFile(entryPath, project, sessionProjectMap);
+          if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
           continue;
         }
 
@@ -185,7 +224,8 @@ export default {
         const children = await readdir(entryPath, { withFileTypes: true }).catch(() => [] as Dirent[]);
         for (const child of children) {
           if (child.name.startsWith('.') || !child.isFile() || extname(child.name) !== '') continue;
-          const call = await parseSessionFile(join(entryPath, child.name), project);
+          const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap);
+          if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
           if (call) calls.push(call);
         }
       }
