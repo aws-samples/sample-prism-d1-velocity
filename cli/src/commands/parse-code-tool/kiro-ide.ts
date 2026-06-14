@@ -226,7 +226,6 @@ export default {
           if (child.name.startsWith('.') || !child.isFile() || extname(child.name) !== '') continue;
           const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap);
           if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
-          if (call) calls.push(call);
         }
       }
     }
