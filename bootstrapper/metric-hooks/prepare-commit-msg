@@ -83,10 +83,16 @@ if [[ -n "${AI_TOOL}" ]] && (command -v codeburn &>/dev/null || command -v prism
     TRACKER_DIR="${HOME}/.prism/tokentracker"
     TRACKER_FILE="${TRACKER_DIR}/${PROJECT_BASENAME}.json"
 
-    # Kiro: use prism-cli parse-code-tool kiro-ide (basename-based project matching)
+    # Kiro: CLI (KIRO_SESSION_ID) uses kiro-cli, IDE uses kiro-ide
     # Everything else: use codeburn
     if [[ "${AI_TOOL}" == "kiro" ]] && command -v prism-cli &>/dev/null; then
-        CODEBURN_JSON=$(prism-cli parse-code-tool kiro-ide --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
+        if [[ -n "${KIRO_SESSION_ID:-}" ]]; then
+            CODEBURN_JSON=$(prism-cli parse-code-tool kiro-cli --session-id "${KIRO_SESSION_ID}" --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
+        fi
+        # Fall back to kiro-ide (covers IDE env vars and CLI sessions without KIRO_SESSION_ID)
+        if [[ -z "${CODEBURN_JSON}" || "$(echo "${CODEBURN_JSON}" | jq -r '.overview.calls // 0')" == "0" ]]; then
+            CODEBURN_JSON=$(prism-cli parse-code-tool kiro-ide --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
+        fi
     elif command -v codeburn &>/dev/null; then
         CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_FILTER}" --format json 2>/dev/null || echo "")
         if [[ -z "${CODEBURN_JSON}" || "$(echo "${CODEBURN_JSON}" | jq -r '.overview.calls // 0')" == "0" ]]; then
