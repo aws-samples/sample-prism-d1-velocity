@@ -117,6 +117,8 @@ if [[ -n "${AI_TOOL}" ]] && (command -v codeburn &>/dev/null || command -v prism
             AI_COST=$(echo "${CURRENT_COST} - ${PREV_COST}" | bc 2>/dev/null || echo "0")
             [[ "${AI_INPUT_TOKENS}" -lt 0 ]] && AI_INPUT_TOKENS=0
             [[ "${AI_OUTPUT_TOKENS}" -lt 0 ]] && AI_OUTPUT_TOKENS=0
+            AI_COST_NEGATIVE=$(echo "${AI_COST} < 0" | bc 2>/dev/null || echo "0")
+            [[ "${AI_COST_NEGATIVE}" == "1" ]] && AI_COST="0"
         else
             AI_INPUT_TOKENS=0; AI_OUTPUT_TOKENS=0; AI_COST="0"
         fi
