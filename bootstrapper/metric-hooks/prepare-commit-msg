@@ -41,7 +41,8 @@ fi
 
 # Check for Kiro markers
 # Kiro CLI sets KIRO_SESSION_ID; Kiro IDE sets TERM_PROGRAM=kiro
-if [[ -n "${KIRO_SESSION_ID:-}" || -n "${KIRO_SESSION:-}" || "${TERM_PROGRAM:-}" == "kiro" ]]; then
+# Kiro Source Control panel sets VSCODE_GIT_ASKPASS_NODE with "kiro" in path
+if [[ -n "${KIRO_SESSION_ID:-}" || -n "${KIRO_SESSION:-}" || "${TERM_PROGRAM:-}" == "kiro" || "${VSCODE_GIT_ASKPASS_NODE:-}" == *"kiro"* || "${GIT_ASKPASS:-}" == *"kiro"* ]]; then
     AI_ORIGIN="ai-generated"
     AI_TOOL="kiro"
 fi
