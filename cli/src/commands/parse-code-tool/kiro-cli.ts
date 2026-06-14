@@ -25,7 +25,7 @@ function getCliSessionsDir(): string {
 interface SessionEntry {
   version?: string;
   kind?: string;
-  data?: { content?: Array<{ kind?: string; data?: string }> };
+  data?: { content?: Array<{ kind?: string; data?: any }> };
 }
 
 export default {
@@ -62,17 +62,23 @@ export default {
       const content = entry.data?.content;
       if (!content || !Array.isArray(content)) continue;
 
-      const text = content
-        .filter(c => c.kind === 'text' && c.data)
-        .map(c => c.data!)
-        .join('');
-
-      if (kind === 'Prompt' || kind === 'ToolResults') {
-        inputChars += text.length;
-      } else if (kind === 'AssistantMessage') {
-        outputChars += text.length;
-        calls++;
+      for (const item of content) {
+        if (item.kind === 'text' && typeof item.data === 'string') {
+          if (kind === 'Prompt' || kind === 'ToolResults') inputChars += item.data.length;
+          else if (kind === 'AssistantMessage') { outputChars += item.data.length; }
+        } else if (item.kind === 'toolUse' && item.data) {
+          // Tool calls are output (assistant decided to call a tool)
+          outputChars += JSON.stringify(item.data.input ?? '').length;
+        } else if (item.kind === 'toolResult' && item.data) {
+          // Tool results are input (fed back to model)
+          const rc = item.data.content;
+          if (Array.isArray(rc)) {
+            for (const r of rc) inputChars += typeof r.data === 'string' ? r.data.length : JSON.stringify(r.data ?? '').length;
+          }
+        }
       }
+
+      if (kind === 'AssistantMessage') calls++;
     }
 
     const inputTokens = Math.ceil(inputChars / CHARS_PER_TOKEN);
