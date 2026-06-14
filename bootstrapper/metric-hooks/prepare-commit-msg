@@ -85,6 +85,7 @@ if [[ -n "${AI_TOOL}" ]] && (command -v codeburn &>/dev/null || command -v prism
 
     # Kiro: CLI (KIRO_SESSION_ID) uses kiro-cli, IDE uses kiro-ide
     # Everything else: use codeburn
+    CODEBURN_JSON=""
     if [[ "${AI_TOOL}" == "kiro" ]] && command -v prism-cli &>/dev/null; then
         if [[ -n "${KIRO_SESSION_ID:-}" ]]; then
             CODEBURN_JSON=$(prism-cli parse-code-tool kiro-cli --session-id "${KIRO_SESSION_ID}" --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
