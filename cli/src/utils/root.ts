@@ -34,15 +34,17 @@ export function getRepoRoot(importMetaUrl: string): string {
  * Always uses dist/assets/ from the npm package.
  */
 export function getAssetPath(importMetaUrl: string, relativePath: string): string {
+  // Strip leading directory prefix (e.g. 'bootstrapper/metric-hooks' -> 'metric-hooks')
+  // because the build copies into dist/assets/ without parent dirs
+  const candidates = [relativePath, relativePath.replace(/^[^/]+\//, '')];
+
   let dir = dirname(fileURLToPath(importMetaUrl));
   for (let i = 0; i < 10; i++) {
-    const assetsPath = resolve(dir, 'assets', relativePath);
-    if (existsSync(assetsPath)) {
-      return assetsPath;
-    }
-    const distAssetsPath = resolve(dir, 'dist', 'assets', relativePath);
-    if (existsSync(distAssetsPath)) {
-      return distAssetsPath;
+    for (const candidate of candidates) {
+      const assetsPath = resolve(dir, 'assets', candidate);
+      if (existsSync(assetsPath)) return assetsPath;
+      const distAssetsPath = resolve(dir, 'dist', 'assets', candidate);
+      if (existsSync(distAssetsPath)) return distAssetsPath;
     }
     dir = resolve(dir, '..');
   }
