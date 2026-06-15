@@ -9,6 +9,7 @@ import * as path from 'path';
 import { Construct } from 'constructs';
 import { BedrockGuardrailConstruct, createDefaultPrismGuardrailProps } from './constructs/bedrock-guardrail-construct';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { PrismVpcConstruct } from './constructs/prism-vpc-construct';
 import { GuardrailEnforcerConstruct } from './constructs/guardrail-enforcer-construct';
 import { SecurityAgentConstruct } from './constructs/security-agent-construct';
@@ -128,8 +129,21 @@ export class MetricsPipelineStack extends cdk.Stack {
 
     // -------------------------------------------------------
     // VPC for Lambda isolation (Pillar 6)
+    // Opt out with: cdk deploy -c skipVpc=true
+    // Use existing VPC: cdk deploy -c vpcId=vpc-0123456789abcdef0
     // -------------------------------------------------------
-    const vpcConstruct = new PrismVpcConstruct(this, 'VPC');
+    const skipVpc = this.node.tryGetContext('skipVpc') === 'true';
+    const existingVpcId = this.node.tryGetContext('vpcId') as string | undefined;
+    const vpcConstruct = skipVpc
+      ? undefined
+      : existingVpcId
+        ? undefined
+        : new PrismVpcConstruct(this, 'VPC');
+    const lambdaVpcProps = skipVpc
+      ? {}
+      : existingVpcId
+        ? { vpc: ec2.Vpc.fromLookup(this, 'ExistingVpc', { vpcId: existingVpcId }) }
+        : { vpc: vpcConstruct!.vpc, securityGroups: [vpcConstruct!.lambdaSecurityGroup] };
 
     // -------------------------------------------------------
     // Metrics processor Lambda
@@ -138,8 +152,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-metrics-processor',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'metrics-processor.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -275,8 +288,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-exfiltration-detector',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'exfiltration-detector.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -338,8 +350,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-defect-correlator',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'defect-correlator.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -400,8 +411,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-spec-to-code-calculator',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'spec-to-code-calculator.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -461,8 +471,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-security-agent-processor',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'security-agent-processor.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -510,8 +519,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-security-remediation-tracker',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'security-remediation-tracker.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -569,8 +577,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-security-response-automator',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'security-response-automator.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,

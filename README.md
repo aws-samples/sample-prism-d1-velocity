@@ -83,6 +83,18 @@ This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypt
 
 > **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
+#### VPC Configuration
+
+By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (DynamoDB, EventBridge, CloudWatch, KMS, Bedrock Runtime) for network isolation. This adds ~$35-50/month in endpoint costs.
+
+| Option | Command | Use Case |
+|--------|---------|----------|
+| **New VPC** (default) | `npx cdk deploy --all` | Production — full network isolation |
+| **Skip VPC** | `npx cdk deploy --all -c skipVpc=true` | Workshop/demo — saves cost, faster cold starts |
+| **Existing VPC** | `npx cdk deploy --all -c vpcId=vpc-0123456789abcdef0` | Enterprise — use shared VPC with existing endpoints or NAT |
+
+When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
+
 ### Assess a Customer
 
 #### Web Assessment Tool (Recommended)
