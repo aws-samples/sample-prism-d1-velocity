@@ -11,7 +11,7 @@
 #   - Pipeline schedule configured: weekly on Monday at 09:00 UTC
 
 prism-dora-weekly:
-  stage: .post
+  stage: test
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
