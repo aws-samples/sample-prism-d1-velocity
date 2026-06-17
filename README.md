@@ -70,7 +70,17 @@ The setup script supports flags:
 - `--skip-kiro` — skip Kiro IDE check
 - `--verify-only` — only verify, don't install anything
 
-### Deploy the Metrics Platform
+### Quickstart: Adopt PRISM
+
+#### 1. Install Dependencies
+
+```bash
+npm install -g @prism-d1/cli codeburn
+```
+
+Requires Node.js 22+, AWS CLI v2, CDK v2 (`npm install -g aws-cdk`).
+
+#### 2. Deploy AWS Infrastructure
 
 ```bash
 cd infra
@@ -80,6 +90,48 @@ npx cdk deploy --all
 ```
 
 This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table.
+
+> **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
+
+#### 3. Set Up OIDC (CI/CD → AWS Authentication)
+
+**GitHub:**
+```bash
+prism-cli bootstrapper setup-github-oidc
+# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a GitHub repo secret.
+```
+
+**GitLab:**
+```bash
+prism-cli bootstrapper setup-gitlab-oidc
+# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a CI/CD variable (unprotected).
+```
+
+#### 4. Install CI/CD Workflows
+
+**GitHub:**
+```bash
+prism-cli bootstrapper install-git-hooks
+# Copies workflow files to .github/workflows/
+```
+
+**GitLab:**
+```bash
+prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
+# Copies workflow files to .prism/gitlab-workflows/ and generates .gitlab-ci.yml
+```
+
+#### 5. Install Git Hooks (per developer)
+
+```bash
+# For all future clones (global template):
+prism-cli bootstrapper install-git-hooks --global
+
+# For an existing repo (run inside the repo):
+prism-cli bootstrapper install-git-hooks
+```
+
+The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
 
 > **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
