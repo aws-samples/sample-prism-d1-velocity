@@ -76,7 +76,7 @@ prism-eval-gate:
         if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
           AI_SHAS="${AI_SHAS} ${SHA}"
         fi
-      done
+      done || true
       AI_SHAS=$(echo "${AI_SHAS}" | xargs)
 
       if [[ -z "${AI_SHAS}" ]]; then
