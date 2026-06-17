@@ -42,8 +42,6 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Quick Start
 
-### Quickstart
-
 #### 1. Install Dependencies
 
 ```bash
@@ -64,6 +62,8 @@ npx cdk deploy --all
 This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table.
 
 > **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
+
+> **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
 #### 3. Set Up OIDC (CI/CD → AWS Authentication)
 
@@ -104,8 +104,6 @@ prism-cli bootstrapper install-git-hooks
 ```
 
 The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
-
-> **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
 #### VPC Configuration
 
