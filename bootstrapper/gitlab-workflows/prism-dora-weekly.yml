@@ -42,6 +42,12 @@ prism-dora-weekly:
       fi
   script:
     - |
+      # Skip if no AWS credentials available
+      if ! aws sts get-caller-identity &>/dev/null; then
+        echo "⚠️ No AWS credentials. Set PRISM_METRICS_ROLE_ARN or configure AWS access."
+        exit 0
+      fi
+
       TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
       SINCE_DATE=$(date -u -d '7 days ago' +"%Y-%m-%d")
       REPO="${CI_PROJECT_PATH}"
