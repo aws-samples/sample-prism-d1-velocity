@@ -10,6 +10,13 @@
 #   4. (Optional) Set GITLAB_OIDC_AUDIENCE if not using gitlab.aws.dev
 #   5. (Optional) Create a pipeline schedule for prism-dora-weekly (Monday 09:00 UTC)
 
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
 include:
   - local: '.prism/gitlab-workflows/prism-ai-metrics.yml'
   - local: '.prism/gitlab-workflows/prism-dora-weekly.yml'
