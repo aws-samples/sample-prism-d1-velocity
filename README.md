@@ -42,34 +42,6 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Quick Start
 
-### Prerequisites
-
-Install the PRISM CLI and the codeburn dependency globally:
-
-```bash
-npm install -g @prism-d1/cli codeburn
-```
-
-This installs `prism-cli` (assessment + bootstrapper) and `codeburn` (AI token tracker for git hooks). Then verify your setup:
-
-```bash
-prism-cli workshop verify-setup
-```
-
-Or install manually:
-
-- AWS Account with Bedrock access (Claude models enabled)
-- Node.js 22+ and npm
-- Python 3.11+ (for Strands Agent)
-- AWS CLI v2 and CDK v2 (`npm install -g aws-cdk`)
-- Claude Code CLI configured for Bedrock (`export CLAUDE_CODE_USE_BEDROCK=1`)
-- Git 2.40+, jq, GitHub CLI
-
-The setup script supports flags:
-- `--skip-aws` — skip AWS credential and Bedrock checks (for offline prep)
-- `--skip-kiro` — skip Kiro IDE check
-- `--verify-only` — only verify, don't install anything
-
 ### Quickstart: Adopt PRISM
 
 #### 1. Install Dependencies
