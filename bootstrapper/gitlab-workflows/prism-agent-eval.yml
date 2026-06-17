@@ -54,6 +54,7 @@ prism-agent-eval:
         echo "⚠️ PRISM_METRICS_ROLE_ARN set but GITLAB_OIDC_TOKEN is empty."
       fi
   script:
+    - set +e
     - |
       # Skip if no AWS credentials available
       if ! aws sts get-caller-identity &>/dev/null; then
