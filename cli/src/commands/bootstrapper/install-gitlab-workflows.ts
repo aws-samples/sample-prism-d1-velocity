@@ -17,12 +17,12 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
 export default {
   description: 'Install GitLab CI workflow templates into the current repo',
   options: [
-    { flags: '--gitlab-url <url>', description: 'GitLab instance URL for OIDC audience', default: 'https://gitlab.aws.dev' },
+    { flags: '--gitlab-url <url>', description: 'GitLab instance URL for OIDC audience', default: 'https://gitlab.com' },
     { flags: '--region <region>', description: 'AWS region for EventBridge/CloudWatch', default: 'us-west-2' },
     { flags: '--output-dir <dir>', description: 'Output directory', default: '.prism/gitlab-workflows' },
   ],
   async action(opts: { gitlabUrl?: string; region?: string; outputDir: string }) {
-    const gitlabUrl = opts.gitlabUrl || await prompt('GitLab instance URL', 'https://gitlab.aws.dev');
+    const gitlabUrl = opts.gitlabUrl || await prompt('GitLab instance URL', 'https://gitlab.com');
     const region = opts.region || 'us-west-2';
     const outputDir = opts.outputDir;
 
@@ -39,7 +39,7 @@ export default {
     for (const file of files) {
       let content = readFileSync(join(assetDir, file), 'utf-8');
       // Template the audience and region
-      content = content.replace(/aud: https:\/\/gitlab\.aws\.dev/g, `aud: ${gitlabUrl}`);
+      content = content.replace(/aud: https:\/\/gitlab\.com/g, `aud: ${gitlabUrl}`);
       content = content.replace(/AWS_DEFAULT_REGION: us-west-2/g, `AWS_DEFAULT_REGION: ${region}`);
       writeFileSync(join(outputDir, file), content);
       console.log(`  ✓ ${file}`);

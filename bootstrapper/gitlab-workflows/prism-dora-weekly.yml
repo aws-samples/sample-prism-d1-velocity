@@ -17,7 +17,7 @@ prism-dora-weekly:
     entrypoint: [""]
   id_tokens:
     GITLAB_OIDC_TOKEN:
-      aud: https://gitlab.aws.dev
+      aud: https://gitlab.com
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'

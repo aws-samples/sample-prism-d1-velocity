@@ -16,7 +16,7 @@ prism-agent-eval:
   image: python:3.12-slim
   id_tokens:
     GITLAB_OIDC_TOKEN:
-      aud: https://gitlab.aws.dev
+      aud: https://gitlab.com
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:

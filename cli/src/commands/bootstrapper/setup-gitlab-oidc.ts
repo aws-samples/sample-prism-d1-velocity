@@ -28,7 +28,7 @@ export default {
     console.log('This will create an IAM OIDC identity provider and a role');
     console.log('that GitLab CI/CD can assume to deploy to your AWS account.\n');
 
-    const gitlabUrl = await prompt('GitLab instance URL', 'https://gitlab.aws.dev');
+    const gitlabUrl = await prompt('GitLab instance URL', 'https://gitlab.com');
     const projectPath = await prompt('GitLab project path (e.g. group/repo)');
     if (!projectPath) {
       console.error('Error: Project path is required.');

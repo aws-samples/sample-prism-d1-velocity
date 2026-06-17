@@ -17,7 +17,7 @@ prism-ai-metrics:
     entrypoint: [""]
   id_tokens:
     GITLAB_OIDC_TOKEN:
-      aud: https://gitlab.aws.dev
+      aud: https://gitlab.com
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
   variables:
