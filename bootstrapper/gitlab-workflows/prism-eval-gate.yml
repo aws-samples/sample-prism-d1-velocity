@@ -160,4 +160,5 @@ prism-eval-gate:
           \"EventBusName\":\"prism-d1-metrics\",
           \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
 
-      [[ "${OVERALL}" == "FAIL" ]] && exit 1 || exit 0
+      [[ "${OVERALL:-PASS}" == "FAIL" ]] && exit 1
+      exit 0
