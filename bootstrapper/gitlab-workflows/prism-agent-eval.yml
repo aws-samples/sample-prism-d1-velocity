@@ -35,7 +35,6 @@ prism-agent-eval:
     - pip install --quiet strands-agents strands-agents-tools requests
     - git fetch --unshallow || true
     - |
-      set +e
       # Assume AWS role via GitLab OIDC
       if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
         echo "Assuming role via OIDC: ${PRISM_METRICS_ROLE_ARN}"
@@ -57,7 +56,6 @@ prism-agent-eval:
       fi
   script:
     - |
-      set +e
       # Skip if no AWS credentials available
       if ! aws sts get-caller-identity &>/dev/null; then
         echo "⚠️ No AWS credentials. Set PRISM_METRICS_ROLE_ARN or configure AWS access."
@@ -116,7 +114,6 @@ prism-agent-eval:
         EVAL_TARGET=$(echo "${AGENT_FILES}" | head -1)
       fi
 
-      set +e
       OUTPUT=$(./.prism/eval-harness/run-eval.sh "${RUBRIC}" "${EVAL_TARGET}" 2>&1)
       set -e
 

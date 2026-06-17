@@ -28,7 +28,6 @@ prism-dora-weekly:
     - yum install -y -q jq bc git
     - git fetch --unshallow || true
     - |
-      set +e
       # Assume AWS role via GitLab OIDC
       if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
         echo "Assuming role via OIDC: ${PRISM_METRICS_ROLE_ARN}"
@@ -50,7 +49,6 @@ prism-dora-weekly:
       fi
   script:
     - |
-      set +e
       # Skip if no AWS credentials available
       if ! aws sts get-caller-identity &>/dev/null; then
         echo "⚠️ No AWS credentials. Set PRISM_METRICS_ROLE_ARN or configure AWS access."
