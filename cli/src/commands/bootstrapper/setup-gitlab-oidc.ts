@@ -151,7 +151,7 @@ export default {
     console.log(`    Key:   PRISM_METRICS_ROLE_ARN`);
     console.log(`    Value: ${roleArn}`);
     console.log('    Type:  Variable');
-    console.log('    Protect: Yes (only available on protected branches)');
+    console.log('    Protect: No (must be available on MR branches)');
     console.log('');
     console.log('  The PRISM GitLab workflows use id_tokens (GitLab 15.7+) for OIDC.');
     console.log('  The token is configured automatically — no additional setup needed.');
