@@ -52,6 +52,13 @@ prism-agent-eval:
       BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
       HEAD_SHA="${CI_COMMIT_SHA}"
 
+      # Skip if eval harness not installed
+      if [[ ! -f ".prism/eval-harness/run-eval.sh" ]]; then
+        echo "Eval harness not installed. Run: prism-cli bootstrapper install-eval-harness"
+        echo "Skipping agent eval."
+        exit 0
+      fi
+
       # Identify agent changes
       AGENT_FILES=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" \
         | grep -E '(^agent/|^agents/|^mcp-servers/|agent.*\.(py|ts)$)' || true)

@@ -44,6 +44,13 @@ prism-eval-gate:
       BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
       HEAD_SHA="${CI_COMMIT_SHA}"
 
+      # Skip if eval harness not installed
+      if [[ ! -f ".prism/eval-harness/run-eval.sh" ]]; then
+        echo "Eval harness not installed. Run: prism-cli bootstrapper install-eval-harness"
+        echo "Skipping eval gate."
+        exit 0
+      fi
+
       # Identify AI-generated commits
       AI_SHAS=""
       for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null); do
