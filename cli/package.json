@@ -22,7 +22,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "npx tsc && mkdir -p dist/assets/infra && cp -r ../bootstrapper/metric-hooks ../bootstrapper/eval-harness ../bootstrapper/github-workflows dist/assets/ && cp -r ../infra/bin ../infra/lib ../infra/package.json ../infra/tsconfig.json ../infra/cdk.json dist/assets/infra/",
+    "build": "npx tsc && mkdir -p dist/assets/infra && cp -r ../bootstrapper/metric-hooks ../bootstrapper/eval-harness ../bootstrapper/github-workflows ../bootstrapper/gitlab-workflows dist/assets/ && cp -r ../infra/bin ../infra/lib ../infra/package.json ../infra/tsconfig.json ../infra/cdk.json dist/assets/infra/",
     "prepublishOnly": "npm run build",
     "start": "tsx bin/prism-cli.ts",
     "dev": "tsx bin/prism-cli.ts"
