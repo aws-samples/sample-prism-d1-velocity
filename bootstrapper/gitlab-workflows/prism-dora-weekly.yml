@@ -30,15 +30,22 @@ prism-dora-weekly:
     - |
       # Assume AWS role via GitLab OIDC
       if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
-        CREDS=$(aws sts assume-role-with-web-identity \
+        echo "Assuming role via OIDC: ${PRISM_METRICS_ROLE_ARN}"
+        if CREDS=$(aws sts assume-role-with-web-identity \
           --role-arn "${PRISM_METRICS_ROLE_ARN}" \
           --role-session-name "gitlab-ci-${CI_JOB_ID}" \
           --web-identity-token "${GITLAB_OIDC_TOKEN}" \
           --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
-          --output text)
-        export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
-        export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
-        export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
+          --output text 2>&1); then
+          export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
+          export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
+          export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
+          echo "✓ OIDC credentials acquired."
+        else
+          echo "⚠️ OIDC assume-role failed: ${CREDS}"
+        fi
+      elif [[ -n "${PRISM_METRICS_ROLE_ARN}" ]]; then
+        echo "⚠️ PRISM_METRICS_ROLE_ARN set but GITLAB_OIDC_TOKEN is empty."
       fi
   script:
     - |
