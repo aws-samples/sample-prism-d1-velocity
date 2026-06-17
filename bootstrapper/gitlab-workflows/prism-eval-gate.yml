@@ -12,7 +12,6 @@
 
 prism-eval-gate:
   stage: test
-  allow_failure: true
   image:
     name: amazon/aws-cli:latest
     entrypoint: [""]
