@@ -1,0 +1,132 @@
+# prism-agent-eval.yml — Evaluate agent outputs on MRs that modify agent code.
+#
+# Include this file in your .gitlab-ci.yml:
+#   include:
+#     - local: '.prism/gitlab-workflows/prism-agent-eval.yml'
+#
+# Required setup:
+#   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role with bedrock:InvokeModel + events:PutEvents)
+#   - CI/CD variable AWS_REGION (default: us-west-2)
+#   - .prism/config.json committed to the repo
+#   - .prism/eval-harness/ installed (run: prism-cli bootstrapper install-eval-harness)
+#   - (Optional) Agent entry point supports --mock flag for dry-run execution
+
+prism-agent-eval:
+  stage: test
+  image: python:3.12-slim
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: ${GITLAB_OIDC_AUDIENCE:-https://gitlab.aws.dev}
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - agent/**
+        - agents/**
+        - mcp-servers/**
+        - "**/*agent*.py"
+        - "**/*agent*.ts"
+  variables:
+    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq jq bc git curl unzip
+    - curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+    - unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install
+    - pip install --quiet strands-agents strands-agents-tools requests
+    - git fetch --unshallow || true
+    - |
+      # Assume AWS role via GitLab OIDC
+      if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
+        CREDS=$(aws sts assume-role-with-web-identity \
+          --role-arn "${PRISM_METRICS_ROLE_ARN}" \
+          --role-session-name "gitlab-ci-${CI_JOB_ID}" \
+          --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+          --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+          --output text)
+        export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
+        export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
+        export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
+      fi
+  script:
+    - |
+      TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
+      BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+      HEAD_SHA="${CI_COMMIT_SHA}"
+
+      # Identify agent changes
+      AGENT_FILES=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" \
+        | grep -E '(^agent/|^agents/|^mcp-servers/|agent.*\.(py|ts)$)' || true)
+
+      if [[ -z "${AGENT_FILES}" ]]; then
+        echo "No agent-related files changed. Skipping."
+        exit 0
+      fi
+
+      FILE_COUNT=$(echo "${AGENT_FILES}" | wc -l | tr -d ' ')
+      echo "Found ${FILE_COUNT} changed agent files."
+
+      # Run agent in mock mode
+      AGENT_ENTRY=""
+      for CANDIDATE in agent/main.py agents/main.py agent.py; do
+        [[ -f "${CANDIDATE}" ]] && AGENT_ENTRY="${CANDIDATE}" && break
+      done
+
+      MOCK_RAN="false"
+      if [[ -n "${AGENT_ENTRY}" ]]; then
+        echo "Running agent in mock mode: ${AGENT_ENTRY}"
+        MOCK_RAN="true"
+        set +e
+        python "${AGENT_ENTRY}" --mock > /tmp/agent-output.json 2>/tmp/agent-stderr.log
+        AGENT_EXIT=$?
+        set -e
+      else
+        echo "{}" > /tmp/agent-output.json
+        AGENT_EXIT=0
+      fi
+
+      # Evaluate
+      chmod +x .prism/eval-harness/run-eval.sh
+      RUBRIC=".prism/eval-harness/rubrics/agent-quality.json"
+
+      if [[ -s /tmp/agent-output.json ]]; then
+        EVAL_TARGET="/tmp/agent-output.json"
+      else
+        EVAL_TARGET=$(echo "${AGENT_FILES}" | head -1)
+      fi
+
+      set +e
+      OUTPUT=$(./.prism/eval-harness/run-eval.sh "${RUBRIC}" "${EVAL_TARGET}" 2>&1)
+      set -e
+
+      SCORE=$(echo "${OUTPUT}" | grep '^Score:' | awk '{print $2}' || echo "0")
+      RESULT=$(echo "${OUTPUT}" | grep '^Result:' | awk '{print $2}' || echo "UNKNOWN")
+
+      echo "Agent eval: score=${SCORE} result=${RESULT}"
+
+      # Post MR note
+      if [[ -n "${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" ]]; then
+        EMOJI=$([[ "${RESULT}" == "PASS" ]] && echo "✅" || echo "❌")
+        NOTE="## ${EMOJI} PRISM Agent Eval — ${RESULT}\n\n**Score**: ${SCORE} | **Agent Files**: ${FILE_COUNT} | **Mock**: ${MOCK_RAN} (exit ${AGENT_EXIT})"
+        curl -s --request POST --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
+          --form "body=${NOTE}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null
+      fi
+
+      # Emit event
+      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      EVAL_EVENT=$(jq -n \
+        --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
+        --argjson score "${SCORE:-0}" --arg result "${RESULT}" --argjson file_count "${FILE_COUNT}" \
+        --arg mr_iid "${CI_MERGE_REQUEST_IID}" --arg mock_ran "${MOCK_RAN}" \
+        '{team_id:$team_id, repo:$repo, timestamp:$timestamp, prism_level:3,
+         metric:{name:"agent_eval_score",value:$score,unit:"score"},
+         ai_context:{tool:"bedrock-eval",model:"anthropic.claude-sonnet-4-20250514",origin:"ai-generated"},
+         ai_dora:{eval_gate_pass_rate:(if $result == "PASS" then 1.0 else 0.0 end)},
+         agent_eval:{file_count:$file_count, result:$result, mock_ran:($mock_ran == "true"),
+                     mr_iid:($mr_iid | tonumber), rubric:"agent-quality"}}')
+
+      aws events put-events --region "${AWS_DEFAULT_REGION}" \
+        --entries "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.agent.eval\",
+          \"EventBusName\":\"prism-d1-metrics\",
+          \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
+
+      [[ "${RESULT}" == "FAIL" ]] && exit 1 || exit 0

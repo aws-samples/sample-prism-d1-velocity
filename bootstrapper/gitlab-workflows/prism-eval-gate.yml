@@ -1,0 +1,139 @@
+# prism-eval-gate.yml — Evaluate AI-generated code quality on MRs.
+#
+# Include this file in your .gitlab-ci.yml:
+#   include:
+#     - local: '.prism/gitlab-workflows/prism-eval-gate.yml'
+#
+# Required setup:
+#   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role with bedrock:InvokeModel + events:PutEvents)
+#   - CI/CD variable AWS_REGION (default: us-west-2)
+#   - .prism/eval-harness/ directory in your repo (run: prism-cli bootstrapper install-eval-harness)
+#   - At least one rubric JSON in .prism/eval-harness/rubrics/
+
+prism-eval-gate:
+  stage: test
+  image: amazon/aws-cli:latest
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: ${GITLAB_OIDC_AUDIENCE:-https://gitlab.aws.dev}
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  variables:
+    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+  before_script:
+    - yum install -y -q jq bc git curl
+    - git fetch --unshallow || true
+    - |
+      # Assume AWS role via GitLab OIDC
+      if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
+        CREDS=$(aws sts assume-role-with-web-identity \
+          --role-arn "${PRISM_METRICS_ROLE_ARN}" \
+          --role-session-name "gitlab-ci-${CI_JOB_ID}" \
+          --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+          --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+          --output text)
+        export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
+        export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
+        export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
+      fi
+  script:
+    - |
+      TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
+      BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+      HEAD_SHA="${CI_COMMIT_SHA}"
+
+      # Identify AI-generated commits
+      AI_SHAS=""
+      for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null); do
+        if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
+          AI_SHAS="${AI_SHAS} ${SHA}"
+        fi
+      done
+      AI_SHAS=$(echo "${AI_SHAS}" | xargs)
+
+      if [[ -z "${AI_SHAS}" ]]; then
+        echo "No AI-generated code detected. Skipping eval gate."
+        # Post skip note
+        curl -s --request POST --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
+          --form "body=✅ **PRISM Eval Gate** — No AI-generated code detected. Skipped." \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null 2>&1 || true
+        exit 0
+      fi
+
+      # Collect changed source files from AI commits
+      CHANGED_FILES=""
+      for SHA in ${AI_SHAS}; do
+        FILES=$(git diff-tree --no-commit-id --name-only -r "${SHA}" \
+          | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' | grep -v '\.test\.\|\.spec\.' || true)
+        CHANGED_FILES="${CHANGED_FILES}\n${FILES}"
+      done
+      echo -e "${CHANGED_FILES}" | sort -u | grep -v '^$' > /tmp/ai-changed-files.txt || true
+      FILE_COUNT=$(wc -l < /tmp/ai-changed-files.txt | tr -d ' ')
+
+      # Run evaluations
+      chmod +x .prism/eval-harness/run-eval.sh
+      PASS_COUNT=0; FAIL_COUNT=0; TOTAL_SCORE=0; TOTAL_HALLUCINATIONS=0; RESULTS=""
+
+      while IFS= read -r FILE; do
+        [[ -z "${FILE}" || ! -f "${FILE}" ]] && continue
+
+        # Auto-select rubric
+        if echo "${FILE}" | grep -qiE '(agent|assistant|orchestrat|workflow|chain)'; then
+          RUBRIC=".prism/eval-harness/rubrics/agent-quality.json"
+        elif echo "${FILE}" | grep -qiE '(auth|security|guard|policy|iam|permission|crypto)'; then
+          RUBRIC=".prism/eval-harness/rubrics/security-compliance.json"
+        elif echo "${FILE}" | grep -qiE '(api|handler|route|controller)'; then
+          RUBRIC=".prism/eval-harness/rubrics/api-response-quality.json"
+        else
+          RUBRIC=".prism/eval-harness/rubrics/code-quality.json"
+        fi
+        [[ -f "${RUBRIC}" ]] || RUBRIC=$(ls .prism/eval-harness/rubrics/*.json 2>/dev/null | head -1)
+        [[ -f "${RUBRIC}" ]] || { echo "No rubrics found"; exit 1; }
+
+        set +e
+        OUTPUT=$(./.prism/eval-harness/run-eval.sh "${RUBRIC}" "${FILE}" 2>&1)
+        set -e
+
+        SCORE=$(echo "${OUTPUT}" | grep '^Score:' | awk '{print $2}' || echo "0")
+        RESULT=$(echo "${OUTPUT}" | grep '^Result:' | awk '{print $2}' || echo "UNKNOWN")
+        HALLUC=$(echo "${OUTPUT}" | grep '^Hallucinations:' | awk '{print $2}' || echo "0")
+
+        TOTAL_SCORE=$(echo "${TOTAL_SCORE} + ${SCORE}" | bc -l)
+        TOTAL_HALLUCINATIONS=$((TOTAL_HALLUCINATIONS + HALLUC))
+
+        [[ "${RESULT}" == "SKIP" ]] && continue
+        [[ "${RESULT}" == "PASS" ]] && PASS_COUNT=$((PASS_COUNT + 1)) || FAIL_COUNT=$((FAIL_COUNT + 1))
+        RESULTS="${RESULTS}\n| \`${FILE}\` | $(basename "${RUBRIC}" .json) | ${SCORE} | ${RESULT} |"
+      done < /tmp/ai-changed-files.txt
+
+      TOTAL_FILES=$((PASS_COUNT + FAIL_COUNT))
+      [[ "${TOTAL_FILES}" -gt 0 ]] && AVG_SCORE=$(echo "scale=4; ${TOTAL_SCORE} / ${TOTAL_FILES}" | bc -l) || AVG_SCORE="0"
+      [[ "${FAIL_COUNT}" -gt 0 ]] && OVERALL="FAIL" || OVERALL="PASS"
+
+      # Post MR note
+      EMOJI=$([[ "${OVERALL}" == "PASS" ]] && echo "✅" || echo "❌")
+      NOTE="## ${EMOJI} PRISM Eval Gate — ${OVERALL}\n\n**Score**: ${AVG_SCORE} | **Files**: ${TOTAL_FILES} | **Pass**: ${PASS_COUNT} | **Fail**: ${FAIL_COUNT} | **Hallucinations**: ${TOTAL_HALLUCINATIONS}\n\n| File | Rubric | Score | Result |\n|---|---|---|---|\n$(echo -e "${RESULTS}")\n\n> Threshold: 0.82 | Model: claude-sonnet-4-20250514"
+      curl -s --request POST --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
+        --form "body=${NOTE}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null 2>&1 || true
+
+      # Emit event
+      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      EVAL_EVENT=$(jq -n \
+        --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
+        --argjson score "${AVG_SCORE}" --arg result "${OVERALL}" \
+        --argjson total_files "${TOTAL_FILES}" --argjson pass_count "${PASS_COUNT}" \
+        --argjson fail_count "${FAIL_COUNT}" --argjson hallucinations "${TOTAL_HALLUCINATIONS}" \
+        --arg mr_iid "${CI_MERGE_REQUEST_IID}" \
+        '{team_id:$team_id, repo:$repo, timestamp:$timestamp, prism_level:2,
+         metric:{name:"eval_score",value:$score,unit:"score"},
+         ai_context:{tool:"bedrock-eval",model:"anthropic.claude-sonnet-4-20250514",origin:"ai-generated"},
+         eval:{total_files:$total_files, pass_count:$pass_count, fail_count:$fail_count,
+               result:$result, mr_iid:($mr_iid | tonumber), hallucinations_caught:$hallucinations}}')
+
+      aws events put-events --region "${AWS_DEFAULT_REGION}" \
+        --entries "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",
+          \"EventBusName\":\"prism-d1-metrics\",
+          \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
+
+      [[ "${OVERALL}" == "FAIL" ]] && exit 1 || exit 0

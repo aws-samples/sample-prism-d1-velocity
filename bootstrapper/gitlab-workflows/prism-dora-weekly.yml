@@ -1,0 +1,166 @@
+# prism-dora-weekly.yml — Weekly DORA + AI-DORA metrics assessment.
+#
+# Include this file in your .gitlab-ci.yml:
+#   include:
+#     - local: '.prism/gitlab-workflows/prism-dora-weekly.yml'
+#
+# Required setup:
+#   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role with events:PutEvents + cloudwatch:PutMetricData)
+#   - CI/CD variable AWS_REGION (default: us-west-2)
+#   - .prism/config.json committed to the repo
+#   - Pipeline schedule configured: weekly on Monday at 09:00 UTC
+
+prism-dora-weekly:
+  stage: .post
+  image: amazon/aws-cli:latest
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: ${GITLAB_OIDC_AUDIENCE:-https://gitlab.aws.dev}
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+  variables:
+    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+  before_script:
+    - yum install -y -q jq bc git curl
+    - git fetch --unshallow || true
+    - |
+      # Assume AWS role via GitLab OIDC
+      if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
+        CREDS=$(aws sts assume-role-with-web-identity \
+          --role-arn "${PRISM_METRICS_ROLE_ARN}" \
+          --role-session-name "gitlab-ci-${CI_JOB_ID}" \
+          --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+          --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+          --output text)
+        export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
+        export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
+        export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
+      fi
+  script:
+    - |
+      TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
+      SINCE_DATE=$(date -u -d '7 days ago' +"%Y-%m-%d")
+      REPO="${CI_PROJECT_PATH}"
+      NAMESPACE="PRISM/D1/Velocity"
+
+      # ---------------------------------------------------------------
+      # 1. Deployment Frequency — merged MRs to default branch (past 7 days)
+      # ---------------------------------------------------------------
+      SINCE_ISO=$(date -u -d '7 days ago' +"%Y-%m-%dT%H:%M:%SZ")
+      MERGED_MRS=$(curl -s --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests?state=merged&updated_after=${SINCE_ISO}&per_page=100" 2>/dev/null || echo "[]")
+      DEPLOY_COUNT=$(echo "${MERGED_MRS}" | jq 'length')
+      DEPLOY_FREQUENCY=$(echo "scale=2; ${DEPLOY_COUNT} / 7" | bc -l | sed 's/^\./0./')
+
+      # ---------------------------------------------------------------
+      # 2. Lead Time — avg time from MR open to merge
+      # ---------------------------------------------------------------
+      AVG_LEAD_TIME_HOURS=$(echo "${MERGED_MRS}" | jq '
+        if length == 0 then 0
+        else [.[] | select(.merged_at != null and .created_at != null) |
+          ((.merged_at | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) -
+           (.created_at | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime)) / 3600
+        ] | if length > 0 then add / length | . * 100 | round / 100 else 0 end
+        end')
+
+      # ---------------------------------------------------------------
+      # 3. Change Failure Rate — MRs with "revert|hotfix|rollback" in title
+      # ---------------------------------------------------------------
+      FAILURE_MRS=$(echo "${MERGED_MRS}" | jq '[.[] | select(.title // "" | test("revert|hotfix|rollback"; "i"))] | length')
+      [[ "${DEPLOY_COUNT}" -gt 0 ]] && CHANGE_FAILURE_RATE=$(echo "scale=4; ${FAILURE_MRS} / ${DEPLOY_COUNT}" | bc -l | sed 's/^\./0./') || CHANGE_FAILURE_RATE="0"
+
+      # ---------------------------------------------------------------
+      # 4. MTTR — avg time for hotfix/revert MRs
+      # ---------------------------------------------------------------
+      MTTR_HOURS=$(echo "${MERGED_MRS}" | jq '
+        [.[] | select(.title // "" | test("revert|hotfix|rollback"; "i")) |
+         select(.merged_at != null and .created_at != null) |
+         ((.merged_at | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) -
+          (.created_at | sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime)) / 3600
+        ] | if length > 0 then add / length | . * 100 | round / 100 else 0 end')
+
+      # ---------------------------------------------------------------
+      # 5. AI-DORA metrics from commit trailers
+      # ---------------------------------------------------------------
+      TOTAL_COMMITS=$(git log --since="${SINCE_DATE}" --oneline "${CI_DEFAULT_BRANCH}" 2>/dev/null | wc -l | tr -d ' ')
+      AI_GENERATED=0; AI_ASSISTED=0; HUMAN_ONLY=0; SPEC_REFS=0
+      CLAUDE_CODE_COUNT=0; KIRO_COUNT=0; Q_DEV_COUNT=0
+
+      for SHA in $(git log --since="${SINCE_DATE}" --format='%H' "${CI_DEFAULT_BRANCH}" 2>/dev/null); do
+        MSG=$(git log -1 --format='%B' "${SHA}")
+        echo "${MSG}" | grep -q '^AI-Origin: ai-generated' && AI_GENERATED=$((AI_GENERATED + 1))
+        echo "${MSG}" | grep -q '^AI-Origin: ai-assisted' && AI_ASSISTED=$((AI_ASSISTED + 1))
+        echo "${MSG}" | grep -q '^AI-Origin: human' && HUMAN_ONLY=$((HUMAN_ONLY + 1))
+        echo "${MSG}" | grep -q '^Spec-Ref:' && SPEC_REFS=$((SPEC_REFS + 1))
+        TOOL=$(echo "${MSG}" | grep -oP '(?<=^AI-Tool: ).+' || true)
+        case "${TOOL}" in
+          *claude-code*) CLAUDE_CODE_COUNT=$((CLAUDE_CODE_COUNT + 1)) ;;
+          *kiro*)        KIRO_COUNT=$((KIRO_COUNT + 1)) ;;
+          *q-developer*) Q_DEV_COUNT=$((Q_DEV_COUNT + 1)) ;;
+        esac
+      done
+
+      UNTAGGED=$((TOTAL_COMMITS - AI_GENERATED - AI_ASSISTED - HUMAN_ONLY))
+      [[ "${UNTAGGED}" -lt 0 ]] && UNTAGGED=0
+      AI_TOTAL=$((AI_GENERATED + AI_ASSISTED))
+      [[ "${TOTAL_COMMITS}" -gt 0 ]] && AI_ADOPTION_RATE=$(echo "scale=4; ${AI_TOTAL} / ${TOTAL_COMMITS}" | bc -l | sed 's/^\./0./') || AI_ADOPTION_RATE="0"
+      [[ "${TOTAL_COMMITS}" -gt 0 ]] && SPEC_COVERAGE=$(echo "scale=4; ${SPEC_REFS} / ${TOTAL_COMMITS}" | bc -l | sed 's/^\./0./') || SPEC_COVERAGE="0"
+
+      # ---------------------------------------------------------------
+      # Emit assessment event
+      # ---------------------------------------------------------------
+      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+      ASSESSMENT_EVENT=$(jq -n \
+        --arg team_id "${TEAM_ID}" --arg repo "${REPO}" --arg timestamp "${TIMESTAMP}" \
+        --argjson deploy_count "${DEPLOY_COUNT}" --argjson deploy_frequency "${DEPLOY_FREQUENCY}" \
+        --argjson avg_lead_time_hours "${AVG_LEAD_TIME_HOURS}" \
+        --argjson change_failure_rate "${CHANGE_FAILURE_RATE}" --argjson mttr_hours "${MTTR_HOURS}" \
+        --argjson total_commits "${TOTAL_COMMITS}" --argjson ai_generated "${AI_GENERATED}" \
+        --argjson ai_assisted "${AI_ASSISTED}" --argjson human_only "${HUMAN_ONLY}" \
+        --argjson untagged "${UNTAGGED}" --argjson ai_adoption_rate "${AI_ADOPTION_RATE}" \
+        --argjson spec_coverage "${SPEC_COVERAGE}" \
+        --argjson claude_code "${CLAUDE_CODE_COUNT}" --argjson kiro "${KIRO_COUNT}" --argjson q_dev "${Q_DEV_COUNT}" \
+        '{team_id:$team_id, repo:$repo, timestamp:$timestamp, prism_level:2,
+         metric:{name:"weekly_assessment",value:1,unit:"assessment"},
+         dora:{deployment_frequency:$deploy_frequency, deployments:$deploy_count,
+               lead_time_hours:$avg_lead_time_hours, change_failure_rate:$change_failure_rate,
+               mttr_hours:$mttr_hours},
+         ai_dora:{ai_adoption_rate:$ai_adoption_rate, ai_to_merge_ratio:$ai_adoption_rate,
+                  total_commits:$total_commits, ai_generated_commits:$ai_generated,
+                  ai_assisted_commits:$ai_assisted, human_commits:$human_only,
+                  untagged_commits:$untagged, spec_coverage:$spec_coverage,
+                  tool_breakdown:{claude_code:$claude_code, kiro:$kiro, q_developer:$q_dev}}}')
+
+      aws events put-events --region "${AWS_DEFAULT_REGION}" \
+        --entries "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.assessment\",
+          \"EventBusName\":\"prism-d1-metrics\",
+          \"Detail\":$(echo "${ASSESSMENT_EVENT}" | jq -c '.' | jq -Rs '.')}]"
+
+      # Emit CloudWatch metrics
+      for METRIC_DATA in \
+        "AIAdoptionRate:${AI_ADOPTION_RATE}:Percent" \
+        "SpecCoverage:${SPEC_COVERAGE}:Percent" \
+        "ClaudeCodeCommits:${CLAUDE_CODE_COUNT}:Count" \
+        "KiroCommits:${KIRO_COUNT}:Count" \
+        "QDeveloperCommits:${Q_DEV_COUNT}:Count" \
+        "UntaggedCommits:${UNTAGGED}:Count"; do
+        METRIC_NAME="${METRIC_DATA%%:*}"; REST="${METRIC_DATA#*:}"
+        METRIC_VALUE="${REST%%:*}"; METRIC_UNIT="${REST#*:}"
+        aws cloudwatch put-metric-data --region "${AWS_DEFAULT_REGION}" --namespace "${NAMESPACE}" \
+          --metric-data "[{\"MetricName\":\"${METRIC_NAME}\",\"Value\":${METRIC_VALUE},
+            \"Unit\":\"${METRIC_UNIT}\",\"Timestamp\":\"${TIMESTAMP}\",
+            \"Dimensions\":[{\"Name\":\"TeamId\",\"Value\":\"${TEAM_ID}\"},{\"Name\":\"Repository\",\"Value\":\"${REPO}\"}]}]"
+      done
+
+      echo "=== DORA Metrics ==="
+      echo "Deployment Frequency: ${DEPLOY_FREQUENCY}/day"
+      echo "Lead Time: ${AVG_LEAD_TIME_HOURS} hours"
+      echo "Change Failure Rate: ${CHANGE_FAILURE_RATE}"
+      echo "MTTR: ${MTTR_HOURS} hours"
+      echo "=== AI-DORA Metrics ==="
+      echo "AI Adoption Rate: ${AI_ADOPTION_RATE}"
+      echo "Spec Coverage: ${SPEC_COVERAGE}"
+      echo "Total Commits: ${TOTAL_COMMITS}"

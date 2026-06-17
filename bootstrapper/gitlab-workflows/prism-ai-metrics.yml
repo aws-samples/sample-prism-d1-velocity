@@ -1,0 +1,139 @@
+# prism-ai-metrics.yml — Emit AI-assisted development metrics on MR merge.
+#
+# Include this file in your .gitlab-ci.yml:
+#   include:
+#     - local: '.prism/gitlab-workflows/prism-ai-metrics.yml'
+#
+# Required setup:
+#   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role ARN with events:PutEvents)
+#   - CI/CD variable AWS_REGION (default: us-west-2)
+#   - .prism/config.json committed to the repo
+#   - AWS credentials configured via OIDC or CI/CD variables
+
+prism-ai-metrics:
+  stage: .post
+  image: amazon/aws-cli:latest
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: ${GITLAB_OIDC_AUDIENCE:-https://gitlab.aws.dev}
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_STATE == "merged"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
+  variables:
+    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+  before_script:
+    - yum install -y -q jq bc git
+    - git fetch --unshallow || true
+    - |
+      # Assume AWS role via GitLab OIDC
+      if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
+        CREDS=$(aws sts assume-role-with-web-identity \
+          --role-arn "${PRISM_METRICS_ROLE_ARN}" \
+          --role-session-name "gitlab-ci-${CI_JOB_ID}" \
+          --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+          --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+          --output text)
+        export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
+        export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
+        export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
+      fi
+  script:
+    - |
+      # Read team ID
+      TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
+
+      # Determine commit range
+      if [[ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA}" ]]; then
+        BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+        HEAD_SHA="${CI_COMMIT_SHA}"
+      else
+        BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+        HEAD_SHA="${CI_COMMIT_SHA}"
+      fi
+
+      TOTAL_COMMITS=$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo "1")
+
+      # Count AI origin per-commit
+      AI_GENERATED=0; AI_ASSISTED=0; HUMAN_ONLY=0
+      TOTAL_INPUT_TOKENS=0; TOTAL_OUTPUT_TOKENS=0; TOTAL_COST="0"
+
+      for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo "${HEAD_SHA}"); do
+        MSG=$(git log -1 --format='%B' "${SHA}")
+        echo "${MSG}" | grep -q '^AI-Origin: ai-generated' && AI_GENERATED=$((AI_GENERATED + 1))
+        echo "${MSG}" | grep -q '^AI-Origin: ai-assisted' && AI_ASSISTED=$((AI_ASSISTED + 1))
+        echo "${MSG}" | grep -q '^AI-Origin: human' && HUMAN_ONLY=$((HUMAN_ONLY + 1))
+
+        INPUT_T=$(echo "${MSG}" | grep -oP '(?<=^AI-Input-Tokens: )\d+' || echo "0")
+        OUTPUT_T=$(echo "${MSG}" | grep -oP '(?<=^AI-Output-Tokens: )\d+' || echo "0")
+        COST_T=$(echo "${MSG}" | grep -oP '(?<=^AI-Cost: )[0-9.]+' || echo "0")
+        [[ ${INPUT_T} -gt 1000000 ]] && INPUT_T=0
+        [[ ${OUTPUT_T} -gt 1000000 ]] && OUTPUT_T=0
+        TOTAL_INPUT_TOKENS=$((TOTAL_INPUT_TOKENS + INPUT_T))
+        TOTAL_OUTPUT_TOKENS=$((TOTAL_OUTPUT_TOKENS + OUTPUT_T))
+        TOTAL_COST=$(echo "${TOTAL_COST} + ${COST_T}" | bc -l)
+      done
+
+      AI_COMMITS=$((AI_GENERATED + AI_ASSISTED))
+      [[ "${TOTAL_COMMITS}" -gt 0 ]] && AI_RATIO=$(echo "scale=4; ${AI_COMMITS} / ${TOTAL_COMMITS}" | bc -l | sed 's/^\./0./') || AI_RATIO="0"
+
+      # Calculate lead time (MR created to merged)
+      LEAD_TIME_SECONDS=0
+      if [[ -n "${CI_MERGE_REQUEST_CREATED_AT}" ]]; then
+        CREATED_TS=$(date -d "${CI_MERGE_REQUEST_CREATED_AT}" +%s 2>/dev/null || echo "0")
+        MERGED_TS=$(date +%s)
+        LEAD_TIME_SECONDS=$((MERGED_TS - CREATED_TS))
+      fi
+
+      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+      PR_EVENT=$(jq -n \
+        --arg team_id "${TEAM_ID}" \
+        --arg repo "${CI_PROJECT_PATH}" \
+        --arg timestamp "${TIMESTAMP}" \
+        --argjson ai_ratio "${AI_RATIO}" \
+        --argjson total_commits "${TOTAL_COMMITS}" \
+        --argjson ai_commits "${AI_COMMITS}" \
+        --argjson ai_generated "${AI_GENERATED}" \
+        --argjson ai_assisted "${AI_ASSISTED}" \
+        --argjson lead_time_seconds "${LEAD_TIME_SECONDS}" \
+        --arg mr_iid "${CI_MERGE_REQUEST_IID:-0}" \
+        --arg mr_author "${GITLAB_USER_LOGIN}" \
+        --argjson total_input_tokens "${TOTAL_INPUT_TOKENS}" \
+        --argjson total_output_tokens "${TOTAL_OUTPUT_TOKENS}" \
+        --arg total_cost "${TOTAL_COST}" \
+        '{
+          team_id: $team_id, repo: $repo, timestamp: $timestamp, prism_level: 2,
+          metric: {name: "ai_to_merge_ratio", value: $ai_ratio, unit: "ratio"},
+          ai_context: {tool: "gitlab-ci", model: "n/a",
+            origin: (if $ai_ratio > 0 then "ai-assisted" else "human" end)},
+          dora: {deployment_frequency: 1, lead_time_seconds: $lead_time_seconds},
+          ai_dora: {ai_to_merge_ratio: $ai_ratio, total_commits: $total_commits,
+            ai_commits: $ai_commits, ai_generated_commits: $ai_generated,
+            ai_assisted_commits: $ai_assisted,
+            total_input_tokens: $total_input_tokens,
+            total_output_tokens: $total_output_tokens,
+            total_cost_usd: (if $total_cost != "0" and $total_cost != "" then ($total_cost | tonumber) else 0 end)},
+          mr: {iid: ($mr_iid | tonumber), author: $mr_author}
+        }')
+
+      aws events put-events --region "${AWS_DEFAULT_REGION}" \
+        --entries "[{
+          \"Source\": \"prism.d1.velocity\",
+          \"DetailType\": \"prism.d1.pr\",
+          \"EventBusName\": \"prism-d1-metrics\",
+          \"Detail\": $(echo "${PR_EVENT}" | jq -c '.' | jq -Rs '.')
+        }]"
+
+      # Also emit deploy event
+      DEPLOY_EVENT=$(jq -n --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
+        '{team_id: $team_id, repo: $repo, timestamp: $timestamp, prism_level: 2,
+         metric: {name: "deployment", value: 1, unit: "count"},
+         dora: {deployment_frequency: 1}}')
+
+      aws events put-events --region "${AWS_DEFAULT_REGION}" \
+        --entries "[{
+          \"Source\": \"prism.d1.velocity\",
+          \"DetailType\": \"prism.d1.deploy\",
+          \"EventBusName\": \"prism-d1-metrics\",
+          \"Detail\": $(echo "${DEPLOY_EVENT}" | jq -c '.' | jq -Rs '.')
+        }]"
