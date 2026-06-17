@@ -42,7 +42,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Quick Start
 
-### Quickstart: Adopt PRISM
+### Quickstart
 
 #### 1. Install Dependencies
 
