@@ -15,7 +15,7 @@ prism-eval-gate:
   image: amazon/aws-cli:latest
   id_tokens:
     GITLAB_OIDC_TOKEN:
-      aud: ${GITLAB_OIDC_AUDIENCE:-https://gitlab.aws.dev}
+      aud: https://gitlab.aws.dev
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
   variables:
