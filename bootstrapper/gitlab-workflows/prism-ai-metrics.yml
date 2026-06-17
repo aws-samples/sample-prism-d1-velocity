@@ -19,7 +19,6 @@ prism-ai-metrics:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.aws.dev
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_STATE == "merged"'
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
   variables:
     AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
