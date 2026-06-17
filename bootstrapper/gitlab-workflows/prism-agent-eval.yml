@@ -125,10 +125,10 @@ prism-agent-eval:
       # Post MR note
       if [[ -n "${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" ]]; then
         EMOJI=$([[ "${RESULT}" == "PASS" ]] && echo "✅" || echo "❌")
-        NOTE="## ${EMOJI} PRISM Agent Eval — ${RESULT}\n\n**Score**: ${SCORE} | **Agent Files**: ${FILE_COUNT} | **Mock**: ${MOCK_RAN} (exit ${AGENT_EXIT})"
-        curl -s --request POST --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
-          --form "body=${NOTE}" \
-          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null
+        echo ""
+        echo "## ${EMOJI} PRISM Agent Eval — ${RESULT}"
+        echo "Score: ${SCORE} | Agent Files: ${FILE_COUNT} | Mock: ${MOCK_RAN} (exit ${AGENT_EXIT})"
+        echo ""
       fi
 
       # Emit event

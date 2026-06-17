@@ -81,10 +81,6 @@ prism-eval-gate:
 
       if [[ -z "${AI_SHAS}" ]]; then
         echo "No AI-generated code detected. Skipping eval gate."
-        # Post skip note
-        curl -s --request POST --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
-          --form "body=✅ **PRISM Eval Gate** — No AI-generated code detected. Skipped." \
-          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null 2>&1 || true
         exit 0
       fi
 
@@ -138,12 +134,13 @@ prism-eval-gate:
       [[ "${TOTAL_FILES}" -gt 0 ]] && AVG_SCORE=$(echo "scale=4; ${TOTAL_SCORE} / ${TOTAL_FILES}" | bc -l) || AVG_SCORE="0"
       [[ "${FAIL_COUNT}" -gt 0 ]] && OVERALL="FAIL" || OVERALL="PASS"
 
-      # Post MR note
+      # Log results
       EMOJI=$([[ "${OVERALL}" == "PASS" ]] && echo "✅" || echo "❌")
-      NOTE="## ${EMOJI} PRISM Eval Gate — ${OVERALL}\n\n**Score**: ${AVG_SCORE} | **Files**: ${TOTAL_FILES} | **Pass**: ${PASS_COUNT} | **Fail**: ${FAIL_COUNT} | **Hallucinations**: ${TOTAL_HALLUCINATIONS}\n\n| File | Rubric | Score | Result |\n|---|---|---|---|\n$(echo -e "${RESULTS}")\n\n> Threshold: 0.82 | Model: claude-sonnet-4-20250514"
-      curl -s --request POST --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-${CI_JOB_TOKEN}}" \
-        --form "body=${NOTE}" \
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}/notes" > /dev/null 2>&1 || true
+      echo ""
+      echo "## ${EMOJI} PRISM Eval Gate — ${OVERALL}"
+      echo "Score: ${AVG_SCORE} | Files: ${TOTAL_FILES} | Pass: ${PASS_COUNT} | Fail: ${FAIL_COUNT} | Hallucinations: ${TOTAL_HALLUCINATIONS}"
+      echo -e "${RESULTS}"
+      echo ""
 
       # Emit event
       TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
