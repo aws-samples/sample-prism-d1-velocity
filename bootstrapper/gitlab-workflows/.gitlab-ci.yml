@@ -1,0 +1,17 @@
+# PRISM D1 Velocity — GitLab CI/CD Pipeline
+#
+# Copy this file to .gitlab-ci.yml in your repo root.
+# Individual workflow files should be placed in .prism/gitlab-workflows/
+#
+# Required setup:
+#   1. Run: prism-cli bootstrapper setup-gitlab-oidc
+#   2. Add CI/CD variable PRISM_METRICS_ROLE_ARN with the output role ARN
+#   3. Copy gitlab-workflows/*.yml to .prism/gitlab-workflows/ in your repo
+#   4. (Optional) Set GITLAB_OIDC_AUDIENCE if not using gitlab.aws.dev
+#   5. (Optional) Create a pipeline schedule for prism-dora-weekly (Monday 09:00 UTC)
+
+include:
+  - local: '.prism/gitlab-workflows/prism-ai-metrics.yml'
+  - local: '.prism/gitlab-workflows/prism-dora-weekly.yml'
+  - local: '.prism/gitlab-workflows/prism-agent-eval.yml'
+  - local: '.prism/gitlab-workflows/prism-eval-gate.yml'
