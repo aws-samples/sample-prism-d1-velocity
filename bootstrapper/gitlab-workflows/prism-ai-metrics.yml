@@ -12,7 +12,9 @@
 
 prism-ai-metrics:
   stage: .post
-  image: amazon/aws-cli:latest
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
   id_tokens:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.aws.dev
