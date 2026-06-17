@@ -49,6 +49,7 @@ prism-eval-gate:
   script:
     - |
       set +e
+      set -x
       # Skip if no AWS credentials available
       if ! aws sts get-caller-identity &>/dev/null; then
         echo "⚠️ No AWS credentials. Set PRISM_METRICS_ROLE_ARN or configure AWS access."
