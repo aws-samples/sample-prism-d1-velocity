@@ -21,7 +21,7 @@ prism-eval-gate:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
   variables:
-    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+    AWS_DEFAULT_REGION: us-west-2
   before_script:
     - yum install -y -q jq bc git
     - git fetch --unshallow || true

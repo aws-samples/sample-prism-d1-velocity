@@ -23,7 +23,7 @@ prism-dora-weekly:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
   variables:
-    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+    AWS_DEFAULT_REGION: us-west-2
   before_script:
     - yum install -y -q jq bc git
     - git fetch --unshallow || true

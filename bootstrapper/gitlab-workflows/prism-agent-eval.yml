@@ -26,7 +26,7 @@ prism-agent-eval:
         - "**/*agent*.py"
         - "**/*agent*.ts"
   variables:
-    AWS_DEFAULT_REGION: ${AWS_REGION:-us-west-2}
+    AWS_DEFAULT_REGION: us-west-2
   before_script:
     - apt-get update -qq && apt-get install -y -qq jq bc git curl unzip
     - curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
