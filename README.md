@@ -175,41 +175,6 @@ pip install -e ".[dev]"
 python scripts/run-demo.py --mock   # Run agent demo with mock model
 ```
 
-### Adopt the Bootstrapper (Post-Workshop)
-
-```bash
-cd ~/your-repo
-
-# Install git hooks (creates .prism/ config directory)
-prism-cli bootstrapper install-git-hooks --team-id your-team
-
-# Optional: set custom token/cost bounds (defaults: 1M tokens, $100/commit)
-prism-cli bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
-
-# Optional: install globally so all future clones get the hook automatically
-prism-cli bootstrapper install-git-hooks --team-id your-team --global
-
-# Choose a CLAUDE.md template for your team
-cp /path/to/bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
-# Or: CLAUDE-frontend.md, CLAUDE-platform.md, CLAUDE-agent.md
-
-# Add GitHub workflows
-mkdir -p .github/workflows
-cp /path/to/bootstrapper/github-workflows/prism-ai-metrics.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-eval-gate.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-agent-eval.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-dora-weekly.yml .github/workflows/
-
-# Install eval harness
-prism-cli bootstrapper install-eval-harness --with-rubrics
-
-# For agent projects:
-cp /path/to/bootstrapper/agent-configs/ ./agent-configs/
-
-# For Security Agent:
-prism-cli securityagent setup
-```
-
 ## Commit Metadata (AI Attribution)
 
 The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
