@@ -83,7 +83,7 @@ prism-cli bootstrapper setup-gitlab-oidc
 
 **GitHub:**
 ```bash
-prism-cli bootstrapper install-git-hooks
+prism-cli bootstrapper install-github-workflows --region us-west-2
 # Copies workflow files to .github/workflows/
 ```
 
