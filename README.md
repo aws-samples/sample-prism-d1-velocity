@@ -90,7 +90,8 @@ prism-cli bootstrapper install-github-workflows --region us-west-2
 **GitLab:**
 ```bash
 prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
-# Copies workflow files to .prism/gitlab-workflows/ and generates .gitlab-ci.yml
+# Copies workflow files to .prism/gitlab-workflows/
+# Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
 ```
 
 #### 5. Install Git Hooks (per developer)
