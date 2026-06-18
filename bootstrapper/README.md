@@ -10,6 +10,7 @@ Everything your team needs to adopt AI-native software development practices. In
 | `spec-templates/` | Kiro-compatible specification templates (API, data model, integration, agent workflow) |
 | `eval-harness/` | Amazon Bedrock Evaluation rubrics (5 rubrics) and runner script with `--spec` flag |
 | `github-workflows/` | Reusable GitHub Actions for metric collection and eval gating |
+| `gitlab-workflows/` | GitLab CI templates for metric collection and eval gating |
 | `metric-hooks/` | Git hooks for automatic AI-origin tagging and local metric collection |
 | `aidlc-steering/` | AI-DLC development workflow rules for Claude Code, Kiro, and Q Developer (adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows)) |
 | `agent-configs/` | AgentCore Runtime, Memory, Gateway, and Guardrail templates |
@@ -21,52 +22,45 @@ Everything your team needs to adopt AI-native software development practices. In
 ### Step 1: Install Git Hooks
 
 ```bash
-cd your-repo
+# For all future clones (global template):
+prism-cli bootstrapper install-git-hooks --global
 
-prism-cli bootstrapper install-git-hooks --team-id your-team
+# For an existing repo (run inside the repo):
+prism-cli bootstrapper install-git-hooks
 ```
 
-Optional: configure token/cost bounds per commit (defaults: 1M tokens, $100):
+The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
 
+### Step 2: Set Up OIDC (CI/CD → AWS Authentication)
+
+**GitHub:**
 ```bash
-prism-cli bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
+prism-cli bootstrapper setup-github-oidc
+# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a GitHub repo secret.
 ```
 
-This installs the `prepare-commit-msg` hook and creates the `.prism/` configuration directory. Every commit will now be tagged with AI-origin metadata.
-
-### Step 2: Choose a CLAUDE.md Template
-
-Pick the template that matches your team and copy it to your repo root:
-
+**GitLab:**
 ```bash
-# Backend/API teams
-cp /path/to/bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
-
-# Frontend teams
-cp /path/to/bootstrapper/claude-code/CLAUDE-frontend.md ./CLAUDE.md
-
-# Platform/Infrastructure teams
-cp /path/to/bootstrapper/claude-code/CLAUDE-platform.md ./CLAUDE.md
-
-# Agent teams
-cp /path/to/bootstrapper/claude-code/CLAUDE-agent.md ./CLAUDE.md
+prism-cli bootstrapper setup-gitlab-oidc
+# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a CI/CD variable (unprotected).
 ```
 
-Customize it for your tech stack, then commit.
+### Step 3: Install CI/CD Workflows
 
-### Step 3: Add GitHub Workflows
-
+**GitHub:**
 ```bash
-mkdir -p .github/workflows
-cp /path/to/bootstrapper/github-workflows/prism-ai-metrics.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-eval-gate.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-agent-eval.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-dora-weekly.yml .github/workflows/
+prism-cli bootstrapper install-github-workflows --region us-west-2
+# Copies workflow files to .github/workflows/
 ```
 
-Configure the required repository secret (`PRISM_METRICS_ROLE_ARN`). See `github-workflows/README.md` for OIDC setup. The team ID is read automatically from `.prism/config.json`.
+**GitLab:**
+```bash
+prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
+# Copies workflow files to .prism/gitlab-workflows/
+# Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
+```
 
-### Step 4: Configure Eval Harness
+### Step 4: Configure Eval Harness (Optional)
 
 ```bash
 prism-cli bootstrapper install-eval-harness --with-rubrics
@@ -74,9 +68,14 @@ prism-cli bootstrapper install-eval-harness --with-rubrics
 
 Edit `.prism/eval-harness/eval-config.json` to set your pass threshold and AWS region.
 
-### Step 5: Deploy Metrics Infrastructure
+### Step 5: Choose a CLAUDE.md Template (Optional)
 
-The bootstrapper emits events to an EventBridge custom bus (`prism-d1-metrics`). The infrastructure to receive and visualize these events is in the `../infra/` directory. Deploy it to start seeing your metrics in CloudWatch and QuickSight.
+Pick the template that matches your team:
+
+```bash
+cp bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
+# Or: CLAUDE-frontend.md, CLAUDE-platform.md, CLAUDE-agent.md
+```
 
 ## Adoption Path
 
@@ -103,8 +102,8 @@ All events flow to the `prism-d1-metrics` EventBridge bus with source `prism.d1.
 
 - **AWS CLI v2** — For EventBridge event emission
 - **jq** — For JSON processing in hooks and scripts
-- **GitHub Actions** — For CI/CD workflows
-- **AWS OIDC** — For secure GitHub Actions to AWS authentication
+- **GitHub Actions or GitLab CI** — For CI/CD workflows
+- **AWS OIDC** — For secure CI/CD to AWS authentication (set up via `setup-github-oidc` or `setup-gitlab-oidc`)
 - **Amazon Bedrock** — For code evaluation (model access must be enabled)
 
 ## File Inventory
@@ -141,6 +140,12 @@ bootstrapper/
     prism-agent-eval.yml                 # Agent evaluation workflow
     prism-dora-weekly.yml                # Weekly DORA assessment workflow
     README.md                            # Workflow setup guide
+  gitlab-workflows/
+    .gitlab-ci.yml                       # Root CI config template (copy to repo root)
+    prism-ai-metrics.yml                 # Post-merge metrics job
+    prism-eval-gate.yml                  # Eval gate job
+    prism-agent-eval.yml                 # Agent evaluation job
+    prism-dora-weekly.yml                # Weekly DORA assessment job
   metric-hooks/
     prepare-commit-msg                   # AI-origin trailer hook
     config.json.template                 # Config template
