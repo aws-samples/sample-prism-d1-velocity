@@ -23,7 +23,10 @@ function run(cmd: string): { ok: boolean; stdout: string; stderr: string } {
 
 export default {
   description: 'Set up GitLab OIDC identity provider and IAM role for GitLab CI/CD',
-  async action() {
+  options: [
+    { flags: '--project-id <id>', description: 'Use numeric project ID instead of path in trust policy (for recycled project paths)' },
+  ],
+  async action(opts: { projectId?: string }) {
     console.log('\n🔐 GitLab OIDC Setup for AWS\n');
     console.log('This will create an IAM OIDC identity provider and a role');
     console.log('that GitLab CI/CD can assume to deploy to your AWS account.\n');
@@ -87,7 +90,9 @@ export default {
               [`${providerHost}:aud`]: gitlabUrl,
             },
             StringLike: {
-              [`${providerHost}:sub`]: `project_path:${projectPath}:*`,
+              [`${providerHost}:sub`]: opts.projectId
+                ? `project_id:${opts.projectId}:*`
+                : `project_path:${projectPath}:*`,
             },
           },
         },
@@ -143,6 +148,7 @@ export default {
     console.log(`\n  Role ARN: ${roleArn}`);
     console.log(`  Project:  ${projectPath}`);
     console.log(`  Provider: ${gitlabUrl}`);
+    console.log(`  Sub claim: ${opts.projectId ? `project_id:${opts.projectId}:*` : `project_path:${projectPath}:*`}`);
     console.log('\n  Next step: Add a CI/CD variable in GitLab');
     console.log('');
     console.log('  In your GitLab project, go to:');
