@@ -93,21 +93,39 @@ function extractText(value: unknown): string {
   return '';
 }
 
-async function parseSessionFile(filePath: string, project: string, sessionProjectMap: Map<string, string>): Promise<ParsedCall | null> {
+async function parseSessionFile(filePath: string, project: string, sessionProjectMap: Map<string, string>, targetProject?: string): Promise<ParsedCall | null> {
   let raw: string;
   try { raw = await readFile(filePath, 'utf-8'); } catch { return null; }
   let data: Record<string, unknown>;
   try { data = JSON.parse(raw); } catch { return null; }
   if (!data || typeof data !== 'object') return null;
 
-  // Resolve project: (1) chatSessionId map, (2) content regex, (3) hash fallback
+  // Resolve project: (1) chatSessionId map, (2) content regex with multi-project split, (3) hash fallback
   let resolvedProject = project;
+  let projectFraction = 1.0;
   if (/^[0-9a-f]{32}$/.test(project)) {
     const chatSessionId = typeof data.chatSessionId === 'string' ? data.chatSessionId : '';
     if (chatSessionId && sessionProjectMap.has(chatSessionId)) {
       resolvedProject = sessionProjectMap.get(chatSessionId)!;
     } else {
-      resolvedProject = extractProjectFromContent(raw) ?? project;
+      // Find all unique projects referenced in session content
+      const projectPattern = /\/(?:local\/)?home\/[^/]+\/(?:workplace|workspace|projects?)\/([a-zA-Z0-9_.-]+)/g;
+      const projects = new Set<string>();
+      let match;
+      while ((match = projectPattern.exec(raw)) !== null) {
+        projects.add(match[1]!);
+      }
+      if (projects.size > 0) {
+        projectFraction = 1.0 / projects.size;
+        // Resolve to the target project if it's in the set, otherwise first
+        if (targetProject && projects.has(targetProject)) {
+          resolvedProject = targetProject;
+        } else {
+          resolvedProject = [...projects][0]!;
+        }
+      } else {
+        resolvedProject = project; // hash fallback
+      }
     }
   }
 
@@ -155,8 +173,8 @@ async function parseSessionFile(filePath: string, project: string, sessionProjec
 
   if (outputChars === 0) return null;
 
-  const inputTokens = Math.ceil(inputChars / CHARS_PER_TOKEN);
-  const outputTokens = Math.ceil(outputChars / CHARS_PER_TOKEN);
+  const inputTokens = Math.ceil((inputChars / CHARS_PER_TOKEN) * projectFraction);
+  const outputTokens = Math.ceil((outputChars / CHARS_PER_TOKEN) * projectFraction);
   return { model: modelId, inputTokens, outputTokens, costUSD: calculateCost(modelId, inputTokens, outputTokens), timestamp: ts, project: resolvedProject };
 }
 
@@ -215,7 +233,7 @@ export default {
         const entryPath = join(wsPath, entry.name);
 
         if (entry.isFile() && (entry.name.endsWith('.chat') || extname(entry.name) === '')) {
-          const call = await parseSessionFile(entryPath, project, sessionProjectMap);
+          const call = await parseSessionFile(entryPath, project, sessionProjectMap, opts.project);
           if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
           continue;
         }
@@ -224,7 +242,7 @@ export default {
         const children = await readdir(entryPath, { withFileTypes: true }).catch(() => [] as Dirent[]);
         for (const child of children) {
           if (child.name.startsWith('.') || !child.isFile() || extname(child.name) !== '') continue;
-          const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap);
+          const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap, opts.project);
           if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
         }
       }
