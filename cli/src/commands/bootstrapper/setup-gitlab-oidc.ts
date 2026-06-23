@@ -25,20 +25,29 @@ export default {
   description: 'Set up GitLab OIDC identity provider and IAM role for GitLab CI/CD',
   options: [
     { flags: '--project-id <id>', description: 'Use numeric project ID instead of path in trust policy (for recycled project paths)' },
+    { flags: '--global', description: 'Create a single role for all projects in a group/user (wildcard sub claim)' },
   ],
-  async action(opts: { projectId?: string }) {
+  async action(opts: { projectId?: string; global?: boolean }) {
     console.log('\n🔐 GitLab OIDC Setup for AWS\n');
     console.log('This will create an IAM OIDC identity provider and a role');
     console.log('that GitLab CI/CD can assume to deploy to your AWS account.\n');
 
     const gitlabUrl = await prompt('GitLab instance URL', 'https://gitlab.com');
-    const projectPath = await prompt('GitLab project path (e.g. group/repo)');
-    if (!projectPath) {
-      console.error('Error: Project path is required.');
-      process.exit(1);
-    }
+    let projectPath: string;
+    let roleName: string;
 
-    console.log(`\nConfiguring OIDC for: ${projectPath} on ${gitlabUrl}`);
+    if (opts.global) {
+      const groupOrUser = await prompt('GitLab group or username');
+      if (!groupOrUser) { console.error('Error: Group/username is required.'); process.exit(1); }
+      projectPath = `${groupOrUser}/*`;
+      roleName = `GitLabCI-${groupOrUser}-all`;
+      console.log(`\nConfiguring OIDC for ALL projects: ${projectPath} on ${gitlabUrl}`);
+    } else {
+      projectPath = await prompt('GitLab project path (e.g. group/repo)');
+      if (!projectPath) { console.error('Error: Project path is required.'); process.exit(1); }
+      roleName = `GitLabCI-${projectPath.split('/').pop() || 'prism'}`;
+      console.log(`\nConfiguring OIDC for: ${projectPath} on ${gitlabUrl}`);
+    }
 
     // Check AWS credentials
     const sts = run('aws sts get-caller-identity --query Account --output text');
@@ -74,8 +83,6 @@ export default {
     }
 
     // Step 2: Create the IAM role
-    const repoName = projectPath.split('/').pop() || 'prism';
-    const roleName = `GitLabCI-${repoName}`;
     console.log(`\nStep 2: Creating IAM role "${roleName}"...`);
 
     const trustPolicy = JSON.stringify({

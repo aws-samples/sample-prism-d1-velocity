@@ -23,21 +23,32 @@ function run(cmd: string): { ok: boolean; stdout: string; stderr: string } {
 
 export default {
   description: 'Set up GitHub OIDC identity provider and IAM role for GitHub Actions',
-  async action() {
+  options: [
+    { flags: '--global', description: 'Create a single role for all repos in the org/user (wildcard sub claim)' },
+  ],
+  async action(opts: { global?: boolean }) {
     console.log('\n🔐 GitHub OIDC Setup for AWS\n');
     console.log('This will create an IAM OIDC identity provider and a role');
     console.log('that GitHub Actions can assume to deploy to your AWS account.\n');
 
-    const githubUsername = await prompt('GitHub username');
+    const githubUsername = await prompt('GitHub username or org');
     if (!githubUsername) {
-      console.error('Error: GitHub username is required.');
+      console.error('Error: GitHub username/org is required.');
       process.exit(1);
     }
 
-    const repoName = await prompt('Repository name', 'prism-d1-velocity');
-
-    const repoPath = `${githubUsername}/${repoName}`;
-    console.log(`\nConfiguring OIDC for: ${repoPath}`);
+    let repoPath: string;
+    let roleName: string;
+    if (opts.global) {
+      repoPath = `${githubUsername}/*`;
+      roleName = `GitHubActions-${githubUsername}-all`;
+      console.log(`\nConfiguring OIDC for ALL repos: ${githubUsername}/*`);
+    } else {
+      const repoName = await prompt('Repository name', 'prism-d1-velocity');
+      repoPath = `${githubUsername}/${repoName}`;
+      roleName = `GitHubActions-${repoName}`;
+      console.log(`\nConfiguring OIDC for: ${repoPath}`);
+    }
 
     // Check AWS credentials
     const sts = run('aws sts get-caller-identity --query Account --output text');
@@ -72,7 +83,6 @@ export default {
     }
 
     // Step 2: Create the IAM role
-    const roleName = `GitHubActions-${repoName}`;
     console.log(`\nStep 2: Creating IAM role "${roleName}"...`);
 
     const trustPolicy = JSON.stringify({
