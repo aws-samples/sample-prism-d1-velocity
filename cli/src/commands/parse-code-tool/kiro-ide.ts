@@ -108,21 +108,27 @@ async function parseSessionFile(filePath: string, project: string, sessionProjec
     if (chatSessionId && sessionProjectMap.has(chatSessionId)) {
       resolvedProject = sessionProjectMap.get(chatSessionId)!;
     } else {
-      // Find all unique projects referenced in session content
-      const projectPattern = /\/(?:local\/)?home\/[^/]+\/(?:workplace|workspace|projects?)\/([a-zA-Z0-9_.-]+)/g;
-      const projects = new Set<string>();
+      // Find all unique projects referenced in session content using /<name>/ pattern
+      // Use known parent dirs for discovery, but simple /<name>/ for matching
+      const projectPattern = /\/([a-zA-Z0-9_][a-zA-Z0-9_.-]{2,})\/(?:src|lib|bin|cli|infra|app|docs|test|scripts?|config|public|bootstrapper|\.kiro|\.github|\.prism|package\.json|tsconfig|README)/g;
+      const discoveredProjects = new Set<string>();
       let match;
       while ((match = projectPattern.exec(raw)) !== null) {
-        projects.add(match[1]!);
+        const name = match[1]!;
+        // Skip common non-project dirs
+        if (['home', 'local', 'usr', 'var', 'tmp', 'etc', 'opt', 'node_modules', 'dist', 'build', 'out', '.git'].includes(name)) continue;
+        discoveredProjects.add(name);
       }
-      if (projects.size > 0) {
-        projectFraction = 1.0 / projects.size;
-        // Resolve to the target project if it's in the set, otherwise first
-        if (targetProject && projects.has(targetProject)) {
-          resolvedProject = targetProject;
-        } else {
-          resolvedProject = [...projects][0]!;
-        }
+
+      // If target project specified, use simple /<name>/ containment check
+      if (targetProject && raw.includes(`/${targetProject}/`)) {
+        resolvedProject = targetProject;
+        // Count how many other projects are also in this session for splitting
+        const otherProjects = [...discoveredProjects].filter(p => p !== targetProject && raw.includes(`/${p}/`));
+        projectFraction = 1.0 / (1 + otherProjects.length);
+      } else if (discoveredProjects.size > 0) {
+        resolvedProject = [...discoveredProjects][0]!;
+        projectFraction = 1.0 / discoveredProjects.size;
       } else {
         resolvedProject = project; // hash fallback
       }
