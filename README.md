@@ -50,7 +50,7 @@ npm install -g @prism-d1/cli codeburn
 
 Requires Node.js 22+, AWS CLI v2, CDK v2 (`npm install -g aws-cdk`).
 
-#### 2. Deploy AWS Infrastructure
+#### 2. Deploy AWS Infrastructure (per org)
 
 ```bash
 cd infra
@@ -65,21 +65,21 @@ This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypt
 
 > **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
-#### 3. Set Up OIDC (CI/CD → AWS Authentication)
+#### 3. Set Up OIDC (CI/CD → AWS Authentication) (per org)
 
 **GitHub:**
 ```bash
-prism-cli bootstrapper setup-github-oidc
+prism-cli bootstrapper setup-github-oidc --global
 # Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a GitHub repo secret.
 ```
 
 **GitLab:**
 ```bash
-prism-cli bootstrapper setup-gitlab-oidc
+prism-cli bootstrapper setup-gitlab-oidc --global
 # Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a CI/CD variable (unprotected).
 ```
 
-#### 4. Install CI/CD Workflows
+#### 4. Install CI/CD Workflows (per repo)
 
 **GitHub:**
 ```bash
