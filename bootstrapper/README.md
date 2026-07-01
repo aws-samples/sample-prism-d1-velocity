@@ -101,7 +101,7 @@ All events flow to the `prism-d1-metrics` EventBridge bus with source `prism.d1.
 ## Prerequisites
 
 - **AWS CLI v2** — For EventBridge event emission
-- **jq** — For JSON processing in hooks and scripts
+- **jq** — For JSON processing in the CI/CD workflows and eval-harness (the git hooks no longer need it — they delegate to `prism-cli`)
 - **GitHub Actions or GitLab CI** — For CI/CD workflows
 - **AWS OIDC** — For secure CI/CD to AWS authentication (set up via `setup-github-oidc` or `setup-gitlab-oidc`)
 - **Amazon Bedrock** — For code evaluation (model access must be enabled)

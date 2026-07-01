@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Dirent } from 'node:fs';
@@ -185,6 +185,46 @@ async function parseSessionFile(filePath: string, project: string, sessionProjec
   return { model: modelId, inputTokens, outputTokens, costUSD: calculateCost(modelId, inputTokens, outputTokens), timestamp: ts, project: resolvedProject };
 }
 
+// ---------------------------------------------------------------------------
+// Per-file parse cache (keyed by mtime)
+//
+// Parsing every Kiro session file on every invocation is the dominant cost,
+// especially on hosts where all sessions live under one hash workspace. Since
+// the commit hook re-runs on every commit, we cache each file's parsed result
+// keyed by its mtime and only re-parse files that changed. Lifetime totals are
+// preserved (we still sum every current file), so the snapshot-delta math in
+// `git commit-trailers` stays correct.
+//
+// The cache is scoped per target project (the resolved project + token split
+// depend on the target), so we key the cache file by target project name.
+// `null` results are cached too, to avoid re-parsing files that yield no usage.
+// Bump CACHE_VERSION whenever parsing/costing logic changes to force a rebuild.
+// ---------------------------------------------------------------------------
+const CACHE_VERSION = 1;
+type CacheEntry = { mtimeMs: number; call: ParsedCall | null };
+interface CacheFile { version: number; entries: Record<string, CacheEntry>; }
+
+function cachePath(targetProject?: string): string {
+  const key = (targetProject && targetProject.length ? targetProject : '__all__').replace(/[^a-zA-Z0-9_.-]/g, '_');
+  return join(homedir(), '.prism', 'tokentracker', 'kiro-ide-cache', `${key}.json`);
+}
+
+function loadCache(targetProject?: string): CacheFile {
+  try {
+    const data = JSON.parse(readFileSync(cachePath(targetProject), 'utf-8')) as CacheFile;
+    if (data && data.version === CACHE_VERSION && data.entries && typeof data.entries === 'object') return data;
+  } catch { /* missing/corrupt/stale-version cache → rebuild */ }
+  return { version: CACHE_VERSION, entries: {} };
+}
+
+function saveCache(targetProject: string | undefined, cache: CacheFile): void {
+  try {
+    const p = cachePath(targetProject);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify(cache));
+  } catch { /* non-fatal — cache is an optimization only */ }
+}
+
 const EMPTY_OUTPUT: CodeburnOutput = { overview: { cost: 0, calls: 0, sessions: 0 }, models: [], projects: [] };
 
 /**
@@ -224,6 +264,10 @@ export async function collectKiroIde(targetProject?: string, period: string = 'a
 
   const calls: ParsedCall[] = [];
 
+  // Collect candidate session files (with their workspace project) first, then
+  // resolve each through the mtime cache — only changed/new files are parsed.
+  const candidates: { filePath: string; project: string }[] = [];
+
   for (const wsHash of workspaceDirs) {
     const wsPath = join(agentDir, wsHash);
     const project = await readWorkspaceProject(join(wsStorageDir, wsHash));
@@ -238,8 +282,7 @@ export async function collectKiroIde(targetProject?: string, period: string = 'a
       const entryPath = join(wsPath, entry.name);
 
       if (entry.isFile() && (entry.name.endsWith('.chat') || extname(entry.name) === '')) {
-        const call = await parseSessionFile(entryPath, project, sessionProjectMap, targetProject);
-        if (call) { if (!targetProject || call.project === targetProject) calls.push(call); }
+        candidates.push({ filePath: entryPath, project });
         continue;
       }
 
@@ -247,11 +290,31 @@ export async function collectKiroIde(targetProject?: string, period: string = 'a
       const children = await readdir(entryPath, { withFileTypes: true }).catch(() => [] as Dirent[]);
       for (const child of children) {
         if (child.name.startsWith('.') || !child.isFile() || extname(child.name) !== '') continue;
-        const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap, targetProject);
-        if (call) { if (!targetProject || call.project === targetProject) calls.push(call); }
+        candidates.push({ filePath: join(entryPath, child.name), project });
       }
     }
   }
+
+  // Process candidates through the mtime cache. Unchanged files reuse their
+  // cached parse result; changed/new files are re-parsed. Deleted files simply
+  // don't appear in `candidates`, so they fall out of the rebuilt cache.
+  const prevCache = loadCache(targetProject);
+  const nextEntries: Record<string, CacheEntry> = {};
+
+  for (const { filePath, project } of candidates) {
+    let mtimeMs: number;
+    try { mtimeMs = (await stat(filePath)).mtimeMs; } catch { continue; }
+
+    const cached = prevCache.entries[filePath];
+    const call = (cached && cached.mtimeMs === mtimeMs)
+      ? cached.call
+      : await parseSessionFile(filePath, project, sessionProjectMap, targetProject);
+
+    nextEntries[filePath] = { mtimeMs, call };
+    if (call && (!targetProject || call.project === targetProject)) calls.push(call);
+  }
+
+  saveCache(targetProject, { version: CACHE_VERSION, entries: nextEntries });
 
   // Period filter
   const now = Date.now();
