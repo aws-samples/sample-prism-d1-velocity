@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# prepare-commit-msg — Detect AI-generated commits and add origin trailers.
+# prepare-commit-msg — add AI-origin trailers to commit messages.
 #
-# This hook detects if the commit was made via Claude Code, Kiro, or other AI tools
-# and adds AI-Origin, AI-Model, AI-Token, and Spec-Ref trailers to the commit message.
-# Token tracking powered by codeburn (npm install -g codeburn).
+# All detection, token accounting, and cost math now live in
+# `prism-cli git commit-trailers` (Node). This keeps the hook fully portable
+# (Linux/macOS/Windows Git Bash) with NO dependency on jq, bc, sed, or grep -P.
+# Token tracking powered by codeburn / prism-cli.
 #
-# Installation: metric-hooks/install.sh
+# Installation: prism-cli bootstrapper install-git-hooks
 
 set -uo pipefail
 
 COMMIT_MSG_FILE="$1"
 COMMIT_SOURCE="${2:-}"
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-SHA="${3:-}"
 
-# Skip for merge commits, amend, and squash
+# Skip merge and squash commits
 if [[ "${COMMIT_SOURCE}" == "merge" || "${COMMIT_SOURCE}" == "squash" ]]; then
     exit 0
 fi
@@ -24,161 +23,16 @@ if grep -q '^AI-Origin:' "${COMMIT_MSG_FILE}" 2>/dev/null; then
     exit 0
 fi
 
-# ---------------------------------------------------------------------------
-# Detect AI tool involvement
-# ---------------------------------------------------------------------------
-AI_ORIGIN="human"
-AI_MODEL=""
-AI_TOOL=""
-
-# Check for Claude Code session
-# Claude Code sets CLAUDE_CODE environment variable or leaves markers
-if [[ -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
-    AI_ORIGIN="ai-generated"
-    AI_TOOL="claude-code"
-    AI_MODEL="${ANTHROPIC_MODEL:-us.anthropic.claude-sonnet-4-5-20250929-v1:0}"
+# prism-cli is required. If it isn't installed, the commit proceeds without
+# trailers rather than failing.
+if ! command -v prism-cli >/dev/null 2>&1; then
+    exit 0
 fi
 
-# Check for Kiro markers
-# Kiro CLI sets KIRO_SESSION_ID; Kiro IDE sets TERM_PROGRAM=kiro
-# Kiro Source Control panel sets VSCODE_GIT_ASKPASS_NODE with "kiro" in path
-if [[ -n "${KIRO_SESSION_ID:-}" || -n "${KIRO_SESSION:-}" || "${TERM_PROGRAM:-}" == "kiro" || "${VSCODE_GIT_ASKPASS_NODE:-}" == *"kiro"* || "${GIT_ASKPASS:-}" == *"kiro"* ]]; then
-    AI_ORIGIN="ai-generated"
-    AI_TOOL="kiro"
-fi
-
-# Check for Amazon Q Developer
-if [[ -n "${Q_DEVELOPER_SESSION:-}" ]]; then
-    AI_ORIGIN="ai-generated"
-    AI_TOOL="q-developer"
-fi
-
-# ---------------------------------------------------------------------------
-# Detect spec references
-# ---------------------------------------------------------------------------
-SPEC_REF=""
-
-# Check if any staged file is a spec
-STAGED_SPECS=$(git diff --cached --name-only 2>/dev/null | grep -E '(specs/|\.kiro/specs/)' | head -1 || true)
-if [[ -n "${STAGED_SPECS}" ]]; then
-    SPEC_REF="${STAGED_SPECS}"
-fi
-
-# Check for spec reference in commit message
-MSG_SPEC=$(grep -oP '(?<=Spec-Ref: ).*' "${COMMIT_MSG_FILE}" 2>/dev/null | head -1 || true)
-if [[ -n "${MSG_SPEC}" ]]; then
-    SPEC_REF="${MSG_SPEC}"
-fi
-
-# ---------------------------------------------------------------------------
-# Track AI token usage via codeburn (per-project snapshot delta)
-# ---------------------------------------------------------------------------
-AI_INPUT_TOKENS=""
-AI_OUTPUT_TOKENS=""
-AI_COST=""
-
-if [[ -n "${AI_TOOL}" ]] && (command -v codeburn &>/dev/null || command -v prism-cli &>/dev/null); then
-    PROJECT_FILTER=$(echo "$REPO_ROOT" | sed 's|^/||; s|/|-|g')
-    PROJECT_BASENAME=$(basename "$REPO_ROOT")
-    TRACKER_DIR="${HOME}/.prism/tokentracker"
-    TRACKER_FILE="${TRACKER_DIR}/${PROJECT_BASENAME}.json"
-
-    # Kiro: CLI (KIRO_SESSION_ID) uses kiro-cli, IDE uses kiro-ide
-    # Everything else: use codeburn
-    CODEBURN_JSON=""
-    if [[ "${AI_TOOL}" == "kiro" ]] && command -v prism-cli &>/dev/null; then
-        if [[ -n "${KIRO_SESSION_ID:-}" ]]; then
-            CODEBURN_JSON=$(prism-cli parse-code-tool kiro-cli --session-id "${KIRO_SESSION_ID}" --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
-        fi
-        # Fall back to kiro-ide (covers IDE env vars and CLI sessions without KIRO_SESSION_ID)
-        if [[ -z "${CODEBURN_JSON}" || "$(echo "${CODEBURN_JSON}" | jq -r '.overview.calls // 0')" == "0" ]]; then
-            CODEBURN_JSON=$(prism-cli parse-code-tool kiro-ide --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
-        fi
-    elif command -v codeburn &>/dev/null; then
-        CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_FILTER}" --format json 2>/dev/null || echo "")
-        if [[ -z "${CODEBURN_JSON}" || "$(echo "${CODEBURN_JSON}" | jq -r '.overview.calls // 0')" == "0" ]]; then
-            CODEBURN_JSON=$(codeburn report -p all --project "${PROJECT_BASENAME}" --format json 2>/dev/null || echo "")
-        fi
-    else
-        CODEBURN_JSON=""
-    fi
-
-    if [[ -n "${CODEBURN_JSON}" ]]; then
-        CURRENT_INPUT=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.inputTokens // 0] | add // 0' 2>/dev/null || echo "0")
-        CURRENT_OUTPUT=$(echo "${CODEBURN_JSON}" | jq -r '[.models[]?.outputTokens // 0] | add // 0' 2>/dev/null || echo "0")
-        CURRENT_COST=$(echo "${CODEBURN_JSON}" | jq -r '.overview.cost // 0' 2>/dev/null || echo "0")
-
-        if [[ -f "${TRACKER_FILE}" ]]; then
-            PREV_INPUT=$(jq -r '.inputTokens // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-            PREV_OUTPUT=$(jq -r '.outputTokens // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-            PREV_COST=$(jq -r '.cost // 0' "${TRACKER_FILE}" 2>/dev/null || echo "0")
-            AI_INPUT_TOKENS=$(( CURRENT_INPUT - PREV_INPUT ))
-            AI_OUTPUT_TOKENS=$(( CURRENT_OUTPUT - PREV_OUTPUT ))
-            AI_COST=$(echo "${CURRENT_COST} - ${PREV_COST}" | bc 2>/dev/null || echo "0")
-            [[ "${AI_INPUT_TOKENS}" -lt 0 ]] && AI_INPUT_TOKENS=0
-            [[ "${AI_OUTPUT_TOKENS}" -lt 0 ]] && AI_OUTPUT_TOKENS=0
-            AI_COST_NEGATIVE=$(echo "${AI_COST} < 0" | bc 2>/dev/null || echo "0")
-            [[ "${AI_COST_NEGATIVE}" == "1" ]] && AI_COST="0"
-        else
-            AI_INPUT_TOKENS=0; AI_OUTPUT_TOKENS=0; AI_COST="0"
-        fi
-
-        mkdir -p "${TRACKER_DIR}"
-        printf '{"inputTokens":%s,"outputTokens":%s,"cost":%s}\n' \
-            "$CURRENT_INPUT" "$CURRENT_OUTPUT" "$CURRENT_COST" > "${TRACKER_FILE}"
-    fi
-fi
-
-# ---------------------------------------------------------------------------
-# Load configurable bounds from .prism/config.json
-# ---------------------------------------------------------------------------
-REPO_CONFIG="${REPO_ROOT}/.prism/config.json"
-MAX_TOKENS=1000000
-MAX_COST=100
-if [[ -f "${REPO_CONFIG}" ]] && command -v jq &>/dev/null; then
-    MAX_TOKENS=$(jq -r '.max_tokens // 1000000' "${REPO_CONFIG}" 2>/dev/null || echo "1000000")
-    MAX_COST=$(jq -r '.max_cost // 100' "${REPO_CONFIG}" 2>/dev/null || echo "100")
-fi
-
-# ---------------------------------------------------------------------------
-# Append trailers to commit message
-# ---------------------------------------------------------------------------
-
-# Ensure there is a blank line before trailers
-if [[ -s "${COMMIT_MSG_FILE}" ]]; then
-    LAST_LINE=$(tail -1 "${COMMIT_MSG_FILE}")
-    if [[ -n "${LAST_LINE}" ]]; then
-        echo "" >> "${COMMIT_MSG_FILE}"
-    fi
-fi
-
-echo "AI-Origin: ${AI_ORIGIN}" >> "${COMMIT_MSG_FILE}"
-
-if [[ -n "${AI_TOOL}" ]]; then
-    echo "AI-Tool: ${AI_TOOL}" >> "${COMMIT_MSG_FILE}"
-fi
-
-if [[ -n "${AI_MODEL}" ]]; then
-    echo "AI-Model: ${AI_MODEL}" >> "${COMMIT_MSG_FILE}"
-fi
-
-if [[ -n "${AI_INPUT_TOKENS}" ]]; then
-    [[ ${AI_INPUT_TOKENS} -gt ${MAX_TOKENS} ]] && AI_INPUT_TOKENS=${MAX_TOKENS}
-    echo "AI-Input-Tokens: ${AI_INPUT_TOKENS}" >> "${COMMIT_MSG_FILE}"
-fi
-
-if [[ -n "${AI_OUTPUT_TOKENS}" ]]; then
-    [[ ${AI_OUTPUT_TOKENS} -gt ${MAX_TOKENS} ]] && AI_OUTPUT_TOKENS=${MAX_TOKENS}
-    echo "AI-Output-Tokens: ${AI_OUTPUT_TOKENS}" >> "${COMMIT_MSG_FILE}"
-fi
-
-if [[ -n "${AI_COST}" ]]; then
-    (( $(echo "${AI_COST} > ${MAX_COST}" | bc -l 2>/dev/null) )) && AI_COST="${MAX_COST}.00"
-    echo "AI-Cost: \$${AI_COST}" >> "${COMMIT_MSG_FILE}"
-fi
-
-if [[ -n "${SPEC_REF}" ]]; then
-    echo "Spec-Ref: ${SPEC_REF}" >> "${COMMIT_MSG_FILE}"
-fi
+# Delegate everything to prism-cli. It appends the trailers to the commit
+# message file directly. Never block the commit on failure.
+prism-cli git commit-trailers \
+    --commit-msg-file "${COMMIT_MSG_FILE}" \
+    --source "${COMMIT_SOURCE}" >/dev/null 2>&1 || true
 
 exit 0

@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Dirent } from 'node:fs';
+import type { CodeburnOutput } from './kiro-cli.js';
 
 const CHARS_PER_TOKEN = 4;
 const MIN_REASONABLE_TIMESTAMP_MS = 1_000_000_000_000;
@@ -184,6 +185,102 @@ async function parseSessionFile(filePath: string, project: string, sessionProjec
   return { model: modelId, inputTokens, outputTokens, costUSD: calculateCost(modelId, inputTokens, outputTokens), timestamp: ts, project: resolvedProject };
 }
 
+const EMPTY_OUTPUT: CodeburnOutput = { overview: { cost: 0, calls: 0, sessions: 0 }, models: [], projects: [] };
+
+/**
+ * Parse Kiro IDE session files into codeburn-compatible token usage.
+ * Returns a zero-usage object when the Kiro agent dir is not present.
+ */
+export async function collectKiroIde(targetProject?: string, period: string = 'all'): Promise<CodeburnOutput> {
+  const agentDir = getKiroAgentDir();
+  const wsStorageDir = getKiroWorkspaceStorageDir();
+
+  // Build chatSessionId -> project name map from workspace-sessions
+  const sessionProjectMap = new Map<string, string>();
+  try {
+    const wsSessionsDir = join(agentDir, 'workspace-sessions');
+    const wsDirs = await readdir(wsSessionsDir).catch(() => [] as string[]);
+    for (const dir of wsDirs) {
+      let decoded = '';
+      try { decoded = Buffer.from(dir.replace(/_/g, '='), 'base64').toString('utf-8'); } catch { continue; }
+      if (!decoded) continue;
+      const projectName = basename(decoded);
+      if (!projectName || projectName === basename(homedir())) continue; // skip bare home dir
+      try {
+        const sessionsJson = await readFile(join(wsSessionsDir, dir, 'sessions.json'), 'utf-8');
+        const sessions = JSON.parse(sessionsJson) as { sessionId?: string }[];
+        if (Array.isArray(sessions)) for (const s of sessions) { if (s.sessionId) sessionProjectMap.set(s.sessionId, projectName); }
+      } catch {}
+    }
+  } catch {}
+
+  let workspaceDirs: string[];
+  try {
+    const entries = await readdir(agentDir, { withFileTypes: true });
+    workspaceDirs = entries.filter(e => e.isDirectory() && e.name.length === 32).map(e => e.name);
+  } catch {
+    return EMPTY_OUTPUT;
+  }
+
+  const calls: ParsedCall[] = [];
+
+  for (const wsHash of workspaceDirs) {
+    const wsPath = join(agentDir, wsHash);
+    const project = await readWorkspaceProject(join(wsStorageDir, wsHash));
+
+    if (targetProject && project !== targetProject && !/^[0-9a-f]{32}$/.test(project)) continue;
+
+    let entries: Dirent[];
+    try { entries = await readdir(wsPath, { withFileTypes: true }); } catch { continue; }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const entryPath = join(wsPath, entry.name);
+
+      if (entry.isFile() && (entry.name.endsWith('.chat') || extname(entry.name) === '')) {
+        const call = await parseSessionFile(entryPath, project, sessionProjectMap, targetProject);
+        if (call) { if (!targetProject || call.project === targetProject) calls.push(call); }
+        continue;
+      }
+
+      if (!entry.isDirectory()) continue;
+      const children = await readdir(entryPath, { withFileTypes: true }).catch(() => [] as Dirent[]);
+      for (const child of children) {
+        if (child.name.startsWith('.') || !child.isFile() || extname(child.name) !== '') continue;
+        const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap, targetProject);
+        if (call) { if (!targetProject || call.project === targetProject) calls.push(call); }
+      }
+    }
+  }
+
+  // Period filter
+  const now = Date.now();
+  const cutoffs: Record<string, number> = { today: 86400000, week: 604800000, '30days': 2592000000, all: Infinity };
+  const cutoff = now - (cutoffs[period] ?? Infinity);
+  const filtered = calls.filter(c => new Date(c.timestamp).getTime() >= cutoff);
+
+  // Aggregate into codeburn-compatible format
+  const byModel = new Map<string, { inputTokens: number; outputTokens: number }>();
+  let totalCost = 0;
+  for (const c of filtered) {
+    const m = byModel.get(c.model) ?? { inputTokens: 0, outputTokens: 0 };
+    m.inputTokens += c.inputTokens;
+    m.outputTokens += c.outputTokens;
+    byModel.set(c.model, m);
+    totalCost += c.costUSD;
+  }
+
+  return {
+    overview: { cost: Math.round(totalCost * 100) / 100, calls: filtered.length, sessions: new Set(filtered.map(c => c.timestamp.slice(0, 10))).size },
+    models: [...byModel.entries()].map(([name, t]) => ({ name, inputTokens: t.inputTokens, outputTokens: t.outputTokens })),
+    projects: [...new Set(filtered.map(c => c.project))].map(p => ({
+      name: p,
+      cost: Math.round(filtered.filter(c => c.project === p).reduce((s, c) => s + c.costUSD, 0) * 100) / 100,
+      calls: filtered.filter(c => c.project === p).length,
+    })),
+  };
+}
+
 export default {
   description: 'Parse Kiro IDE session files and output token usage (codeburn-compatible JSON)',
   options: [
@@ -192,94 +289,7 @@ export default {
     { flags: '--format <fmt>', description: 'Output format: json, summary', default: 'json' },
   ],
   async action(opts: { project?: string; period: string; format: string }) {
-    const agentDir = getKiroAgentDir();
-    const wsStorageDir = getKiroWorkspaceStorageDir();
-
-    // Build chatSessionId -> project name map from workspace-sessions
-    const sessionProjectMap = new Map<string, string>();
-    try {
-      const wsSessionsDir = join(agentDir, 'workspace-sessions');
-      const wsDirs = await readdir(wsSessionsDir).catch(() => [] as string[]);
-      for (const dir of wsDirs) {
-        let decoded = '';
-        try { decoded = Buffer.from(dir.replace(/_/g, '='), 'base64').toString('utf-8'); } catch { continue; }
-        if (!decoded) continue;
-        const projectName = basename(decoded);
-        if (!projectName || projectName === basename(homedir())) continue; // skip bare home dir
-        try {
-          const sessionsJson = await readFile(join(wsSessionsDir, dir, 'sessions.json'), 'utf-8');
-          const sessions = JSON.parse(sessionsJson) as { sessionId?: string }[];
-          if (Array.isArray(sessions)) for (const s of sessions) { if (s.sessionId) sessionProjectMap.set(s.sessionId, projectName); }
-        } catch {}
-      }
-    } catch {}
-
-    let workspaceDirs: string[];
-    try {
-      const entries = await readdir(agentDir, { withFileTypes: true });
-      workspaceDirs = entries.filter(e => e.isDirectory() && e.name.length === 32).map(e => e.name);
-    } catch {
-      console.error(`Kiro agent dir not found: ${agentDir}`);
-      process.exit(1);
-    }
-
-    const calls: ParsedCall[] = [];
-
-    for (const wsHash of workspaceDirs) {
-      const wsPath = join(agentDir, wsHash);
-      const project = await readWorkspaceProject(join(wsStorageDir, wsHash));
-
-      if (opts.project && project !== opts.project && !/^[0-9a-f]{32}$/.test(project)) continue;
-
-      let entries: Dirent[];
-      try { entries = await readdir(wsPath, { withFileTypes: true }); } catch { continue; }
-
-      for (const entry of entries) {
-        if (entry.name.startsWith('.')) continue;
-        const entryPath = join(wsPath, entry.name);
-
-        if (entry.isFile() && (entry.name.endsWith('.chat') || extname(entry.name) === '')) {
-          const call = await parseSessionFile(entryPath, project, sessionProjectMap, opts.project);
-          if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
-          continue;
-        }
-
-        if (!entry.isDirectory()) continue;
-        const children = await readdir(entryPath, { withFileTypes: true }).catch(() => [] as Dirent[]);
-        for (const child of children) {
-          if (child.name.startsWith('.') || !child.isFile() || extname(child.name) !== '') continue;
-          const call = await parseSessionFile(join(entryPath, child.name), project, sessionProjectMap, opts.project);
-          if (call) { if (!opts.project || call.project === opts.project) calls.push(call); }
-        }
-      }
-    }
-
-    // Period filter
-    const now = Date.now();
-    const cutoffs: Record<string, number> = { today: 86400000, week: 604800000, '30days': 2592000000, all: Infinity };
-    const cutoff = now - (cutoffs[opts.period] ?? Infinity);
-    const filtered = calls.filter(c => new Date(c.timestamp).getTime() >= cutoff);
-
-    // Aggregate into codeburn-compatible format
-    const byModel = new Map<string, { inputTokens: number; outputTokens: number }>();
-    let totalCost = 0;
-    for (const c of filtered) {
-      const m = byModel.get(c.model) ?? { inputTokens: 0, outputTokens: 0 };
-      m.inputTokens += c.inputTokens;
-      m.outputTokens += c.outputTokens;
-      byModel.set(c.model, m);
-      totalCost += c.costUSD;
-    }
-
-    const output = {
-      overview: { cost: Math.round(totalCost * 100) / 100, calls: filtered.length, sessions: new Set(filtered.map(c => c.timestamp.slice(0, 10))).size },
-      models: [...byModel.entries()].map(([name, t]) => ({ name, inputTokens: t.inputTokens, outputTokens: t.outputTokens })),
-      projects: [...new Set(filtered.map(c => c.project))].map(p => ({
-        name: p,
-        cost: Math.round(filtered.filter(c => c.project === p).reduce((s, c) => s + c.costUSD, 0) * 100) / 100,
-        calls: filtered.filter(c => c.project === p).length,
-      })),
-    };
+    const output = await collectKiroIde(opts.project, opts.period);
 
     if (opts.format === 'summary') {
       console.log(`Kiro IDE Token Usage (${opts.period})`);
