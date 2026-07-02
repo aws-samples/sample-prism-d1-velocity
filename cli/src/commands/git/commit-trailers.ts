@@ -186,13 +186,15 @@ export default {
         const curCost = usage.overview?.cost ?? 0;
 
         const trackerDir = resolve(homedir(), '.prism', 'tokentracker');
-        // cursor uses a provider-isolated snapshot (codeburn --provider cursor),
-        // so keep its baseline in a separate file — mixing it with the default
-        // all-provider snapshot used by other tools would produce wrong deltas.
-        const trackerFile = resolve(
-          trackerDir,
-          tool === 'cursor' ? `${projectBasename}.cursor.json` : `${projectBasename}.json`,
-        );
+        // Snapshot baselines are keyed by (project, tool) so each tool's cumulative
+        // usage is isolated. Mixing tools in a single file corrupts deltas because
+        // their cumulative bases are not comparable — e.g. a per-session Kiro CLI
+        // total vs a lifetime Kiro IDE total, or codeburn's real provider counts vs
+        // char-estimated counts. Older un-keyed <project>.json files from before this
+        // change are left orphaned (never read again); the first commit per
+        // (project, tool) finds no baseline and correctly reports a 0 delta while
+        // establishing the new baseline.
+        const trackerFile = resolve(trackerDir, `${projectBasename}.${tool}.json`);
 
         if (existsSync(trackerFile)) {
           try {
