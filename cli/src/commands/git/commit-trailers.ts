@@ -54,6 +54,19 @@ function detectTool(): { origin: string; tool: string; model: string } {
     tool = 'q-developer';
   }
 
+  // Cursor (VS Code fork). Checked LAST so any commit made from within Cursor
+  // wins the single AI-Tool slot, even when another agent's session env vars are
+  // also present (e.g. a CLI agent run inside Cursor's integrated terminal).
+  // TERM_PROGRAM=vscode is NOT usable (Cursor inherits VS Code's value), so key
+  // off CURSOR_AGENT / CURSOR_TRACE_ID or the askpass path Cursor injects into
+  // its terminal + Source Control panel, which contains 'cursor'.
+  const cursorAskpass = `${env.VSCODE_GIT_ASKPASS_NODE || ''} ${env.VSCODE_GIT_ASKPASS_MAIN || ''} ${env.GIT_ASKPASS || ''}`.toLowerCase();
+  if (env.CURSOR_AGENT === '1' || env.CURSOR_TRACE_ID || cursorAskpass.includes('cursor')) {
+    origin = 'ai-generated';
+    tool = 'cursor';
+    model = '';
+  }
+
   return { origin, tool, model };
 }
 
@@ -71,12 +84,17 @@ function detectSpecRef(repoRoot: string, msg: string): string {
   return '';
 }
 
-/** Run `codeburn report` and parse its JSON. Returns null if codeburn is absent or errors. */
-function runCodeburn(projectFilter: string): CodeburnOutput | null {
+/** Run `codeburn report` and parse its JSON. Returns null if codeburn is absent or errors.
+ *  `provider` (optional) maps to codeburn's `--provider` filter (e.g. 'cursor', 'claude').
+ *  It is always a fixed internal literal — never user/LLM input — so the Windows shell
+ *  interpolation below is not an injection vector. */
+function runCodeburn(projectFilter: string, provider?: string): CodeburnOutput | null {
   const isWin = process.platform === 'win32';
+  const providerArgs = provider ? ['--provider', provider] : [];
+  const providerCmd = provider ? `--provider ${provider} ` : '';
   const r = isWin
-    ? spawnSync(`codeburn report -p all --project "${projectFilter}" --format json`, { encoding: 'utf8', shell: true })
-    : spawnSync('codeburn', ['report', '-p', 'all', '--project', projectFilter, '--format', 'json'], { encoding: 'utf8' });
+    ? spawnSync(`codeburn report -p all ${providerCmd}--project "${projectFilter}" --format json`, { encoding: 'utf8', shell: true })
+    : spawnSync('codeburn', ['report', '-p', 'all', ...providerArgs, '--project', projectFilter, '--format', 'json'], { encoding: 'utf8' });
   if (!r || r.status !== 0 || !r.stdout) return null;
   try { return JSON.parse(r.stdout) as CodeburnOutput; } catch { return null; }
 }
@@ -91,6 +109,14 @@ async function collectUsage(tool: string, projectBasename: string, projectFilter
     if (!out || out.overview.calls === 0) {
       out = await collectKiroIde(projectBasename);
     }
+    return out;
+  }
+  // cursor → codeburn with the cursor provider filter (codeburn natively tracks
+  // Cursor usage). Isolating to --provider cursor keeps its snapshot delta from
+  // being polluted by other providers' totals.
+  if (tool === 'cursor') {
+    let out = runCodeburn(projectFilter, 'cursor');
+    if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename, 'cursor');
     return out;
   }
   // claude-code / q-developer → codeburn (full-path slug, then basename fallback)
@@ -160,7 +186,13 @@ export default {
         const curCost = usage.overview?.cost ?? 0;
 
         const trackerDir = resolve(homedir(), '.prism', 'tokentracker');
-        const trackerFile = resolve(trackerDir, `${projectBasename}.json`);
+        // cursor uses a provider-isolated snapshot (codeburn --provider cursor),
+        // so keep its baseline in a separate file — mixing it with the default
+        // all-provider snapshot used by other tools would produce wrong deltas.
+        const trackerFile = resolve(
+          trackerDir,
+          tool === 'cursor' ? `${projectBasename}.cursor.json` : `${projectBasename}.json`,
+        );
 
         if (existsSync(trackerFile)) {
           try {
