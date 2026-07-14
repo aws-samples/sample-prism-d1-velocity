@@ -176,6 +176,8 @@ python scripts/run-demo.py --mock   # Run agent demo with mock model
 
 ## Commit Metadata (AI Attribution)
 
+![Workflow](assets/images/PrismDashboard.drawio.png)
+
 The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
 
 **Trailers injected:**
