@@ -46,6 +46,11 @@ export class PrismVpcConstruct extends Construct {
       service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
     });
 
+    // --- Gateway endpoint: S3 (free; used by the OTEL receiver archive writes) ---
+    this.vpc.addGatewayEndpoint('S3Endpoint', {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
     // --- Interface endpoints ---
     const interfaceEndpoints = [
       { id: 'EventBridgeEndpoint', service: ec2.InterfaceVpcEndpointAwsService.EVENTBRIDGE },

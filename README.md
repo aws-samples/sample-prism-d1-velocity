@@ -118,6 +118,42 @@ By default, all Lambda functions deploy into a VPC with private isolated subnets
 
 When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
 
+#### OTEL Collector (Opt-In)
+
+An alternative, higher-fidelity source for per-user AI usage: instead of the `AI-Summary` commit trailer, developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). When enabled, OTEL data **replaces** AI-Summary as the per-user usage source (commit-level trailers are unaffected).
+
+```bash
+# Deploy with the collector (default: provisions a Cognito user pool)
+npx cdk deploy --all -c enableOtelCollector=true
+
+# Create a user (username MUST be the developer's email)
+aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
+
+# Developer one-time setup (opens browser for OIDC login), then push
+codeburn sync setup <OtelCollectorUrl output>
+codeburn sync push
+```
+
+**Bring your own IdP** (Okta, Entra ID) instead of Cognito:
+
+```bash
+npx cdk deploy --all -c enableOtelCollector=true \
+  -c otelIssuer=https://login.example.okta.com/oauth2/default \
+  -c otelClientId=0oa1b2c3d4 \
+  -c otelIdentityClaim=email
+```
+
+Your IdP app must be a **public client with PKCE**, register loopback redirect URIs `http://127.0.0.1:19876/callback` (also ports 19877, 19878), and issue **JWT access tokens** (Okta and Entra ID work; Auth0's opaque access tokens are not supported).
+
+**Data layout:**
+
+| Destination | Content | Purpose |
+|-------------|---------|---------|
+| S3 (`prism-d1-otlp-archive-*`) | Raw OTLP JSON batches, partitioned by `dt=` | External contract — Athena, data lake, replay into any OTel backend |
+| DynamoDB (`prism-d1-ai-usage`) | Per-span rows (90-day TTL) + daily per-user/tool aggregates | PRISM dashboards |
+
+Duplicate pushes are safe: codeburn's deterministic span IDs act as an idempotency key server-side. Historical sessions are backfilled on first push (aggregates bucket by span date). Running a full ADOT collector for fan-out to X-Ray/Grafana/Datadog is on the [roadmap](docs/ROADMAP.md).
+
 ### Assess a Customer
 
 #### Web Assessment Tool (Recommended)

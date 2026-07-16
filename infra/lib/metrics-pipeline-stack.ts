@@ -13,15 +13,18 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { PrismVpcConstruct } from './constructs/prism-vpc-construct';
 import { GuardrailEnforcerConstruct } from './constructs/guardrail-enforcer-construct';
 import { SecurityAgentConstruct } from './constructs/security-agent-construct';
+import { OtelCollectorConstruct } from './constructs/otel-collector-construct';
 import { NagSuppressions } from 'cdk-nag';
 
 export class MetricsPipelineStack extends cdk.Stack {
   public readonly eventBus: events.EventBus;
   public readonly eventsTable: dynamodb.Table;
+  public readonly aiUsageTable: dynamodb.Table;
   public readonly metadataTable: dynamodb.Table;
   public readonly kmsKey: kms.Key;
   public readonly guardrail: BedrockGuardrailConstruct;
   public readonly securityAgent?: SecurityAgentConstruct;
+  public readonly otelCollector?: OtelCollectorConstruct;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -128,6 +131,38 @@ export class MetricsPipelineStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------
+    // DynamoDB AI-usage table — user-keyed, KMS encrypted
+    // pk = USER#<email>
+    // sk = COMMIT#<ts>#<sha>#<tool> | SUMMARY#<ts>#<tool> | AGG#<yyyy-mm>#<tool>
+    // Sparse GSIs (only commit-level items set them) invert the user key so the
+    // same table answers by-repo / by-PR / by-commit / global-by-date.
+    // -------------------------------------------------------
+    this.aiUsageTable = new dynamodb.Table(this, 'AiUsageTable', {
+      tableName: 'prism-d1-ai-usage',
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: prismKmsKey,
+    });
+    for (const [indexName, pkAttr, skAttr] of [
+      ['by-repo', 'gsi_repo', 'gsi_repo_sk'],
+      ['by-pr', 'gsi_pr', 'gsi_pr_sk'],
+      ['by-commit', 'gsi_commit', 'gsi_commit_sk'],
+      ['by-date', 'gsi_date', 'gsi_date_sk'],
+    ] as const) {
+      this.aiUsageTable.addGlobalSecondaryIndex({
+        indexName,
+        partitionKey: { name: pkAttr, type: dynamodb.AttributeType.STRING },
+        sortKey: { name: skAttr, type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+    }
+
+    // -------------------------------------------------------
     // VPC for Lambda isolation (Pillar 6)
     // Opt out with: cdk deploy -c skipVpc=true
     // Use existing VPC: cdk deploy -c vpcId=vpc-0123456789abcdef0
@@ -186,6 +221,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       environment: {
         EVENTS_TABLE: this.eventsTable.tableName,
         METADATA_TABLE: this.metadataTable.tableName,
+        AI_USAGE_TABLE: this.aiUsageTable.tableName,
         METRIC_NAMESPACE: 'PRISM/D1/Velocity',
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
@@ -197,6 +233,7 @@ export class MetricsPipelineStack extends cdk.Stack {
     // -------------------------------------------------------
     this.eventsTable.grantWriteData(metricsProcessor);
     this.metadataTable.grantWriteData(metricsProcessor);
+    this.aiUsageTable.grantReadWriteData(metricsProcessor);
 
     metricsProcessor.addToRolePolicy(
       new iam.PolicyStatement({
@@ -252,6 +289,26 @@ export class MetricsPipelineStack extends cdk.Stack {
     // Bedrock Guardrail (Pillar 4)
     // -------------------------------------------------------
     this.guardrail = new BedrockGuardrailConstruct(this, 'PrismGuardrail', createDefaultPrismGuardrailProps());
+
+    // -------------------------------------------------------
+    // OTEL Collector (opt-in — server side of `codeburn sync`)
+    // Enable with: npx cdk deploy --context enableOtelCollector=true
+    // BYO IdP:     -c otelIssuer=... -c otelClientId=... [-c otelIdentityClaim=email]
+    // When enabled, OTEL data replaces the AI-Summary trailer as the
+    // per-user usage source (metrics processor skips writeAiSummary).
+    // -------------------------------------------------------
+    const enableOtelCollector = this.node.tryGetContext('enableOtelCollector') === 'true';
+    if (enableOtelCollector) {
+      this.otelCollector = new OtelCollectorConstruct(this, 'OtelCollector', {
+        aiUsageTable: this.aiUsageTable,
+        kmsKey: prismKmsKey,
+        lambdaVpcProps,
+        externalIssuer: this.node.tryGetContext('otelIssuer') as string | undefined,
+        externalClientId: this.node.tryGetContext('otelClientId') as string | undefined,
+        identityClaim: this.node.tryGetContext('otelIdentityClaim') as string | undefined,
+      });
+      metricsProcessor.addEnvironment('OTEL_ENABLED', 'true');
+    }
 
     // -------------------------------------------------------
     // AWS Security Agent (opt-in — requires Security Agent access)
@@ -681,7 +738,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       {
         id: 'AwsSolutions-IAM5',
         reason: 'CDK grantReadData on DynamoDB generates wildcard for GSI index ARNs via token reference',
-        appliesTo: ['Resource::<EventsTableD24865E5.Arn>/index/*'],
+        appliesTo: ['Resource::<EventsTableD24865E5.Arn>/index/*', 'Resource::<AiUsageTable79F37CE0.Arn>/index/*'],
       },
       { id: 'AwsSolutions-L1', reason: 'All Lambdas use nodejs22.x which is the latest Node.js runtime available' },
     ]);
