@@ -225,6 +225,7 @@ export default {
     if (outputTokens !== null) outputTokens = Math.min(outputTokens, maxTokens);
     if (cost !== null && cost > maxCost) cost = maxCost;
 
+
     // Build trailer block
     const lines: string[] = [`AI-Origin: ${origin}`];
     if (tool) lines.push(`AI-Tool: ${tool}`);

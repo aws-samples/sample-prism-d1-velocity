@@ -221,7 +221,6 @@ export class MetricsPipelineStack extends cdk.Stack {
       environment: {
         EVENTS_TABLE: this.eventsTable.tableName,
         METADATA_TABLE: this.metadataTable.tableName,
-        AI_USAGE_TABLE: this.aiUsageTable.tableName,
         METRIC_NAMESPACE: 'PRISM/D1/Velocity',
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
@@ -233,7 +232,6 @@ export class MetricsPipelineStack extends cdk.Stack {
     // -------------------------------------------------------
     this.eventsTable.grantWriteData(metricsProcessor);
     this.metadataTable.grantWriteData(metricsProcessor);
-    this.aiUsageTable.grantReadWriteData(metricsProcessor);
 
     metricsProcessor.addToRolePolicy(
       new iam.PolicyStatement({
@@ -294,8 +292,8 @@ export class MetricsPipelineStack extends cdk.Stack {
     // OTEL Collector (opt-in — server side of `codeburn sync`)
     // Enable with: npx cdk deploy --context enableOtelCollector=true
     // BYO IdP:     -c otelIssuer=... -c otelClientId=... [-c otelIdentityClaim=email]
-    // When enabled, OTEL data replaces the AI-Summary trailer as the
-    // per-user usage source (metrics processor skips writeAiSummary).
+    // Per-user AI usage flows directly from codeburn sync to the
+    // ai-usage table (spans + daily aggregates).
     // -------------------------------------------------------
     const enableOtelCollector = this.node.tryGetContext('enableOtelCollector') === 'true';
     if (enableOtelCollector) {
@@ -307,7 +305,6 @@ export class MetricsPipelineStack extends cdk.Stack {
         externalClientId: this.node.tryGetContext('otelClientId') as string | undefined,
         identityClaim: this.node.tryGetContext('otelIdentityClaim') as string | undefined,
       });
-      metricsProcessor.addEnvironment('OTEL_ENABLED', 'true');
     }
 
     // -------------------------------------------------------

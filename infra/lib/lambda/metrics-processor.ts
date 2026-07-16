@@ -1,7 +1,6 @@
 import {
   DynamoDBClient,
   PutItemCommand,
-  GetItemCommand,
 } from '@aws-sdk/client-dynamodb';
 import {
   CloudWatchClient,
@@ -150,107 +149,8 @@ const cloudwatchClient = new CloudWatchClient({});
 
 const EVENTS_TABLE = process.env.EVENTS_TABLE!;
 const METADATA_TABLE = process.env.METADATA_TABLE!;
-const AI_USAGE_TABLE = process.env.AI_USAGE_TABLE!;
 const METRIC_NAMESPACE = process.env.METRIC_NAMESPACE ?? 'PRISM/D1/Velocity';
 
-// ---- AI-Summary (per-user global usage) ----
-
-/** Parse the AI-Summary trailer "tool=in/out/cost;tool2=..." into structured usage. */
-function parseAiSummary(s: string): Array<{ tool: string; input: number; output: number; cost: number }> {
-  const out: Array<{ tool: string; input: number; output: number; cost: number }> = [];
-  for (const part of s.split(';')) {
-    const m = part.trim().match(/^([a-z0-9-]+)=(\d+)\/(\d+)\/([0-9.]+)$/i);
-    if (m) out.push({ tool: m[1]!, input: Number(m[2]), output: Number(m[3]), cost: Number(m[4]) });
-  }
-  return out;
-}
-
-/**
- * Consume the AI-Summary trailer: the author's GLOBAL per-tool ABSOLUTE cumulative
- * usage. We compute the per-user period delta server-side against the last stored
- * cumulative (keyed by user+tool), write a SUMMARY# delta row, and advance the
- * CUM# state item. Reset/first-observation unified: delta = cur-last when monotonic,
- * else cur (handles first PR + machine reinstall where the cumulative regresses).
- * Attributed to the PR author (per scope decision). Raw email key — no HMAC (this is
- * a public sample deployed in the customer's own account, not Amazon-internal).
- */
-async function writeAiSummaryToDynamo(detail: MetricDetail): Promise<void> {
-  // When the OTEL collector is enabled, codeburn sync is the authoritative
-  // per-user usage source — the AI-Summary trailer is ignored entirely
-  // (commit-level trailers are unaffected; only the per-user store switches).
-  if (process.env.OTEL_ENABLED === 'true') {
-    console.log('[writeAiSummary] OTEL_ENABLED — skipping AI-Summary trailer processing');
-    return;
-  }
-  const summary = (detail as any).ai_summary as string | undefined;
-  const author = (detail as any).pr?.author as string | undefined;
-  if (!summary || !author) {
-    console.log('[writeAiSummary] no ai_summary or author — skipping');
-    return;
-  }
-  const user = author.trim().toLowerCase();
-  const tools = parseAiSummary(summary);
-  const ttl = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60;
-
-  for (const t of tools) {
-    let lastIn = 0, lastOut = 0, lastCost = 0;
-    try {
-      const got = await dynamoClient.send(new GetItemCommand({
-        TableName: AI_USAGE_TABLE,
-        Key: { pk: { S: `USER#${user}` }, sk: { S: `CUM#${t.tool}` } },
-      }));
-      if (got.Item) {
-        lastIn = Number(got.Item.last_input?.N ?? '0');
-        lastOut = Number(got.Item.last_output?.N ?? '0');
-        lastCost = Number(got.Item.last_cost?.N ?? '0');
-      }
-    } catch (e) {
-      console.error('[writeAiSummary] GetItem(CUM) failed:', e);
-    }
-
-    // Monotonic delta; regression (reset/reinstall) or first-obs (last=0) counts cur.
-    const dIn = t.input >= lastIn ? t.input - lastIn : t.input;
-    const dOut = t.output >= lastOut ? t.output - lastOut : t.output;
-    const dCost = t.cost >= lastCost ? t.cost - lastCost : t.cost;
-
-    // SUMMARY delta row (keyed by user; no repo/PR/commit dimension by design).
-    await dynamoClient.send(new PutItemCommand({
-      TableName: AI_USAGE_TABLE,
-      Item: {
-        pk: { S: `USER#${user}` },
-        sk: { S: `SUMMARY#${detail.timestamp}#${t.tool}` },
-        record_type: { S: 'SUMMARY' },
-        tool: { S: t.tool },
-        input_tokens: { N: String(dIn) },
-        output_tokens: { N: String(dOut) },
-        cost_usd: { N: String(dCost) },
-        cumulative_input: { N: String(t.input) },
-        cumulative_output: { N: String(t.output) },
-        cumulative_cost: { N: String(t.cost) },
-        gsi_date: { S: `DATE#${detail.timestamp.slice(0, 10)}` },
-        gsi_date_sk: { S: `${detail.timestamp}#${user}#${t.tool}` },
-        timestamp: { S: detail.timestamp },
-        ttl: { N: ttl.toString() },
-      },
-    }));
-
-    // Advance the server-side cumulative baseline for this (user, tool).
-    await dynamoClient.send(new PutItemCommand({
-      TableName: AI_USAGE_TABLE,
-      Item: {
-        pk: { S: `USER#${user}` },
-        sk: { S: `CUM#${t.tool}` },
-        record_type: { S: 'CUM_STATE' },
-        tool: { S: t.tool },
-        last_input: { N: String(t.input) },
-        last_output: { N: String(t.output) },
-        last_cost: { N: String(t.cost) },
-        updated_at: { S: detail.timestamp },
-      },
-    }));
-  }
-  console.log(`[writeAiSummary] wrote ${tools.length} summary delta row(s) for USER#${user}`);
-}
 
 // ---- Handler ----
 
@@ -277,11 +177,10 @@ export async function handler(event: EventBridgeEvent): Promise<void> {
     writeEventToDynamo(detailType, detail),
     writeMetadataToDynamo(detailType, detail),
     publishCloudWatchMetrics(detailType, detail),
-    writeAiSummaryToDynamo(detail),
   ]);
 
   results.forEach((result, idx) => {
-    const labels = ['writeEventToDynamo', 'writeMetadataToDynamo', 'publishCloudWatchMetrics', 'writeAiSummaryToDynamo'];
+    const labels = ['writeEventToDynamo', 'writeMetadataToDynamo', 'publishCloudWatchMetrics'];
     if (result.status === 'fulfilled') {
       console.log(`[metrics-processor] ${labels[idx]} succeeded`);
     } else {
