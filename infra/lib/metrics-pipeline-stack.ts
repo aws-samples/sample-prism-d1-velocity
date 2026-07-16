@@ -133,7 +133,7 @@ export class MetricsPipelineStack extends cdk.Stack {
     // -------------------------------------------------------
     // DynamoDB AI-usage table — user-keyed, KMS encrypted
     // pk = USER#<email>
-    // sk = COMMIT#<ts>#<sha>#<tool> | SUMMARY#<ts>#<tool> | AGG#<yyyy-mm>#<tool>
+    // sk = COMMIT#<ts>#<sha>#<tool> | SPAN#<ts>#<spanId> | OTEL#DAY#<date>#<tool>
     // Sparse GSIs (only commit-level items set them) invert the user key so the
     // same table answers by-repo / by-PR / by-commit / global-by-date.
     // -------------------------------------------------------

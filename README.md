@@ -120,7 +120,7 @@ When using an existing VPC, ensure it has either VPC endpoints for the required 
 
 #### OTEL Collector (Opt-In)
 
-An alternative, higher-fidelity source for per-user AI usage: instead of the `AI-Summary` commit trailer, developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). When enabled, OTEL data **replaces** AI-Summary as the per-user usage source (commit-level trailers are unaffected).
+A higher-fidelity source for per-user AI usage: developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). The OTEL collector receives spans, archives raw OTLP to S3, and writes per-user daily aggregates to DynamoDB for the PRISM dashboards.
 
 ```bash
 # Deploy with the collector (default: provisions a Cognito user pool)

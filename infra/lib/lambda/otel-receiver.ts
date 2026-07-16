@@ -35,7 +35,7 @@ const OIDC_CLIENT_ID = process.env.OIDC_CLIENT_ID || '';
 const MAX_BATCH_SIZE = Number(process.env.MAX_BATCH_SIZE || '1000');
 const SPAN_TTL_DAYS = Number(process.env.SPAN_TTL_DAYS || '90');
 
-/** codeburn provider names → PRISM tool names (aligns with AI-Summary tooling). */
+/** codeburn provider names → PRISM tool names. */
 const PROVIDER_TO_TOOL: Record<string, string> = {
   claude: 'claude-code',
   kiro: 'kiro',

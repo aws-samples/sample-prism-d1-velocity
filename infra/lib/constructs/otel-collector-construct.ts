@@ -76,7 +76,7 @@ export class OtelCollectorConstruct extends Construct {
       identityClaim = props.identityClaim ?? 'sub';
     } else {
       // Admin-create-user only (no self-signup); username = email so DDB keys
-      // line up with the AI-Summary USER#<email> convention. We do NOT use
+      // line up with the USER#<email> key convention. We do NOT use
       // signInAliases: { email: true } because that generates a random UUID
       // as the internal username — the access token's `username` claim would
       // carry the UUID, not the email. Instead, admins create users with
