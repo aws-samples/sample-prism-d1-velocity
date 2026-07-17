@@ -122,6 +122,8 @@ When using an existing VPC, ensure it has either VPC endpoints for the required 
 
 A higher-fidelity source for per-user AI usage: developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). The OTEL collector receives spans, archives raw OTLP to S3, and writes per-user daily aggregates to DynamoDB for the PRISM dashboards.
 
+> Requires **codeburn ≥ 0.9.16** (`npm install -g codeburn` or update with `npm update -g codeburn`). The `sync` subcommand is not available in earlier versions.
+
 ```bash
 # Deploy with the collector (default: provisions a Cognito user pool)
 npx cdk deploy --all -c enableOtelCollector=true
