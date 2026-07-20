@@ -100,29 +100,25 @@ function runCodeburn(projectFilter: string, provider?: string): CodeburnOutput |
 }
 
 /** Collect cumulative token usage for the given tool + project. */
-async function collectUsage(tool: string, projectBasename: string, projectFilter: string): Promise<CodeburnOutput | null> {
+async function collectUsage(tool: string, projectBasename: string, projectFilter: string): Promise<{ data: CodeburnOutput; source: string } | null> {
   if (tool === 'kiro') {
     let out: CodeburnOutput | null = null;
     if (process.env.KIRO_SESSION_ID) {
       out = await collectKiroCli(process.env.KIRO_SESSION_ID, projectBasename);
     }
-    if (!out || out.overview.calls === 0) {
-      out = await collectKiroIde(projectBasename);
-    }
-    return out;
+    if (out && out.overview.calls > 0) return { data: out, source: 'kiro-cli' };
+    out = await collectKiroIde(projectBasename);
+    if (out && out.overview.calls > 0) return { data: out, source: 'kiro-ide' };
+    return null;
   }
-  // cursor → codeburn with the cursor provider filter (codeburn natively tracks
-  // Cursor usage). Isolating to --provider cursor keeps its snapshot delta from
-  // being polluted by other providers' totals.
   if (tool === 'cursor') {
     let out = runCodeburn(projectFilter, 'cursor');
     if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename, 'cursor');
-    return out;
+    return out ? { data: out, source: 'cursor' } : null;
   }
-  // claude-code / q-developer → codeburn (full-path slug, then basename fallback)
   let out = runCodeburn(projectFilter);
   if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename);
-  return out;
+  return out ? { data: out, source: tool } : null;
 }
 
 function sumTokens(o: CodeburnOutput, key: 'inputTokens' | 'outputTokens'): number {
@@ -179,22 +175,19 @@ export default {
     let cost: number | null = null;
 
     if (tool) {
-      const usage = await collectUsage(tool, projectBasename, projectFilter);
-      if (usage) {
+      const result = await collectUsage(tool, projectBasename, projectFilter);
+      if (result) {
+        const { data: usage, source: usageSource } = result;
         const curIn = sumTokens(usage, 'inputTokens');
         const curOut = sumTokens(usage, 'outputTokens');
         const curCost = usage.overview?.cost ?? 0;
 
         const trackerDir = resolve(homedir(), '.prism', 'tokentracker');
-        // Snapshot baselines are keyed by (project, tool) so each tool's cumulative
-        // usage is isolated. Mixing tools in a single file corrupts deltas because
-        // their cumulative bases are not comparable — e.g. a per-session Kiro CLI
-        // total vs a lifetime Kiro IDE total, or codeburn's real provider counts vs
-        // char-estimated counts. Older un-keyed <project>.json files from before this
-        // change are left orphaned (never read again); the first commit per
-        // (project, tool) finds no baseline and correctly reports a 0 delta while
-        // establishing the new baseline.
-        const trackerFile = resolve(trackerDir, `${projectBasename}.${tool}.json`);
+        // Snapshot baselines are keyed by (project, source) — NOT just (project, tool).
+        // Kiro has two sources (kiro-cli per-session vs kiro-ide lifetime) with
+        // vastly different cumulative totals. Sharing a tracker file between them
+        // produces massive false deltas when the fallback path switches.
+        const trackerFile = resolve(trackerDir, `${projectBasename}.${usageSource}.json`);
 
         if (existsSync(trackerFile)) {
           try {
