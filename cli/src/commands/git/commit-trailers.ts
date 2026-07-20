@@ -102,13 +102,17 @@ function runCodeburn(projectFilter: string, provider?: string): CodeburnOutput |
 /** Collect cumulative token usage for the given tool + project. */
 async function collectUsage(tool: string, projectBasename: string, projectFilter: string): Promise<{ data: CodeburnOutput; source: string } | null> {
   if (tool === 'kiro') {
+    // Kiro usage is tracked by codeburn natively (provider: kiro). codeburn reads
+    // Kiro's session files and provides a real-time cumulative view, unlike the
+    // prism-cli kiro-ide parser which only sees stale on-disk snapshots.
     let out: CodeburnOutput | null = null;
     if (process.env.KIRO_SESSION_ID) {
       out = await collectKiroCli(process.env.KIRO_SESSION_ID, projectBasename);
     }
     if (out && out.overview.calls > 0) return { data: out, source: 'kiro-cli' };
-    out = await collectKiroIde(projectBasename);
-    if (out && out.overview.calls > 0) return { data: out, source: 'kiro-ide' };
+    out = runCodeburn(projectFilter, 'kiro');
+    if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename, 'kiro');
+    if (out && out.overview.calls > 0) return { data: out, source: 'kiro' };
     return null;
   }
   if (tool === 'cursor') {
