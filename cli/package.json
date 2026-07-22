@@ -1,6 +1,6 @@
 {
   "name": "@prism-d1/cli",
-  "version": "1.0.65",
+  "version": "1.0.66",
   "description": "PRISM D1 Velocity CLI — AI development lifecycle assessment tool",
   "author": "andklee",
   "engines": {

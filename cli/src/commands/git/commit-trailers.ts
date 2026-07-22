@@ -99,6 +99,12 @@ function runCodeburn(projectFilter: string, provider?: string): CodeburnOutput |
   try { return JSON.parse(r.stdout) as CodeburnOutput; } catch { return null; }
 }
 
+/** Check if a codeburn result has actual per-model token data (not just unfiltered overview). */
+function hasModelTokens(out: CodeburnOutput | null): boolean {
+  if (!out || !out.models || out.models.length === 0) return false;
+  return out.models.some(m => (m.inputTokens || 0) > 0 || (m.outputTokens || 0) > 0);
+}
+
 /** Collect cumulative token usage for the given tool + project. */
 async function collectUsage(tool: string, projectBasename: string, projectFilter: string): Promise<{ data: CodeburnOutput; source: string } | null> {
   if (tool === 'kiro') {
@@ -110,23 +116,32 @@ async function collectUsage(tool: string, projectBasename: string, projectFilter
       out = await collectKiroCli(process.env.KIRO_SESSION_ID, projectBasename);
     }
     if (out && out.overview.calls > 0) return { data: out, source: 'kiro-cli' };
+    // Use hasModelTokens instead of overview.calls — codeburn returns non-zero
+    // overview.calls even when the --project filter matches nothing in models[].
     out = runCodeburn(projectFilter, 'kiro');
-    if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename, 'kiro');
-    if (out && out.overview.calls > 0) return { data: out, source: 'kiro' };
+    if (!hasModelTokens(out)) out = runCodeburn(projectBasename, 'kiro');
+    if (hasModelTokens(out)) return { data: out!, source: 'kiro' };
     return null;
   }
   if (tool === 'cursor') {
     let out = runCodeburn(projectFilter, 'cursor');
-    if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename, 'cursor');
-    return out ? { data: out, source: 'cursor' } : null;
+    if (!hasModelTokens(out)) out = runCodeburn(projectBasename, 'cursor');
+    return out && hasModelTokens(out) ? { data: out, source: 'cursor' } : null;
   }
   let out = runCodeburn(projectFilter);
-  if (!out || out.overview.calls === 0) out = runCodeburn(projectBasename);
-  return out ? { data: out, source: tool } : null;
+  if (!hasModelTokens(out)) out = runCodeburn(projectBasename);
+  return out && hasModelTokens(out) ? { data: out, source: tool } : null;
 }
 
 function sumTokens(o: CodeburnOutput, key: 'inputTokens' | 'outputTokens'): number {
   return (o.models || []).reduce((s, m) => s + (m[key] || 0), 0);
+}
+
+/** Sum cost from the models array (project-filtered) rather than overview.cost (unfiltered). */
+function sumCost(o: CodeburnOutput): number {
+  const modelCost = (o.models || []).reduce((s, m) => s + ((m as any).cost || 0), 0);
+  // Fall back to overview.cost only when models have no cost field (older codeburn versions)
+  return modelCost > 0 ? modelCost : (o.overview?.cost ?? 0);
 }
 
 function readBounds(repoRoot: string): { maxTokens: number; maxCost: number } {
@@ -184,7 +199,7 @@ export default {
         const { data: usage, source: usageSource } = result;
         const curIn = sumTokens(usage, 'inputTokens');
         const curOut = sumTokens(usage, 'outputTokens');
-        const curCost = usage.overview?.cost ?? 0;
+        const curCost = sumCost(usage);
 
         const trackerDir = resolve(homedir(), '.prism', 'tokentracker');
         // Snapshot baselines are keyed by (project, source) — NOT just (project, tool).
