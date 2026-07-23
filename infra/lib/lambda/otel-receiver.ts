@@ -11,8 +11,8 @@
  * newly-seen spans, bucketed by SPAN date, not arrival date).
  *
  * Item shapes in the AI-usage table:
- *   pk=USER#<identity>  sk=SPAN#<timestamp>#<spanId>       raw span, TTL 90d
- *   pk=USER#<identity>  sk=OTEL#DAY#<yyyy-mm-dd>#<tool>    daily aggregate
+ *   pk=USER#<identity>  sk=SPAN#<timestamp>#<spanId>            raw span, TTL 90d
+ *   pk=USER#<identity>  sk=OTEL#DAY#<yyyy-mm-dd>#<tool>#<model> daily aggregate
  */
 
 import {
@@ -272,15 +272,17 @@ async function writeSpanIfNew(user: string, s: ParsedSpan): Promise<boolean> {
 /** ADD-increment the daily aggregate for a newly-seen span (bucketed by SPAN date). */
 async function bumpDailyAggregate(user: string, s: ParsedSpan): Promise<void> {
   const day = s.timestamp.slice(0, 10);
+  // '#' is the key delimiter — strip it from the model to keep the sk parseable.
+  const model = (s.model || 'unknown').replace(/#/g, '');
   await dynamoClient.send(new UpdateItemCommand({
     TableName: AI_USAGE_TABLE,
     Key: {
       pk: { S: `USER#${user}` },
-      sk: { S: `OTEL#DAY#${day}#${s.tool}` },
+      sk: { S: `OTEL#DAY#${day}#${s.tool}#${model}` },
     },
     UpdateExpression:
       'ADD input_tokens :in, output_tokens :out, cost_usd :cost, call_count :one ' +
-      'SET record_type = :rt, tool = :tool, #day = :day, updated_at = :now',
+      'SET record_type = :rt, tool = :tool, model = :model, #day = :day, updated_at = :now',
     ExpressionAttributeNames: { '#day': 'day' },
     ExpressionAttributeValues: {
       ':in': { N: String(s.inputTokens) },
@@ -289,6 +291,7 @@ async function bumpDailyAggregate(user: string, s: ParsedSpan): Promise<void> {
       ':one': { N: '1' },
       ':rt': { S: 'OTEL_DAY' },
       ':tool': { S: s.tool },
+      ':model': { S: model },
       ':day': { S: day },
       ':now': { S: new Date().toISOString() },
     },

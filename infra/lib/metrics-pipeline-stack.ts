@@ -2,6 +2,8 @@ import * as cdk from 'aws-cdk-lib';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -133,10 +135,14 @@ export class MetricsPipelineStack extends cdk.Stack {
     // -------------------------------------------------------
     // DynamoDB AI-usage table — user-keyed, KMS encrypted
     // pk = USER#<email>
-    // sk = COMMIT#<ts>#<sha>#<tool> | SPAN#<ts>#<spanId> | OTEL#DAY#<date>#<tool>
+    // sk = COMMIT#<ts>#<sha>#<tool> | SPAN#<ts>#<spanId> | OTEL#DAY#<date>#<tool>#<model>
     // Sparse GSIs (only commit-level items set them) invert the user key so the
     // same table answers by-repo / by-PR / by-commit / global-by-date.
     // -------------------------------------------------------
+    // Read the OTEL collector flag early — it also controls the table stream
+    // and which pipeline owns the token/cost CloudWatch metrics.
+    const enableOtelCollector = this.node.tryGetContext('enableOtelCollector') === 'true';
+
     this.aiUsageTable = new dynamodb.Table(this, 'AiUsageTable', {
       tableName: 'prism-d1-ai-usage',
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
@@ -147,6 +153,9 @@ export class MetricsPipelineStack extends cdk.Stack {
       timeToLiveAttribute: 'ttl',
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: prismKmsKey,
+      // NEW_AND_OLD_IMAGES so the otel-metrics-publisher can compute exact
+      // counter deltas (new − old) on OTEL#DAY# aggregate updates.
+      stream: enableOtelCollector ? dynamodb.StreamViewType.NEW_AND_OLD_IMAGES : undefined,
     });
     for (const [indexName, pkAttr, skAttr] of [
       ['by-repo', 'gsi_repo', 'gsi_repo_sk'],
@@ -222,6 +231,10 @@ export class MetricsPipelineStack extends cdk.Stack {
         EVENTS_TABLE: this.eventsTable.tableName,
         METADATA_TABLE: this.metadataTable.tableName,
         METRIC_NAMESPACE: 'PRISM/D1/Velocity',
+        // When the OTEL collector is enabled, the otel-metrics-publisher owns
+        // AIInputTokens/AIOutputTokens/AICostUSD — the processor skips its
+        // trailer-sourced copies to avoid double-counting.
+        OTEL_ENABLED: enableOtelCollector ? 'true' : 'false',
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
       description: 'Processes PRISM D1 metric events from EventBridge into DynamoDB and CloudWatch',
@@ -295,7 +308,6 @@ export class MetricsPipelineStack extends cdk.Stack {
     // Per-user AI usage flows directly from codeburn sync to the
     // ai-usage table (spans + daily aggregates).
     // -------------------------------------------------------
-    const enableOtelCollector = this.node.tryGetContext('enableOtelCollector') === 'true';
     if (enableOtelCollector) {
       this.otelCollector = new OtelCollectorConstruct(this, 'OtelCollector', {
         aiUsageTable: this.aiUsageTable,
@@ -305,6 +317,97 @@ export class MetricsPipelineStack extends cdk.Stack {
         externalClientId: this.node.tryGetContext('otelClientId') as string | undefined,
         identityClaim: this.node.tryGetContext('otelIdentityClaim') as string | undefined,
       });
+
+      // ---------------------------------------------------
+      // OTEL metrics publisher — DDB stream → CloudWatch.
+      // Replaces the trailer-sourced AIInputTokens/AIOutputTokens/AICostUSD
+      // series with per-span OTEL data (same metric names — dashboards
+      // require no changes). The event-source filter limits invocations to
+      // OTEL#DAY# aggregate updates, so span-volume writes never invoke it.
+      // ---------------------------------------------------
+      const otelPublisherDlq = new sqs.Queue(this, 'OtelPublisherDLQ', {
+        queueName: 'prism-d1-otel-publisher-dlq',
+        encryptionMasterKey: prismKmsKey,
+        enforceSSL: true,
+        retentionPeriod: cdk.Duration.days(14),
+      });
+
+      const otelMetricsPublisher = new lambda.Function(this, 'OtelMetricsPublisher', {
+        functionName: 'prism-d1-otel-metrics-publisher',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        handler: 'otel-metrics-publisher.handler',
+        ...lambdaVpcProps,
+        code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
+          bundling: {
+            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+            command: [
+              'bash', '-c',
+              [
+                'npm init -y > /dev/null 2>&1',
+                'npm install --save @aws-sdk/client-cloudwatch esbuild > /dev/null 2>&1',
+                'npx esbuild otel-metrics-publisher.ts --bundle --platform=node --target=node22 --outfile=/asset-output/otel-metrics-publisher.js --external:@aws-sdk/*',
+              ].join(' && '),
+            ],
+            local: {
+              tryBundle(outputDir: string): boolean {
+                try {
+                  const { execSync } = require('child_process');
+                  execSync(
+                    `npx esbuild ${path.join(__dirname, 'lambda', 'otel-metrics-publisher.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'otel-metrics-publisher.js')} --external:@aws-sdk/*`,
+                    { stdio: 'pipe' },
+                  );
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            },
+          },
+        }),
+        timeout: cdk.Duration.seconds(60),
+        memorySize: 256,
+        environment: {
+          METRIC_NAMESPACE: 'PRISM/D1/Velocity',
+        },
+        logRetention: logs.RetentionDays.ONE_MONTH,
+        description: 'Publishes OTEL#DAY aggregate deltas from the ai-usage stream as CloudWatch token/cost metrics',
+      });
+
+      otelMetricsPublisher.addToRolePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['cloudwatch:PutMetricData'],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'cloudwatch:namespace': 'PRISM/D1/Velocity',
+            },
+          },
+        }),
+      );
+
+      otelMetricsPublisher.addEventSource(
+        new eventsources.DynamoEventSource(this.aiUsageTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 100,
+          maxBatchingWindow: cdk.Duration.seconds(10),
+          bisectBatchOnError: true,
+          retryAttempts: 3,
+          onFailure: new eventsources.SqsDlq(otelPublisherDlq),
+          // Only OTEL#DAY# aggregate inserts/updates — SPAN# and COMMIT#
+          // writes (the overwhelming majority at scale) never invoke us.
+          filters: [
+            lambda.FilterCriteria.filter({
+              eventName: lambda.FilterRule.or('INSERT', 'MODIFY'),
+              dynamodb: {
+                Keys: {
+                  sk: { S: lambda.FilterRule.beginsWith('OTEL#DAY#') },
+                },
+              },
+            }),
+          ],
+        }),
+      );
     }
 
     // -------------------------------------------------------
@@ -736,6 +839,15 @@ export class MetricsPipelineStack extends cdk.Stack {
         id: 'AwsSolutions-IAM5',
         reason: 'CDK grantReadData on DynamoDB generates wildcard for GSI index ARNs via token reference',
         appliesTo: ['Resource::<EventsTableD24865E5.Arn>/index/*', 'Resource::<AiUsageTable79F37CE0.Arn>/index/*'],
+      },
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'DynamoDB stream event source mapping requires ListStreams which does not support resource-level scoping beyond the table stream wildcard',
+        appliesTo: ['Resource::<AiUsageTable79F37CE0.Arn>/stream/*', 'Resource::*'],
+      },
+      {
+        id: 'AwsSolutions-SQS3',
+        reason: 'The OTEL publisher queue is itself a DLQ for the DynamoDB stream event source',
       },
       { id: 'AwsSolutions-L1', reason: 'All Lambdas use nodejs22.x which is the latest Node.js runtime available' },
     ]);
