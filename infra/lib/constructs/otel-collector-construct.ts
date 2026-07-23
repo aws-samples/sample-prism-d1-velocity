@@ -287,16 +287,21 @@ export class OtelCollectorConstruct extends Construct {
 
     // -------------------------------------------------------
     // Outputs — everything needed to run `codeburn sync setup <url>`
+    // Logical IDs are overridden so the deploy output keys match the
+    // README verbatim (construct nesting would otherwise mangle them to
+    // OtelCollectorOtelCollectorUrl<hash>).
     // -------------------------------------------------------
-    new cdk.CfnOutput(this, 'OtelCollectorUrl', {
+    const urlOutput = new cdk.CfnOutput(this, 'OtelCollectorUrl', {
       value: this.httpApi.apiEndpoint,
       description: 'Run: codeburn sync setup <this URL>',
     });
+    urlOutput.overrideLogicalId('OtelCollectorUrl');
     if (this.userPool) {
-      new cdk.CfnOutput(this, 'OtelUserPoolId', {
+      const poolOutput = new cdk.CfnOutput(this, 'OtelUserPoolId', {
         value: this.userPool.userPoolId,
         description: 'Create users: aws cognito-idp admin-create-user --user-pool-id <this> --username <email>',
       });
+      poolOutput.overrideLogicalId('OtelUserPoolId');
     }
   }
 }
