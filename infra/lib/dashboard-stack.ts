@@ -187,7 +187,7 @@ export class DashboardStack extends cdk.Stack {
 
     teamDashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: 'AI Input Tokens per PR',
+        title: 'AI Input Tokens',
         left: [
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
@@ -202,7 +202,7 @@ export class DashboardStack extends cdk.Stack {
         leftYAxis: { min: 0, label: 'Tokens' },
       }),
       new cloudwatch.GraphWidget({
-        title: 'AI Output Tokens per PR',
+        title: 'AI Output Tokens',
         left: [
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
@@ -217,7 +217,7 @@ export class DashboardStack extends cdk.Stack {
         leftYAxis: { min: 0, label: 'Tokens' },
       }),
       new cloudwatch.GraphWidget({
-        title: 'AI Cost per PR (USD)',
+        title: 'AI Cost (USD)',
         left: [
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
@@ -230,6 +230,44 @@ export class DashboardStack extends cdk.Stack {
         width: 8,
         height: 6,
         leftYAxis: { min: 0, label: 'USD' },
+      }),
+    );
+
+    // Cost breakdowns by Tool and Model. SEARCH expressions auto-discover
+    // every dimension value, so new tools/models appear without dashboard
+    // changes. These series are populated by the otel-metrics-publisher
+    // (requires -c enableOtelCollector=true); the trailer path has no
+    // per-tool/per-model breakdown and leaves these widgets empty.
+    teamDashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'AI Cost by Tool (USD)',
+        left: [
+          new cloudwatch.MathExpression({
+            expression: `SEARCH('{${METRIC_NAMESPACE},Tool} MetricName="AICostUSD"', 'Sum')`,
+            usingMetrics: {},
+            label: '',
+            period: DEFAULT_PERIOD,
+          }),
+        ],
+        width: 12,
+        height: 6,
+        leftYAxis: { min: 0, label: 'USD' },
+        legendPosition: cloudwatch.LegendPosition.RIGHT,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'AI Cost by Model (USD)',
+        left: [
+          new cloudwatch.MathExpression({
+            expression: `SEARCH('{${METRIC_NAMESPACE},Model} MetricName="AICostUSD"', 'Sum')`,
+            usingMetrics: {},
+            label: '',
+            period: DEFAULT_PERIOD,
+          }),
+        ],
+        width: 12,
+        height: 6,
+        leftYAxis: { min: 0, label: 'USD' },
+        legendPosition: cloudwatch.LegendPosition.RIGHT,
       }),
     );
 
