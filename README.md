@@ -136,6 +136,21 @@ codeburn sync setup <OtelCollectorUrl output>
 codeburn sync push
 ```
 
+**Automated sync (recommended):** Instead of manual pushes, use the CLI to set up a recurring schedule:
+
+```bash
+# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
+prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl output>
+
+# Check status anytime
+prism-cli bootstrapper setup-otel-sync --status
+
+# Remove the schedule
+prism-cli bootstrapper setup-otel-sync --remove
+```
+
+This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows) that runs `codeburn sync push --since 7d` every 12 hours. The 7-day overlap window means a developer's machine can be off for a week and nothing is missed — duplicate pushes are server-side no-ops. Use `--interval <hours>` to override the cadence.
+
 **Bring your own IdP** (Okta, Entra ID) instead of Cognito:
 
 ```bash
