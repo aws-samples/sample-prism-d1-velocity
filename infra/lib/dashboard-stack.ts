@@ -245,7 +245,9 @@ export class DashboardStack extends cdk.Stack {
           new cloudwatch.MathExpression({
             expression: `SEARCH('{${METRIC_NAMESPACE},Tool} MetricName="AICostUSD"', 'Sum')`,
             usingMetrics: {},
-            label: '',
+            // Dynamic label: each discovered series is legend-labeled with
+            // its Tool dimension value (e.g. "claude-code").
+            label: "${PROP('Dim.Tool')}",
             period: DEFAULT_PERIOD,
           }),
         ],
@@ -260,7 +262,9 @@ export class DashboardStack extends cdk.Stack {
           new cloudwatch.MathExpression({
             expression: `SEARCH('{${METRIC_NAMESPACE},Model} MetricName="AICostUSD"', 'Sum')`,
             usingMetrics: {},
-            label: '',
+            // Dynamic label: each discovered series is legend-labeled with
+            // its Model dimension value (e.g. "claude-sonnet-4-5-20250929").
+            label: "${PROP('Dim.Model')}",
             period: DEFAULT_PERIOD,
           }),
         ],
