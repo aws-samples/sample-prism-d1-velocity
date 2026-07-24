@@ -193,7 +193,7 @@ export class DashboardStack extends cdk.Stack {
             namespace: METRIC_NAMESPACE,
             metricName: 'AIInputTokens',
             statistic: 'Sum',
-            period: DEFAULT_PERIOD,
+            period: cdk.Duration.days(1),
             label: 'Input Tokens',
           }),
         ],
@@ -208,7 +208,7 @@ export class DashboardStack extends cdk.Stack {
             namespace: METRIC_NAMESPACE,
             metricName: 'AIOutputTokens',
             statistic: 'Sum',
-            period: DEFAULT_PERIOD,
+            period: cdk.Duration.days(1),
             label: 'Output Tokens',
           }),
         ],
@@ -223,7 +223,7 @@ export class DashboardStack extends cdk.Stack {
             namespace: METRIC_NAMESPACE,
             metricName: 'AICostUSD',
             statistic: 'Sum',
-            period: DEFAULT_PERIOD,
+            period: cdk.Duration.days(1),
             label: 'Cost (USD)',
           }),
         ],
@@ -248,7 +248,7 @@ export class DashboardStack extends cdk.Stack {
             // Dynamic label: each discovered series is legend-labeled with
             // its Tool dimension value (e.g. "claude-code").
             label: "${PROP('Dim.Tool')}",
-            period: DEFAULT_PERIOD,
+            period: cdk.Duration.days(1),
           }),
         ],
         width: 12,
@@ -265,7 +265,7 @@ export class DashboardStack extends cdk.Stack {
             // Dynamic label: each discovered series is legend-labeled with
             // its Model dimension value (e.g. "claude-sonnet-4-5-20250929").
             label: "${PROP('Dim.Model')}",
-            period: DEFAULT_PERIOD,
+            period: cdk.Duration.days(1),
           }),
         ],
         width: 12,
