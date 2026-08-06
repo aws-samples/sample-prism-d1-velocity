@@ -46,11 +46,22 @@ function buildSyncCommand(codeburnPath: string, since: string): string {
 // ---- Linux: user crontab ----
 
 function linuxScheduleExists(): boolean {
+  if (!linuxCrontabAvailable()) return false;
   const result = run('crontab -l');
   return result.ok && result.stdout.includes(CRON_MARKER);
 }
 
+function linuxCrontabAvailable(): boolean {
+  return run('which crontab').ok;
+}
+
 function linuxInstallSchedule(codeburnPath: string, intervalHours: number): void {
+  if (!linuxCrontabAvailable()) {
+    console.warn('\n⚠️  crontab not found — skipping automatic schedule installation.');
+    console.warn('   Run "codeburn sync push --since 7d" manually, or install cronie:');
+    console.warn('   sudo yum install cronie -y  # then re-run this command\n');
+    return;
+  }
   const existing = run('crontab -l');
   const lines = existing.ok ? existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER)) : [];
   const logFile = join(LOG_DIR, 'otel-sync.log');
@@ -64,6 +75,7 @@ function linuxInstallSchedule(codeburnPath: string, intervalHours: number): void
 }
 
 function linuxRemoveSchedule(): void {
+  if (!linuxCrontabAvailable()) return;
   const existing = run('crontab -l');
   if (!existing.ok) return;
   const lines = existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER) && !l.includes('codeburn sync push'));
