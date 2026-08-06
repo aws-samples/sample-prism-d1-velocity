@@ -55,12 +55,12 @@ function linuxCrontabAvailable(): boolean {
   return run('which crontab').ok;
 }
 
-function linuxInstallSchedule(codeburnPath: string, intervalHours: number): void {
+function linuxInstallSchedule(codeburnPath: string, intervalHours: number): boolean {
   if (!linuxCrontabAvailable()) {
     console.warn('\n⚠️  crontab not found — skipping automatic schedule installation.');
     console.warn('   Run "codeburn sync push --since 7d" manually, or install cronie:');
     console.warn('   sudo yum install cronie -y  # then re-run this command\n');
-    return;
+    return false;
   }
   const existing = run('crontab -l');
   const lines = existing.ok ? existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER)) : [];
@@ -72,6 +72,7 @@ function linuxInstallSchedule(codeburnPath: string, intervalHours: number): void
   writeFileSync(tmpFile, lines.join('\n') + '\n');
   const result = run(`crontab ${tmpFile}`);
   if (!result.ok) throw new Error(`Failed to install crontab: ${result.stderr}`);
+  return true;
 }
 
 function linuxRemoveSchedule(): void {
@@ -167,11 +168,11 @@ function scheduleExists(): boolean {
   }
 }
 
-function installSchedule(codeburnPath: string, intervalHours: number): void {
+function installSchedule(codeburnPath: string, intervalHours: number): boolean {
   mkdirSync(LOG_DIR, { recursive: true });
   switch (platform()) {
-    case 'darwin': return darwinInstallSchedule(codeburnPath, intervalHours);
-    case 'win32': return windowsInstallSchedule(codeburnPath, intervalHours);
+    case 'darwin': darwinInstallSchedule(codeburnPath, intervalHours); return true;
+    case 'win32': windowsInstallSchedule(codeburnPath, intervalHours); return true;
     default: return linuxInstallSchedule(codeburnPath, intervalHours);
   }
 }
@@ -357,15 +358,21 @@ export default {
       removeSchedule();
     }
 
-    installSchedule(codeburnPath, intervalHours);
-    console.log(`  ✓ ${schedulerName()} schedule installed (every ${intervalHours}h).`);
+    const scheduled = installSchedule(codeburnPath, intervalHours);
+    if (scheduled) {
+      console.log(`  ✓ ${schedulerName()} schedule installed (every ${intervalHours}h).`);
+    }
 
     // Summary
     console.log('\n════════════════════════════════════════════════');
     console.log('  ✅ OTEL sync setup complete!');
     console.log('════════════════════════════════════════════════');
     console.log(`\n  Endpoint:  ${otelUrl}`);
-    console.log(`  Schedule:  every ${intervalHours}h via ${schedulerName()}`);
+    if (scheduled) {
+      console.log(`  Schedule:  every ${intervalHours}h via ${schedulerName()}`);
+    } else {
+      console.log(`  Schedule:  ⚠️  not installed (run manually: codeburn sync push --since 7d)`);
+    }
     console.log(`  Backfill:  last 30d pushed (dashboard shows last 14d)`);
     console.log(`  Logs:      ${join(LOG_DIR, 'otel-sync.log')}`);
     console.log(`\n  Run \`prism-cli bootstrapper setup-otel-sync --status\` to check health.`);
