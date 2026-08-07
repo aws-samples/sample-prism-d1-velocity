@@ -42,6 +42,10 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Quick Start
 
+### Administrator Setup (per org)
+
+These steps are performed once by an engineering leader or platform team to provision shared infrastructure.
+
 > **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
 
 ```bash
@@ -49,11 +53,7 @@ node --version  # Verify: must be v22.x or later
 npm install -g @prism-d1/cli codeburn
 ```
 
-Requires AWS CLI v2, CDK v2 (`npm install -g aws-cdk`).
-
-### Administrator Setup (per org)
-
-These steps are performed once by an engineering leader or platform team to provision shared infrastructure.
+Requires [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), CDK v2 (`npm install -g aws-cdk`).
 
 #### 1. Deploy AWS Infrastructure
 
@@ -126,6 +126,8 @@ Your IdP app must be a **public client with PKCE**, register loopback redirect U
 ### Developer Setup (per developer)
 
 These steps are run by each developer on their machine. You'll need the **OtelCollectorUrl** from your administrator.
+
+> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
 
 #### 1. Install Tools
 
