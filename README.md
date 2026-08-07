@@ -151,7 +151,9 @@ prism-cli bootstrapper setup-otel-sync --remove
 
 This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows) that runs `codeburn sync push --since 7d` every 12 hours. The 7-day overlap window means a developer's machine can be off for a week and nothing is missed — duplicate pushes are server-side no-ops. Use `--interval <hours>` to override the cadence.
 
-#### 3. Install Git Hooks
+#### 3. Install Git Hooks (optional)
+
+> **Note:** Git hooks are optional and will be deprecated in a future release. The OTEL sync in step 2 above provides the same metrics (and more) via codeburn. Git hooks remain available for teams that want commit-level AI attribution trailers in their git history.
 
 ```bash
 # For all future clones (global template):
