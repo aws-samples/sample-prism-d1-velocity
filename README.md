@@ -42,8 +42,6 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Quick Start
 
-#### 1. Install Dependencies
-
 > **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
 
 ```bash
@@ -53,7 +51,11 @@ npm install -g @prism-d1/cli codeburn
 
 Requires AWS CLI v2, CDK v2 (`npm install -g aws-cdk`).
 
-#### 2. Deploy AWS Infrastructure (per org)
+### Administrator Setup (per org)
+
+These steps are performed once by an engineering leader or platform team to provision shared infrastructure.
+
+#### 1. Deploy AWS Infrastructure
 
 ```bash
 cd infra
@@ -70,7 +72,7 @@ This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypt
 
 > **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
-#### 3. Set Up OIDC (CI/CD → AWS Authentication) (per org)
+#### 2. Set Up OIDC (CI/CD → AWS Authentication)
 
 **GitHub:**
 ```bash
@@ -84,7 +86,7 @@ prism-cli bootstrapper setup-gitlab-oidc --global
 # Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a CI/CD variable (unprotected).
 ```
 
-#### 4. Install CI/CD Workflows (per repo)
+#### 3. Install CI/CD Workflows (per repo)
 
 **GitHub:**
 ```bash
@@ -99,58 +101,16 @@ prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com 
 # Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
 ```
 
-#### 5. Developer Setup (per developer)
+#### 4. Create Developer Accounts
 
-Administrators should setup Cognito users for each developer:
+After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector:
+
 ```bash
 # Create a user (username MUST be the developer's email)
 aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
 ```
 
-Developers would then setup Codeburn to automatically send OTEL spans:
-```bash
-# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
-prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl output>
-```
-
-Legacy Git hooks which provide trailers for other metrics in Prism. Will eventually be deprecated for Codeburn.
-```bash
-# For all future clones (global template):
-prism-cli bootstrapper install-git-hooks --global
-
-# For an existing repo (run inside the repo):
-prism-cli bootstrapper install-git-hooks
-```
-
-The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
-
-#### OTEL Collector (Included by Default)
-
-A higher-fidelity source for per-user AI usage: developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). The OTEL collector receives spans, archives raw OTLP to S3, and writes per-user daily aggregates to DynamoDB for the PRISM dashboards.
-
-> Requires **codeburn ≥ 0.9.16** (`npm install -g codeburn` or update with `npm update -g codeburn`). The `sync` subcommand is not available in earlier versions.
-
-For each developer, create a user in Cognito:
-```bash
-# Create a user (username MUST be the developer's email)
-aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
-```
-
-Each developer will need to setup the Codeburn sync:
-**Automated sync (recommended):** Instead of manual pushes, use the CLI to set up a recurring schedule:
-
-```bash
-# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
-prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl output>
-
-# Check status anytime
-prism-cli bootstrapper setup-otel-sync --status
-
-# Remove the schedule
-prism-cli bootstrapper setup-otel-sync --remove
-```
-
-This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows) that runs `codeburn sync push --since 7d` every 12 hours. The 7-day overlap window means a developer's machine can be off for a week and nothing is missed — duplicate pushes are server-side no-ops. Use `--interval <hours>` to override the cadence.
+Then share the **OtelCollectorUrl** stack output with your developers — they'll need it for setup below.
 
 **Bring your own IdP** (Okta, Entra ID) instead of Cognito:
 
@@ -162,6 +122,44 @@ npx cdk deploy --all \
 ```
 
 Your IdP app must be a **public client with PKCE**, register loopback redirect URIs `http://127.0.0.1:19876/callback` (also ports 19877, 19878), and issue **JWT access tokens** (Okta and Entra ID work; Auth0's opaque access tokens are not supported).
+
+### Developer Setup (per developer)
+
+These steps are run by each developer on their machine. You'll need the **OtelCollectorUrl** from your administrator.
+
+#### 1. Install Tools
+
+```bash
+node --version  # Verify: must be v22.x or later
+npm install -g @prism-d1/cli codeburn
+```
+
+#### 2. Set Up AI Usage Telemetry (Codeburn)
+
+```bash
+# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
+prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl from admin>
+
+# Check status anytime
+prism-cli bootstrapper setup-otel-sync --status
+
+# Remove the schedule
+prism-cli bootstrapper setup-otel-sync --remove
+```
+
+This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows) that runs `codeburn sync push --since 7d` every 12 hours. The 7-day overlap window means a developer's machine can be off for a week and nothing is missed — duplicate pushes are server-side no-ops. Use `--interval <hours>` to override the cadence.
+
+#### 3. Install Git Hooks
+
+```bash
+# For all future clones (global template):
+prism-cli bootstrapper install-git-hooks --global
+
+# For an existing repo (run inside the repo):
+prism-cli bootstrapper install-git-hooks
+```
+
+The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
 
 #### VPC Configuration
 
