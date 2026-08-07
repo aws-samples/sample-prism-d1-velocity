@@ -44,11 +44,14 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 #### 1. Install Dependencies
 
+> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
+
 ```bash
+node --version  # Verify: must be v22.x or later
 npm install -g @prism-d1/cli codeburn
 ```
 
-Requires Node.js 22+, AWS CLI v2, CDK v2 (`npm install -g aws-cdk`).
+Requires AWS CLI v2, CDK v2 (`npm install -g aws-cdk`).
 
 #### 2. Deploy AWS Infrastructure (per org)
 
@@ -59,9 +62,11 @@ npx cdk bootstrap   # First time only
 npx cdk deploy --all
 ```
 
-This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table.
+This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
 
 > **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
+
+> **Skip OTEL collector:** Add `-c skipOtelCollector=true` if you only want git-hook-based metrics without per-developer AI usage telemetry.
 
 > **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
 
@@ -118,16 +123,13 @@ By default, all Lambda functions deploy into a VPC with private isolated subnets
 
 When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
 
-#### OTEL Collector (Opt-In)
+#### OTEL Collector (Included by Default)
 
 A higher-fidelity source for per-user AI usage: developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). The OTEL collector receives spans, archives raw OTLP to S3, and writes per-user daily aggregates to DynamoDB for the PRISM dashboards.
 
 > Requires **codeburn ≥ 0.9.16** (`npm install -g codeburn` or update with `npm update -g codeburn`). The `sync` subcommand is not available in earlier versions.
 
 ```bash
-# Deploy with the collector (default: provisions a Cognito user pool)
-npx cdk deploy --all -c enableOtelCollector=true
-
 # Create a user (username MUST be the developer's email)
 aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
 
@@ -154,7 +156,7 @@ This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS
 **Bring your own IdP** (Okta, Entra ID) instead of Cognito:
 
 ```bash
-npx cdk deploy --all -c enableOtelCollector=true \
+npx cdk deploy --all \
   -c otelIssuer=https://login.example.okta.com/oauth2/default \
   -c otelClientId=0oa1b2c3d4 \
   -c otelIdentityClaim=email
