@@ -99,8 +99,21 @@ prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com 
 # Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
 ```
 
-#### 5. Install Git Hooks (per developer)
+#### 5. Developer Setup (per developer)
 
+Administrators should setup Cognito users for each developer:
+```bash
+# Create a user (username MUST be the developer's email)
+aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
+```
+
+Developers would then setup Codeburn to automatically send OTEL spans:
+```bash
+# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
+prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl output>
+```
+
+Legacy Git hooks which provide trailers for other metrics in Prism. Will eventually be deprecated for Codeburn.
 ```bash
 # For all future clones (global template):
 prism-cli bootstrapper install-git-hooks --global
@@ -111,33 +124,19 @@ prism-cli bootstrapper install-git-hooks
 
 The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
 
-#### VPC Configuration
-
-By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (DynamoDB, EventBridge, CloudWatch, KMS, Bedrock Runtime) for network isolation. This adds ~$35-50/month in endpoint costs.
-
-| Option | Command | Use Case |
-|--------|---------|----------|
-| **New VPC** (default) | `npx cdk deploy --all` | Production — full network isolation |
-| **Skip VPC** | `npx cdk deploy --all -c skipVpc=true` | Workshop/demo — saves cost, faster cold starts |
-| **Existing VPC** | `npx cdk deploy --all -c vpcId=vpc-0123456789abcdef0` | Enterprise — use shared VPC with existing endpoints or NAT |
-
-When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
-
 #### OTEL Collector (Included by Default)
 
 A higher-fidelity source for per-user AI usage: developers push per-LLM-call telemetry directly via [codeburn's OTLP sync](https://github.com/getagentseal/codeburn) (`codeburn sync`). The OTEL collector receives spans, archives raw OTLP to S3, and writes per-user daily aggregates to DynamoDB for the PRISM dashboards.
 
 > Requires **codeburn ≥ 0.9.16** (`npm install -g codeburn` or update with `npm update -g codeburn`). The `sync` subcommand is not available in earlier versions.
 
+For each developer, create a user in Cognito:
 ```bash
 # Create a user (username MUST be the developer's email)
 aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
-
-# Developer one-time setup (opens browser for OIDC login), then push
-codeburn sync setup <OtelCollectorUrl output>
-codeburn sync push
 ```
 
+Each developer will need to setup the Codeburn sync:
 **Automated sync (recommended):** Instead of manual pushes, use the CLI to set up a recurring schedule:
 
 ```bash
@@ -163,6 +162,18 @@ npx cdk deploy --all \
 ```
 
 Your IdP app must be a **public client with PKCE**, register loopback redirect URIs `http://127.0.0.1:19876/callback` (also ports 19877, 19878), and issue **JWT access tokens** (Okta and Entra ID work; Auth0's opaque access tokens are not supported).
+
+#### VPC Configuration
+
+By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (DynamoDB, EventBridge, CloudWatch, KMS, Bedrock Runtime) for network isolation. This adds ~$35-50/month in endpoint costs.
+
+| Option | Command | Use Case |
+|--------|---------|----------|
+| **New VPC** (default) | `npx cdk deploy --all` | Production — full network isolation |
+| **Skip VPC** | `npx cdk deploy --all -c skipVpc=true` | Workshop/demo — saves cost, faster cold starts |
+| **Existing VPC** | `npx cdk deploy --all -c vpcId=vpc-0123456789abcdef0` | Enterprise — use shared VPC with existing endpoints or NAT |
+
+When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
 
 **Data layout:**
 
