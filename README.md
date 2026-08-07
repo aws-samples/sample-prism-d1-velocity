@@ -10,7 +10,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Architecture
 
-![PRISM D1 Velocity Architecture](assets/images/architecture-overview.svg)
+![PRISM D1 Velocity Architecture](assets/images/prismarchitecture.drawio.png)
 
 ## What This Repo Contains
 
@@ -172,6 +172,28 @@ Your IdP app must be a **public client with PKCE**, register loopback redirect U
 | DynamoDB (`prism-d1-ai-usage`) | Per-span rows (90-day TTL) + daily per-user/tool aggregates | PRISM dashboards |
 
 Duplicate pushes are safe: codeburn's deterministic span IDs act as an idempotency key server-side. Historical sessions are backfilled on first push (aggregates bucket by span date). Running a full ADOT collector for fan-out to X-Ray/Grafana/Datadog is on the [roadmap](docs/ROADMAP.md).
+
+#### Cost Estimate
+
+Monthly cost depends on team size and configuration. All resources are serverless (pay-per-use) except VPC endpoints.
+
+| Component | ~Monthly Cost | Notes |
+|-----------|--------------|-------|
+| **VPC endpoints** (5×) | $35–50 | Skip with `-c skipVpc=true` |
+| **DynamoDB** (2 tables) | $1–5 | On-demand billing; scales with commit volume |
+| **Lambda** (8 processors) | $1–3 | Invoked per event; negligible at <50 devs |
+| **EventBridge** | < $1 | $1/million events |
+| **CloudWatch** (3 dashboards, 11 alarms) | $3–10 | Per-dashboard fee + metric costs |
+| **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
+| **Bedrock Guardrails** | $1–5 | Per-invocation; depends on eval gate frequency |
+| **KMS** (1 key) | $1 | Fixed monthly fee + $0.03/10K requests |
+
+**Typical total:**
+- Workshop/demo (no VPC): **~$10–25/month**
+- Production (with VPC, <50 devs): **~$50–80/month**
+- Large team (100+ devs, heavy CI): **~$80–150/month**
+
+> 💡 The largest cost driver is VPC endpoints. For workshops and demos, use `-c skipVpc=true` to stay under $25/month. QuickSight dashboards (optional) add $12–24/reader/month separately.
 
 ### Assess a Customer
 
