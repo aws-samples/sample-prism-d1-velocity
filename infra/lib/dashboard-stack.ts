@@ -236,8 +236,8 @@ export class DashboardStack extends cdk.Stack {
     // Cost breakdowns by Tool and Model. SEARCH expressions auto-discover
     // every dimension value, so new tools/models appear without dashboard
     // changes. These series are populated by the otel-metrics-publisher
-    // (requires -c enableOtelCollector=true); the trailer path has no
-    // per-tool/per-model breakdown and leaves these widgets empty.
+    // (deployed by default; skip with -c skipOtelCollector=true); the trailer
+    // path has no per-tool/per-model breakdown and leaves these widgets empty.
     teamDashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'AI Cost by Tool (USD)',

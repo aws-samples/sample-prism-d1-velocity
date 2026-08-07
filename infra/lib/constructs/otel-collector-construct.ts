@@ -1,10 +1,10 @@
 /**
- * PRISM D1 — OTEL Collector construct (opt-in).
+ * PRISM D1 — OTEL Collector construct (on by default).
  *
  * Server side of `codeburn sync`: an HTTP API serving the codeburn discovery
  * doc and an OTLP/HTTP traces endpoint, authorized by OIDC JWT.
  *
- * Enable with:   cdk deploy -c enableOtelCollector=true
+ * Skip with:     cdk deploy -c skipOtelCollector=true
  * BYO IdP with:  -c otelIssuer=... -c otelClientId=... [-c otelIdentityClaim=email]
  *
  * Default mode provisions a Cognito User Pool (admin-create-user only,

@@ -140,8 +140,11 @@ export class MetricsPipelineStack extends cdk.Stack {
     // same table answers by-repo / by-PR / by-commit / global-by-date.
     // -------------------------------------------------------
     // Read the OTEL collector flag early — it also controls the table stream
-    // and which pipeline owns the token/cost CloudWatch metrics.
-    const enableOtelCollector = this.node.tryGetContext('enableOtelCollector') === 'true';
+    // OTEL collector is ON by default. Skip with: -c skipOtelCollector=true
+    // Legacy flag -c enableOtelCollector=true is also respected for backwards compat.
+    const skipOtel = this.node.tryGetContext('skipOtelCollector') === 'true';
+    const legacyEnable = this.node.tryGetContext('enableOtelCollector') === 'true';
+    const enableOtelCollector = legacyEnable || !skipOtel;
 
     this.aiUsageTable = new dynamodb.Table(this, 'AiUsageTable', {
       tableName: 'prism-d1-ai-usage',
@@ -302,8 +305,8 @@ export class MetricsPipelineStack extends cdk.Stack {
     this.guardrail = new BedrockGuardrailConstruct(this, 'PrismGuardrail', createDefaultPrismGuardrailProps());
 
     // -------------------------------------------------------
-    // OTEL Collector (opt-in — server side of `codeburn sync`)
-    // Enable with: npx cdk deploy --context enableOtelCollector=true
+    // OTEL Collector (on by default — server side of `codeburn sync`)
+    // Skip with:   npx cdk deploy --context skipOtelCollector=true
     // BYO IdP:     -c otelIssuer=... -c otelClientId=... [-c otelIdentityClaim=email]
     // Per-user AI usage flows directly from codeburn sync to the
     // ai-usage table (spans + daily aggregates).
