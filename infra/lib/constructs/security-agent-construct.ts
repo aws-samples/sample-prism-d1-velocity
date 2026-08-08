@@ -5,6 +5,7 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
 
@@ -208,11 +209,12 @@ export class SecurityAgentConstruct extends Construct {
     }
 
     // Log group for pen test results (Security Agent writes to /aws/securityagent/<space>/pt-<id>)
-    new logs.LogGroup(this, 'PentestLogGroup', {
-      logGroupName: `/aws/securityagent/${props.agentSpaceName}`,
-      retention: logs.RetentionDays.SIX_MONTHS,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
+    // Note: we do NOT set logGroupName to avoid conflicts with pre-existing log groups
+    // created by prism-cli securityagent setup or the Security Agent service itself.
+    const pentestLogGroup = logs.LogGroup.fromLogGroupName(
+      this, 'PentestLogGroup',
+      `/aws/securityagent/${props.agentSpaceName}`,
+    );
 
     // Outputs
     new cdk.CfnOutput(this, 'AgentSpaceIdOutput', {
@@ -260,6 +262,24 @@ export class SecurityAgentConstruct extends Construct {
     // Grant Security Agent service role read access to the scan bucket
     this.scanBucket.grantRead(this.serviceRole);
 
+    // Suppress cdk-nag for S3 read grant wildcards (grantRead expands to s3:GetObject*, s3:GetBucket*, s3:List*)
+    NagSuppressions.addResourceSuppressions(
+      this.serviceRole,
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'grantRead() generates s3:GetObject*, s3:GetBucket*, s3:List* — standard CDK pattern for bucket read access',
+          appliesTo: ['Action::s3:GetObject*', 'Action::s3:GetBucket*', 'Action::s3:List*'],
+        },
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'Scan bucket objects are dynamic (SHA-named diffs); wildcard on objects required',
+          appliesTo: ['Resource::<SecurityAgentScanBucketB752F4A9.Arn>/*'],
+        },
+      ],
+      true,
+    );
+
     NagSuppressions.addResourceSuppressions(
       this.scanBucket,
       [
@@ -277,58 +297,112 @@ export class SecurityAgentConstruct extends Construct {
     // The code review points to the S3 scan bucket so CI
     // workflows can call StartCodeReviewJob with diffSource.
     // -------------------------------------------------------
-    const codeReviewCr = new cdk.CustomResource(this, 'CodeReview', {
-      serviceToken: new cdk.aws_lambda.Function(this, 'CodeReviewProvider', {
-        runtime: cdk.aws_lambda.Runtime.NODEJS_22_X,
-        handler: 'index.handler',
-        timeout: cdk.Duration.seconds(30),
-        code: cdk.aws_lambda.Code.fromInline(`
-const { SecurityAgentClient, CreateCodeReviewCommand, BatchGetCodeReviewsCommand } = require('@aws-sdk/client-securityagent');
+    const codeReviewProviderFn = new cdk.aws_lambda.Function(this, 'CodeReviewProvider', {
+      runtime: cdk.aws_lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      timeout: cdk.Duration.seconds(60),
+      code: cdk.aws_lambda.Code.fromInline(`
+const { SecurityAgentClient, CreateCodeReviewCommand, ListCodeReviewsCommand } = require('@aws-sdk/client-securityagent');
 
 exports.handler = async (event) => {
   const client = new SecurityAgentClient();
   const props = event.ResourceProperties;
 
   if (event.RequestType === 'Delete') {
-    // Code reviews cannot be deleted via API — just return
-    return { PhysicalResourceId: event.PhysicalResourceId };
+    // Code reviews cannot be deleted via API — no-op
+    return { PhysicalResourceId: event.PhysicalResourceId, Data: {} };
   }
 
-  // Create or describe existing code review
+  const findExisting = async () => {
+    try {
+      const list = await client.send(new ListCodeReviewsCommand({ agentSpaceId: props.AgentSpaceId }));
+      const match = (list.codeReviews || []).find((c) => c.name === props.Name || c.title === props.Title);
+      return match ? (match.codeReviewId || match.id) : null;
+    } catch (e) {
+      return null;
+    }
+  };
+
   try {
     const resp = await client.send(new CreateCodeReviewCommand({
       agentSpaceId: props.AgentSpaceId,
       name: props.Name,
+      title: props.Title,
       sourceConfig: { s3: { bucketName: props.BucketName, keyPrefix: props.KeyPrefix } },
     }));
-    return {
-      PhysicalResourceId: resp.codeReviewId,
-      Data: { CodeReviewId: resp.codeReviewId },
-    };
+    const id = resp.codeReviewId || resp.id;
+    return { PhysicalResourceId: id, Data: { CodeReviewId: id } };
   } catch (err) {
     if (err.name === 'ConflictException') {
-      // Already exists — retrieve it
-      // List all and find by name (no GetCodeReviewByName API)
-      return { PhysicalResourceId: 'existing', Data: { CodeReviewId: 'existing-use-ssm' } };
+      const existingId = await findExisting();
+      if (existingId) {
+        return { PhysicalResourceId: existingId, Data: { CodeReviewId: existingId } };
+      }
     }
     throw err;
   }
 };
         `),
-        initialPolicy: [
-          new iam.PolicyStatement({
-            actions: [
-              'securityagent:CreateCodeReview',
-              'securityagent:BatchGetCodeReviews',
-              'securityagent:ListCodeReviews',
-            ],
-            resources: [`arn:aws:securityagent:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:agent-space/*`],
-          }),
-        ],
-      }).functionArn,
+      initialPolicy: [
+        new iam.PolicyStatement({
+          actions: [
+            'securityagent:CreateCodeReview',
+            'securityagent:BatchGetCodeReviews',
+            'securityagent:ListCodeReviews',
+          ],
+          resources: [`arn:aws:securityagent:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:agent-space/*`],
+        }),
+      ],
+    });
+
+    const codeReviewProvider = new cr.Provider(this, 'CodeReviewProviderFramework', {
+      onEventHandler: codeReviewProviderFn,
+    });
+
+    NagSuppressions.addResourceSuppressions(
+      codeReviewProviderFn,
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'CodeReview provider needs securityagent actions on agent-space/* because the space ID is dynamic',
+          appliesTo: ['Resource::arn:aws:securityagent:<AWS::Region>:<AWS::AccountId>:agent-space/*'],
+        },
+        {
+          id: 'AwsSolutions-IAM4',
+          reason: 'Lambda basic execution role is required for CloudWatch Logs access',
+          appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+        },
+      ],
+      true,
+    );
+
+    // Suppress nag on the Provider framework's own Lambda + role
+    NagSuppressions.addResourceSuppressions(
+      codeReviewProvider,
+      [
+        {
+          id: 'AwsSolutions-IAM4',
+          reason: 'CDK Provider framework Lambda uses the managed basic execution role',
+          appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+        },
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'CDK Provider framework grants lambda:InvokeFunction to its own onEvent handler with a wildcard version suffix',
+        },
+        {
+          id: 'AwsSolutions-L1',
+          reason: 'CDK Provider framework manages its own Lambda runtime version',
+        },
+      ],
+      true,
+    );
+
+    const codeReviewCr = new cdk.CustomResource(this, 'CodeReview', {
+      serviceToken: codeReviewProvider.serviceToken,
       properties: {
         AgentSpaceId: this.agentSpaceId,
         Name: `${props.agentSpaceName}-ci-scan`,
+        Title: `${props.agentSpaceName} CI diff scan`,
         BucketName: this.scanBucket.bucketName,
         KeyPrefix: 'repo/',
       },
