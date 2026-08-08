@@ -5,7 +5,6 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
-import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
 
@@ -82,7 +81,6 @@ export class SecurityAgentConstruct extends Construct {
   public readonly serviceRole: iam.Role;
   public readonly targetDomainIds: string[];
   public readonly scanBucket: s3.Bucket;
-  public readonly codeReviewId: string;
 
   constructor(scope: Construct, id: string, props: SecurityAgentProps) {
     super(scope, id);
@@ -243,8 +241,11 @@ export class SecurityAgentConstruct extends Construct {
     // -------------------------------------------------------
     this.scanBucket = new s3.Bucket(this, 'ScanBucket', {
       bucketName: `security-agent-scans-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-      encryption: s3.BucketEncryption.KMS,
-      encryptionKey: props.kmsKey,
+      // SSE-S3 (not the customer-managed KMS key): the Continuum service reads
+      // this bucket when creating the code review and cannot access a CMK it
+      // has no grant on. Artifacts here are ephemeral diffs (30-day lifecycle),
+      // the bucket is private (BLOCK_ALL) and SSL-enforced.
+      encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       versioned: false,
@@ -292,130 +293,15 @@ export class SecurityAgentConstruct extends Construct {
     );
 
     // -------------------------------------------------------
-    // Code Review resource — created via SDK Custom Resource
-    // since CloudFormation does not yet have a CfnCodeReview.
-    // The code review points to the S3 scan bucket so CI
-    // workflows can call StartCodeReviewJob with diffSource.
+    // Code Review resource — NOT created here in CDK.
+    // CreateCodeReview requires assets.sourceCode pointing to
+    // an existing ZIP of the repo (chicken-and-egg at deploy).
+    // Instead, `prism-cli securityagent setup` handles:
+    //   1. git archive → upload repo.zip to scan bucket
+    //   2. CreateCodeReview API call
+    //   3. Write code-review-id to SSM
+    // The CDK only provisions the bucket + role + SSM scaffold.
     // -------------------------------------------------------
-    const codeReviewProviderFn = new cdk.aws_lambda.Function(this, 'CodeReviewProvider', {
-      runtime: cdk.aws_lambda.Runtime.NODEJS_22_X,
-      handler: 'index.handler',
-      timeout: cdk.Duration.seconds(60),
-      code: cdk.aws_lambda.Code.fromInline(`
-const { SecurityAgentClient, CreateCodeReviewCommand, ListCodeReviewsCommand } = require('@aws-sdk/client-securityagent');
-
-exports.handler = async (event) => {
-  const client = new SecurityAgentClient();
-  const props = event.ResourceProperties;
-
-  if (event.RequestType === 'Delete') {
-    // Code reviews cannot be deleted via API — no-op
-    return { PhysicalResourceId: event.PhysicalResourceId, Data: {} };
-  }
-
-  const findExisting = async () => {
-    try {
-      const list = await client.send(new ListCodeReviewsCommand({ agentSpaceId: props.AgentSpaceId }));
-      const match = (list.codeReviews || []).find((c) => c.name === props.Name || c.title === props.Title);
-      return match ? (match.codeReviewId || match.id) : null;
-    } catch (e) {
-      return null;
-    }
-  };
-
-  try {
-    const resp = await client.send(new CreateCodeReviewCommand({
-      agentSpaceId: props.AgentSpaceId,
-      name: props.Name,
-      title: props.Title,
-      sourceConfig: { s3: { bucketName: props.BucketName, keyPrefix: props.KeyPrefix } },
-    }));
-    const id = resp.codeReviewId || resp.id;
-    return { PhysicalResourceId: id, Data: { CodeReviewId: id } };
-  } catch (err) {
-    if (err.name === 'ConflictException') {
-      const existingId = await findExisting();
-      if (existingId) {
-        return { PhysicalResourceId: existingId, Data: { CodeReviewId: existingId } };
-      }
-    }
-    throw err;
-  }
-};
-        `),
-      initialPolicy: [
-        new iam.PolicyStatement({
-          actions: [
-            'securityagent:CreateCodeReview',
-            'securityagent:BatchGetCodeReviews',
-            'securityagent:ListCodeReviews',
-          ],
-          resources: [`arn:aws:securityagent:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:agent-space/*`],
-        }),
-      ],
-    });
-
-    const codeReviewProvider = new cr.Provider(this, 'CodeReviewProviderFramework', {
-      onEventHandler: codeReviewProviderFn,
-    });
-
-    NagSuppressions.addResourceSuppressions(
-      codeReviewProviderFn,
-      [
-        {
-          id: 'AwsSolutions-IAM5',
-          reason: 'CodeReview provider needs securityagent actions on agent-space/* because the space ID is dynamic',
-          appliesTo: ['Resource::arn:aws:securityagent:<AWS::Region>:<AWS::AccountId>:agent-space/*'],
-        },
-        {
-          id: 'AwsSolutions-IAM4',
-          reason: 'Lambda basic execution role is required for CloudWatch Logs access',
-          appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
-        },
-      ],
-      true,
-    );
-
-    // Suppress nag on the Provider framework's own Lambda + role
-    NagSuppressions.addResourceSuppressions(
-      codeReviewProvider,
-      [
-        {
-          id: 'AwsSolutions-IAM4',
-          reason: 'CDK Provider framework Lambda uses the managed basic execution role',
-          appliesTo: ['Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
-        },
-        {
-          id: 'AwsSolutions-IAM5',
-          reason: 'CDK Provider framework grants lambda:InvokeFunction to its own onEvent handler with a wildcard version suffix',
-        },
-        {
-          id: 'AwsSolutions-L1',
-          reason: 'CDK Provider framework manages its own Lambda runtime version',
-        },
-      ],
-      true,
-    );
-
-    const codeReviewCr = new cdk.CustomResource(this, 'CodeReview', {
-      serviceToken: codeReviewProvider.serviceToken,
-      properties: {
-        AgentSpaceId: this.agentSpaceId,
-        Name: `${props.agentSpaceName}-ci-scan`,
-        Title: `${props.agentSpaceName} CI diff scan`,
-        BucketName: this.scanBucket.bucketName,
-        KeyPrefix: 'repo/',
-      },
-    });
-    codeReviewCr.node.addDependency(agentSpace);
-
-    this.codeReviewId = codeReviewCr.getAttString('CodeReviewId');
-
-    new cdk.CfnOutput(this, 'CodeReviewIdOutput', {
-      value: this.codeReviewId,
-      description: 'Code Review ID for CI/CD diff scans',
-      exportName: 'PrismD1ContinuumCodeReviewId',
-    });
 
     new cdk.CfnOutput(this, 'ScanBucketOutput', {
       value: this.scanBucket.bucketName,
@@ -437,12 +323,8 @@ exports.handler = async (event) => {
       tier: ssm.ParameterTier.STANDARD,
     });
 
-    new ssm.StringParameter(this, 'ParamCodeReviewId', {
-      parameterName: `${prefix}/code-review-id`,
-      stringValue: this.codeReviewId,
-      description: 'AWS Continuum Code Review ID for CI diff scans',
-      tier: ssm.ParameterTier.STANDARD,
-    });
+    // code-review-id is written by `prism-cli securityagent setup` (not CDK)
+    // because CreateCodeReview needs an existing repo ZIP in S3 first.
 
     new ssm.StringParameter(this, 'ParamScanBucket', {
       parameterName: `${prefix}/scan-bucket`,

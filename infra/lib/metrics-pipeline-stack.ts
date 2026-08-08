@@ -497,7 +497,12 @@ export class MetricsPipelineStack extends cdk.Stack {
           {
             id: 'AwsSolutions-IAM5',
             reason: 'Scan bucket objects include dynamic diff filenames (SHA-based); wildcard on objects only',
-            appliesTo: ['Resource::<SecurityAgentScanBucket*>.Arn/*'],
+            appliesTo: ['Resource::<SecurityAgentScanBucketB752F4A9.Arn>/*'],
+          },
+          {
+            id: 'AwsSolutions-IAM5',
+            reason: 'SSM parameters under /prism/continuum/ are all non-sensitive config values (IDs and bucket names)',
+            appliesTo: ['Resource::arn:aws:ssm:<AWS::Region>:<AWS::AccountId>:parameter/prism/continuum/*'],
           },
         ],
         true,

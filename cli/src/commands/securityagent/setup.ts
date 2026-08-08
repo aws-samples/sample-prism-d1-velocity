@@ -118,5 +118,91 @@ export default {
     console.log(`   Application: ${applicationId}`);
     console.log(`   Web console: https://${region}.console.aws.amazon.com/securityagent/home?region=${region}`);
     console.log('   Click "Admin access" to open the web app.');
+
+    // -------------------------------------------------------
+    // Create Code Review for CI diff scans
+    // Requires: repo ZIP uploaded to scan bucket first
+    // -------------------------------------------------------
+    console.log('\n📦 Setting up Code Review for CI/CD diff scans...');
+
+    // Get scan bucket from SSM (created by CDK)
+    const bucketParam = runCapture(`aws ssm get-parameter --name /prism/continuum/scan-bucket ${env} --query Parameter.Value --output text`);
+    if (!bucketParam.ok || !bucketParam.stdout) {
+      console.log('   ⚠️  Scan bucket SSM param not found. Deploy with --context enableSecurityAgent=true first.');
+      console.log('   Skipping Code Review creation.');
+      return;
+    }
+    const scanBucket = bucketParam.stdout;
+    console.log(`   Scan bucket: ${scanBucket}`);
+
+    // Zip the repo and upload
+    console.log('   Archiving repo...');
+    const repoRoot = process.cwd();
+    const zipResult = runCapture(`cd ${repoRoot} && git archive HEAD --format=zip -o /tmp/prism-repo.zip`);
+    if (!zipResult.ok) {
+      console.log(`   ⚠️  git archive failed (not a git repo?): ${zipResult.stdout}`);
+      console.log('   Skipping Code Review creation. Run from a git repo root.');
+      return;
+    }
+
+    const upload = runCapture(`aws s3 cp /tmp/prism-repo.zip s3://${scanBucket}/repo/latest.zip ${env}`);
+    if (!upload.ok) {
+      console.error(`   Failed to upload repo ZIP: ${upload.stdout}`);
+      return;
+    }
+    console.log('   ✅ Repo ZIP uploaded');
+
+    // Create Code Review (or find existing)
+    const codeReviewTitle = 'prism-d1-security-ci-diff-scan';
+    const createCr = runCapture(
+      `aws securityagent create-code-review ` +
+      `--agent-space-id ${agentSpaceId} ` +
+      `--title ${codeReviewTitle} ` +
+      `--service-role ${roleArn} ` +
+      `--assets '{"sourceCode":[{"s3Location":"s3://${scanBucket}/repo/latest.zip"}]}' ` +
+      `${env} --output json`
+    );
+
+    let codeReviewId: string;
+    if (createCr.ok) {
+      codeReviewId = JSON.parse(createCr.stdout).codeReviewId;
+      console.log(`   ✅ Code Review created: ${codeReviewId}`);
+    } else if (createCr.stdout.includes('Conflict') || createCr.stdout.includes('already exists')) {
+      // Already exists — find it
+      const listCr = runCapture(`aws securityagent list-code-reviews --agent-space-id ${agentSpaceId} ${env} --output json`);
+      if (listCr.ok) {
+        const reviews = JSON.parse(listCr.stdout).codeReviews || [];
+        const existing = reviews.find((r: any) => r.title === codeReviewTitle);
+        if (existing) {
+          codeReviewId = existing.codeReviewId;
+          console.log(`   ✅ Code Review already exists: ${codeReviewId}`);
+        } else {
+          console.error('   ❌ Could not find existing Code Review');
+          return;
+        }
+      } else {
+        console.error(`   ❌ Failed to list code reviews: ${listCr.stdout}`);
+        return;
+      }
+    } else {
+      console.error(`   ❌ Failed to create Code Review: ${createCr.stdout}`);
+      console.log('   The CI workflow will skip Continuum scanning until this is resolved.');
+      return;
+    }
+
+    // Write code-review-id to SSM
+    const ssmWrite = runCapture(
+      `aws ssm put-parameter --name /prism/continuum/code-review-id ` +
+      `--value "${codeReviewId}" --type String --overwrite ${env}`
+    );
+    if (ssmWrite.ok) {
+      console.log('   ✅ Code Review ID written to SSM: /prism/continuum/code-review-id');
+    } else {
+      console.log(`   ⚠️  Failed to write SSM param: ${ssmWrite.stdout}`);
+      console.log(`   Manually run: aws ssm put-parameter --name /prism/continuum/code-review-id --value "${codeReviewId}" --type String --overwrite ${env}`);
+    }
+
+    console.log('\n🎉 Continuum CI scanning ready!');
+    console.log('   The eval gate workflow will now run diff scans on every PR.');
   },
 };
