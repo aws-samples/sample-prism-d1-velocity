@@ -3,6 +3,8 @@ import * as securityagent from 'aws-cdk-lib/aws-securityagent';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
 
@@ -53,6 +55,13 @@ export interface SecurityAgentProps {
   codeRemediationStrategy?: 'AUTOMATIC' | 'DISABLED';
 
   /**
+   * SSM Parameter Store prefix for CI/CD config retrieval.
+   * Stores agent space ID, code review ID, and scan bucket name.
+   * @default '/prism/continuum'
+   */
+  ssmParameterPrefix?: string;
+
+  /**
    * Tags applied to all Security Agent resources.
    */
   tags?: Record<string, string>;
@@ -71,6 +80,8 @@ export class SecurityAgentConstruct extends Construct {
   public readonly agentSpaceId: string;
   public readonly serviceRole: iam.Role;
   public readonly targetDomainIds: string[];
+  public readonly scanBucket: s3.Bucket;
+  public readonly codeReviewId: string;
 
   constructor(scope: Construct, id: string, props: SecurityAgentProps) {
     super(scope, id);
@@ -223,6 +234,148 @@ export class SecurityAgentConstruct extends Construct {
         exportName: `PrismD1SecurityAgentDomainIds`,
       });
     }
+
+    // -------------------------------------------------------
+    // S3 Scan Bucket — stores repo ZIPs and diff files for
+    // API-triggered code reviews (diff scans from CI/CD).
+    // -------------------------------------------------------
+    this.scanBucket = new s3.Bucket(this, 'ScanBucket', {
+      bucketName: `security-agent-scans-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: props.kmsKey,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: false,
+      lifecycleRules: [
+        {
+          id: 'expire-scan-artifacts',
+          expiration: cdk.Duration.days(30),
+          enabled: true,
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // Grant Security Agent service role read access to the scan bucket
+    this.scanBucket.grantRead(this.serviceRole);
+
+    NagSuppressions.addResourceSuppressions(
+      this.scanBucket,
+      [
+        {
+          id: 'AwsSolutions-S1',
+          reason: 'Access logging not required for ephemeral scan artifacts (30-day lifecycle, auto-deleted)',
+        },
+      ],
+      true,
+    );
+
+    // -------------------------------------------------------
+    // Code Review resource — created via SDK Custom Resource
+    // since CloudFormation does not yet have a CfnCodeReview.
+    // The code review points to the S3 scan bucket so CI
+    // workflows can call StartCodeReviewJob with diffSource.
+    // -------------------------------------------------------
+    const codeReviewCr = new cdk.CustomResource(this, 'CodeReview', {
+      serviceToken: new cdk.aws_lambda.Function(this, 'CodeReviewProvider', {
+        runtime: cdk.aws_lambda.Runtime.NODEJS_22_X,
+        handler: 'index.handler',
+        timeout: cdk.Duration.seconds(30),
+        code: cdk.aws_lambda.Code.fromInline(`
+const { SecurityAgentClient, CreateCodeReviewCommand, BatchGetCodeReviewsCommand } = require('@aws-sdk/client-securityagent');
+
+exports.handler = async (event) => {
+  const client = new SecurityAgentClient();
+  const props = event.ResourceProperties;
+
+  if (event.RequestType === 'Delete') {
+    // Code reviews cannot be deleted via API — just return
+    return { PhysicalResourceId: event.PhysicalResourceId };
+  }
+
+  // Create or describe existing code review
+  try {
+    const resp = await client.send(new CreateCodeReviewCommand({
+      agentSpaceId: props.AgentSpaceId,
+      name: props.Name,
+      sourceConfig: { s3: { bucketName: props.BucketName, keyPrefix: props.KeyPrefix } },
+    }));
+    return {
+      PhysicalResourceId: resp.codeReviewId,
+      Data: { CodeReviewId: resp.codeReviewId },
+    };
+  } catch (err) {
+    if (err.name === 'ConflictException') {
+      // Already exists — retrieve it
+      // List all and find by name (no GetCodeReviewByName API)
+      return { PhysicalResourceId: 'existing', Data: { CodeReviewId: 'existing-use-ssm' } };
+    }
+    throw err;
+  }
+};
+        `),
+        initialPolicy: [
+          new iam.PolicyStatement({
+            actions: [
+              'securityagent:CreateCodeReview',
+              'securityagent:BatchGetCodeReviews',
+              'securityagent:ListCodeReviews',
+            ],
+            resources: [`arn:aws:securityagent:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:agent-space/*`],
+          }),
+        ],
+      }).functionArn,
+      properties: {
+        AgentSpaceId: this.agentSpaceId,
+        Name: `${props.agentSpaceName}-ci-scan`,
+        BucketName: this.scanBucket.bucketName,
+        KeyPrefix: 'repo/',
+      },
+    });
+    codeReviewCr.node.addDependency(agentSpace);
+
+    this.codeReviewId = codeReviewCr.getAttString('CodeReviewId');
+
+    new cdk.CfnOutput(this, 'CodeReviewIdOutput', {
+      value: this.codeReviewId,
+      description: 'Code Review ID for CI/CD diff scans',
+      exportName: 'PrismD1ContinuumCodeReviewId',
+    });
+
+    new cdk.CfnOutput(this, 'ScanBucketOutput', {
+      value: this.scanBucket.bucketName,
+      description: 'S3 bucket for scan artifacts (repo ZIPs + diffs)',
+      exportName: 'PrismD1ContinuumScanBucket',
+    });
+
+    // -------------------------------------------------------
+    // SSM Parameter Store — non-sensitive CI/CD config.
+    // GitHub Actions workflows read these at runtime so no
+    // hardcoded IDs are needed in the repository.
+    // -------------------------------------------------------
+    const prefix = props.ssmParameterPrefix ?? '/prism/continuum';
+
+    new ssm.StringParameter(this, 'ParamAgentSpaceId', {
+      parameterName: `${prefix}/agent-space-id`,
+      stringValue: this.agentSpaceId,
+      description: 'AWS Continuum Agent Space ID for PRISM D1',
+      tier: ssm.ParameterTier.STANDARD,
+    });
+
+    new ssm.StringParameter(this, 'ParamCodeReviewId', {
+      parameterName: `${prefix}/code-review-id`,
+      stringValue: this.codeReviewId,
+      description: 'AWS Continuum Code Review ID for CI diff scans',
+      tier: ssm.ParameterTier.STANDARD,
+    });
+
+    new ssm.StringParameter(this, 'ParamScanBucket', {
+      parameterName: `${prefix}/scan-bucket`,
+      stringValue: this.scanBucket.bucketName,
+      description: 'S3 bucket name for uploading repo/diff scan artifacts',
+      tier: ssm.ParameterTier.STANDARD,
+    });
   }
 
   /**
