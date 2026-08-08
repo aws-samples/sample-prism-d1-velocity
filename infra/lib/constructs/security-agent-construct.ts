@@ -332,6 +332,13 @@ export class SecurityAgentConstruct extends Construct {
       description: 'S3 bucket name for uploading repo/diff scan artifacts',
       tier: ssm.ParameterTier.STANDARD,
     });
+
+    new ssm.StringParameter(this, 'ParamServiceRoleArn', {
+      parameterName: `${prefix}/service-role-arn`,
+      stringValue: this.serviceRole.roleArn,
+      description: 'Service role ARN for Continuum CreateCodeReview (passed via --service-role)',
+      tier: ssm.ParameterTier.STANDARD,
+    });
   }
 
   /**

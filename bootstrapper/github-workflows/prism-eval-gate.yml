@@ -227,9 +227,18 @@ jobs:
         env:
           AWS_REGION: us-west-2
         run: |
+          # Pre-flight: verify AWS CLI has securityagent subcommand
+          if ! aws securityagent help > /dev/null 2>&1; then
+            echo "::warning::AWS CLI does not support 'securityagent' commands (upgrade to v2.35+). Skipping scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "::group::Retrieve Continuum config from SSM"
           AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
           SCAN_BUCKET=$(aws ssm get-parameter --name /prism/continuum/scan-bucket --query Parameter.Value --output text 2>/dev/null || echo "")
+          SERVICE_ROLE=$(aws ssm get-parameter --name /prism/continuum/service-role-arn --query Parameter.Value --output text 2>/dev/null || echo "")
           echo "::endgroup::"
 
           # Skip if core infrastructure not deployed
@@ -238,6 +247,13 @@ jobs:
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          # Fallback for service role if SSM param not yet deployed
+          if [[ -z "$SERVICE_ROLE" ]]; then
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            SERVICE_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/prism-d1-security-agent-prism-d1-security"
+            echo "::notice::service-role-arn SSM param not found, using convention: ${SERVICE_ROLE}"
           fi
 
           # Derive repo slug for per-repo SSM key (org/repo → org-repo)
@@ -252,10 +268,6 @@ jobs:
             # Upload repo ZIP as context for the diff scan
             git archive HEAD --format=zip -o /tmp/repo.zip
             aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
-
-            # Get service role ARN from the agent space
-            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            SERVICE_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/prism-d1-security-agent-prism-d1-security"
 
             # Create Code Review resource
             CR_RESPONSE=$(aws securityagent create-code-review \
