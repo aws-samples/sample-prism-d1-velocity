@@ -229,17 +229,66 @@ jobs:
         run: |
           echo "::group::Retrieve Continuum config from SSM"
           AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
-          CODE_REVIEW_ID=$(aws ssm get-parameter --name /prism/continuum/code-review-id --query Parameter.Value --output text 2>/dev/null || echo "")
           SCAN_BUCKET=$(aws ssm get-parameter --name /prism/continuum/scan-bucket --query Parameter.Value --output text 2>/dev/null || echo "")
           echo "::endgroup::"
 
-          # Skip if Continuum not configured (SSM params missing = stack deployed without enableSecurityAgent)
-          if [[ -z "$AGENT_SPACE_ID" || -z "$CODE_REVIEW_ID" || -z "$SCAN_BUCKET" ]]; then
-            echo "⚠️ AWS Continuum not configured (SSM params missing). Skipping security scan."
+          # Skip if core infrastructure not deployed
+          if [[ -z "$AGENT_SPACE_ID" || -z "$SCAN_BUCKET" ]]; then
+            echo "⚠️ AWS Continuum not configured (agent-space-id or scan-bucket missing). Skipping security scan."
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          # Derive repo slug for per-repo SSM key (org/repo → org-repo)
+          REPO_SLUG=$(echo "${{ github.repository }}" | tr '/' '-')
+
+          echo "::group::Resolve or bootstrap Code Review for ${REPO_SLUG}"
+          CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
+
+          if [[ -z "$CODE_REVIEW_ID" ]]; then
+            echo "  No Code Review found for ${REPO_SLUG} — bootstrapping..."
+
+            # Upload repo ZIP as context for the diff scan
+            git archive HEAD --format=zip -o /tmp/repo.zip
+            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+
+            # Get service role ARN from the agent space
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            SERVICE_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/prism-d1-security-agent-prism-d1-security"
+
+            # Create Code Review resource
+            CR_RESPONSE=$(aws securityagent create-code-review \
+              --agent-space-id "${AGENT_SPACE_ID}" \
+              --title "${REPO_SLUG}-ci-diff-scan" \
+              --service-role "${SERVICE_ROLE}" \
+              --assets "{\"sourceCode\":[{\"s3Location\":\"s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip\"}]}" \
+              --output json 2>&1)
+
+            if echo "$CR_RESPONSE" | jq -e '.codeReviewId' > /dev/null 2>&1; then
+              CODE_REVIEW_ID=$(echo "$CR_RESPONSE" | jq -r '.codeReviewId')
+              echo "  ✅ Code Review created: ${CODE_REVIEW_ID}"
+
+              # Persist for future runs
+              aws ssm put-parameter \
+                --name "/prism/continuum/code-review-id/${REPO_SLUG}" \
+                --value "${CODE_REVIEW_ID}" \
+                --type String --overwrite 2>/dev/null || true
+            else
+              echo "  ⚠️ Failed to create Code Review: ${CR_RESPONSE}"
+              echo "  Skipping scan (non-blocking)."
+              echo "findings=0" >> "$GITHUB_OUTPUT"
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            echo "  Using existing Code Review: ${CODE_REVIEW_ID}"
+
+            # Re-upload fresh repo ZIP (context for accurate cross-module analysis)
+            git archive HEAD --format=zip -o /tmp/repo.zip
+            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+          fi
+          echo "::endgroup::"
 
           echo "::group::Generate and upload diff"
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
@@ -253,7 +302,7 @@ jobs:
             exit 0
           fi
 
-          DIFF_KEY="diffs/${{ github.event.pull_request.number }}/${HEAD_SHA}.diff"
+          DIFF_KEY="diffs/${REPO_SLUG}/${{ github.event.pull_request.number }}/${HEAD_SHA}.diff"
           aws s3 cp /tmp/changes.diff "s3://${SCAN_BUCKET}/${DIFF_KEY}" --quiet
           echo "::endgroup::"
 

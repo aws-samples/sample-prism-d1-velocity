@@ -461,10 +461,21 @@ export class MetricsPipelineStack extends cdk.Stack {
               'securityagent:BatchGetCodeReviewJobTasks',
               'securityagent:ListFindings',
               'securityagent:BatchGetFindings',
+              'securityagent:CreateCodeReview',
+              'securityagent:ListCodeReviews',
             ],
             resources: [
               `arn:aws:securityagent:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:agent-space/*`,
             ],
+          }),
+          new iam.PolicyStatement({
+            sid: 'PassRoleForCodeReview',
+            effect: iam.Effect.ALLOW,
+            actions: ['iam:PassRole'],
+            resources: [this.securityAgent.serviceRole.roleArn],
+            conditions: {
+              StringEquals: { 'iam:PassedToService': 'securityagent.amazonaws.com' },
+            },
           }),
           new iam.PolicyStatement({
             sid: 'ScanBucketWrite',
@@ -478,7 +489,7 @@ export class MetricsPipelineStack extends cdk.Stack {
           new iam.PolicyStatement({
             sid: 'SSMReadConfig',
             effect: iam.Effect.ALLOW,
-            actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+            actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter'],
             resources: [
               `arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/prism/continuum/*`,
             ],
