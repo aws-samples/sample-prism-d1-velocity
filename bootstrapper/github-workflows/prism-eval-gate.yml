@@ -222,13 +222,16 @@ jobs:
             \"EventBusName\":\"prism-d1-metrics\",
             \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
 
-      - name: Upgrade AWS CLI v2 (securityagent code review requires latest)
+      - name: Upgrade AWS CLI v2 (securityagent code review requires v2.35+)
         run: |
           curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
           unzip -qo /tmp/awscliv2.zip -d /tmp
-          sudo /tmp/aws/install --update 2>/dev/null || sudo /tmp/aws/install 2>/dev/null || true
+          sudo /tmp/aws/install --update --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin 2>/dev/null || \
+            sudo /tmp/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin 2>/dev/null || true
           rm -rf /tmp/aws /tmp/awscliv2.zip
-          echo "AWS CLI: $(aws --version 2>&1 | head -1)"
+          hash -r  # refresh shell PATH cache
+          echo "AWS CLI: $(aws --version)"
+          echo "Has create-code-review: $(aws securityagent create-code-review help 2>&1 | head -1)"
 
       - name: AWS Continuum diff scan
         id: security-gate
