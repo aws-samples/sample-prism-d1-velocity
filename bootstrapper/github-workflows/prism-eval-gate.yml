@@ -267,47 +267,28 @@ jobs:
           # Derive repo slug for per-repo SSM key (org/repo → org-repo)
           REPO_SLUG=$(echo "${{ github.repository }}" | tr '/' '-')
 
-          echo "::group::Resolve or bootstrap Code Review for ${REPO_SLUG}"
+          echo "::group::Resolve Code Review for ${REPO_SLUG}"
           CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
 
           if [[ -z "$CODE_REVIEW_ID" ]]; then
-            echo "  No Code Review found for ${REPO_SLUG} — bootstrapping..."
-
-            # Upload repo ZIP as context for the diff scan
-            git archive HEAD --format=zip -o /tmp/repo.zip
-            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
-
-            # Create Code Review resource
-            CR_RESPONSE=$(aws securityagent create-code-review \
-              --agent-space-id "${AGENT_SPACE_ID}" \
-              --title "${REPO_SLUG}-ci-diff-scan" \
-              --service-role "${SERVICE_ROLE}" \
-              --assets "{\"sourceCode\":[{\"s3Location\":\"s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip\"}]}" \
-              --output json 2>&1)
-
-            if echo "$CR_RESPONSE" | jq -e '.codeReviewId' > /dev/null 2>&1; then
-              CODE_REVIEW_ID=$(echo "$CR_RESPONSE" | jq -r '.codeReviewId')
-              echo "  ✅ Code Review created: ${CODE_REVIEW_ID}"
-
-              # Persist for future runs
-              aws ssm put-parameter \
-                --name "/prism/continuum/code-review-id/${REPO_SLUG}" \
-                --value "${CODE_REVIEW_ID}" \
-                --type String --overwrite 2>/dev/null || true
-            else
-              echo "  ⚠️ Failed to create Code Review: ${CR_RESPONSE}"
-              echo "  Skipping scan (non-blocking)."
-              echo "findings=0" >> "$GITHUB_OUTPUT"
-              echo "skipped=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          else
-            echo "  Using existing Code Review: ${CODE_REVIEW_ID}"
-
-            # Re-upload fresh repo ZIP (context for accurate cross-module analysis)
-            git archive HEAD --format=zip -o /tmp/repo.zip
-            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+            # Also check the generic (non-slug) key as fallback
+            CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id" --query Parameter.Value --output text 2>/dev/null || echo "")
           fi
+
+          if [[ -z "$CODE_REVIEW_ID" ]]; then
+            echo "  ⚠️ No Code Review configured for ${REPO_SLUG}."
+            echo "  Run 'prism-cli securityagent setup' from your DevBox to create one."
+            echo "  Skipping security scan (non-blocking)."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "  Using Code Review: ${CODE_REVIEW_ID}"
+
+          # Upload fresh repo ZIP (context for accurate cross-module analysis)
+          git archive HEAD --format=zip -o /tmp/repo.zip
+          aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
           echo "::endgroup::"
 
           echo "::group::Generate and upload diff"
