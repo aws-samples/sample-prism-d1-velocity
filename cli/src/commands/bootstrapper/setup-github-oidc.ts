@@ -241,6 +241,28 @@ export default {
       process.exit(1);
     }
 
+    // Step 4: Attach Continuum CI managed policy (if deployed)
+    console.log('\nStep 4: Attaching Continuum CI scan policy (if available)...');
+    const continuumPolicy = run(
+      `aws iam list-policies --scope Local --query "Policies[?PolicyName=='prism-d1-continuum-ci-scan'].Arn" --output text`
+    );
+    if (continuumPolicy.ok && continuumPolicy.stdout) {
+      const attachResult = run(
+        `aws iam attach-role-policy --role-name ${roleName} --policy-arn ${continuumPolicy.stdout}`
+      );
+      if (attachResult.ok) {
+        console.log(`  ✓ Continuum CI policy attached (SSM + S3 + SecurityAgent access).`);
+      } else if (attachResult.stderr.includes('already')) {
+        console.log('  ✓ Continuum CI policy already attached.');
+      } else {
+        console.log(`  ⚠️  Could not attach Continuum policy: ${attachResult.stderr}`);
+        console.log('  The eval gate workflow will skip security scanning until this is resolved.');
+      }
+    } else {
+      console.log('  ℹ️  Continuum CI policy not found (deploy with --context enableSecurityAgent=true to create it).');
+      console.log('  The eval gate workflow will gracefully skip security scanning.');
+    }
+
     // Summary
     const roleArn = `arn:aws:iam::${accountId}:role/${roleName}`;
     console.log('\n════════════════════════════════════════════════');
