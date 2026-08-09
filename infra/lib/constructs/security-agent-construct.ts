@@ -103,9 +103,11 @@ export class SecurityAgentConstruct extends Construct {
       }),
     );
 
-    // Grant KMS permissions for encrypted agent spaces
+    // Grant KMS permissions for encrypted agent spaces + log groups
     if (props.kmsKey) {
       props.kmsKey.grantEncryptDecrypt(this.serviceRole);
+      // DescribeKey is required for CreateLogGroup with KMS encryption
+      props.kmsKey.grant(this.serviceRole, 'kms:DescribeKey', 'kms:CreateGrant');
     }
 
     // Grant CloudWatch Logs access for pen test logging
