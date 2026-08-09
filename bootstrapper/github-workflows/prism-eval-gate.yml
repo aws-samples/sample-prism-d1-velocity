@@ -225,11 +225,13 @@ jobs:
       - name: Upgrade AWS CLI v2 (securityagent code review requires v2.35+)
         run: |
           curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sha256" -o /tmp/awscliv2.zip.sha256
+          cd /tmp && sha256sum -c awscliv2.zip.sha256
           unzip -qo /tmp/awscliv2.zip -d /tmp
           sudo /tmp/aws/install --update --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin 2>/dev/null || \
             sudo /tmp/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin 2>/dev/null || true
-          rm -rf /tmp/aws /tmp/awscliv2.zip
-          hash -r  # refresh shell PATH cache
+          rm -rf /tmp/aws /tmp/awscliv2.zip /tmp/awscliv2.zip.sha256
+          hash -r
           echo "AWS CLI: $(aws --version)"
           echo "Has create-code-review: $(aws securityagent create-code-review help 2>&1 | head -1)"
 
@@ -272,11 +274,6 @@ jobs:
 
           echo "::group::Resolve Code Review for ${REPO_SLUG}"
           CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
-
-          if [[ -z "$CODE_REVIEW_ID" ]]; then
-            # Also check the generic (non-slug) key as fallback
-            CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id" --query Parameter.Value --output text 2>/dev/null || echo "")
-          fi
 
           if [[ -z "$CODE_REVIEW_ID" ]]; then
             echo "  No Code Review found for ${REPO_SLUG} -- bootstrapping..."
@@ -366,14 +363,16 @@ jobs:
           echo "::endgroup::"
 
           if [[ "$STATUS" == "FAILED" ]]; then
-            echo "::warning::Continuum scan failed — treating as 0 findings (non-blocking)"
-            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::Continuum scan failed — check Security Agent logs"
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [[ "$STATUS" != "COMPLETED" ]]; then
-            echo "::warning::Continuum scan timed out (status: ${STATUS}) — treating as 0 findings"
-            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::Continuum scan timed out (status: ${STATUS})"
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -445,7 +444,10 @@ jobs:
         if: steps.eval.outputs.overall_result == 'FAIL' || (steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.skipped != 'true')
         run: |
           [[ "${{ steps.eval.outputs.overall_result }}" == "FAIL" ]] && echo "❌ Eval gate failed"
-          if [[ "${{ steps.security-gate.outputs.findings }}" != "0" && "${{ steps.security-gate.outputs.skipped }}" != "true" ]]; then
+          if [[ "${{ steps.security-gate.outputs.scan_error }}" == "true" ]]; then
+            echo "⚠️ AWS Continuum scan encountered an error (did not complete successfully)"
+            echo "  The security gate cannot verify this PR is safe. Re-run the workflow or check Security Agent logs."
+          elif [[ "${{ steps.security-gate.outputs.findings }}" != "0" && "${{ steps.security-gate.outputs.skipped }}" != "true" ]]; then
             echo "❌ AWS Continuum found ${{ steps.security-gate.outputs.findings }} security issues (${{ steps.security-gate.outputs.critical }} critical, ${{ steps.security-gate.outputs.high }} high)"
           fi
           exit 1
