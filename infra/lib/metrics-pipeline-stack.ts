@@ -487,6 +487,12 @@ export class MetricsPipelineStack extends cdk.Stack {
             ],
           }),
           new iam.PolicyStatement({
+            sid: 'KMSForScanBucket',
+            effect: iam.Effect.ALLOW,
+            actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+            resources: [prismKmsKey.keyArn],
+          }),
+          new iam.PolicyStatement({
             sid: 'SSMReadConfig',
             effect: iam.Effect.ALLOW,
             actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter'],
