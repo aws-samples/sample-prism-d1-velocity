@@ -359,25 +359,24 @@ jobs:
           echo "::group::Retrieve findings"
           FINDINGS_JSON=$(aws securityagent list-findings \
             --agent-space-id "${AGENT_SPACE_ID}" \
-            --code-review-id "${CODE_REVIEW_ID}" \
             --code-review-job-id "${JOB_ID}" \
-            --output json 2>/dev/null || echo '{"findings":[]}')
+            --output json 2>/dev/null || echo '{"findingsSummaries":[]}')
 
-          TOTAL=$(echo "$FINDINGS_JSON" | jq '.findings | length')
-          CRITICAL=$(echo "$FINDINGS_JSON" | jq '[.findings[] | select(.severity == "CRITICAL")] | length')
-          HIGH=$(echo "$FINDINGS_JSON" | jq '[.findings[] | select(.severity == "HIGH")] | length')
-          MEDIUM=$(echo "$FINDINGS_JSON" | jq '[.findings[] | select(.severity == "MEDIUM")] | length')
+          TOTAL=$(echo "$FINDINGS_JSON" | jq '.findingsSummaries | length')
+          CRITICAL=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "CRITICAL")] | length')
+          HIGH=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "HIGH")] | length')
+          MEDIUM=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "MEDIUM")] | length')
 
           echo "Findings: ${TOTAL} total (${CRITICAL} critical, ${HIGH} high, ${MEDIUM} medium)"
           echo "findings=${TOTAL}" >> "$GITHUB_OUTPUT"
           echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
           echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
-          echo "findings_json=$(echo "$FINDINGS_JSON" | jq -c '.findings')" >> "$GITHUB_OUTPUT"
+          echo "findings_json=$(echo "$FINDINGS_JSON" | jq -c '.findingsSummaries')" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
 
           # Print findings summary for PR annotations
           if [[ "$TOTAL" -gt 0 ]]; then
-            echo "$FINDINGS_JSON" | jq -r '.findings[] | "::error file=\(.filePath // "unknown"),line=\(.startLine // 1)::[\(.severity)] \(.title // .description | .[0:120])"'
+            echo "$FINDINGS_JSON" | jq -r '.findingsSummaries[] | "::error ::[\(.riskLevel)] \(.name | .[0:120])"'
           fi
 
       - name: Emit Continuum findings to EventBridge
@@ -408,7 +407,7 @@ jobs:
                  metric:{name:"security_finding",value:1,unit:"count"},
                  ai_context:{tool:"continuum",model:"aws-continuum",origin:$ai_origin},
                  continuum_finding:{finding_id:($f.findingId // "cf-pr\($pr_number)-\(.key)"), phase:"code_review",
-                   severity:($f.severity // "MEDIUM"),
+                   severity:($f.riskLevel // "MEDIUM"),
                    cwe_id:($f.cweId // null),
                    ai_origin:$ai_origin, found_at:($f.createdAt // null)}
                } | tostring)})' 2>/dev/null || echo "[]")
