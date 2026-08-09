@@ -222,9 +222,12 @@ jobs:
             \"EventBusName\":\"prism-d1-metrics\",
             \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
 
-      - name: Upgrade AWS CLI (securityagent code review requires v2.35+)
+      - name: Upgrade AWS CLI v2 (securityagent code review requires latest)
         run: |
-          pip install --quiet --upgrade awscli 2>/dev/null || true
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -qo /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update 2>/dev/null || sudo /tmp/aws/install 2>/dev/null || true
+          rm -rf /tmp/aws /tmp/awscliv2.zip
           echo "AWS CLI: $(aws --version 2>&1 | head -1)"
 
       - name: AWS Continuum diff scan
