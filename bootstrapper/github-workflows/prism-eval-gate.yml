@@ -279,12 +279,41 @@ jobs:
           fi
 
           if [[ -z "$CODE_REVIEW_ID" ]]; then
-            echo "  ⚠️ No Code Review configured for ${REPO_SLUG}."
-            echo "  Run 'prism-cli securityagent setup' from your DevBox to create one."
-            echo "  Skipping security scan (non-blocking)."
-            echo "findings=0" >> "$GITHUB_OUTPUT"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "  No Code Review found for ${REPO_SLUG} -- bootstrapping..."
+            echo "  CLI version: $(aws --version 2>&1 | head -1)"
+            echo "  CLI path: $(which aws)"
+
+            # Upload repo ZIP first (required as source context for the CodeReview)
+            git archive HEAD --format=zip -o /tmp/repo.zip
+            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+
+            # Create the CodeReview
+            CR_OUTPUT=$(aws securityagent create-code-review \
+              --agent-space-id "$AGENT_SPACE_ID" \
+              --title "${REPO_SLUG}-ci-diff-scan" \
+              --service-role "$SERVICE_ROLE" \
+              --assets "{\"sourceCode\":[{\"s3Location\":\"s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip\"}]}" \
+              --output json 2>&1) || true
+            CODE_REVIEW_ID=$(echo "$CR_OUTPUT" | jq -r '.codeReviewId // empty' 2>/dev/null)
+
+            if [[ -z "$CODE_REVIEW_ID" ]]; then
+              echo "  ⚠️ Bootstrap failed:"
+              echo "  $CR_OUTPUT"
+              echo "  Run 'sudo prism-cli securityagent setup' from your DevBox to create manually."
+              echo "  Skipping security scan (non-blocking)."
+              echo "findings=0" >> "$GITHUB_OUTPUT"
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Persist for future runs
+            aws ssm put-parameter \
+              --name "/prism/continuum/code-review-id/${REPO_SLUG}" \
+              --value "$CODE_REVIEW_ID" \
+              --type String --overwrite > /dev/null
+
+            echo "  [x] Code Review created: ${CODE_REVIEW_ID}"
+            echo "  [x] Saved to SSM"
           fi
 
           echo "  Using Code Review: ${CODE_REVIEW_ID}"
