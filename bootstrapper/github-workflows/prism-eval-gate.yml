@@ -228,7 +228,7 @@ jobs:
           AWS_REGION: us-west-2
         run: |
           # Pre-flight: verify AWS CLI has securityagent subcommand
-          if ! aws securityagent help > /dev/null 2>&1; then
+          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
             echo "::warning::AWS CLI does not support 'securityagent' commands (upgrade to v2.35+). Skipping scan."
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
