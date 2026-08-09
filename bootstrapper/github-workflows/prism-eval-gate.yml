@@ -305,17 +305,17 @@ jobs:
           echo "::group::Generate and upload diff"
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.sha }}"
-          git diff "${BASE_SHA}..${HEAD_SHA}" > /tmp/changes.diff
+          git diff "${BASE_SHA}..${HEAD_SHA}" > /tmp/changes.patch
 
-          DIFF_SIZE=$(wc -c < /tmp/changes.diff)
+          DIFF_SIZE=$(wc -c < /tmp/changes.patch)
           if [[ "$DIFF_SIZE" -eq 0 ]]; then
             echo "No changes to scan."
             echo "findings=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          DIFF_KEY="diffs/${REPO_SLUG}/${{ github.event.pull_request.number }}/${HEAD_SHA}.diff"
-          aws s3 cp /tmp/changes.diff "s3://${SCAN_BUCKET}/${DIFF_KEY}" --quiet
+          DIFF_KEY="diffs/${REPO_SLUG}/${{ github.event.pull_request.number }}/${HEAD_SHA}.patch"
+          aws s3 cp /tmp/changes.patch "s3://${SCAN_BUCKET}/${DIFF_KEY}" --quiet
           echo "::endgroup::"
 
           echo "::group::Start Continuum diff scan"

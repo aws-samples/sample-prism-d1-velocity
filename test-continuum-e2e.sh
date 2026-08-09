@@ -112,14 +112,14 @@ export function runCmd(host: string) { exec(`ping -c 3 ${host}`); }
 EOF
 
 # Generate diff introducing the vulnerable file
-git diff /dev/null /tmp/vuln-test.ts > /tmp/e2e-changes.diff 2>/dev/null || \
-  diff -u /dev/null /tmp/vuln-test.ts > /tmp/e2e-changes.diff || true
+git diff /dev/null /tmp/vuln-test.ts > /tmp/e2e-changes.patch 2>/dev/null || \
+  diff -u /dev/null /tmp/vuln-test.ts > /tmp/e2e-changes.patch || true
 
-DIFF_SIZE=$(wc -c < /tmp/e2e-changes.diff)
+DIFF_SIZE=$(wc -c < /tmp/e2e-changes.patch)
 echo "  Diff size: ${DIFF_SIZE} bytes (vulnerable test file)"
 
-DIFF_KEY="diffs/${REPO_SLUG}/e2e-test/test-$(date +%s).diff"
-aws s3 cp /tmp/e2e-changes.diff "s3://${SCAN_BUCKET}/${DIFF_KEY}" $ENV --quiet
+DIFF_KEY="diffs/${REPO_SLUG}/e2e-test/test-$(date +%s).patch"
+aws s3 cp /tmp/e2e-changes.patch "s3://${SCAN_BUCKET}/${DIFF_KEY}" $ENV --quiet
 echo "  ✓ Uploaded to s3://${SCAN_BUCKET}/${DIFF_KEY}"
 echo ""
 
@@ -195,6 +195,6 @@ else
 fi
 
 # Cleanup
-rm -f /tmp/prism-e2e-repo.zip /tmp/e2e-changes.diff /tmp/vuln-test.ts
+rm -f /tmp/prism-e2e-repo.zip /tmp/e2e-changes.patch /tmp/vuln-test.ts
 echo ""
 echo "Done."
