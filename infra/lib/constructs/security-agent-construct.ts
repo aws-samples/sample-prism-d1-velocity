@@ -3,6 +3,8 @@ import * as securityagent from 'aws-cdk-lib/aws-securityagent';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
 
@@ -53,6 +55,13 @@ export interface SecurityAgentProps {
   codeRemediationStrategy?: 'AUTOMATIC' | 'DISABLED';
 
   /**
+   * SSM Parameter Store prefix for CI/CD config retrieval.
+   * Stores agent space ID, code review ID, and scan bucket name.
+   * @default '/prism/continuum'
+   */
+  ssmParameterPrefix?: string;
+
+  /**
    * Tags applied to all Security Agent resources.
    */
   tags?: Record<string, string>;
@@ -71,6 +80,7 @@ export class SecurityAgentConstruct extends Construct {
   public readonly agentSpaceId: string;
   public readonly serviceRole: iam.Role;
   public readonly targetDomainIds: string[];
+  public readonly scanBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: SecurityAgentProps) {
     super(scope, id);
@@ -93,9 +103,11 @@ export class SecurityAgentConstruct extends Construct {
       }),
     );
 
-    // Grant KMS permissions for encrypted agent spaces
+    // Grant KMS permissions for encrypted agent spaces + log groups
     if (props.kmsKey) {
       props.kmsKey.grantEncryptDecrypt(this.serviceRole);
+      // DescribeKey is required for CreateLogGroup with KMS encryption
+      props.kmsKey.grant(this.serviceRole, 'kms:DescribeKey', 'kms:CreateGrant');
     }
 
     // Grant CloudWatch Logs access for pen test logging
@@ -197,11 +209,12 @@ export class SecurityAgentConstruct extends Construct {
     }
 
     // Log group for pen test results (Security Agent writes to /aws/securityagent/<space>/pt-<id>)
-    new logs.LogGroup(this, 'PentestLogGroup', {
-      logGroupName: `/aws/securityagent/${props.agentSpaceName}`,
-      retention: logs.RetentionDays.SIX_MONTHS,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
+    // Note: we do NOT set logGroupName to avoid conflicts with pre-existing log groups
+    // created by prism-cli securityagent setup or the Security Agent service itself.
+    const pentestLogGroup = logs.LogGroup.fromLogGroupName(
+      this, 'PentestLogGroup',
+      `/aws/securityagent/${props.agentSpaceName}`,
+    );
 
     // Outputs
     new cdk.CfnOutput(this, 'AgentSpaceIdOutput', {
@@ -223,6 +236,111 @@ export class SecurityAgentConstruct extends Construct {
         exportName: `PrismD1SecurityAgentDomainIds`,
       });
     }
+
+    // -------------------------------------------------------
+    // S3 Scan Bucket — stores repo ZIPs and diff files for
+    // API-triggered code reviews (diff scans from CI/CD).
+    // -------------------------------------------------------
+    this.scanBucket = new s3.Bucket(this, 'ScanBucket', {
+      bucketName: `security-agent-scans-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
+      // SSE-S3 (not the customer-managed KMS key): the Continuum service reads
+      // this bucket when creating the code review and cannot access a CMK it
+      // has no grant on. Artifacts here are ephemeral diffs (30-day lifecycle),
+      // the bucket is private (BLOCK_ALL) and SSL-enforced.
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: false,
+      lifecycleRules: [
+        {
+          id: 'expire-scan-artifacts',
+          expiration: cdk.Duration.days(30),
+          enabled: true,
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // Grant Security Agent service role read access to the scan bucket
+    this.scanBucket.grantRead(this.serviceRole);
+
+    // Suppress cdk-nag for S3 read grant wildcards (grantRead expands to s3:GetObject*, s3:GetBucket*, s3:List*)
+    NagSuppressions.addResourceSuppressions(
+      this.serviceRole,
+      [
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'grantRead() generates s3:GetObject*, s3:GetBucket*, s3:List* — standard CDK pattern for bucket read access',
+          appliesTo: ['Action::s3:GetObject*', 'Action::s3:GetBucket*', 'Action::s3:List*'],
+        },
+        {
+          id: 'AwsSolutions-IAM5',
+          reason: 'Scan bucket objects are dynamic (SHA-named diffs); wildcard on objects required',
+          appliesTo: ['Resource::<SecurityAgentScanBucketB752F4A9.Arn>/*'],
+        },
+      ],
+      true,
+    );
+
+    NagSuppressions.addResourceSuppressions(
+      this.scanBucket,
+      [
+        {
+          id: 'AwsSolutions-S1',
+          reason: 'Access logging not required for ephemeral scan artifacts (30-day lifecycle, auto-deleted)',
+        },
+      ],
+      true,
+    );
+
+    // -------------------------------------------------------
+    // Code Review resource — NOT created here in CDK.
+    // CreateCodeReview requires assets.sourceCode pointing to
+    // an existing ZIP of the repo (chicken-and-egg at deploy).
+    // Instead, `prism-cli securityagent setup` handles:
+    //   1. git archive → upload repo.zip to scan bucket
+    //   2. CreateCodeReview API call
+    //   3. Write code-review-id to SSM
+    // The CDK only provisions the bucket + role + SSM scaffold.
+    // -------------------------------------------------------
+
+    new cdk.CfnOutput(this, 'ScanBucketOutput', {
+      value: this.scanBucket.bucketName,
+      description: 'S3 bucket for scan artifacts (repo ZIPs + diffs)',
+      exportName: 'PrismD1ContinuumScanBucket',
+    });
+
+    // -------------------------------------------------------
+    // SSM Parameter Store — non-sensitive CI/CD config.
+    // GitHub Actions workflows read these at runtime so no
+    // hardcoded IDs are needed in the repository.
+    // -------------------------------------------------------
+    const prefix = props.ssmParameterPrefix ?? '/prism/continuum';
+
+    new ssm.StringParameter(this, 'ParamAgentSpaceId', {
+      parameterName: `${prefix}/agent-space-id`,
+      stringValue: this.agentSpaceId,
+      description: 'AWS Continuum Agent Space ID for PRISM D1',
+      tier: ssm.ParameterTier.STANDARD,
+    });
+
+    // code-review-id is written by `prism-cli securityagent setup` (not CDK)
+    // because CreateCodeReview needs an existing repo ZIP in S3 first.
+
+    new ssm.StringParameter(this, 'ParamScanBucket', {
+      parameterName: `${prefix}/scan-bucket`,
+      stringValue: this.scanBucket.bucketName,
+      description: 'S3 bucket name for uploading repo/diff scan artifacts',
+      tier: ssm.ParameterTier.STANDARD,
+    });
+
+    new ssm.StringParameter(this, 'ParamServiceRoleArn', {
+      parameterName: `${prefix}/service-role-arn`,
+      stringValue: this.serviceRole.roleArn,
+      description: 'Service role ARN for Continuum CreateCodeReview (passed via --service-role)',
+      tier: ssm.ParameterTier.STANDARD,
+    });
   }
 
   /**

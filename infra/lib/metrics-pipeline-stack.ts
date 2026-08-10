@@ -2,6 +2,8 @@ import * as cdk from 'aws-cdk-lib';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -9,18 +11,22 @@ import * as path from 'path';
 import { Construct } from 'constructs';
 import { BedrockGuardrailConstruct, createDefaultPrismGuardrailProps } from './constructs/bedrock-guardrail-construct';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { PrismVpcConstruct } from './constructs/prism-vpc-construct';
 import { GuardrailEnforcerConstruct } from './constructs/guardrail-enforcer-construct';
 import { SecurityAgentConstruct } from './constructs/security-agent-construct';
+import { OtelCollectorConstruct } from './constructs/otel-collector-construct';
 import { NagSuppressions } from 'cdk-nag';
 
 export class MetricsPipelineStack extends cdk.Stack {
   public readonly eventBus: events.EventBus;
   public readonly eventsTable: dynamodb.Table;
+  public readonly aiUsageTable: dynamodb.Table;
   public readonly metadataTable: dynamodb.Table;
   public readonly kmsKey: kms.Key;
   public readonly guardrail: BedrockGuardrailConstruct;
   public readonly securityAgent?: SecurityAgentConstruct;
+  public readonly otelCollector?: OtelCollectorConstruct;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -127,9 +133,64 @@ export class MetricsPipelineStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------
-    // VPC for Lambda isolation (Pillar 6)
+    // DynamoDB AI-usage table — user-keyed, KMS encrypted
+    // pk = USER#<email>
+    // sk = COMMIT#<ts>#<sha>#<tool> | SPAN#<ts>#<spanId> | OTEL#DAY#<date>#<tool>#<model>
+    // Sparse GSIs (only commit-level items set them) invert the user key so the
+    // same table answers by-repo / by-PR / by-commit / global-by-date.
     // -------------------------------------------------------
-    const vpcConstruct = new PrismVpcConstruct(this, 'VPC');
+    // Read the OTEL collector flag early — it also controls the table stream
+    // OTEL collector is ON by default. Skip with: -c skipOtelCollector=true
+    // Legacy flag -c enableOtelCollector=true is also respected for backwards compat.
+    const skipOtel = this.node.tryGetContext('skipOtelCollector') === 'true';
+    const legacyEnable = this.node.tryGetContext('enableOtelCollector') === 'true';
+    const enableOtelCollector = legacyEnable || !skipOtel;
+
+    this.aiUsageTable = new dynamodb.Table(this, 'AiUsageTable', {
+      tableName: 'prism-d1-ai-usage',
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: prismKmsKey,
+      // NEW_AND_OLD_IMAGES so the otel-metrics-publisher can compute exact
+      // counter deltas (new − old) on OTEL#DAY# aggregate updates.
+      stream: enableOtelCollector ? dynamodb.StreamViewType.NEW_AND_OLD_IMAGES : undefined,
+    });
+    for (const [indexName, pkAttr, skAttr] of [
+      ['by-repo', 'gsi_repo', 'gsi_repo_sk'],
+      ['by-pr', 'gsi_pr', 'gsi_pr_sk'],
+      ['by-commit', 'gsi_commit', 'gsi_commit_sk'],
+      ['by-date', 'gsi_date', 'gsi_date_sk'],
+    ] as const) {
+      this.aiUsageTable.addGlobalSecondaryIndex({
+        indexName,
+        partitionKey: { name: pkAttr, type: dynamodb.AttributeType.STRING },
+        sortKey: { name: skAttr, type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+    }
+
+    // -------------------------------------------------------
+    // VPC for Lambda isolation (Pillar 6)
+    // Opt out with: cdk deploy -c skipVpc=true
+    // Use existing VPC: cdk deploy -c vpcId=vpc-0123456789abcdef0
+    // -------------------------------------------------------
+    const skipVpc = this.node.tryGetContext('skipVpc') === 'true';
+    const existingVpcId = this.node.tryGetContext('vpcId') as string | undefined;
+    const vpcConstruct = skipVpc
+      ? undefined
+      : existingVpcId
+        ? undefined
+        : new PrismVpcConstruct(this, 'VPC');
+    const lambdaVpcProps = skipVpc
+      ? {}
+      : existingVpcId
+        ? { vpc: ec2.Vpc.fromLookup(this, 'ExistingVpc', { vpcId: existingVpcId }) }
+        : { vpc: vpcConstruct!.vpc, securityGroups: [vpcConstruct!.lambdaSecurityGroup] };
 
     // -------------------------------------------------------
     // Metrics processor Lambda
@@ -138,8 +199,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-metrics-processor',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'metrics-processor.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -174,6 +234,10 @@ export class MetricsPipelineStack extends cdk.Stack {
         EVENTS_TABLE: this.eventsTable.tableName,
         METADATA_TABLE: this.metadataTable.tableName,
         METRIC_NAMESPACE: 'PRISM/D1/Velocity',
+        // When the OTEL collector is enabled, the otel-metrics-publisher owns
+        // AIInputTokens/AIOutputTokens/AICostUSD — the processor skips its
+        // trailer-sourced copies to avoid double-counting.
+        OTEL_ENABLED: enableOtelCollector ? 'true' : 'false',
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
       description: 'Processes PRISM D1 metric events from EventBridge into DynamoDB and CloudWatch',
@@ -241,6 +305,115 @@ export class MetricsPipelineStack extends cdk.Stack {
     this.guardrail = new BedrockGuardrailConstruct(this, 'PrismGuardrail', createDefaultPrismGuardrailProps());
 
     // -------------------------------------------------------
+    // OTEL Collector (on by default — server side of `codeburn sync`)
+    // Skip with:   npx cdk deploy --context skipOtelCollector=true
+    // BYO IdP:     -c otelIssuer=... -c otelClientId=... [-c otelIdentityClaim=email]
+    // Per-user AI usage flows directly from codeburn sync to the
+    // ai-usage table (spans + daily aggregates).
+    // -------------------------------------------------------
+    if (enableOtelCollector) {
+      this.otelCollector = new OtelCollectorConstruct(this, 'OtelCollector', {
+        aiUsageTable: this.aiUsageTable,
+        kmsKey: prismKmsKey,
+        lambdaVpcProps,
+        externalIssuer: this.node.tryGetContext('otelIssuer') as string | undefined,
+        externalClientId: this.node.tryGetContext('otelClientId') as string | undefined,
+        identityClaim: this.node.tryGetContext('otelIdentityClaim') as string | undefined,
+      });
+
+      // ---------------------------------------------------
+      // OTEL metrics publisher — DDB stream → CloudWatch.
+      // Replaces the trailer-sourced AIInputTokens/AIOutputTokens/AICostUSD
+      // series with per-span OTEL data (same metric names — dashboards
+      // require no changes). The event-source filter limits invocations to
+      // OTEL#DAY# aggregate updates, so span-volume writes never invoke it.
+      // ---------------------------------------------------
+      const otelPublisherDlq = new sqs.Queue(this, 'OtelPublisherDLQ', {
+        queueName: 'prism-d1-otel-publisher-dlq',
+        encryptionMasterKey: prismKmsKey,
+        enforceSSL: true,
+        retentionPeriod: cdk.Duration.days(14),
+      });
+
+      const otelMetricsPublisher = new lambda.Function(this, 'OtelMetricsPublisher', {
+        functionName: 'prism-d1-otel-metrics-publisher',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        handler: 'otel-metrics-publisher.handler',
+        ...lambdaVpcProps,
+        code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
+          bundling: {
+            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+            command: [
+              'bash', '-c',
+              [
+                'npm init -y > /dev/null 2>&1',
+                'npm install --save @aws-sdk/client-cloudwatch esbuild > /dev/null 2>&1',
+                'npx esbuild otel-metrics-publisher.ts --bundle --platform=node --target=node22 --outfile=/asset-output/otel-metrics-publisher.js --external:@aws-sdk/*',
+              ].join(' && '),
+            ],
+            local: {
+              tryBundle(outputDir: string): boolean {
+                try {
+                  const { execSync } = require('child_process');
+                  execSync(
+                    `npx esbuild ${path.join(__dirname, 'lambda', 'otel-metrics-publisher.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'otel-metrics-publisher.js')} --external:@aws-sdk/*`,
+                    { stdio: 'pipe' },
+                  );
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            },
+          },
+        }),
+        timeout: cdk.Duration.seconds(60),
+        memorySize: 256,
+        environment: {
+          METRIC_NAMESPACE: 'PRISM/D1/Velocity',
+        },
+        logRetention: logs.RetentionDays.ONE_MONTH,
+        description: 'Publishes OTEL#DAY aggregate deltas from the ai-usage stream as CloudWatch token/cost metrics',
+      });
+
+      otelMetricsPublisher.addToRolePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['cloudwatch:PutMetricData'],
+          resources: ['*'],
+          conditions: {
+            StringEquals: {
+              'cloudwatch:namespace': 'PRISM/D1/Velocity',
+            },
+          },
+        }),
+      );
+
+      otelMetricsPublisher.addEventSource(
+        new eventsources.DynamoEventSource(this.aiUsageTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 100,
+          maxBatchingWindow: cdk.Duration.seconds(10),
+          bisectBatchOnError: true,
+          retryAttempts: 3,
+          onFailure: new eventsources.SqsDlq(otelPublisherDlq),
+          // Only OTEL#DAY# aggregate inserts/updates — SPAN# and COMMIT#
+          // writes (the overwhelming majority at scale) never invoke us.
+          filters: [
+            lambda.FilterCriteria.filter({
+              eventName: lambda.FilterRule.or('INSERT', 'MODIFY'),
+              dynamodb: {
+                Keys: {
+                  sk: { S: lambda.FilterRule.beginsWith('OTEL#DAY#') },
+                },
+              },
+            }),
+          ],
+        }),
+      );
+    }
+
+    // -------------------------------------------------------
     // AWS Security Agent (opt-in — requires Security Agent access)
     // Enable with: npx cdk deploy --context enableSecurityAgent=true
     // -------------------------------------------------------
@@ -248,12 +421,113 @@ export class MetricsPipelineStack extends cdk.Stack {
     if (enableSecurityAgent) {
       this.securityAgent = new SecurityAgentConstruct(this, 'SecurityAgent', {
         agentSpaceName: 'prism-d1-security',
-        description: 'PRISM D1 Security Agent space for design review, code review, and pen testing',
+        description: 'PRISM D1 Continuum space for design review, code review, and pen testing',
         kmsKey: prismKmsKey,
         codeRemediationStrategy: 'DISABLED',
         tags: {
           'prism:pillar': 'security',
         },
+      });
+
+      // Grant GitHub OIDC roles access to scan bucket and Continuum APIs.
+      // The OIDC role is created by `prism-cli bootstrapper setup-github-oidc`
+      // with name pattern prism-d1-github-oidc-*.
+      this.securityAgent.scanBucket.addToResourcePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          principals: [new iam.ArnPrincipal(`arn:aws:iam::${cdk.Aws.ACCOUNT_ID}:root`)],
+          actions: ['s3:PutObject', 's3:GetObject'],
+          resources: [this.securityAgent.scanBucket.arnForObjects('*')],
+          conditions: {
+            ArnLike: {
+              'aws:PrincipalArn': `arn:aws:iam::${cdk.Aws.ACCOUNT_ID}:role/prism-d1-github-oidc-*`,
+            },
+          },
+        }),
+      );
+
+      // Create a managed policy for Continuum scan API access.
+      // Attached to the OIDC role by the bootstrapper setup script.
+      const continuumCiPolicy = new iam.ManagedPolicy(this, 'ContinuumCiPolicy', {
+        managedPolicyName: 'prism-d1-continuum-ci-scan',
+        description: 'Grants GitHub Actions workflows access to Continuum diff scan APIs and SSM config',
+        statements: [
+          new iam.PolicyStatement({
+            sid: 'ContinuumScanAPIs',
+            effect: iam.Effect.ALLOW,
+            actions: [
+              'securityagent:StartCodeReviewJob',
+              'securityagent:BatchGetCodeReviewJobs',
+              'securityagent:BatchGetCodeReviewJobTasks',
+              'securityagent:ListFindings',
+              'securityagent:BatchGetFindings',
+              'securityagent:CreateCodeReview',
+              'securityagent:ListCodeReviews',
+            ],
+            resources: [
+              `arn:aws:securityagent:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:agent-space/*`,
+            ],
+          }),
+          new iam.PolicyStatement({
+            sid: 'PassRoleForCodeReview',
+            effect: iam.Effect.ALLOW,
+            actions: ['iam:PassRole'],
+            resources: [this.securityAgent.serviceRole.roleArn],
+            conditions: {
+              StringEquals: { 'iam:PassedToService': 'securityagent.amazonaws.com' },
+            },
+          }),
+          new iam.PolicyStatement({
+            sid: 'ScanBucketWrite',
+            effect: iam.Effect.ALLOW,
+            actions: ['s3:PutObject', 's3:GetObject', 's3:ListBucket'],
+            resources: [
+              this.securityAgent.scanBucket.bucketArn,
+              this.securityAgent.scanBucket.arnForObjects('*'),
+            ],
+          }),
+          new iam.PolicyStatement({
+            sid: 'KMSForScanBucket',
+            effect: iam.Effect.ALLOW,
+            actions: ['kms:Encrypt', 'kms:Decrypt', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+            resources: [prismKmsKey.keyArn],
+          }),
+          new iam.PolicyStatement({
+            sid: 'SSMReadConfig',
+            effect: iam.Effect.ALLOW,
+            actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter'],
+            resources: [
+              `arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/prism/continuum/*`,
+            ],
+          }),
+        ],
+      });
+
+      NagSuppressions.addResourceSuppressions(
+        continuumCiPolicy,
+        [
+          {
+            id: 'AwsSolutions-IAM5',
+            reason: 'Agent space ID is dynamic; wildcard scoped to securityagent service resources only',
+            appliesTo: [`Resource::arn:aws:securityagent:<AWS::Region>:<AWS::AccountId>:agent-space/*`],
+          },
+          {
+            id: 'AwsSolutions-IAM5',
+            reason: 'Scan bucket objects include dynamic diff filenames (SHA-based); wildcard on objects only',
+            appliesTo: ['Resource::<SecurityAgentScanBucketB752F4A9.Arn>/*'],
+          },
+          {
+            id: 'AwsSolutions-IAM5',
+            reason: 'SSM parameters under /prism/continuum/ are all non-sensitive config values (IDs and bucket names)',
+            appliesTo: ['Resource::arn:aws:ssm:<AWS::Region>:<AWS::AccountId>:parameter/prism/continuum/*'],
+          },
+        ],
+        true,
+      );
+
+      new cdk.CfnOutput(this, 'ContinuumCiPolicyArn', {
+        value: continuumCiPolicy.managedPolicyArn,
+        description: 'Attach this policy to your GitHub OIDC role for Continuum CI scans',
       });
     }
 
@@ -275,8 +549,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-exfiltration-detector',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'exfiltration-detector.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -338,8 +611,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-defect-correlator',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'defect-correlator.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -400,8 +672,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-spec-to-code-calculator',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'spec-to-code-calculator.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -461,8 +732,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-security-agent-processor',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'security-agent-processor.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -510,8 +780,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-security-remediation-tracker',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'security-remediation-tracker.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -569,8 +838,7 @@ export class MetricsPipelineStack extends cdk.Stack {
       functionName: 'prism-d1-security-response-automator',
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'security-response-automator.handler',
-      vpc: vpcConstruct.vpc,
-      securityGroups: [vpcConstruct.lambdaSecurityGroup],
+      ...lambdaVpcProps,
       code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
         bundling: {
           image: lambda.Runtime.NODEJS_22_X.bundlingImage,
@@ -674,7 +942,16 @@ export class MetricsPipelineStack extends cdk.Stack {
       {
         id: 'AwsSolutions-IAM5',
         reason: 'CDK grantReadData on DynamoDB generates wildcard for GSI index ARNs via token reference',
-        appliesTo: ['Resource::<EventsTableD24865E5.Arn>/index/*'],
+        appliesTo: ['Resource::<EventsTableD24865E5.Arn>/index/*', 'Resource::<AiUsageTable79F37CE0.Arn>/index/*'],
+      },
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'DynamoDB stream event source mapping requires ListStreams which does not support resource-level scoping beyond the table stream wildcard',
+        appliesTo: ['Resource::<AiUsageTable79F37CE0.Arn>/stream/*', 'Resource::*'],
+      },
+      {
+        id: 'AwsSolutions-SQS3',
+        reason: 'The OTEL publisher queue is itself a DLQ for the DynamoDB stream event source',
       },
       { id: 'AwsSolutions-L1', reason: 'All Lambdas use nodejs22.x which is the latest Node.js runtime available' },
     ]);

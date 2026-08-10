@@ -30,33 +30,24 @@ export function getRepoRoot(importMetaUrl: string): string {
 }
 
 /**
- * Resolves a path relative to the repo root OR bundled assets directory.
- * Checks repo root first (source checkout), then dist/assets/ (npm install).
- * Throws if neither location has the requested path.
+ * Resolves a path relative to the bundled assets directory.
+ * Always uses dist/assets/ from the npm package.
  */
 export function getAssetPath(importMetaUrl: string, relativePath: string): string {
-  // Try repo root first (source checkout / cloned repo)
-  const repoRoot = getRepoRoot(importMetaUrl);
-  const repoPath = resolve(repoRoot, relativePath);
-  if (existsSync(repoPath)) {
-    return repoPath;
-  }
+  // Strip leading directory prefix (e.g. 'bootstrapper/metric-hooks' -> 'metric-hooks')
+  // because the build copies into dist/assets/ without parent dirs
+  const candidates = [relativePath, relativePath.replace(/^[^/]+\//, '')];
 
-  // Try bundled assets (npm global install)
   let dir = dirname(fileURLToPath(importMetaUrl));
   for (let i = 0; i < 10; i++) {
-    const assetsPath = resolve(dir, 'assets', relativePath);
-    if (existsSync(assetsPath)) {
-      return assetsPath;
-    }
-    // Also check dist/assets from cli root
-    const distAssetsPath = resolve(dir, 'dist', 'assets', relativePath);
-    if (existsSync(distAssetsPath)) {
-      return distAssetsPath;
+    for (const candidate of candidates) {
+      const assetsPath = resolve(dir, 'assets', candidate);
+      if (existsSync(assetsPath)) return assetsPath;
+      const distAssetsPath = resolve(dir, 'dist', 'assets', candidate);
+      if (existsSync(distAssetsPath)) return distAssetsPath;
     }
     dir = resolve(dir, '..');
   }
 
-  // Fallback to repo path (will fail at runtime with clear error)
-  return repoPath;
+  throw new Error(`Asset not found: ${relativePath}. Run 'npm run build' first.`);
 }

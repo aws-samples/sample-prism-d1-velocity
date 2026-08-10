@@ -151,6 +151,7 @@ const EVENTS_TABLE = process.env.EVENTS_TABLE!;
 const METADATA_TABLE = process.env.METADATA_TABLE!;
 const METRIC_NAMESPACE = process.env.METRIC_NAMESPACE ?? 'PRISM/D1/Velocity';
 
+
 // ---- Handler ----
 
 export async function handler(event: EventBridgeEvent): Promise<void> {
@@ -440,10 +441,19 @@ async function publishCloudWatchMetrics(
       ['PostMergeDefectRate', detail.ai_dora.post_merge_defect_rate, StandardUnit.Percent, true],
       ['EvalGatePassRate', detail.ai_dora.eval_gate_pass_rate, StandardUnit.Percent, true],
       ['AITestCoverageDelta', detail.ai_dora.ai_test_coverage_delta, StandardUnit.Percent, true],
-      ['AIInputTokens', detail.ai_dora.total_input_tokens, StandardUnit.Count, false],
-      ['AIOutputTokens', detail.ai_dora.total_output_tokens, StandardUnit.Count, false],
-      ['AICostUSD', detail.ai_dora.total_cost_usd, StandardUnit.None, false],
     ];
+
+    // Token & cost metrics come from git-trailer PR sums by default. When the
+    // OTEL collector is enabled (OTEL_ENABLED=true), the otel-metrics-publisher
+    // Lambda owns AIInputTokens / AIOutputTokens / AICostUSD (higher-fidelity
+    // per-span data via `codeburn sync`) — publishing both would double-count.
+    if (process.env.OTEL_ENABLED !== 'true') {
+      aiDoraMap.push(
+        ['AIInputTokens', detail.ai_dora.total_input_tokens, StandardUnit.Count, false],
+        ['AIOutputTokens', detail.ai_dora.total_output_tokens, StandardUnit.Count, false],
+        ['AICostUSD', detail.ai_dora.total_cost_usd, StandardUnit.None, false],
+      );
+    }
 
     for (const [name, value, unit, scaleToPercent] of aiDoraMap) {
       if (value != null) {

@@ -10,7 +10,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ## Architecture
 
-![PRISM D1 Velocity Architecture](assets/images/architecture-overview.svg)
+![PRISM D1 Velocity Architecture](assets/images/prismarchitecture.drawio.png)
 
 ## What This Repo Contains
 
@@ -36,41 +36,26 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 - **Bedrock Guardrails** — content filters, PII protection, denied topics with per-trigger metrics
 - **MCP Authorization** — scope-based tool access control with audit trail
-- **Eval Gates** — 5 rubrics (code-quality, API, security, agent, spec-compliance) + Security Agent finding gate
+- **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), + Security Agent finding gate
 - **KMS encryption** on all data stores, VPC isolation, exfiltration detection
 - **11 CloudWatch alarms** including security critical finding and remediation SLA
 
 ## Quick Start
 
-### Prerequisites
+### Administrator Setup (per org)
 
-Install the PRISM CLI and the codeburn dependency globally:
+These steps are performed once by an engineering leader or platform team to provision shared infrastructure.
+
+> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
 
 ```bash
+node --version  # Verify: must be v22.x or later
 npm install -g @prism-d1/cli codeburn
 ```
 
-This installs `prism-cli` (assessment + bootstrapper) and `codeburn` (AI token tracker for git hooks). Then verify your setup:
+Requires [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), CDK v2 (`npm install -g aws-cdk`).
 
-```bash
-prism-cli workshop verify-setup
-```
-
-Or install manually:
-
-- AWS Account with Bedrock access (Claude models enabled)
-- Node.js 22+ and npm
-- Python 3.11+ (for Strands Agent)
-- AWS CLI v2 and CDK v2 (`npm install -g aws-cdk`)
-- Claude Code CLI configured for Bedrock (`export CLAUDE_CODE_USE_BEDROCK=1`)
-- Git 2.40+, jq, GitHub CLI
-
-The setup script supports flags:
-- `--skip-aws` — skip AWS credential and Bedrock checks (for offline prep)
-- `--skip-kiro` — skip Kiro IDE check
-- `--verify-only` — only verify, don't install anything
-
-### Deploy the Metrics Platform
+#### 1. Deploy AWS Infrastructure
 
 ```bash
 cd infra
@@ -79,9 +64,149 @@ npx cdk bootstrap   # First time only
 npx cdk deploy --all
 ```
 
-This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table.
+This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
+
+> **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
+
+> **Skip OTEL collector:** Add `-c skipOtelCollector=true` if you only want git-hook-based metrics without per-developer AI usage telemetry.
 
 > **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
+
+#### 2. Set Up OIDC (CI/CD → AWS Authentication)
+
+**GitHub:**
+```bash
+prism-cli bootstrapper setup-github-oidc --global
+# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a GitHub repo secret.
+```
+
+**GitLab:**
+```bash
+prism-cli bootstrapper setup-gitlab-oidc --global
+# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a CI/CD variable (unprotected).
+```
+
+#### 3. Install CI/CD Workflows (per repo)
+
+**GitHub:**
+```bash
+prism-cli bootstrapper install-github-workflows --region us-west-2
+# Copies workflow files to .github/workflows/
+```
+
+**GitLab:**
+```bash
+prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
+# Copies workflow files to .prism/gitlab-workflows/
+# Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
+```
+
+#### 4. Create Developer Accounts
+
+After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector:
+
+```bash
+# Create a user (username MUST be the developer's email)
+aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
+```
+
+Then share the **OtelCollectorUrl** stack output with your developers — they'll need it for setup below.
+
+**Bring your own IdP** (Okta, Entra ID) instead of Cognito:
+
+```bash
+npx cdk deploy --all \
+  -c otelIssuer=https://login.example.okta.com/oauth2/default \
+  -c otelClientId=0oa1b2c3d4 \
+  -c otelIdentityClaim=email
+```
+
+Your IdP app must be a **public client with PKCE**, register loopback redirect URIs `http://127.0.0.1:19876/callback` (also ports 19877, 19878), and issue **JWT access tokens** (Okta and Entra ID work; Auth0's opaque access tokens are not supported).
+
+### Developer Setup (per developer)
+
+These steps are run by each developer on their machine. You'll need the **OtelCollectorUrl** from your administrator.
+
+> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
+
+#### 1. Install Tools
+
+```bash
+node --version  # Verify: must be v22.x or later
+npm install -g @prism-d1/cli codeburn
+```
+
+#### 2. Set Up AI Usage Telemetry (Codeburn)
+
+```bash
+# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
+prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl from admin>
+
+# Check status anytime
+prism-cli bootstrapper setup-otel-sync --status
+
+# Remove the schedule
+prism-cli bootstrapper setup-otel-sync --remove
+```
+
+This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows) that runs `codeburn sync push --since 7d` every 12 hours. The 7-day overlap window means a developer's machine can be off for a week and nothing is missed — duplicate pushes are server-side no-ops. Use `--interval <hours>` to override the cadence.
+
+#### 3. Install Git Hooks (optional)
+
+> **Note:** Git hooks are optional and will be deprecated in a future release. The OTEL sync in step 2 above provides the same metrics (and more) via codeburn. Git hooks remain available for teams that want commit-level AI attribution trailers in their git history.
+
+```bash
+# For all future clones (global template):
+prism-cli bootstrapper install-git-hooks --global
+
+# For an existing repo (run inside the repo):
+prism-cli bootstrapper install-git-hooks
+```
+
+The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
+
+#### VPC Configuration
+
+By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (DynamoDB, EventBridge, CloudWatch, KMS, Bedrock Runtime) for network isolation. This adds ~$35-50/month in endpoint costs.
+
+| Option | Command | Use Case |
+|--------|---------|----------|
+| **New VPC** (default) | `npx cdk deploy --all` | Production — full network isolation |
+| **Skip VPC** | `npx cdk deploy --all -c skipVpc=true` | Workshop/demo — saves cost, faster cold starts |
+| **Existing VPC** | `npx cdk deploy --all -c vpcId=vpc-0123456789abcdef0` | Enterprise — use shared VPC with existing endpoints or NAT |
+
+When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
+
+**Data layout:**
+
+| Destination | Content | Purpose |
+|-------------|---------|---------|
+| S3 (`prism-d1-otlp-archive-*`) | Raw OTLP JSON batches, partitioned by `dt=` | External contract — Athena, data lake, replay into any OTel backend |
+| DynamoDB (`prism-d1-ai-usage`) | Per-span rows (90-day TTL) + daily per-user/tool aggregates | PRISM dashboards |
+
+Duplicate pushes are safe: codeburn's deterministic span IDs act as an idempotency key server-side. Historical sessions are backfilled on first push (aggregates bucket by span date). Running a full ADOT collector for fan-out to X-Ray/Grafana/Datadog is on the [roadmap](docs/ROADMAP.md).
+
+#### Cost Estimate
+
+Monthly cost depends on team size and configuration. All resources are serverless (pay-per-use) except VPC endpoints.
+
+| Component | ~Monthly Cost | Notes |
+|-----------|--------------|-------|
+| **VPC endpoints** (5×) | $35–50 | Skip with `-c skipVpc=true` |
+| **DynamoDB** (2 tables) | $1–5 | On-demand billing; scales with commit volume |
+| **Lambda** (8 processors) | $1–3 | Invoked per event; negligible at <50 devs |
+| **EventBridge** | < $1 | $1/million events |
+| **CloudWatch** (3 dashboards, 11 alarms) | $3–10 | Per-dashboard fee + metric costs |
+| **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
+| **Bedrock Guardrails** | $1–5 | Per-invocation; depends on eval gate frequency |
+| **KMS** (1 key) | $1 | Fixed monthly fee + $0.03/10K requests |
+
+**Typical total:**
+- Workshop/demo (no VPC): **~$10–25/month**
+- Production (with VPC, <50 devs): **~$50–80/month**
+- Large team (100+ devs, heavy CI): **~$80–150/month**
+
+> 💡 The largest cost driver is VPC endpoints. For workshops and demos, use `-c skipVpc=true` to stay under $25/month. QuickSight dashboards (optional) add $12–24/reader/month separately.
 
 ### Assess a Customer
 
@@ -139,42 +264,9 @@ pip install -e ".[dev]"
 python scripts/run-demo.py --mock   # Run agent demo with mock model
 ```
 
-### Adopt the Bootstrapper (Post-Workshop)
-
-```bash
-cd ~/your-repo
-
-# Install git hooks (creates .prism/ config directory)
-prism-cli bootstrapper install-git-hooks --team-id your-team
-
-# Optional: set custom token/cost bounds (defaults: 1M tokens, $100/commit)
-prism-cli bootstrapper install-git-hooks --team-id your-team --max-tokens 500000 --max-cost 50
-
-# Optional: install globally so all future clones get the hook automatically
-prism-cli bootstrapper install-git-hooks --team-id your-team --global
-
-# Choose a CLAUDE.md template for your team
-cp /path/to/bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
-# Or: CLAUDE-frontend.md, CLAUDE-platform.md, CLAUDE-agent.md
-
-# Add GitHub workflows
-mkdir -p .github/workflows
-cp /path/to/bootstrapper/github-workflows/prism-ai-metrics.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-eval-gate.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-agent-eval.yml .github/workflows/
-cp /path/to/bootstrapper/github-workflows/prism-dora-weekly.yml .github/workflows/
-
-# Install eval harness
-prism-cli bootstrapper install-eval-harness --with-rubrics
-
-# For agent projects:
-cp /path/to/bootstrapper/agent-configs/ ./agent-configs/
-
-# For Security Agent:
-prism-cli securityagent setup
-```
-
 ## Commit Metadata (AI Attribution)
+
+![Workflow](assets/images/PrismDashboard.drawio.png)
 
 The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
 
@@ -223,7 +315,7 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 | **AI-to-Merge Ratio** | CI metadata | >= 20% | >= 45% |
 | **Spec-to-Code Turnaround** | Spec commit → PR ready | Baseline set | < 2 days |
 | **Post-Merge Defect Rate** | Defect correlator + AI origin tag | <= 1.2x human | <= 0.9x |
-| **Eval Gate Pass Rate** | Bedrock Evaluations in CI | >= 80% | >= 95% |
+| **Eval Gate Pass Rate** | kiro-cli headless review in CI | >= 80% | >= 95% |
 | **AI Test Coverage Delta** | Coverage tool + AI origin tag | > 15% | > 40% |
 
 ## Workshop Modules
@@ -235,7 +327,7 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 | 02 | Agent Development | 70 min | Strands agent + MCP server (with auth) + multi-agent orchestration |
 | 03 | Spec-Driven Development | 45 min | Spec-driven development with Kiro, Claude Code IDE, or Claude Code CLI |
 | 04 | Instrumenting AI Metrics | 45 min | Git hooks + CI emitting 18 event types to EventBridge |
-| 05 | Eval Gates in CI/CD | 45 min | 5 Bedrock eval rubrics + Security Agent finding gate blocking bad merges |
+| 05 | Eval Gates in CI/CD | 45 min | Agentic kiro-cli code review (or legacy Bedrock rubrics) + Security Agent finding gate blocking bad merges |
 | 06 | Dashboards & Visibility | 30 min | 3 CloudWatch + 2 QuickSight dashboards live |
 
 Extension exercises: Security Agent design review (+10 min in Module 03), code review (+10 min in Module 05), CISO dashboard walkthrough (+5 min in Module 06).
@@ -257,7 +349,7 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 | **Agent Framework** | Strands Agents SDK (Python) | `sample-app/agent/` |
 | **Tool Integration** | Model Context Protocol (MCP) with scope-based auth | `sample-app/src/mcp/` |
 | **Production Hosting** | Amazon Bedrock AgentCore | `bootstrapper/agent-configs/` |
-| **Agent Eval** | Bedrock Evaluations (5 rubrics) | `bootstrapper/eval-harness/rubrics/` |
+| **Agent Eval** | kiro-cli headless review + Bedrock rubrics (legacy) | `bootstrapper/eval-harness/` |
 | **Security** | Bedrock Guardrails + MCP authorization + Security Agent | `infra/lib/constructs/` |
 | **Workshop** | Module 02: Agent Development | `workshop/02-agent-development/` |
 

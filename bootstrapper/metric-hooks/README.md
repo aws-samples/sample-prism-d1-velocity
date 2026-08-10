@@ -9,7 +9,7 @@ Every commit gets trailers appended to the message:
 ```
 feat: add order creation endpoint
 
-AI-Origin: ai-assisted
+AI-Origin: ai-generated
 AI-Tool: claude-code
 AI-Model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 AI-Input-Tokens: 12450
@@ -38,31 +38,40 @@ To remove:
 bash prism-cli bootstrapper install-git-hooks --uninstall
 ```
 
+The installer also registers a Claude Code `SessionStart` hook in
+`~/.claude/settings.json` (served by `prism-cli git claude-session-context`).
+It captures the Claude session id into the environment so commits made during a
+Claude Code session are attributed correctly.
+
 ## Prerequisites
 
-- **codeburn** — Token usage tracking. Install: `npm install -g codeburn` (or `brew install codeburn` on macOS)
-- **jq** — JSON processing. Install: `brew install jq` or `sudo apt install jq`
+- **prism-cli** — Runs the hook logic (`prism-cli git commit-trailers`). Install: `npm install -g @prism-d1/cli`
+- **codeburn** *(optional)* — Token usage tracking for non-Kiro tools. Install: `npm install -g codeburn` (or `brew install codeburn` on macOS). Kiro sessions are parsed directly by prism-cli, no codeburn needed.
+
+> The hook is a thin bash delegator to prism-cli. It requires only `git` and
+> `bash` (with `prism-cli` on PATH) — **no `jq`, `bc`, or `sed`** — so it works
+> on Linux, macOS, and Windows Git Bash. If `prism-cli` is not installed, the
+> commit proceeds normally without trailers.
 
 ## How AI Detection Works
 
-The hook checks for AI tool involvement:
+The hook (via `prism-cli git commit-trailers`) checks for AI tool involvement, in order:
 
 1. **Claude Code**: `CLAUDE_CODE` or `CLAUDE_CODE_SESSION_ID` environment variable
-2. **Kiro**: `KIRO_SESSION` environment variable
+2. **Kiro**: `KIRO_SESSION_ID` / `KIRO_SESSION` env var, `TERM_PROGRAM=kiro` (IDE terminal), or a `kiro` path in `VSCODE_GIT_ASKPASS_NODE` / `GIT_ASKPASS` (Source Control panel commits)
 3. **Q Developer**: `Q_DEVELOPER_SESSION` environment variable
-4. **Commit message**: "Co-Authored-By: Claude" or similar markers → `ai-generated`
-5. **Default**: No indicators → `AI-Origin: human`
+4. **Default**: No indicators → `AI-Origin: human`
 
 ## Token Tracking
 
-When an AI tool is detected and `codeburn` is installed, the hook:
+When an AI tool is detected, the hook computes a per-commit delta:
 
-1. Runs `codeburn report -p all --format json` to get lifetime token totals
-2. Compares against a snapshot from the previous commit (`.prism/tokentracker/<user>.json`)
+1. Collects lifetime token totals — Kiro sessions are parsed directly by prism-cli; other tools use `codeburn report -p all --format json`
+2. Compares against a snapshot from the previous commit (`~/.prism/tokentracker/<project-basename>.json`)
 3. Writes the delta as `AI-Input-Tokens` and `AI-Output-Tokens` trailers
 4. Saves the new snapshot for next time
 
-If codeburn is not installed or no AI tool is detected, token trailers are omitted.
+If no usage data is available (e.g. codeburn absent for a non-Kiro tool) or no AI tool is detected, token trailers are omitted.
 
 ## Configuration
 
@@ -92,7 +101,7 @@ Values exceeding bounds are clamped to the configured maximum. The workflow (`pr
 
 ## Safety
 
-- Never blocks a commit — exits 0 even if codeburn or jq fails
+- Never blocks a commit — exits 0 even if prism-cli or codeburn is missing or errors
 - Only appends trailers — never modifies code
 - Skips merge and squash commits
 - Won't duplicate trailers if already present

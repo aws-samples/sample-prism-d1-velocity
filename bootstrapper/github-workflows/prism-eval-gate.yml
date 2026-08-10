@@ -222,89 +222,232 @@ jobs:
             \"EventBusName\":\"prism-d1-metrics\",
             \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
 
-      - name: Wait for Security Agent
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+      - name: Upgrade AWS CLI v2 (securityagent code review requires v2.35+)
+        run: |
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sha256" -o /tmp/awscliv2.zip.sha256
+          cd /tmp && sha256sum -c awscliv2.zip.sha256
+          unzip -qo /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin 2>/dev/null || \
+            sudo /tmp/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin 2>/dev/null || true
+          rm -rf /tmp/aws /tmp/awscliv2.zip /tmp/awscliv2.zip.sha256
+          hash -r
+          echo "AWS CLI: $(aws --version)"
+          echo "Has create-code-review: $(aws securityagent create-code-review help 2>&1 | head -1)"
+
+      - name: AWS Continuum diff scan
         id: security-gate
-        with:
-          script: |
-            const pr = context.issue.number;
-            const opts = { owner: context.repo.owner, repo: context.repo.repo };
-
-            // Phase 1: Wait for Security Agent to start (2 min)
-            let reviewingComment = null;
-            for (let i = 0; i < 12; i++) {
-              const { data: comments } = await github.rest.issues.listComments({ ...opts, issue_number: pr });
-              reviewingComment = comments.find(c => c.user.login === 'aws-security-agent[bot]' && c.body.includes('reviewing your pull request'));
-              if (reviewingComment) break;
-              await new Promise(r => setTimeout(r, 10000));
-            }
-            if (!reviewingComment) { core.setOutput('findings', '0'); return; }
-
-            // Phase 2: Wait for completion (10 min) — look after the "reviewing" comment
-            const since = reviewingComment.created_at;
-            for (let i = 0; i < 40; i++) {
-              // Check for completed review submission (summary appears as review body, not issue comment)
-              const { data: reviews } = await github.rest.pulls.listReviews({ ...opts, pull_number: pr });
-              const botReview = reviews.find(r => r.user.login === 'aws-security-agent[bot]' && new Date(r.submitted_at) >= new Date(since));
-              // Check for inline review comments
-              const { data: reviewComments } = await github.rest.pulls.listReviewComments({ ...opts, pull_number: pr });
-              const findings = reviewComments.filter(c => c.user.login === 'aws-security-agent[bot]' && new Date(c.created_at) >= new Date(since));
-              if (botReview || findings.length > 0) {
-                core.setOutput('findings', String(findings.length));
-                return;
-              }
-              await new Promise(r => setTimeout(r, 15000));
-            }
-            core.setOutput('findings', '0');
-
-      - name: Forward Security Agent findings
-        if: steps.security-gate.outputs.findings != '0'
         env:
-          GH_TOKEN: ${{ github.token }}
+          AWS_REGION: us-west-2
+        run: |
+          # Pre-flight: verify AWS CLI has securityagent subcommand
+          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
+            echo "::warning::AWS CLI does not support 'securityagent code review' commands after upgrade. Skipping scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::group::Retrieve Continuum config from SSM"
+          AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
+          SCAN_BUCKET=$(aws ssm get-parameter --name /prism/continuum/scan-bucket --query Parameter.Value --output text 2>/dev/null || echo "")
+          SERVICE_ROLE=$(aws ssm get-parameter --name /prism/continuum/service-role-arn --query Parameter.Value --output text 2>/dev/null || echo "")
+          echo "::endgroup::"
+
+          # Skip if core infrastructure not deployed
+          if [[ -z "$AGENT_SPACE_ID" || -z "$SCAN_BUCKET" ]]; then
+            echo "⚠️ AWS Continuum not configured (agent-space-id or scan-bucket missing). Skipping security scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fallback for service role if SSM param not yet deployed
+          if [[ -z "$SERVICE_ROLE" ]]; then
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            SERVICE_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/prism-d1-security-agent-prism-d1-security"
+            echo "::notice::service-role-arn SSM param not found, using convention: ${SERVICE_ROLE}"
+          fi
+
+          # Derive repo slug for per-repo SSM key (org/repo → org-repo)
+          REPO_SLUG=$(echo "${{ github.repository }}" | tr '/' '-')
+
+          echo "::group::Resolve Code Review for ${REPO_SLUG}"
+          CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
+
+          if [[ -z "$CODE_REVIEW_ID" ]]; then
+            echo "  No Code Review found for ${REPO_SLUG} -- bootstrapping..."
+            echo "  CLI version: $(aws --version 2>&1 | head -1)"
+            echo "  CLI path: $(which aws)"
+
+            # Upload repo ZIP first (required as source context for the CodeReview)
+            git archive HEAD --format=zip -o /tmp/repo.zip
+            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+
+            # Create the CodeReview
+            CR_OUTPUT=$(aws securityagent create-code-review \
+              --agent-space-id "$AGENT_SPACE_ID" \
+              --title "${REPO_SLUG}-ci-diff-scan" \
+              --service-role "$SERVICE_ROLE" \
+              --assets "{\"sourceCode\":[{\"s3Location\":\"s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip\"}]}" \
+              --output json 2>&1) || true
+            CODE_REVIEW_ID=$(echo "$CR_OUTPUT" | jq -r '.codeReviewId // empty' 2>/dev/null)
+
+            if [[ -z "$CODE_REVIEW_ID" ]]; then
+              echo "  ⚠️ Bootstrap failed:"
+              echo "  $CR_OUTPUT"
+              echo "  Run 'sudo prism-cli securityagent setup' from your DevBox to create manually."
+              echo "  Skipping security scan (non-blocking)."
+              echo "findings=0" >> "$GITHUB_OUTPUT"
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Persist for future runs
+            aws ssm put-parameter \
+              --name "/prism/continuum/code-review-id/${REPO_SLUG}" \
+              --value "$CODE_REVIEW_ID" \
+              --type String --overwrite > /dev/null
+
+            echo "  [x] Code Review created: ${CODE_REVIEW_ID}"
+            echo "  [x] Saved to SSM"
+          fi
+
+          echo "  Using Code Review: ${CODE_REVIEW_ID}"
+
+          # Upload fresh repo ZIP (context for accurate cross-module analysis)
+          git archive HEAD --format=zip -o /tmp/repo.zip
+          aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+          echo "::endgroup::"
+
+          echo "::group::Generate and upload diff"
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+          git diff "${BASE_SHA}..${HEAD_SHA}" > /tmp/changes.patch
+
+          DIFF_SIZE=$(wc -c < /tmp/changes.patch)
+          if [[ "$DIFF_SIZE" -eq 0 ]]; then
+            echo "No changes to scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DIFF_KEY="diffs/${REPO_SLUG}/${{ github.event.pull_request.number }}/${HEAD_SHA}.patch"
+          aws s3 cp /tmp/changes.patch "s3://${SCAN_BUCKET}/${DIFF_KEY}" --quiet
+          echo "::endgroup::"
+
+          echo "::group::Start Continuum diff scan"
+          JOB_RESPONSE=$(aws securityagent start-code-review-job \
+            --agent-space-id "${AGENT_SPACE_ID}" \
+            --code-review-id "${CODE_REVIEW_ID}" \
+            --diff-source "{\"s3Uri\":\"s3://${SCAN_BUCKET}/${DIFF_KEY}\"}" \
+            --output json)
+
+          JOB_ID=$(echo "$JOB_RESPONSE" | jq -r '.codeReviewJobId')
+          echo "Job started: ${JOB_ID}"
+          echo "::endgroup::"
+
+          echo "::group::Poll for completion (timeout: 30 min)"
+          for i in $(seq 1 60); do
+            sleep 30
+            STATUS=$(aws securityagent batch-get-code-review-jobs \
+              --agent-space-id "${AGENT_SPACE_ID}" \
+              --code-review-job-ids "${JOB_ID}" \
+              --query 'codeReviewJobs[0].status' --output text 2>/dev/null || echo "UNKNOWN")
+
+            echo "  Poll ${i}/60: ${STATUS}"
+            if [[ "$STATUS" == "COMPLETED" || "$STATUS" == "FAILED" || "$STATUS" == "STOPPED" ]]; then
+              break
+            fi
+          done
+          echo "::endgroup::"
+
+          if [[ "$STATUS" == "FAILED" ]]; then
+            echo "::warning::Continuum scan failed — check Security Agent logs"
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$STATUS" != "COMPLETED" ]]; then
+            echo "::warning::Continuum scan timed out (status: ${STATUS})"
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::group::Retrieve findings"
+          FINDINGS_JSON=$(aws securityagent list-findings \
+            --agent-space-id "${AGENT_SPACE_ID}" \
+            --code-review-job-id "${JOB_ID}" \
+            --output json 2>/dev/null || echo '{"findingsSummaries":[]}')
+
+          TOTAL=$(echo "$FINDINGS_JSON" | jq '.findingsSummaries | length')
+          CRITICAL=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "CRITICAL")] | length')
+          HIGH=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "HIGH")] | length')
+          MEDIUM=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "MEDIUM")] | length')
+
+          echo "Findings: ${TOTAL} total (${CRITICAL} critical, ${HIGH} high, ${MEDIUM} medium)"
+          echo "findings=${TOTAL}" >> "$GITHUB_OUTPUT"
+          echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
+          echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
+          echo "findings_json=$(echo "$FINDINGS_JSON" | jq -c '.findingsSummaries')" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+          # Print findings summary for PR annotations
+          if [[ "$TOTAL" -gt 0 ]]; then
+            echo "$FINDINGS_JSON" | jq -r '.findingsSummaries[] | "::error ::[\(.riskLevel)] \(.name | .[0:120])"'
+          fi
+
+      - name: Emit Continuum findings to EventBridge
+        if: steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.skipped != 'true'
+        env:
+          AWS_REGION: us-west-2
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
           TEAM_ID="${{ steps.prism-config.outputs.team_id }}"
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.sha }}"
+          FINDINGS='${{ steps.security-gate.outputs.findings_json }}'
 
           AI_ORIGIN="human"
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
           for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
             if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
               AI_ORIGIN="ai-assisted"; break
             fi
           done
 
-          REVIEW_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate 2>/dev/null || echo "[]")
-
-          ENTRIES=$(echo "${REVIEW_COMMENTS}" | jq --arg team_id "${TEAM_ID}" --arg repo "${REPO}" \
+          ENTRIES=$(echo "${FINDINGS}" | jq --arg team_id "${TEAM_ID}" --arg repo "${REPO}" \
             --arg ai_origin "${AI_ORIGIN}" --argjson pr_number "${PR_NUMBER}" '
-            def cwe_severity:
-              {"89":"CRITICAL","78":"CRITICAL","94":"CRITICAL","502":"CRITICAL","798":"CRITICAL",
-               "79":"HIGH","22":"HIGH","918":"HIGH","352":"HIGH","287":"HIGH","862":"HIGH",
-               "200":"MEDIUM","532":"MEDIUM","601":"MEDIUM"};
-            [.[] | select(.user.login == "aws-security-agent[bot]")] |
-            to_entries | map(.value as $c |
-              ($c.body | capture("CWE-(?<id>[0-9]+)") // {id: null}).id as $cwe_id |
-              (if $cwe_id then (cwe_severity[$cwe_id] // "MEDIUM") else "MEDIUM" end) as $severity |
+            to_entries | map(.value as $f |
               {Source:"prism.d1.velocity", DetailType:"prism.d1.security.code_review",
                EventBusName:"prism-d1-metrics",
-               Detail:({team_id:$team_id, repo:$repo, timestamp:$c.created_at, prism_level:3,
+               Detail:({team_id:$team_id, repo:$repo, timestamp:($f.createdAt // now | tostring), prism_level:3,
                  metric:{name:"security_finding",value:1,unit:"count"},
-                 ai_context:{tool:"security-agent",model:"aws-security-agent",origin:$ai_origin},
-                 security_agent_finding:{finding_id:"sa-pr\($pr_number)-\($c.id)", phase:"code_review",
-                   severity:$severity, cwe_id:(if $cwe_id then "CWE-\($cwe_id)" else null end),
-                   ai_origin:$ai_origin, found_at:$c.created_at}
+                 ai_context:{tool:"continuum",model:"aws-continuum",origin:$ai_origin},
+                 continuum_finding:{finding_id:($f.findingId // "cf-pr\($pr_number)-\(.key)"), phase:"code_review",
+                   severity:($f.riskLevel // "MEDIUM"),
+                   cwe_id:($f.cweId // null),
+                   ai_origin:$ai_origin, found_at:($f.createdAt // null)}
                } | tostring)})' 2>/dev/null || echo "[]")
 
           TOTAL=$(echo "${ENTRIES}" | jq 'length')
-          for i in $(seq 0 10 $((TOTAL - 1))); do
-            aws events put-events --region us-west-2 --entries "$(echo "${ENTRIES}" | jq ".[$i:$((i+10))]")"
-          done
+          if [[ "$TOTAL" -gt 0 ]]; then
+            for i in $(seq 0 10 $((TOTAL - 1))); do
+              aws events put-events --entries "$(echo "${ENTRIES}" | jq ".[$i:$((i+10))]")"
+            done
+            echo "Emitted ${TOTAL} finding events to EventBridge"
+          fi
 
       - name: Fail on eval or security issues
-        if: steps.eval.outputs.overall_result == 'FAIL' || steps.security-gate.outputs.findings != '0'
+        if: steps.eval.outputs.overall_result == 'FAIL' || (steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.skipped != 'true')
         run: |
           [[ "${{ steps.eval.outputs.overall_result }}" == "FAIL" ]] && echo "❌ Eval gate failed"
-          [[ "${{ steps.security-gate.outputs.findings }}" != "0" ]] && echo "❌ Security Agent found ${{ steps.security-gate.outputs.findings }} issues"
+          if [[ "${{ steps.security-gate.outputs.scan_error }}" == "true" ]]; then
+            echo "⚠️ AWS Continuum scan encountered an error (did not complete successfully)"
+            echo "  The security gate cannot verify this PR is safe. Re-run the workflow or check Security Agent logs."
+          elif [[ "${{ steps.security-gate.outputs.findings }}" != "0" && "${{ steps.security-gate.outputs.skipped }}" != "true" ]]; then
+            echo "❌ AWS Continuum found ${{ steps.security-gate.outputs.findings }} security issues (${{ steps.security-gate.outputs.critical }} critical, ${{ steps.security-gate.outputs.high }} high)"
+          fi
           exit 1

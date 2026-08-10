@@ -24,7 +24,31 @@ export default {
     { flags: '--uninstall', description: 'Remove PRISM hooks' },
   ],
   async action(opts: { teamId?: string; maxTokens?: string; maxCost?: string; global?: boolean; uninstall?: boolean }) {
-    const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
+    let gitRoot = '';
+    try {
+      gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    } catch {
+      if (!opts.global) {
+        console.error('Error: not inside a git repository. Use --global to install the template without a repo.');
+        process.exit(1);
+      }
+    }
+
+    // --global without a repo: just install the template and exit
+    if (!gitRoot && opts.global) {
+      const source = resolve(HOOKS_SOURCE, 'prepare-commit-msg');
+      if (!existsSync(source)) { console.error(`Hook source not found: ${source}`); process.exit(1); }
+      const home = homedir();
+      const templateHooksDir = resolve(home, '.git-templates/hooks');
+      mkdirSync(templateHooksDir, { recursive: true });
+      copyFileSync(source, resolve(templateHooksDir, 'prepare-commit-msg'));
+      chmodSync(resolve(templateHooksDir, 'prepare-commit-msg'), 0o755);
+      execSync(`git config --global init.templateDir "${resolve(home, '.git-templates')}"`, { encoding: 'utf8' });
+      console.log('Global template dir set — all future clones will get the hook automatically.');
+      console.log('Run again inside a repo to install locally + configure .prism/config.json.');
+      return;
+    }
+
     const hooksDir = resolve(gitRoot, '.git/hooks');
     const prismDir = resolve(gitRoot, '.prism');
     const configFile = resolve(prismDir, 'config.json');
@@ -113,31 +137,14 @@ export default {
   },
 };
 
-const CLAUDE_SESSION_HOOK_SCRIPT = `#!/usr/bin/env bash
-INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
-jq -n --arg ctx "CLAUDE_CODE_SESSION_ID=$SESSION_ID" \\
-    '{ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: $ctx } }'
-if [ -n "$CLAUDE_ENV_FILE" ] && ! grep -q "CLAUDE_CODE_SESSION_ID" "$CLAUDE_ENV_FILE" 2>/dev/null; then
-    echo "export CLAUDE_CODE_SESSION_ID=\\"$SESSION_ID\\"" > "$CLAUDE_ENV_FILE"
-fi
-`;
+const CLAUDE_HOOK_COMMAND = 'prism-cli git claude-session-context';
 
 function installClaudeSessionHook() {
   const home = homedir();
-  const binDir = resolve(home, '.local/bin');
-  const hookScriptPath = resolve(binDir, 'claude-session-id-hook');
 
-  mkdirSync(binDir, { recursive: true });
-  writeFileSync(hookScriptPath, CLAUDE_SESSION_HOOK_SCRIPT, { mode: 0o755 });
-
-  const pathDirs = (process.env.PATH || '').split(':');
-  if (!pathDirs.includes(binDir)) {
-    console.log(`\n  ⚠️  ${binDir} is not in your PATH.`);
-    console.log(`  Add to your shell profile: export PATH="$HOME/.local/bin:$PATH"\n`);
-  }
-
-  // Register in ~/.claude/settings.json
+  // Register the SessionStart hook in ~/.claude/settings.json.
+  // The hook is served by `prism-cli git claude-session-context` (Node, no jq),
+  // so there's no standalone script in ~/.local/bin and no PATH requirement.
   const claudeDir = resolve(home, '.claude');
   const settingsPath = resolve(claudeDir, 'settings.json');
   mkdirSync(claudeDir, { recursive: true });
@@ -148,14 +155,16 @@ function installClaudeSessionHook() {
   }
 
   if (!settings.hooks) settings.hooks = {};
-  const hook = { matcher: '', hooks: [{ type: 'command', command: 'claude-session-id-hook', timeout: 5000 }] };
+  let sessionStart: any[] = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : [];
 
-  if (!settings.hooks.SessionStart) {
-    settings.hooks.SessionStart = [hook];
-  } else if (!settings.hooks.SessionStart.some((e: any) => e.hooks?.some((h: any) => h.command === 'claude-session-id-hook'))) {
-    settings.hooks.SessionStart.push(hook);
-  }
+  // Drop any prior PRISM entry (legacy 'claude-session-id-hook' script or this
+  // command) so re-running the installer upgrades cleanly without duplicates.
+  sessionStart = sessionStart.filter((e: any) =>
+    !e?.hooks?.some((h: any) => h.command === 'claude-session-id-hook' || h.command === CLAUDE_HOOK_COMMAND));
+
+  sessionStart.push({ matcher: '', hooks: [{ type: 'command', command: CLAUDE_HOOK_COMMAND, timeout: 5000 }] });
+  settings.hooks.SessionStart = sessionStart;
 
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  console.log('Claude Code session hook installed.');
+  console.log(`Claude Code session hook installed (${CLAUDE_HOOK_COMMAND}).`);
 }

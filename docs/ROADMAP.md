@@ -131,6 +131,7 @@ Contributors: pick any item, open an issue referencing the roadmap ID (e.g., `R-
 | **R-704** | **R&D capitalization report** — Time allocation breakdown (new feature vs maintenance vs overhead) for finance teams | P2 | L | `dashboard`, `new-metric` | Jellyfish, Swarmia, Pluralsight Flow |
 | **R-705** | **GitHub Actions marketplace action** — One-click PRISM metric emission from any CI/CD pipeline | P1 | M | `integration`, `community` | Swarmia, LinearB |
 | **R-706** | **GitLab CI integration** — Equivalent collector for GitLab-based teams | P2 | M | `integration`, `community` | Swarmia, Faros |
+| **R-707** | **ADOT collector mode for OTEL ingestion** — Replace the Lambda OTLP receiver with an ADOT collector on Fargate (`-c otelCollectorMode=adot`): OIDC-authenticated receiver, exporter fan-out to X-Ray/CloudWatch traces, S3, and any OTLP backend (Grafana Tempo, Datadog, Honeycomb) via YAML config. Lambda mode remains the low-cost default | P2 | L | `integration`, `infra` | — |
 
 ---
 
