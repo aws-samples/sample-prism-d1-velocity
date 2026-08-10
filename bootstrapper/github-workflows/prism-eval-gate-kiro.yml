@@ -339,13 +339,13 @@ jobs:
           echo "Continuum job started: ${JOB_ID}"
 
           STATUS="UNKNOWN"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             sleep 30
             STATUS=$(aws securityagent batch-get-code-review-jobs \
               --agent-space-id "${AGENT_SPACE_ID}" \
               --code-review-job-ids "${JOB_ID}" \
               --query 'codeReviewJobs[0].status' --output text 2>/dev/null || echo "UNKNOWN")
-            echo "  Poll ${i}/30: ${STATUS}"
+            echo "  Poll ${i}/60: ${STATUS}"
             case "$STATUS" in COMPLETED|FAILED|STOPPED) break ;; esac
           done
 
