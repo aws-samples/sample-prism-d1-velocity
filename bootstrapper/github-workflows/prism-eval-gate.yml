@@ -347,15 +347,15 @@ jobs:
           echo "Job started: ${JOB_ID}"
           echo "::endgroup::"
 
-          echo "::group::Poll for completion (timeout: 15 min)"
-          for i in $(seq 1 30); do
+          echo "::group::Poll for completion (timeout: 30 min)"
+          for i in $(seq 1 60); do
             sleep 30
             STATUS=$(aws securityagent batch-get-code-review-jobs \
               --agent-space-id "${AGENT_SPACE_ID}" \
               --code-review-job-ids "${JOB_ID}" \
               --query 'codeReviewJobs[0].status' --output text 2>/dev/null || echo "UNKNOWN")
 
-            echo "  Poll ${i}/30: ${STATUS}"
+            echo "  Poll ${i}/60: ${STATUS}"
             if [[ "$STATUS" == "COMPLETED" || "$STATUS" == "FAILED" || "$STATUS" == "STOPPED" ]]; then
               break
             fi
