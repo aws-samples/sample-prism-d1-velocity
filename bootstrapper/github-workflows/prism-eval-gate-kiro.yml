@@ -283,10 +283,43 @@ jobs:
           REPO_SLUG=$(echo "${REPO}" | tr '/' '-')
           CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
           if [ -z "$CODE_REVIEW_ID" ]; then
-            echo "::warning::No Code Review resource for ${REPO_SLUG} -- run 'prism-cli securityagent setup' first. Skipping."
-            echo "findings=0" >> "$GITHUB_OUTPUT"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "No Code Review found for ${REPO_SLUG} -- bootstrapping..."
+
+            # Get service role (SSM or convention fallback)
+            SERVICE_ROLE=$(aws ssm get-parameter --name /prism/continuum/service-role-arn --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -z "$SERVICE_ROLE" ]; then
+              ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+              SERVICE_ROLE="arn:aws:iam::${ACCOUNT_ID}:role/prism-d1-security-agent-prism-d1-security"
+              echo "  Using convention role: ${SERVICE_ROLE}"
+            fi
+
+            # Upload repo ZIP as source context
+            git archive HEAD --format=zip -o /tmp/repo.zip
+            aws s3 cp /tmp/repo.zip "s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip" --quiet
+
+            # Create the Code Review resource
+            CR_OUTPUT=$(aws securityagent create-code-review \
+              --agent-space-id "$AGENT_SPACE_ID" \
+              --title "${REPO_SLUG}-ci-diff-scan" \
+              --service-role "$SERVICE_ROLE" \
+              --assets "{\"sourceCode\":[{\"s3Location\":\"s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip\"}]}" \
+              --output json 2>&1) || true
+            CODE_REVIEW_ID=$(echo "$CR_OUTPUT" | jq -r '.codeReviewId // empty' 2>/dev/null)
+
+            if [ -z "$CODE_REVIEW_ID" ]; then
+              echo "::warning::Bootstrap failed: ${CR_OUTPUT}"
+              echo "  Run 'sudo prism-cli securityagent setup' from your DevBox to create manually."
+              echo "findings=0" >> "$GITHUB_OUTPUT"
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Persist for future runs
+            aws ssm put-parameter \
+              --name "/prism/continuum/code-review-id/${REPO_SLUG}" \
+              --value "$CODE_REVIEW_ID" \
+              --type String --overwrite > /dev/null
+            echo "  Code Review created: ${CODE_REVIEW_ID} (saved to SSM)"
           fi
 
           # Diff must be uploaded with .patch extension (API requirement)
