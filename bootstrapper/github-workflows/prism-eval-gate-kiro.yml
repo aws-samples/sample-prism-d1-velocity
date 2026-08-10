@@ -1,0 +1,379 @@
+# prism-eval-gate.yml — AI code quality gate using kiro-cli headless mode.
+#
+# Copy this file to .github/workflows/prism-eval-gate.yml in your repo.
+#
+# Required setup:
+#   - Kiro API key stored as repository secret: KIRO_API_KEY
+#   - .kiro/steering/code-review.md in your repo (review rules)
+#   - (Optional) PRISM_METRICS_ROLE_ARN for EventBridge metrics emission
+#   - (Optional) AWS Continuum configured for security scanning
+
+name: PRISM Eval Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, master]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+    env:
+      # Secrets mapped to env so steps can gate on them (secrets context not allowed in `if`)
+      METRICS_ROLE_ARN: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
+      HAS_KIRO_KEY: ${{ secrets.KIRO_API_KEY != '' && 'true' || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Kiro CLI
+        run: curl -fsSL https://cli.kiro.dev/install | bash
+
+      - name: Read team ID
+        id: prism-config
+        run: |
+          TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
+          echo "team_id=${TEAM_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Identify AI-generated changes
+        id: detect-ai
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          AI_FILES=""
+          for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
+            if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
+              FILES=$(git diff-tree --no-commit-id --name-only -r "${SHA}" \
+                | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' \
+                | grep -vE '\.test\.|\.spec\.|__test__|_test\.' || true)
+              AI_FILES="${AI_FILES} ${FILES}"
+            fi
+          done
+
+          UNIQUE_FILES=$(echo "${AI_FILES}" | tr ' ' '\n' | sort -u | grep -v '^$' | head -30)
+          FILE_COUNT=$(echo "${UNIQUE_FILES}" | grep -c . || echo "0")
+
+          if [ "${FILE_COUNT}" -eq 0 ]; then
+            echo "has_ai_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_ai_changes=true" >> "$GITHUB_OUTPUT"
+            echo "file_count=${FILE_COUNT}" >> "$GITHUB_OUTPUT"
+            echo "${UNIQUE_FILES}" > /tmp/ai-changed-files.txt
+          fi
+
+      - name: Kiro code quality review
+        id: review
+        if: steps.detect-ai.outputs.has_ai_changes == 'true'
+        env:
+          KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Fork PRs don't receive secrets — report neutral, never silently pass
+          if [ "${HAS_KIRO_KEY}" != "true" ]; then
+            echo "::warning::KIRO_API_KEY unavailable (fork PR or missing secret) — review skipped"
+            echo "result=SKIPPED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FILES=$(cat /tmp/ai-changed-files.txt | tr '\n' ' ')
+          DIFF=$(git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES})
+
+          # Find spec reference from commit trailers
+          SPEC_REF=$(git log "${BASE_SHA}..${HEAD_SHA}" --format='%(trailers:key=Spec-Ref,valueonly)' | head -1 | tr -d '[:space:]' || true)
+          SPEC_CONTEXT=""
+          if [ -n "${SPEC_REF}" ] && [ -f "${SPEC_REF}" ]; then
+            SPEC_CONTEXT="The spec for this work is at ${SPEC_REF}. Read it and verify the code implements all acceptance criteria."
+          fi
+
+          # Run kiro-cli in headless mode
+          REVIEW_OUTPUT=$(echo "${DIFF}" | kiro-cli chat --no-interactive \
+            --trust-tools=read,grep \
+            --model claude-haiku-4.5 \
+            "You are a code reviewer running in CI. Review this PR diff for code quality issues.
+
+          Changed files: ${FILES}
+
+          ${SPEC_CONTEXT}
+
+          Read the actual source files for full context (imports, related functions, tests).
+          Follow the review rules in .kiro/steering/code-review.md if it exists.
+
+          Focus on: correctness bugs, missing error handling, injection risks, performance anti-patterns, type safety violations, and hallucinated imports/APIs that don't exist.
+
+          Output ONLY valid JSON on a single line (no markdown fencing, no explanation):
+          {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"security|correctness|performance|maintainability|reliability\",\"message\":\"description\"}],\"score\":0.0,\"summary\":\"one line\"}" 2>/dev/null) || true
+
+          # Strip ANSI escapes, join lines, extract the last JSON object
+          CLEANED=$(echo "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
+          REVIEW_JSON=$(echo "${CLEANED}" | tr '\n' ' ' | grep -o '{.*}' || true)
+
+          if [ -z "${REVIEW_JSON}" ] || ! echo "${REVIEW_JSON}" | jq -e '.score' > /dev/null 2>&1; then
+            # FAIL CLOSED: a gate that can't evaluate must not pass
+            echo "::error::Could not parse kiro-cli review output — failing closed"
+            echo "result=ERROR" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SCORE=$(echo "${REVIEW_JSON}" | jq -r '.score')
+          FINDINGS=$(echo "${REVIEW_JSON}" | jq '.findings | length')
+          HIGH=$(echo "${REVIEW_JSON}" | jq '[.findings[] | select(.severity=="high")] | length')
+          MEDIUM=$(echo "${REVIEW_JSON}" | jq '[.findings[] | select(.severity=="medium")] | length')
+          # Single line, quotes stripped — safe for GITHUB_OUTPUT and downstream env use
+          SUMMARY=$(echo "${REVIEW_JSON}" | jq -r '.summary // "No summary"' | head -1 | tr -d '"`'"'" | cut -c1-200)
+
+          echo "score=${SCORE}" >> "$GITHUB_OUTPUT"
+          echo "findings=${FINDINGS}" >> "$GITHUB_OUTPUT"
+          echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
+          echo "medium=${MEDIUM}" >> "$GITHUB_OUTPUT"
+          echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
+          echo "${REVIEW_JSON}" > /tmp/kiro-review.json
+
+          # Determine pass/fail (awk instead of bc — no extra package needed)
+          PASS=$(awk -v s="${SCORE}" 'BEGIN { print (s >= 0.82) ? "true" : "false" }')
+          if [ "${HIGH}" -gt 0 ] || [ "${PASS}" != "true" ]; then
+            echo "result=FAIL" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=PASS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post PR comment
+        if: always()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          HAS_AI: ${{ steps.detect-ai.outputs.has_ai_changes }}
+          REVIEW_SCORE: ${{ steps.review.outputs.score }}
+          REVIEW_FINDINGS: ${{ steps.review.outputs.findings }}
+          REVIEW_HIGH: ${{ steps.review.outputs.high }}
+          REVIEW_MEDIUM: ${{ steps.review.outputs.medium }}
+          REVIEW_RESULT: ${{ steps.review.outputs.result }}
+          REVIEW_SUMMARY: ${{ steps.review.outputs.summary }}
+        with:
+          script: |
+            const fs = require('fs');
+            // All values read from env — never interpolate ${{ }} into script source
+            // (LLM-generated text could contain quotes/backticks = script injection)
+            const hasAI = process.env.HAS_AI === 'true';
+
+            let body;
+            if (!hasAI) {
+              body = '✅ **PRISM Eval Gate** — No AI-generated code detected. Skipped.';
+            } else {
+              const result = process.env.REVIEW_RESULT || 'ERROR';
+              if (result === 'SKIPPED') {
+                body = '⚠️ **PRISM Eval Gate** — Review unavailable (no API key on fork PRs). A maintainer must review manually.';
+              } else if (result === 'ERROR') {
+                body = '❌ **PRISM Eval Gate** — Review output could not be parsed. Failing closed; re-run the workflow or review manually.';
+              } else {
+                const score = process.env.REVIEW_SCORE || '?';
+                const findings = process.env.REVIEW_FINDINGS || '0';
+                const high = process.env.REVIEW_HIGH || '0';
+                const medium = process.env.REVIEW_MEDIUM || '0';
+                // Sanitize LLM text before embedding in markdown
+                const summary = (process.env.REVIEW_SUMMARY || 'No summary').replace(/[<>|]/g, ' ');
+                const emoji = result === 'PASS' ? '✅' : '❌';
+
+                let table = '';
+                try {
+                  const review = JSON.parse(fs.readFileSync('/tmp/kiro-review.json', 'utf8'));
+                  if (review.findings && review.findings.length > 0) {
+                    const clean = (s) => String(s ?? '-').replace(/[|<>`]/g, ' ').slice(0, 200);
+                    table = review.findings
+                      .map(f => `| \`${clean(f.file)}\` | ${Number(f.line) || '-'} | ${clean(f.severity)} | ${clean(f.category)} | ${clean(f.message)} |`)
+                      .join('\n');
+                  }
+                } catch(e) { /* no detail available */ }
+
+                body = `## ${emoji} PRISM Eval Gate — ${result}\n\n` +
+                  `**Score**: ${score} | **Findings**: ${findings} (${high} high, ${medium} medium)\n\n` +
+                  `**Summary**: ${summary}\n\n`;
+
+                if (table) {
+                  body += `| File | Line | Severity | Category | Issue |\n|---|---|---|---|---|\n${table}\n\n`;
+                }
+
+                body += `> Powered by kiro-cli headless • Model: claude-haiku-4.5 • Threshold: 0.82`;
+              }
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const existing = comments.find(c => c.body.includes('PRISM Eval Gate'));
+            const params = { owner: context.repo.owner, repo: context.repo.repo, body };
+
+            if (existing) {
+              await github.rest.issues.updateComment({ ...params, comment_id: existing.id });
+            } else {
+              await github.rest.issues.createComment({ ...params, issue_number: context.issue.number });
+            }
+
+      - name: Configure AWS credentials (OIDC) — for metrics + security scan
+        id: aws-creds
+        if: steps.detect-ai.outputs.has_ai_changes == 'true' && env.METRICS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ env.METRICS_ROLE_ARN }}
+          aws-region: us-west-2
+        continue-on-error: true
+
+      - name: Emit prism.d1.eval event
+        if: steps.detect-ai.outputs.has_ai_changes == 'true' && steps.aws-creds.outcome == 'success'
+        env:
+          AWS_REGION: us-west-2
+          TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
+          REPO: ${{ github.repository }}
+          REVIEW_SCORE: ${{ steps.review.outputs.score }}
+          REVIEW_RESULT: ${{ steps.review.outputs.result }}
+          REVIEW_FINDINGS: ${{ steps.review.outputs.findings }}
+          REVIEW_HIGH: ${{ steps.review.outputs.high }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Only emit when we have a real score (not SKIPPED/ERROR)
+          if [ -z "${REVIEW_SCORE}" ]; then
+            echo "No score to emit (result: ${REVIEW_RESULT:-none})"
+            exit 0
+          fi
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          DETAIL=$(jq -n -c \
+            --arg team_id "${TEAM_ID}" \
+            --arg repo "${REPO}" \
+            --arg timestamp "${TIMESTAMP}" \
+            --arg score "${REVIEW_SCORE}" \
+            --arg result "${REVIEW_RESULT}" \
+            --arg findings "${REVIEW_FINDINGS:-0}" \
+            --arg high "${REVIEW_HIGH:-0}" \
+            --arg pr_number "${PR_NUMBER}" \
+            '{team_id:$team_id,repo:$repo,timestamp:$timestamp,prism_level:2,
+              metric:{name:"eval_score",value:($score|tonumber),unit:"score"},
+              ai_context:{tool:"kiro-cli",model:"claude-haiku-4.5",origin:"ai-generated"},
+              eval:{score:($score|tonumber),result:$result,rubric:"kiro-headless",
+                    findings:($findings|tonumber),high_findings:($high|tonumber),
+                    pr_number:($pr_number|tonumber),method:"kiro-headless"}}')
+          aws events put-events --region us-west-2 --entries \
+            "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",\"EventBusName\":\"prism-d1-metrics\",\"Detail\":$(echo "${DETAIL}" | jq -Rs '.')}]" || true
+
+      - name: AWS Continuum security scan (Tier 2 — deterministic)
+        id: security-gate
+        if: steps.detect-ai.outputs.has_ai_changes == 'true' && steps.aws-creds.outcome == 'success'
+        env:
+          AWS_REGION: us-west-2
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Pre-flight: verify the specific subcommand exists (AWS CLI v2.36+)
+          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
+            echo "::warning::AWS CLI lacks securityagent code review commands (need v2.36+). Skipping scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
+          SCAN_BUCKET=$(aws ssm get-parameter --name /prism/continuum/scan-bucket --query Parameter.Value --output text 2>/dev/null || echo "")
+
+          if [ -z "$AGENT_SPACE_ID" ] || [ -z "$SCAN_BUCKET" ]; then
+            echo "AWS Continuum not configured (SSM params missing). Skipping security scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          REPO_SLUG=$(echo "${REPO}" | tr '/' '-')
+          CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ -z "$CODE_REVIEW_ID" ]; then
+            echo "::warning::No Code Review resource for ${REPO_SLUG} — run 'prism-cli securityagent setup' first. Skipping."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Diff must be uploaded with .patch extension (API requirement)
+          git diff "${BASE_SHA}..${HEAD_SHA}" > /tmp/changes.patch
+          if [ ! -s /tmp/changes.patch ]; then
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DIFF_KEY="diffs/${REPO_SLUG}/${PR_NUMBER}/${HEAD_SHA}.patch"
+          aws s3 cp /tmp/changes.patch "s3://${SCAN_BUCKET}/${DIFF_KEY}" --quiet
+
+          JOB_ID=$(aws securityagent start-code-review-job \
+            --agent-space-id "${AGENT_SPACE_ID}" \
+            --code-review-id "${CODE_REVIEW_ID}" \
+            --diff-source "{\"s3Uri\":\"s3://${SCAN_BUCKET}/${DIFF_KEY}\"}" \
+            --query 'codeReviewJobId' --output text)
+          echo "Continuum job started: ${JOB_ID}"
+
+          STATUS="UNKNOWN"
+          for i in $(seq 1 30); do
+            sleep 30
+            STATUS=$(aws securityagent batch-get-code-review-jobs \
+              --agent-space-id "${AGENT_SPACE_ID}" \
+              --code-review-job-ids "${JOB_ID}" \
+              --query 'codeReviewJobs[0].status' --output text 2>/dev/null || echo "UNKNOWN")
+            echo "  Poll ${i}/30: ${STATUS}"
+            case "$STATUS" in COMPLETED|FAILED|STOPPED) break ;; esac
+          done
+
+          if [ "$STATUS" != "COMPLETED" ]; then
+            echo "::warning::Continuum scan did not complete (status: ${STATUS}) — treating as skipped"
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # NOTE: list-findings takes agent-space-id + code-review-job-id only.
+          # Response field is 'findingsSummaries', risk field is 'riskLevel'.
+          FINDINGS_JSON=$(aws securityagent list-findings \
+            --agent-space-id "${AGENT_SPACE_ID}" \
+            --code-review-job-id "${JOB_ID}" \
+            --output json 2>/dev/null || echo '{"findingsSummaries":[]}')
+
+          TOTAL=$(echo "$FINDINGS_JSON" | jq '.findingsSummaries | length')
+          CRITICAL=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "CRITICAL")] | length')
+          HIGH=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "HIGH")] | length')
+
+          echo "Continuum findings: ${TOTAL} total (${CRITICAL} critical, ${HIGH} high)"
+          echo "findings=${TOTAL}" >> "$GITHUB_OUTPUT"
+          echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
+          echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
+
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "$FINDINGS_JSON" | jq -r '.findingsSummaries[] | "::warning::[\(.riskLevel)] \(.name)"'
+          fi
+
+      - name: Fail on eval gate failure
+        if: >-
+          steps.review.outputs.result == 'FAIL' ||
+          steps.review.outputs.result == 'ERROR' ||
+          (steps.security-gate.outputs.skipped != 'true' &&
+           (steps.security-gate.outputs.critical > 0 || steps.security-gate.outputs.high > 0))
+        env:
+          REVIEW_RESULT: ${{ steps.review.outputs.result }}
+          REVIEW_HIGH: ${{ steps.review.outputs.high }}
+          REVIEW_SCORE: ${{ steps.review.outputs.score }}
+          REVIEW_SUMMARY: ${{ steps.review.outputs.summary }}
+          SEC_CRITICAL: ${{ steps.security-gate.outputs.critical }}
+          SEC_HIGH: ${{ steps.security-gate.outputs.high }}
+        run: |
+          if [ "${REVIEW_RESULT}" = "ERROR" ]; then
+            echo "❌ Eval gate failed closed: review output could not be parsed"
+          elif [ "${REVIEW_RESULT}" = "FAIL" ]; then
+            echo "❌ Kiro found ${REVIEW_HIGH:-?} high-severity issues (score: ${REVIEW_SCORE:-?})"
+            echo "Summary: ${REVIEW_SUMMARY}"
+          fi
+          if [ "${SEC_CRITICAL:-0}" -gt 0 ] || [ "${SEC_HIGH:-0}" -gt 0 ]; then
+            echo "❌ Continuum found ${SEC_CRITICAL:-0} critical, ${SEC_HIGH:-0} high security findings"
+          fi
+          exit 1

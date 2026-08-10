@@ -17,12 +17,13 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
 export default {
   description: 'Install eval harness (script + config + optional rubrics)',
   options: [
-    { flags: '--with-rubrics', description: 'Include production rubrics (code-quality, api, agent, security, spec)' },
-    { flags: '--model <id>', description: 'Bedrock model ID for evaluation' },
+    { flags: '--mode <mode>', description: 'Eval mode: "kiro" (recommended, headless kiro-cli) or "bedrock" (legacy run-eval.sh)' },
+    { flags: '--with-rubrics', description: 'Include production rubrics (bedrock mode only)' },
+    { flags: '--model <id>', description: 'Bedrock model ID for evaluation (bedrock mode only)' },
     { flags: '--threshold <n>', description: 'Pass threshold (0-1)' },
-    { flags: '--uninstall', description: 'Remove eval-harness directory' },
+    { flags: '--uninstall', description: 'Remove eval-harness directory and steering files' },
   ],
-  async action(opts: { withRubrics?: boolean; model?: string; threshold?: string; uninstall?: boolean }) {
+  async action(opts: { mode?: string; withRubrics?: boolean; model?: string; threshold?: string; uninstall?: boolean }) {
     const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
     const targetDir = resolve(gitRoot, '.prism/eval-harness');
 
@@ -30,77 +31,145 @@ export default {
       if (existsSync(targetDir)) {
         execSync(`rm -rf "${targetDir}"`);
         console.log('✓ Removed .prism/eval-harness/');
-      } else {
-        console.log('No .prism/eval-harness/ found.');
+      }
+      const steeringFile = resolve(gitRoot, '.kiro/steering/code-review.md');
+      if (existsSync(steeringFile)) {
+        execSync(`rm -f "${steeringFile}"`);
+        console.log('✓ Removed .kiro/steering/code-review.md');
       }
       return;
     }
 
-    // --- Config ---
-    const model = opts.model || await prompt('Eval model ID', 'us.anthropic.claude-haiku-4-5-20251001-v1:0');
-    const threshold = opts.threshold || await prompt('Pass threshold', '0.82');
-    const region = await prompt('AWS region', 'us-west-2');
+    // Determine mode
+    const mode = opts.mode || await prompt('Eval mode (kiro = recommended, bedrock = legacy)', 'kiro');
 
-    // --- Install script + config ---
-    mkdirSync(resolve(targetDir, 'rubrics'), { recursive: true });
-
-    // Copy run-eval.sh
-    copyFileSync(resolve(EVAL_SOURCE, 'run-eval.sh'), resolve(targetDir, 'run-eval.sh'));
-    chmodSync(resolve(targetDir, 'run-eval.sh'), 0o755);
-    console.log('✓ Installed .prism/eval-harness/run-eval.sh');
-
-    // Write eval-config.json
-    const config = {
-      pass_threshold: parseFloat(threshold),
-      eval_model_id: model,
-      aws_region: region,
-      event_bus: 'prism-d1-metrics',
-      emit_to_eventbridge: true,
-    };
-    writeFileSync(resolve(targetDir, 'eval-config.json'), JSON.stringify(config, null, 2) + '\n');
-    console.log('✓ Created .prism/eval-harness/eval-config.json');
-
-    // --- Rubrics ---
-    if (opts.withRubrics) {
-      const rubricsSrc = resolve(EVAL_SOURCE, 'rubrics');
-      for (const file of readdirSync(rubricsSrc).filter(f => f.endsWith('.json'))) {
-        copyFileSync(resolve(rubricsSrc, file), resolve(targetDir, 'rubrics', file));
-      }
-      console.log(`✓ Installed ${readdirSync(resolve(targetDir, 'rubrics')).length} production rubrics`);
+    if (mode === 'kiro') {
+      await installKiroMode(gitRoot, opts);
     } else {
-      console.log('✓ rubrics/ directory created (empty — add your own rubric JSON files)');
+      await installBedrockMode(gitRoot, targetDir, opts);
     }
-
-    // --- Workflow ---
-    const workflowsDir = resolve(gitRoot, '.github/workflows');
-    const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate.yml');
-    if (existsSync(workflowSrc)) {
-      mkdirSync(workflowsDir, { recursive: true });
-      const dest = resolve(workflowsDir, 'prism-eval-gate.yml');
-      if (existsSync(dest)) {
-        const overwrite = await prompt('Workflow already exists. Overwrite? [y/N]', 'n');
-        if (overwrite.toLowerCase() !== 'y') {
-          console.log('  Skipped workflow.');
-        } else {
-          copyFileSync(workflowSrc, dest);
-          console.log('✓ Updated .github/workflows/prism-eval-gate.yml');
-        }
-      } else {
-        copyFileSync(workflowSrc, dest);
-        console.log('✓ Installed .github/workflows/prism-eval-gate.yml');
-      }
-    }
-
-    console.log('\n════════════════════════════════════════════════');
-    console.log('  ✅ Eval harness installed!');
-    console.log('════════════════════════════════════════════════');
-    console.log(`\n  Model:     ${model}`);
-    console.log(`  Threshold: ${threshold}`);
-    console.log(`  Rubrics:   ${opts.withRubrics ? 'production set' : 'empty (add your own)'}`);
-    if (!opts.withRubrics) {
-      console.log('\n  Next: Create a rubric at .prism/eval-harness/rubrics/my-rubric.json');
-      console.log('  See: bootstrapper/eval-harness/rubrics/ for examples');
-    }
-    console.log('');
   },
 };
+
+async function installKiroMode(gitRoot: string, opts: { threshold?: string }) {
+  // --- Install steering file ---
+  const steeringDir = resolve(gitRoot, '.kiro/steering');
+  mkdirSync(steeringDir, { recursive: true });
+
+  const steeringSrc = resolve(EVAL_SOURCE, 'steering/code-review.md');
+  const steeringDest = resolve(steeringDir, 'code-review.md');
+
+  if (existsSync(steeringDest)) {
+    const overwrite = await prompt('Steering file already exists. Overwrite? [y/N]', 'n');
+    if (overwrite.toLowerCase() !== 'y') {
+      console.log('  Kept existing .kiro/steering/code-review.md');
+    } else {
+      copyFileSync(steeringSrc, steeringDest);
+      console.log('✓ Updated .kiro/steering/code-review.md');
+    }
+  } else {
+    copyFileSync(steeringSrc, steeringDest);
+    console.log('✓ Installed .kiro/steering/code-review.md');
+  }
+
+  // --- Install workflow ---
+  const workflowsDir = resolve(gitRoot, '.github/workflows');
+  const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate-kiro.yml');
+  if (existsSync(workflowSrc)) {
+    mkdirSync(workflowsDir, { recursive: true });
+    const dest = resolve(workflowsDir, 'prism-eval-gate.yml');
+    if (existsSync(dest)) {
+      const overwrite = await prompt('Workflow already exists. Overwrite? [y/N]', 'n');
+      if (overwrite.toLowerCase() !== 'y') {
+        console.log('  Skipped workflow.');
+      } else {
+        copyFileSync(workflowSrc, dest);
+        console.log('✓ Updated .github/workflows/prism-eval-gate.yml');
+      }
+    } else {
+      copyFileSync(workflowSrc, dest);
+      console.log('✓ Installed .github/workflows/prism-eval-gate.yml');
+    }
+  }
+
+  console.log('\n════════════════════════════════════════════════');
+  console.log('  ✅ Kiro eval gate installed!');
+  console.log('════════════════════════════════════════════════');
+  console.log('\n  Mode:     kiro-cli headless');
+  console.log('  Rules:    .kiro/steering/code-review.md');
+  console.log('  Workflow:  .github/workflows/prism-eval-gate.yml');
+  console.log('\n  Required: Add KIRO_API_KEY as a GitHub repository secret');
+  console.log('  Generate at: https://app.kiro.dev → Settings → API Keys');
+  console.log('\n  Optional: Add PRISM_METRICS_ROLE_ARN for EventBridge metrics');
+  console.log('');
+}
+
+async function installBedrockMode(gitRoot: string, targetDir: string, opts: { withRubrics?: boolean; model?: string; threshold?: string }) {
+  // --- Config ---
+  const model = opts.model || await prompt('Eval model ID', 'us.anthropic.claude-haiku-4-5-20251001-v1:0');
+  const threshold = opts.threshold || await prompt('Pass threshold', '0.82');
+  const region = await prompt('AWS region', 'us-west-2');
+
+  // --- Install script + config ---
+  mkdirSync(resolve(targetDir, 'rubrics'), { recursive: true });
+
+  // Copy run-eval.sh
+  copyFileSync(resolve(EVAL_SOURCE, 'run-eval.sh'), resolve(targetDir, 'run-eval.sh'));
+  chmodSync(resolve(targetDir, 'run-eval.sh'), 0o755);
+  console.log('✓ Installed .prism/eval-harness/run-eval.sh');
+
+  // Write eval-config.json
+  const config = {
+    pass_threshold: parseFloat(threshold),
+    eval_model_id: model,
+    aws_region: region,
+    event_bus: 'prism-d1-metrics',
+    emit_to_eventbridge: true,
+  };
+  writeFileSync(resolve(targetDir, 'eval-config.json'), JSON.stringify(config, null, 2) + '\n');
+  console.log('✓ Created .prism/eval-harness/eval-config.json');
+
+  // --- Rubrics ---
+  if (opts.withRubrics) {
+    const rubricsSrc = resolve(EVAL_SOURCE, 'rubrics');
+    for (const file of readdirSync(rubricsSrc).filter(f => f.endsWith('.json'))) {
+      copyFileSync(resolve(rubricsSrc, file), resolve(targetDir, 'rubrics', file));
+    }
+    console.log(`✓ Installed ${readdirSync(resolve(targetDir, 'rubrics')).length} production rubrics`);
+  } else {
+    console.log('✓ rubrics/ directory created (empty — add your own rubric JSON files)');
+  }
+
+  // --- Workflow ---
+  const workflowsDir = resolve(gitRoot, '.github/workflows');
+  const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate.yml');
+  if (existsSync(workflowSrc)) {
+    mkdirSync(workflowsDir, { recursive: true });
+    const dest = resolve(workflowsDir, 'prism-eval-gate.yml');
+    if (existsSync(dest)) {
+      const overwrite = await prompt('Workflow already exists. Overwrite? [y/N]', 'n');
+      if (overwrite.toLowerCase() !== 'y') {
+        console.log('  Skipped workflow.');
+      } else {
+        copyFileSync(workflowSrc, dest);
+        console.log('✓ Updated .github/workflows/prism-eval-gate.yml');
+      }
+    } else {
+      copyFileSync(workflowSrc, dest);
+      console.log('✓ Installed .github/workflows/prism-eval-gate.yml');
+    }
+  }
+
+  console.log('\n════════════════════════════════════════════════');
+  console.log('  ✅ Eval harness installed (legacy Bedrock mode)!');
+  console.log('════════════════════════════════════════════════');
+  console.log(`\n  Model:     ${model}`);
+  console.log(`  Threshold: ${threshold}`);
+  console.log(`  Rubrics:   ${opts.withRubrics ? 'production set' : 'empty (add your own)'}`);
+  if (!opts.withRubrics) {
+    console.log('\n  Next: Create a rubric at .prism/eval-harness/rubrics/my-rubric.json');
+    console.log('  See: bootstrapper/eval-harness/rubrics/ for examples');
+  }
+  console.log('\n  💡 Consider upgrading to kiro mode: prism-cli bootstrapper install-eval-harness --mode kiro');
+  console.log('');
+}

@@ -36,7 +36,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 - **Bedrock Guardrails** — content filters, PII protection, denied topics with per-trigger metrics
 - **MCP Authorization** — scope-based tool access control with audit trail
-- **Eval Gates** — 5 rubrics (code-quality, API, security, agent, spec-compliance) + Security Agent finding gate
+- **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), + Security Agent finding gate
 - **KMS encryption** on all data stores, VPC isolation, exfiltration detection
 - **11 CloudWatch alarms** including security critical finding and remediation SLA
 
@@ -315,7 +315,7 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 | **AI-to-Merge Ratio** | CI metadata | >= 20% | >= 45% |
 | **Spec-to-Code Turnaround** | Spec commit → PR ready | Baseline set | < 2 days |
 | **Post-Merge Defect Rate** | Defect correlator + AI origin tag | <= 1.2x human | <= 0.9x |
-| **Eval Gate Pass Rate** | Bedrock Evaluations in CI | >= 80% | >= 95% |
+| **Eval Gate Pass Rate** | kiro-cli headless review in CI | >= 80% | >= 95% |
 | **AI Test Coverage Delta** | Coverage tool + AI origin tag | > 15% | > 40% |
 
 ## Workshop Modules
@@ -327,7 +327,7 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 | 02 | Agent Development | 70 min | Strands agent + MCP server (with auth) + multi-agent orchestration |
 | 03 | Spec-Driven Development | 45 min | Spec-driven development with Kiro, Claude Code IDE, or Claude Code CLI |
 | 04 | Instrumenting AI Metrics | 45 min | Git hooks + CI emitting 18 event types to EventBridge |
-| 05 | Eval Gates in CI/CD | 45 min | 5 Bedrock eval rubrics + Security Agent finding gate blocking bad merges |
+| 05 | Eval Gates in CI/CD | 45 min | Agentic kiro-cli code review (or legacy Bedrock rubrics) + Security Agent finding gate blocking bad merges |
 | 06 | Dashboards & Visibility | 30 min | 3 CloudWatch + 2 QuickSight dashboards live |
 
 Extension exercises: Security Agent design review (+10 min in Module 03), code review (+10 min in Module 05), CISO dashboard walkthrough (+5 min in Module 06).
@@ -349,7 +349,7 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 | **Agent Framework** | Strands Agents SDK (Python) | `sample-app/agent/` |
 | **Tool Integration** | Model Context Protocol (MCP) with scope-based auth | `sample-app/src/mcp/` |
 | **Production Hosting** | Amazon Bedrock AgentCore | `bootstrapper/agent-configs/` |
-| **Agent Eval** | Bedrock Evaluations (5 rubrics) | `bootstrapper/eval-harness/rubrics/` |
+| **Agent Eval** | kiro-cli headless review + Bedrock rubrics (legacy) | `bootstrapper/eval-harness/` |
 | **Security** | Bedrock Guardrails + MCP authorization + Security Agent | `infra/lib/constructs/` |
 | **Workshop** | Module 02: Agent Development | `workshop/02-agent-development/` |
 
