@@ -12,6 +12,7 @@
 - Unbounded database queries (no LIMIT, no pagination, no streaming for large result sets)
 - Disabled security controls (authentication bypassed, authorization checks removed)
 - Use of `eval()`, `Function()` constructor, or `child_process.exec()` with user input
+- Stub or placeholder implementations (functions that ignore parameters and return hardcoded/empty values)
 
 ## Warnings (comment but don't block)
 

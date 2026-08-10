@@ -1,4 +1,4 @@
-# prism-eval-gate.yml — AI code quality gate using kiro-cli headless mode.
+# prism-eval-gate.yml -- AI code quality gate using kiro-cli headless mode.
 #
 # Copy this file to .github/workflows/prism-eval-gate.yml in your repo.
 #
@@ -42,49 +42,35 @@ jobs:
           TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
           echo "team_id=${TEAM_ID}" >> "$GITHUB_OUTPUT"
 
-      - name: Identify AI-generated changes
-        id: detect-ai
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          AI_FILES=""
-          for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
-            if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
-              FILES=$(git diff-tree --no-commit-id --name-only -r "${SHA}" \
-                | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' \
-                | grep -vE '\.test\.|\.spec\.|__test__|_test\.' || true)
-              AI_FILES="${AI_FILES} ${FILES}"
-            fi
-          done
-
-          UNIQUE_FILES=$(echo "${AI_FILES}" | tr ' ' '\n' | sort -u | grep -v '^$' | head -30)
-          FILE_COUNT=$(echo "${UNIQUE_FILES}" | grep -c . || echo "0")
-
-          if [ "${FILE_COUNT}" -eq 0 ]; then
-            echo "has_ai_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_ai_changes=true" >> "$GITHUB_OUTPUT"
-            echo "file_count=${FILE_COUNT}" >> "$GITHUB_OUTPUT"
-            echo "${UNIQUE_FILES}" > /tmp/ai-changed-files.txt
-          fi
-
       - name: Kiro code quality review
         id: review
-        if: steps.detect-ai.outputs.has_ai_changes == 'true'
         env:
           KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
         run: |
-          # Fork PRs don't receive secrets — report neutral, never silently pass
+          # Trim whitespace/newlines from API key (GitHub Secrets can add trailing chars)
+          export KIRO_API_KEY=$(echo -n "${KIRO_API_KEY}" | tr -d '[:space:]')
+
+          # Fork PRs don't receive secrets -- report neutral, never silently pass
           if [ "${HAS_KIRO_KEY}" != "true" ]; then
-            echo "::warning::KIRO_API_KEY unavailable (fork PR or missing secret) — review skipped"
+            echo "::warning::KIRO_API_KEY unavailable (fork PR or missing secret) -- review skipped"
             echo "result=SKIPPED" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          FILES=$(cat /tmp/ai-changed-files.txt | tr '\n' ' ')
+          # Get all changed source files in this PR
+          FILES=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" \
+            | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' \
+            | grep -vE '\.test\.|\.spec\.|__test__|_test\.' \
+            | head -30 | tr '\n' ' ')
+
+          if [ -z "${FILES}" ]; then
+            echo "No source files changed -- skipping review"
+            echo "result=SKIPPED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           DIFF=$(git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES})
 
           # Find spec reference from commit trailers
@@ -95,22 +81,24 @@ jobs:
           fi
 
           # Run kiro-cli in headless mode
-          REVIEW_OUTPUT=$(echo "${DIFF}" | kiro-cli chat --no-interactive \
-            --trust-tools=read,grep \
-            --model claude-haiku-4.5 \
-            "You are a code reviewer running in CI. Review this PR diff for code quality issues.
+          echo "::group::kiro-cli version"
+          which kiro-cli && kiro-cli --version || echo "kiro-cli not found on PATH"
+          echo "::endgroup::"
 
-          Changed files: ${FILES}
+          echo "::group::kiro-cli smoke test"
+          echo "Say hello in JSON" | kiro-cli chat --no-interactive --model auto || echo "SMOKE TEST FAILED"
+          echo "::endgroup::"
 
-          ${SPEC_CONTEXT}
+          echo "Reviewing ${FILES}"
 
-          Read the actual source files for full context (imports, related functions, tests).
-          Follow the review rules in .kiro/steering/code-review.md if it exists.
+          # Keep prompt short -- kiro-cli v2.16.2 has a bug putting stdin into HTTP headers
+          # on long content. Use a minimal CLI arg prompt and let kiro read files itself.
+          git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES} > /tmp/pr-diff.patch
 
-          Focus on: correctness bugs, missing error handling, injection risks, performance anti-patterns, type safety violations, and hallucinated imports/APIs that don't exist.
-
-          Output ONLY valid JSON on a single line (no markdown fencing, no explanation):
-          {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"security|correctness|performance|maintainability|reliability\",\"message\":\"description\"}],\"score\":0.0,\"summary\":\"one line\"}" 2>/dev/null) || true
+          REVIEW_OUTPUT=$(kiro-cli chat --no-interactive \
+            --trust-all-tools \
+            --model auto \
+            "Review /tmp/pr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}") || true
 
           # Strip ANSI escapes, join lines, extract the last JSON object
           CLEANED=$(echo "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
@@ -118,7 +106,15 @@ jobs:
 
           if [ -z "${REVIEW_JSON}" ] || ! echo "${REVIEW_JSON}" | jq -e '.score' > /dev/null 2>&1; then
             # FAIL CLOSED: a gate that can't evaluate must not pass
-            echo "::error::Could not parse kiro-cli review output — failing closed"
+            echo "::group::Debug: raw kiro-cli output (first 2000 chars)"
+            echo "${REVIEW_OUTPUT:-<empty>}" | head -c 2000
+            echo ""
+            echo "::endgroup::"
+            echo "::group::Debug: cleaned output"
+            echo "${CLEANED:-<empty>}" | head -c 2000
+            echo ""
+            echo "::endgroup::"
+            echo "::error::Could not parse kiro-cli review output -- failing closed"
             echo "result=ERROR" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -127,7 +123,7 @@ jobs:
           FINDINGS=$(echo "${REVIEW_JSON}" | jq '.findings | length')
           HIGH=$(echo "${REVIEW_JSON}" | jq '[.findings[] | select(.severity=="high")] | length')
           MEDIUM=$(echo "${REVIEW_JSON}" | jq '[.findings[] | select(.severity=="medium")] | length')
-          # Single line, quotes stripped — safe for GITHUB_OUTPUT and downstream env use
+          # Single line, quotes stripped -- safe for GITHUB_OUTPUT and downstream env use
           SUMMARY=$(echo "${REVIEW_JSON}" | jq -r '.summary // "No summary"' | head -1 | tr -d '"`'"'" | cut -c1-200)
 
           echo "score=${SCORE}" >> "$GITHUB_OUTPUT"
@@ -137,7 +133,7 @@ jobs:
           echo "summary=${SUMMARY}" >> "$GITHUB_OUTPUT"
           echo "${REVIEW_JSON}" > /tmp/kiro-review.json
 
-          # Determine pass/fail (awk instead of bc — no extra package needed)
+          # Determine pass/fail (awk instead of bc -- no extra package needed)
           PASS=$(awk -v s="${SCORE}" 'BEGIN { print (s >= 0.82) ? "true" : "false" }')
           if [ "${HIGH}" -gt 0 ] || [ "${PASS}" != "true" ]; then
             echo "result=FAIL" >> "$GITHUB_OUTPUT"
@@ -149,7 +145,6 @@ jobs:
         if: always()
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
-          HAS_AI: ${{ steps.detect-ai.outputs.has_ai_changes }}
           REVIEW_SCORE: ${{ steps.review.outputs.score }}
           REVIEW_FINDINGS: ${{ steps.review.outputs.findings }}
           REVIEW_HIGH: ${{ steps.review.outputs.high }}
@@ -159,20 +154,16 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            // All values read from env — never interpolate ${{ }} into script source
+            // All values read from env -- never interpolate secrets into script source
             // (LLM-generated text could contain quotes/backticks = script injection)
-            const hasAI = process.env.HAS_AI === 'true';
 
             let body;
-            if (!hasAI) {
-              body = '✅ **PRISM Eval Gate** — No AI-generated code detected. Skipped.';
+            const result = process.env.REVIEW_RESULT || 'ERROR';
+            if (result === 'SKIPPED') {
+              body = '⚠️ **PRISM Eval Gate** -- Review skipped (no source files changed or no API key on fork PRs).';
+            } else if (result === 'ERROR') {
+              body = '❌ **PRISM Eval Gate** -- Review output could not be parsed. Failing closed; re-run the workflow or review manually.';
             } else {
-              const result = process.env.REVIEW_RESULT || 'ERROR';
-              if (result === 'SKIPPED') {
-                body = '⚠️ **PRISM Eval Gate** — Review unavailable (no API key on fork PRs). A maintainer must review manually.';
-              } else if (result === 'ERROR') {
-                body = '❌ **PRISM Eval Gate** — Review output could not be parsed. Failing closed; re-run the workflow or review manually.';
-              } else {
                 const score = process.env.REVIEW_SCORE || '?';
                 const findings = process.env.REVIEW_FINDINGS || '0';
                 const high = process.env.REVIEW_HIGH || '0';
@@ -192,7 +183,7 @@ jobs:
                   }
                 } catch(e) { /* no detail available */ }
 
-                body = `## ${emoji} PRISM Eval Gate — ${result}\n\n` +
+                body = `## ${emoji} PRISM Eval Gate -- ${result}\n\n` +
                   `**Score**: ${score} | **Findings**: ${findings} (${high} high, ${medium} medium)\n\n` +
                   `**Summary**: ${summary}\n\n`;
 
@@ -200,8 +191,7 @@ jobs:
                   body += `| File | Line | Severity | Category | Issue |\n|---|---|---|---|---|\n${table}\n\n`;
                 }
 
-                body += `> Powered by kiro-cli headless • Model: claude-haiku-4.5 • Threshold: 0.82`;
-              }
+                body += `> Powered by kiro-cli headless - Model: claude-haiku-4.5 - Threshold: 0.82`;
             }
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -217,9 +207,9 @@ jobs:
               await github.rest.issues.createComment({ ...params, issue_number: context.issue.number });
             }
 
-      - name: Configure AWS credentials (OIDC) — for metrics + security scan
+      - name: Configure AWS credentials (OIDC) -- for metrics + security scan
         id: aws-creds
-        if: steps.detect-ai.outputs.has_ai_changes == 'true' && env.METRICS_ROLE_ARN != ''
+        if: env.METRICS_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ env.METRICS_ROLE_ARN }}
@@ -227,7 +217,7 @@ jobs:
         continue-on-error: true
 
       - name: Emit prism.d1.eval event
-        if: steps.detect-ai.outputs.has_ai_changes == 'true' && steps.aws-creds.outcome == 'success'
+        if: steps.aws-creds.outcome == 'success'
         env:
           AWS_REGION: us-west-2
           TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
@@ -262,9 +252,9 @@ jobs:
           aws events put-events --region us-west-2 --entries \
             "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",\"EventBusName\":\"prism-d1-metrics\",\"Detail\":$(echo "${DETAIL}" | jq -Rs '.')}]" || true
 
-      - name: AWS Continuum security scan (Tier 2 — deterministic)
+      - name: AWS Continuum security scan (Tier 2 -- deterministic)
         id: security-gate
-        if: steps.detect-ai.outputs.has_ai_changes == 'true' && steps.aws-creds.outcome == 'success'
+        if: steps.aws-creds.outcome == 'success'
         env:
           AWS_REGION: us-west-2
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -293,7 +283,7 @@ jobs:
           REPO_SLUG=$(echo "${REPO}" | tr '/' '-')
           CODE_REVIEW_ID=$(aws ssm get-parameter --name "/prism/continuum/code-review-id/${REPO_SLUG}" --query Parameter.Value --output text 2>/dev/null || echo "")
           if [ -z "$CODE_REVIEW_ID" ]; then
-            echo "::warning::No Code Review resource for ${REPO_SLUG} — run 'prism-cli securityagent setup' first. Skipping."
+            echo "::warning::No Code Review resource for ${REPO_SLUG} -- run 'prism-cli securityagent setup' first. Skipping."
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -327,7 +317,7 @@ jobs:
           done
 
           if [ "$STATUS" != "COMPLETED" ]; then
-            echo "::warning::Continuum scan did not complete (status: ${STATUS}) — treating as skipped"
+            echo "::warning::Continuum scan did not complete (status: ${STATUS}) -- treating as skipped"
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -354,11 +344,7 @@ jobs:
           fi
 
       - name: Fail on eval gate failure
-        if: >-
-          steps.review.outputs.result == 'FAIL' ||
-          steps.review.outputs.result == 'ERROR' ||
-          (steps.security-gate.outputs.skipped != 'true' &&
-           (steps.security-gate.outputs.critical > 0 || steps.security-gate.outputs.high > 0))
+        if: ${{ steps.review.outputs.result == 'FAIL' || steps.review.outputs.result == 'ERROR' || (steps.security-gate.outputs.skipped != 'true' && (steps.security-gate.outputs.critical != '0' || steps.security-gate.outputs.high != '0')) }}
         env:
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
           REVIEW_HIGH: ${{ steps.review.outputs.high }}
