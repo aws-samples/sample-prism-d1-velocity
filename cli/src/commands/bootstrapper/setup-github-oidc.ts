@@ -14,7 +14,7 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
 
 function run(cmd: string): { ok: boolean; stdout: string; stderr: string } {
   try {
-    const stdout = execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const stdout = execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/bash', env: process.env }).trim();
     return { ok: true, stdout, stderr: '' };
   } catch (err: any) {
     return { ok: false, stdout: '', stderr: (err.stderr || err.message || '').trim() };
