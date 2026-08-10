@@ -1,8 +1,38 @@
 # Eval Harness
 
-Evaluate AI-generated code against rubrics using Amazon Bedrock. Runs per-file, calculates weighted scores client-side, and integrates with the PRISM eval gate workflow.
+Evaluate code quality in CI using either **kiro-cli headless mode** (recommended) or Amazon Bedrock rubrics.
 
-## Install
+## Modes
+
+| Mode | Install Command | How It Works |
+|---|---|---|
+| **Kiro** (recommended) | `prism-cli bootstrapper install-eval-harness --mode kiro` | kiro-cli reads files, follows `.kiro/steering/code-review.md`, outputs structured JSON findings |
+| **Bedrock** (legacy) | `prism-cli bootstrapper install-eval-harness --with-rubrics` | Per-file rubric scoring via Bedrock API, weighted average client-side |
+
+## Kiro Mode
+
+```bash
+prism-cli bootstrapper install-eval-harness --mode kiro
+```
+
+This installs:
+- `.kiro/steering/code-review.md` — review rules (plain English)
+- `.github/workflows/prism-eval-gate.yml` — kiro-cli headless CI workflow
+
+**Requirements:**
+- `KIRO_API_KEY` repository secret (generate at https://app.kiro.dev → Settings → API Keys)
+- (Optional) `PRISM_METRICS_ROLE_ARN` for EventBridge metrics + AWS Continuum security scanning
+
+**How it works:**
+1. PR opened → workflow triggers
+2. kiro-cli reads changed files + the diff via `--trust-all-tools`
+3. Outputs structured JSON: findings with file/line, severity, score
+4. Gate fails if any high-severity finding or score < 0.82
+5. PR comment posted with findings table
+
+## Bedrock Mode (Legacy)
+
+## Bedrock Mode (Legacy) — Install
 
 ```bash
 # Workshop mode — empty rubrics, create your own
