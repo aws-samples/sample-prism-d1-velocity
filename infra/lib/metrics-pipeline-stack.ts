@@ -411,6 +411,83 @@ export class MetricsPipelineStack extends cdk.Stack {
           ],
         }),
       );
+
+      // Attribution metrics publisher — commit attribution → CloudWatch
+      const attrPublisherDlq = new sqs.Queue(this, 'AttrPublisherDlq', {
+        retentionPeriod: cdk.Duration.days(7),
+        encryption: sqs.QueueEncryption.KMS,
+        encryptionMasterKey: prismKmsKey,
+        enforceSSL: true,
+      });
+
+      const attrMetricsPublisher = new lambda.Function(this, 'AttributionMetricsPublisher', {
+        functionName: 'prism-d1-attribution-metrics-publisher',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        handler: 'attribution-metrics-publisher.handler',
+        timeout: cdk.Duration.seconds(60),
+        memorySize: 256,
+        environment: {
+          METRIC_NAMESPACE: 'PRISM/D1/Velocity',
+          AI_USAGE_TABLE: this.aiUsageTable.tableName,
+        },
+        code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
+          bundling: {
+            image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+            command: [
+              'bash', '-c',
+              `npx esbuild attribution-metrics-publisher.ts --bundle --platform=node --target=node22 --outfile=/asset-output/attribution-metrics-publisher.js --external:@aws-sdk/*`,
+            ],
+            local: {
+              tryBundle(outputDir: string): boolean {
+                try {
+                  require('child_process').execSync(
+                    `npx esbuild ${path.join(__dirname, 'lambda', 'attribution-metrics-publisher.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'attribution-metrics-publisher.js')} --external:@aws-sdk/*`,
+                    { stdio: 'pipe' },
+                  );
+                  return true;
+                } catch { return false; }
+              },
+            },
+          },
+        }),
+      });
+
+      // Grant permissions
+      this.aiUsageTable.grantReadWriteData(attrMetricsPublisher);
+      attrMetricsPublisher.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['cloudwatch:PutMetricData'],
+        resources: ['*'],
+        conditions: { StringEquals: { 'cloudwatch:namespace': 'PRISM/D1/Velocity' } },
+      }));
+
+      // DDB stream trigger — only COMMIT# items (pk begins_with REPO#)
+      attrMetricsPublisher.addEventSource(
+        new eventsources.DynamoEventSource(this.aiUsageTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 50,
+          maxBatchingWindow: cdk.Duration.seconds(15),
+          bisectBatchOnError: true,
+          retryAttempts: 3,
+          onFailure: new eventsources.SqsDlq(attrPublisherDlq),
+          filters: [
+            lambda.FilterCriteria.filter({
+              eventName: lambda.FilterRule.or('INSERT', 'MODIFY'),
+              dynamodb: {
+                Keys: {
+                  pk: { S: lambda.FilterRule.beginsWith('REPO#') },
+                  sk: { S: lambda.FilterRule.beginsWith('COMMIT#') },
+                },
+              },
+            }),
+          ],
+        }),
+      );
+
+      NagSuppressions.addResourceSuppressions(
+        attrMetricsPublisher,
+        [{ id: 'AwsSolutions-IAM5', reason: 'CloudWatch PutMetricData requires * resource, scoped by namespace condition' }],
+        true,
+      );
     }
 
     // -------------------------------------------------------
