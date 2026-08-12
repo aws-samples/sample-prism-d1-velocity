@@ -159,12 +159,36 @@ export class DashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'AI to Merge Ratio',
         left: [
+          // Line 1: CI-fed metric (git trailers, computed per PR at merge time
+          // by prism-ai-metrics.yml). Requires an instrumented repo.
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
             metricName: 'AIToMergeRatio',
             statistic: 'Average',
             period: DEFAULT_PERIOD,
-            label: 'AI-to-Merge Ratio (%)',
+            label: 'CI (git trailers, per-PR)',
+          }),
+          // Line 2: attribution-derived (codeburn spans, fleet aggregate).
+          // Populates for any user running `codeburn sync --attribution`.
+          // Divergence from line 1 indicates attribution coverage gaps.
+          new cloudwatch.MathExpression({
+            expression: '100 * (mergedAi / aiCommits)',
+            usingMetrics: {
+              mergedAi: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'MergedAICommits',
+                statistic: 'Sum',
+                period: DEFAULT_PERIOD,
+              }),
+              aiCommits: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'AICommits',
+                statistic: 'Sum',
+                period: DEFAULT_PERIOD,
+              }),
+            },
+            label: 'Attribution (codeburn spans)',
+            period: DEFAULT_PERIOD,
           }),
         ],
         width: 8,
@@ -439,7 +463,26 @@ export class DashboardStack extends cdk.Stack {
             metricName: 'AIToMergeRatio',
             statistic: 'Average',
             period: cdk.Duration.days(1),
-            label: 'AI-to-Merge Ratio (%)',
+            label: 'AI-to-Merge Ratio (CI, %)',
+          }),
+          new cloudwatch.MathExpression({
+            expression: '100 * (execMergedAi / execAiCommits)',
+            usingMetrics: {
+              execMergedAi: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'MergedAICommits',
+                statistic: 'Sum',
+                period: cdk.Duration.days(1),
+              }),
+              execAiCommits: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'AICommits',
+                statistic: 'Sum',
+                period: cdk.Duration.days(1),
+              }),
+            },
+            label: 'AI-to-Merge Ratio (Attribution, %)',
+            period: cdk.Duration.days(1),
           }),
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
@@ -496,12 +539,33 @@ export class DashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Post-Merge Defect Rate',
         left: [
+          // CI-fed (git trailers + revert scan in prism-ai-metrics.yml)
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
             metricName: 'PostMergeDefectRate',
             statistic: 'Average',
             period: cdk.Duration.days(1),
-            label: 'Defect Rate (%)',
+            label: 'CI (per-PR)',
+          }),
+          // Attribution-derived: reverted AI commits over merged AI commits
+          new cloudwatch.MathExpression({
+            expression: '100 * (revertedAi / mergedAi)',
+            usingMetrics: {
+              revertedAi: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'RevertedAICommits',
+                statistic: 'Sum',
+                period: cdk.Duration.days(1),
+              }),
+              mergedAi: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'MergedAICommits',
+                statistic: 'Sum',
+                period: cdk.Duration.days(1),
+              }),
+            },
+            label: 'Attribution (codeburn spans)',
+            period: cdk.Duration.days(1),
           }),
         ],
         width: 6,

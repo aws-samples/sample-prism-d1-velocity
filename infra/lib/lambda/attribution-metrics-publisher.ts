@@ -109,14 +109,20 @@ async function resolveAiTool(user: string, traceId: string): Promise<{ tool: str
   return { tool: 'none', isAi: false };
 }
 
-/** Parse a stream record into commit metadata. Only processes INSERT events for COMMIT# items. */
+/** Parse a stream record into commit metadata. Only processes COMMIT# items. */
 function parseCommitRecord(record: StreamRecord): {
   user: string;
   traceId: string;
   wasReverted: boolean;
+  inMain: boolean;
   timestamp: string;
+  /** Which state transitions this event represents. INSERT = 'new'. A MODIFY
+   * can flip in_main and/or was_reverted (receiver writes only when one of
+   * them changed). */
+  isNew: boolean;
+  mergedNow: boolean;   // in_main flipped false → true
+  revertedNow: boolean; // was_reverted flipped false → true
 } | null {
-  // Only process new commits (INSERT) and state updates (MODIFY where wasReverted changes)
   if (record.eventName !== 'INSERT' && record.eventName !== 'MODIFY') return null;
 
   const newImage = record.dynamodb?.NewImage;
@@ -125,19 +131,31 @@ function parseCommitRecord(record: StreamRecord): {
   const recordType = newImage.record_type?.S;
   if (recordType !== 'OTEL_ATTR_COMMIT') return null;
 
-  // For MODIFY, only publish if wasReverted changed from false → true
+  const inMain = newImage.in_main?.BOOL ?? false;
+  const wasReverted = newImage.was_reverted?.BOOL ?? false;
+
+  let isNew = record.eventName === 'INSERT';
+  let mergedNow = false;
+  let revertedNow = false;
+
   if (record.eventName === 'MODIFY') {
     const oldImage = record.dynamodb?.OldImage;
+    const oldInMain = oldImage?.in_main?.BOOL ?? false;
     const oldReverted = oldImage?.was_reverted?.BOOL ?? false;
-    const newReverted = newImage.was_reverted?.BOOL ?? false;
-    if (!newReverted || oldReverted === newReverted) return null; // no revert transition
+    mergedNow = inMain && !oldInMain;
+    revertedNow = wasReverted && !oldReverted;
+    if (!mergedNow && !revertedNow) return null; // no meaningful transition
   }
 
   return {
     user: newImage.user?.S ?? '',
     traceId: newImage.trace_id?.S ?? '',
-    wasReverted: newImage.was_reverted?.BOOL ?? false,
+    wasReverted,
+    inMain,
     timestamp: newImage.timestamp?.S ?? new Date().toISOString(),
+    isNew,
+    mergedNow,
+    revertedNow,
   };
 }
 
@@ -148,7 +166,16 @@ export async function handler(event: StreamEvent): Promise<void> {
   const datums: MetricDatum[] = [];
   let aiCommits = 0;
   let humanCommits = 0;
+  let mergedAi = 0;
   let revertedAi = 0;
+
+  /** Push a Count=1 datum, dimensionless plus an optional Tool-dimensioned twin. */
+  const emit = (name: string, ts: Date, tool?: string): void => {
+    datums.push({ MetricName: name, Value: 1, Unit: StandardUnit.Count, Timestamp: ts, Dimensions: [] });
+    if (tool) {
+      datums.push({ MetricName: name, Value: 1, Unit: StandardUnit.Count, Timestamp: ts, Dimensions: [{ Name: 'Tool', Value: tool }] });
+    }
+  };
 
   for (const record of event.Records ?? []) {
     const commit = parseCommitRecord(record);
@@ -166,77 +193,43 @@ export async function handler(event: StreamEvent): Promise<void> {
         ? now
         : timestamp;
 
-    // For MODIFY events, we only get here if wasReverted changed to true
-    if (record.eventName === 'MODIFY') {
+    if (commit.isNew) {
+      // New commit: CommitsTotal always, then AI/Human split.
+      emit('CommitsTotal', metricTimestamp);
       if (isAi) {
-        revertedAi++;
-        datums.push({
-          MetricName: 'RevertedAICommits',
-          Value: 1,
-          Unit: StandardUnit.Count,
-          Timestamp: metricTimestamp,
-          Dimensions: [],
-        });
-        datums.push({
-          MetricName: 'RevertedAICommits',
-          Value: 1,
-          Unit: StandardUnit.Count,
-          Timestamp: metricTimestamp,
-          Dimensions: [{ Name: 'Tool', Value: tool }],
-        });
+        aiCommits++;
+        emit('AICommits', metricTimestamp, tool);
+        // States already true at INSERT time (backfill of an old commit whose
+        // merge/revert happened before codeburn first synced it).
+        if (commit.inMain) {
+          mergedAi++;
+          emit('MergedAICommits', metricTimestamp, tool);
+        }
+        if (commit.wasReverted) {
+          revertedAi++;
+          emit('RevertedAICommits', metricTimestamp);
+        }
+      } else {
+        humanCommits++;
+        emit('HumanCommits', metricTimestamp);
+        if (commit.inMain) emit('MergedHumanCommits', metricTimestamp);
       }
       continue;
     }
 
-    // INSERT — new commit
-    // CommitsTotal (always)
-    datums.push({
-      MetricName: 'CommitsTotal',
-      Value: 1,
-      Unit: StandardUnit.Count,
-      Timestamp: metricTimestamp,
-      Dimensions: [],
-    });
-
-    if (isAi) {
-      aiCommits++;
-      // AICommits dimensionless
-      datums.push({
-        MetricName: 'AICommits',
-        Value: 1,
-        Unit: StandardUnit.Count,
-        Timestamp: metricTimestamp,
-        Dimensions: [],
-      });
-      // AICommits by Tool
-      datums.push({
-        MetricName: 'AICommits',
-        Value: 1,
-        Unit: StandardUnit.Count,
-        Timestamp: metricTimestamp,
-        Dimensions: [{ Name: 'Tool', Value: tool }],
-      });
-
-      // If already reverted at INSERT time (rare but possible via upsert race)
-      if (commit.wasReverted) {
-        revertedAi++;
-        datums.push({
-          MetricName: 'RevertedAICommits',
-          Value: 1,
-          Unit: StandardUnit.Count,
-          Timestamp: metricTimestamp,
-          Dimensions: [],
-        });
+    // MODIFY — state transition(s). The receiver writes only when in_main or
+    // was_reverted actually changed, and a single MODIFY can carry both flips.
+    if (commit.mergedNow) {
+      if (isAi) {
+        mergedAi++;
+        emit('MergedAICommits', metricTimestamp, tool);
+      } else {
+        emit('MergedHumanCommits', metricTimestamp);
       }
-    } else {
-      humanCommits++;
-      datums.push({
-        MetricName: 'HumanCommits',
-        Value: 1,
-        Unit: StandardUnit.Count,
-        Timestamp: metricTimestamp,
-        Dimensions: [],
-      });
+    }
+    if (commit.revertedNow && isAi) {
+      revertedAi++;
+      emit('RevertedAICommits', metricTimestamp, tool);
     }
   }
 
@@ -250,6 +243,6 @@ export async function handler(event: StreamEvent): Promise<void> {
 
   console.log(
     `[attribution-metrics-publisher] records=${event.Records?.length ?? 0} ` +
-    `ai=${aiCommits} human=${humanCommits} reverted=${revertedAi} datums=${datums.length}`,
+    `ai=${aiCommits} human=${humanCommits} merged=${mergedAi} reverted=${revertedAi} datums=${datums.length}`,
   );
 }
