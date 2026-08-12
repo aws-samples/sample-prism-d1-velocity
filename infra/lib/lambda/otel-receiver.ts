@@ -63,7 +63,7 @@ interface HttpApiResponse {
 }
 
 type OtlpValue =
-  | { stringValue?: string; intValue?: string | number; doubleValue?: number; boolValue?: boolean };
+  | { stringValue?: string; intValue?: string | number; doubleValue?: number; boolValue?: boolean; arrayValue?: { values?: OtlpValue[] } };
 
 interface OtlpAttribute {
   key: string;
@@ -75,6 +75,7 @@ interface OtlpSpan {
   spanId?: string;
   name?: string;
   startTimeUnixNano?: string;
+  endTimeUnixNano?: string;
   attributes?: OtlpAttribute[];
 }
 
@@ -87,6 +88,7 @@ interface OtlpPayload {
 
 interface ParsedSpan {
   spanId: string;
+  traceId: string;
   timestamp: string; // ISO from span start time
   tool: string;
   model: string;
@@ -97,6 +99,34 @@ interface ParsedSpan {
   costEstimated: boolean;
   deviceId: string;
 }
+
+// ---- Attribution span types ----
+
+interface ParsedAttributionSpan {
+  kind: 'session' | 'commit';
+  spanId: string;
+  traceId: string;
+  timestamp: string;
+  endTimestamp: string;
+  sessionId: string;
+  project: string;
+  repo: string | null;
+  deviceId: string;
+  // session-specific
+  commitCount?: number;
+  prLinks?: string[];
+  // commit-specific
+  sha?: string;
+  inMain?: boolean;
+  wasReverted?: boolean;
+}
+
+const ATTRIBUTION_SPAN_NAMES: Record<string, 'session' | 'commit'> = {
+  'codeburn.session.attribution': 'session',
+  'codeburn.commit': 'commit',
+};
+
+const COMMIT_TTL_DAYS = 365; // commit facts are more durable than usage spans
 
 // ---- Helpers ----
 
@@ -157,9 +187,14 @@ function resolveIdentity(event: HttpApiEvent): string | null {
   return null;
 }
 
-/** Extract and sanity-check spans from an OTLP payload. Returns spans + rejected count. */
-export function parseOtlpSpans(payload: OtlpPayload): { spans: ParsedSpan[]; rejected: number } {
+/** Extract and sanity-check spans from an OTLP payload. Returns usage spans, attribution spans, and rejected count. */
+export function parseOtlpSpans(payload: OtlpPayload): {
+  spans: ParsedSpan[];
+  attributionSpans: ParsedAttributionSpan[];
+  rejected: number;
+} {
   const spans: ParsedSpan[] = [];
+  const attributionSpans: ParsedAttributionSpan[] = [];
   let rejected = 0;
 
   for (const rs of payload.resourceSpans ?? []) {
@@ -168,13 +203,75 @@ export function parseOtlpSpans(payload: OtlpPayload): { spans: ParsedSpan[]; rej
 
     for (const ss of rs.scopeSpans ?? []) {
       for (const span of ss.spans ?? []) {
+        const spanName = typeof span.name === 'string' ? span.name : '';
         const attrs = attrMap(span.attributes);
         const spanId = typeof span.spanId === 'string' ? span.spanId : '';
+        const traceId = typeof span.traceId === 'string' ? span.traceId : '';
         const timestamp = nanoToIso(span.startTimeUnixNano);
-        const provider = str(attrs.get('ai.provider'));
 
-        // Minimum viable span: identity key parts must be present and sane.
-        if (!/^[0-9a-f]{16}$/i.test(spanId) || !timestamp || !provider) {
+        if (!/^[0-9a-f]{16}$/i.test(spanId) || !timestamp) {
+          rejected++;
+          continue;
+        }
+
+        // --- Attribution spans ---
+        const attrKind = ATTRIBUTION_SPAN_NAMES[spanName];
+        if (attrKind) {
+          const sessionId = str(attrs.get('ai.session_id'));
+          if (!sessionId) { rejected++; continue; }
+
+          const endTimestamp = nanoToIso(span.endTimeUnixNano) || timestamp;
+          const repo = str(attrs.get('git.repo')) || null;
+
+          if (attrKind === 'commit') {
+            const sha = str(attrs.get('git.sha'));
+            if (!sha || !repo) { rejected++; continue; } // commits without repo can't be joined
+            attributionSpans.push({
+              kind: 'commit',
+              spanId: spanId.toLowerCase(),
+              traceId: traceId.toLowerCase(),
+              timestamp,
+              endTimestamp,
+              sessionId,
+              project: str(attrs.get('ai.project')).slice(0, 256),
+              repo,
+              deviceId,
+              sha: sha.slice(0, 40),
+              inMain: bool(attrs.get('git.in_main')),
+              wasReverted: bool(attrs.get('git.was_reverted')),
+            });
+          } else {
+            // session attribution
+            const prLinksValue = attrs.get('git.pr_links');
+            const prLinks: string[] = [];
+            if (prLinksValue && 'arrayValue' in prLinksValue) {
+              const av = (prLinksValue as { arrayValue?: { values?: OtlpValue[] } }).arrayValue;
+              for (const v of av?.values ?? []) {
+                const link = typeof (v as { stringValue?: string }).stringValue === 'string'
+                  ? (v as { stringValue: string }).stringValue : '';
+                if (link) prLinks.push(link.slice(0, 256));
+              }
+            }
+            attributionSpans.push({
+              kind: 'session',
+              spanId: spanId.toLowerCase(),
+              traceId: traceId.toLowerCase(),
+              timestamp,
+              endTimestamp,
+              sessionId,
+              project: str(attrs.get('ai.project')).slice(0, 256),
+              repo,
+              deviceId,
+              commitCount: num(attrs.get('git.commit_count')),
+              prLinks: prLinks.slice(0, 20),
+            });
+          }
+          continue;
+        }
+
+        // --- Usage spans (existing logic) ---
+        const provider = str(attrs.get('ai.provider'));
+        if (!provider) {
           rejected++;
           continue;
         }
@@ -182,7 +279,6 @@ export function parseOtlpSpans(payload: OtlpPayload): { spans: ParsedSpan[]; rej
         const inputTokens = num(attrs.get('ai.input_tokens'));
         const outputTokens = num(attrs.get('ai.output_tokens'));
         const costUsd = num(attrs.get('ai.cost_usd'));
-        // Clamp: reject absurd values (mirrors the CI trailer clamps).
         if (
           inputTokens < 0 || outputTokens < 0 || costUsd < 0 ||
           inputTokens > 100_000_000 || outputTokens > 100_000_000 || costUsd > 10_000
@@ -193,6 +289,7 @@ export function parseOtlpSpans(payload: OtlpPayload): { spans: ParsedSpan[]; rej
 
         spans.push({
           spanId: spanId.toLowerCase(),
+          traceId: traceId.toLowerCase(),
           timestamp,
           tool: PROVIDER_TO_TOOL[provider] ?? provider.slice(0, 32),
           model: str(attrs.get('ai.model')).slice(0, 128),
@@ -207,7 +304,7 @@ export function parseOtlpSpans(payload: OtlpPayload): { spans: ParsedSpan[]; rej
     }
   }
 
-  return { spans, rejected };
+  return { spans, attributionSpans, rejected };
 }
 
 // ---- Route: discovery doc ----
@@ -298,6 +395,104 @@ async function bumpDailyAggregate(user: string, s: ParsedSpan): Promise<void> {
   }));
 }
 
+// ---- Attribution DDB writes ----
+
+/**
+ * Write a session attribution record. Conditional put (dedup by spanId which
+ * encodes state). If state changes, codeburn sends a new spanId → new item.
+ * Old items expire via TTL.
+ */
+async function writeSessionAttribution(user: string, s: ParsedAttributionSpan): Promise<boolean> {
+  const ttl = Math.floor(Date.now() / 1000) + SPAN_TTL_DAYS * 24 * 60 * 60;
+  try {
+    const item: Record<string, { S?: string; N?: string; BOOL?: boolean; SS?: string[] }> = {
+      pk: { S: `USER#${user}` },
+      sk: { S: `ATTR#SESSION#${s.sessionId}#${s.spanId}` },
+      record_type: { S: 'OTEL_ATTR_SESSION' },
+      session_id: { S: s.sessionId },
+      trace_id: { S: s.traceId },
+      project: { S: s.project },
+      device_id: { S: s.deviceId },
+      timestamp: { S: s.timestamp },
+      end_time: { S: s.endTimestamp },
+      commit_count: { N: String(s.commitCount ?? 0) },
+      ttl: { N: String(ttl) },
+    };
+    if (s.repo) item.repo = { S: s.repo };
+    if (s.prLinks && s.prLinks.length > 0) item.pr_links = { SS: s.prLinks };
+
+    await dynamoClient.send(new PutItemCommand({
+      TableName: AI_USAGE_TABLE,
+      Item: item,
+      ConditionExpression: 'attribute_not_exists(pk)',
+    }));
+    return true;
+  } catch (e) {
+    if (e instanceof ConditionalCheckFailedException) return false;
+    throw e;
+  }
+}
+
+/**
+ * Write/update a commit attribution record. UPSERT — when inMain or wasReverted
+ * changes, the receiver overwrites the mutable fields. The pk/sk (REPO#/COMMIT#)
+ * is stable; only the boolean state evolves.
+ *
+ * AI-Origin inference: done at query time by joining with usage spans via traceId.
+ * If no usage spans share this traceId → origin=human, tool=none.
+ * If usage spans exist → origin=ai-generated, tool=provider from usage span.
+ */
+async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): Promise<boolean> {
+  if (!s.repo || !s.sha) return false;
+  const ttl = Math.floor(Date.now() / 1000) + COMMIT_TTL_DAYS * 24 * 60 * 60;
+
+  await dynamoClient.send(new UpdateItemCommand({
+    TableName: AI_USAGE_TABLE,
+    Key: {
+      pk: { S: `REPO#${s.repo}` },
+      sk: { S: `COMMIT#${s.sha}` },
+    },
+    UpdateExpression:
+      'SET record_type = :rt, session_id = :sid, trace_id = :tid, ' +
+      'project = :proj, #usr = :usr, device_id = :did, ' +
+      'in_main = :im, was_reverted = :wr, ' +
+      '#ts = :ts, updated_at = :now, ttl = :ttl',
+    ExpressionAttributeNames: {
+      '#usr': 'user',
+      '#ts': 'timestamp',
+    },
+    ExpressionAttributeValues: {
+      ':rt': { S: 'OTEL_ATTR_COMMIT' },
+      ':sid': { S: s.sessionId },
+      ':tid': { S: s.traceId },
+      ':proj': { S: s.project },
+      ':usr': { S: user },
+      ':did': { S: s.deviceId },
+      ':im': { BOOL: s.inMain ?? false },
+      ':wr': { BOOL: s.wasReverted ?? false },
+      ':ts': { S: s.timestamp },
+      ':now': { S: new Date().toISOString() },
+      ':ttl': { N: String(ttl) },
+    },
+  }));
+  return true;
+}
+
+/** Process attribution spans. Returns count of writes. */
+async function processAttributionSpans(user: string, spans: ParsedAttributionSpan[]): Promise<number> {
+  const CONCURRENCY = 20;
+  let written = 0;
+  for (let i = 0; i < spans.length; i += CONCURRENCY) {
+    const chunk = spans.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(chunk.map(async (s) => {
+      if (s.kind === 'session') return writeSessionAttribution(user, s);
+      return writeCommitAttribution(user, s);
+    }));
+    written += results.filter(Boolean).length;
+  }
+  return written;
+}
+
 /** Process spans with bounded concurrency. Returns count of newly-written spans. */
 async function processSpans(user: string, spans: ParsedSpan[]): Promise<number> {
   const CONCURRENCY = 20;
@@ -331,26 +526,32 @@ async function handleTraces(event: HttpApiEvent): Promise<HttpApiResponse> {
     return jsonResponse(400, { message: 'Body is not valid JSON' });
   }
 
-  const { spans, rejected } = parseOtlpSpans(payload);
+  const { spans, attributionSpans, rejected } = parseOtlpSpans(payload);
+  const totalAccepted = spans.length + attributionSpans.length;
 
-  if (spans.length > MAX_BATCH_SIZE) {
+  if (totalAccepted > MAX_BATCH_SIZE) {
     return jsonResponse(400, { message: `Batch exceeds max_batch_size (${MAX_BATCH_SIZE})` });
   }
 
   // Archive the raw batch first — the S3 OTLP archive is the external contract.
-  // Archive failures are fatal (client retries the batch; dedup gate makes it safe).
   await archiveToS3(rawBody);
 
-  const written = await processSpans(user, spans);
+  // Process usage spans (existing flow)
+  const usageWritten = await processSpans(user, spans);
+
+  // Process attribution spans (new flow)
+  const attrWritten = await processAttributionSpans(user, attributionSpans);
+
   console.log(
-    `[otel-receiver] user=${user} received=${spans.length + rejected} accepted=${spans.length} ` +
-    `new=${written} duplicates=${spans.length - written} rejected=${rejected}`,
+    `[otel-receiver] user=${user} ` +
+    `usage: received=${spans.length} new=${usageWritten} dupes=${spans.length - usageWritten} | ` +
+    `attribution: received=${attributionSpans.length} written=${attrWritten} | ` +
+    `rejected=${rejected}`,
   );
 
-  // OTLP/HTTP success response; report malformed spans via partialSuccess.
   if (rejected > 0) {
     return jsonResponse(200, {
-      partialSuccess: { rejectedSpans: rejected, errorMessage: 'Spans missing required ai.* attributes or failed validation' },
+      partialSuccess: { rejectedSpans: rejected, errorMessage: 'Spans missing required attributes or failed validation' },
     });
   }
   return jsonResponse(200, {});
