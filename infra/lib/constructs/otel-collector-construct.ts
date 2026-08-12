@@ -54,6 +54,8 @@ export class OtelCollectorConstruct extends Construct {
   public readonly archiveBucket: s3.Bucket;
   public readonly userPool?: cognito.UserPool;
   public readonly userPoolClient?: cognito.UserPoolClient;
+  /** ARN of the CloudWatch custom-widget Lambda (Developer Productivity table). */
+  public productivityWidgetArn?: string;
 
   constructor(scope: Construct, id: string, props: OtelCollectorConstructProps) {
     super(scope, id);
@@ -196,6 +198,62 @@ export class OtelCollectorConstruct extends Construct {
     props.aiUsageTable.grantReadWriteData(receiver);
     this.archiveBucket.grantPut(receiver);
     props.kmsKey.grantEncryptDecrypt(receiver);
+
+    // -------------------------------------------------------
+    // CloudWatch Custom Widget: Developer Productivity
+    // Invoked by CloudWatch dashboards with the VIEWING user's IAM creds
+    // (access = lambda:InvokeFunction on this function). Delegates
+    // aggregation to the receiver's /v1/productivity handler via direct
+    // invoke so there is a single aggregation implementation.
+    // -------------------------------------------------------
+    const productivityWidget = new lambda.Function(this, 'ProductivityWidget', {
+      functionName: 'prism-d1-productivity-widget',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'productivity-widget.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda'), {
+        bundling: {
+          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            [
+              'npm init -y > /dev/null 2>&1',
+              'npm install --save @aws-sdk/client-lambda esbuild > /dev/null 2>&1',
+              'npx esbuild productivity-widget.ts --bundle --platform=node --target=node22 --outfile=/asset-output/productivity-widget.js --external:@aws-sdk/*',
+            ].join(' && '),
+          ],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              try {
+                const { execSync } = require('child_process');
+                execSync(
+                  `npx esbuild ${path.join(__dirname, '..', 'lambda', 'productivity-widget.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'productivity-widget.js')} --external:@aws-sdk/*`,
+                  { stdio: 'pipe' },
+                );
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          },
+        },
+      }),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        RECEIVER_FUNCTION: receiver.functionName,
+      },
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      description: 'CloudWatch custom widget: per-developer productivity table from the attribution store',
+    });
+    receiver.grantInvoke(productivityWidget);
+    NagSuppressions.addResourceSuppressions(productivityWidget, [
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'lambda.grantInvoke scopes to the receiver function ARN plus its versions/aliases (<fn-arn>:*) — a single-function grant, not a broad wildcard.',
+        appliesTo: [{ regex: '/^Resource::<OtelCollectorReceiver.*\\.Arn>:\\*$/' }],
+      },
+    ], true);
+    this.productivityWidgetArn = productivityWidget.functionArn;
 
     // -------------------------------------------------------
     // HTTP API — discovery (public) + traces (JWT)

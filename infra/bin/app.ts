@@ -41,6 +41,7 @@ const apiStack = new ApiStack(app, 'PrismD1Api', {
 const dashboardStack = new DashboardStack(app, 'PrismD1Dashboard', {
   env,
   description: 'PRISM D1 Velocity - CloudWatch dashboards and alarms',
+  productivityWidgetArn: pipelineStack.otelCollector?.productivityWidgetArn,
   tags: {
     'prism:project': 'PRISM',
     'prism:domain': 'D1-Velocity',

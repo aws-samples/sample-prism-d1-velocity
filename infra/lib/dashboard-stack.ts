@@ -6,8 +6,13 @@ import { NagSuppressions } from 'cdk-nag';
 const METRIC_NAMESPACE = 'PRISM/D1/Velocity';
 const DEFAULT_PERIOD = cdk.Duration.hours(1);
 
+export interface DashboardStackProps extends cdk.StackProps {
+  /** ARN of the productivity custom-widget Lambda (from the OTEL collector construct). */
+  readonly productivityWidgetArn?: string;
+}
+
 export class DashboardStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props?: DashboardStackProps) {
     super(scope, id, props);
 
     // cdk-nag: CloudWatch alarms in this stack are for observability dashboards.
@@ -1533,5 +1538,46 @@ export class DashboardStack extends cdk.Stack {
       value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Executive-Readout`,
       description: 'Executive Readout Dashboard URL',
     });
+
+    // =======================================================
+    // Dashboard 3: Developer Productivity (attribution store)
+    // Only created when the OTEL collector (and its custom-widget
+    // Lambda) is deployed.
+    // =======================================================
+    if (props?.productivityWidgetArn) {
+      const devDashboard = new cloudwatch.Dashboard(this, 'DeveloperProductivityDashboard', {
+        dashboardName: 'PRISM-D1-Developer-Productivity',
+        defaultInterval: cdk.Duration.days(30),
+      });
+
+      devDashboard.addWidgets(
+        new cloudwatch.TextWidget({
+          markdown:
+            '# PRISM D1 - Developer Productivity\n' +
+            'Per-developer usage and commit outcomes from the codeburn attribution store — ' +
+            'full history, real commit timestamps (not subject to the 2-week metric ingestion window). ' +
+            'The table follows the dashboard time range.',
+          width: 24,
+          height: 2,
+        }),
+      );
+
+      devDashboard.addWidgets(
+        new cloudwatch.CustomWidget({
+          functionArn: props.productivityWidgetArn,
+          title: 'Developer Productivity (org + per-developer)',
+          width: 24,
+          height: 10,
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
+        }),
+      );
+
+      new cdk.CfnOutput(this, 'DevProductivityDashboardUrl', {
+        value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Developer-Productivity`,
+        description: 'Developer Productivity Dashboard URL',
+      });
+    }
   }
 }
