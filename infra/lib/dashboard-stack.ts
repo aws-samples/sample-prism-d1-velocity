@@ -1545,29 +1545,134 @@ export class DashboardStack extends cdk.Stack {
     // Lambda) is deployed.
     // =======================================================
     if (props?.productivityWidgetArn) {
+      // Type-in filter for the detail row. PATTERN variables literal-replace
+      // the token below anywhere in the dashboard JSON, so the token must be
+      // unique. Default 'all' = organization scope.
+      const USER_TOKEN = 'PRISM_USER_FILTER_TOKEN';
       const devDashboard = new cloudwatch.Dashboard(this, 'DeveloperProductivityDashboard', {
         dashboardName: 'PRISM-D1-Developer-Productivity',
         defaultInterval: cdk.Duration.days(30),
+        variables: [
+          new cloudwatch.DashboardVariable({
+            id: 'devFilter',
+            label: 'Developer',
+            type: cloudwatch.VariableType.PATTERN,
+            value: USER_TOKEN,
+            inputType: cloudwatch.VariableInputType.INPUT,
+            defaultValue: cloudwatch.DefaultValue.value('all'),
+            visible: true,
+          }),
+        ],
       });
 
       devDashboard.addWidgets(
         new cloudwatch.TextWidget({
           markdown:
             '# PRISM D1 - Developer Productivity\n' +
-            'Per-developer usage and commit outcomes from the codeburn attribution store — ' +
-            'full history, real commit timestamps (not subject to the 2-week metric ingestion window). ' +
-            'The table follows the dashboard time range.',
+            'Rows 1-2: org metrics (CloudWatch, 2-week ingestion window applies to backfills). ' +
+            'Rows 3-4: attribution store — full history, real commit timestamps. ' +
+            'Type a developer email into the **Developer** variable (default `all`) to scope the detail row.',
           width: 24,
           height: 2,
         }),
       );
 
+      // --- Row 1: Org KPIs (NaN-guarded metric math, follow time range) ---
+      const dailyMetric = (metricName: string, id: string): cloudwatch.Metric =>
+        new cloudwatch.Metric({
+          namespace: METRIC_NAMESPACE,
+          metricName,
+          statistic: 'Sum',
+          period: cdk.Duration.days(1),
+          label: id,
+        });
+      const ratioKpi = (title: string, expression: string, using: Record<string, cloudwatch.IMetric>): cloudwatch.SingleValueWidget =>
+        new cloudwatch.SingleValueWidget({
+          title,
+          metrics: [new cloudwatch.MathExpression({ expression, usingMetrics: using, label: title, period: cdk.Duration.days(1) })],
+          setPeriodToTimeRange: true,
+          width: 6,
+          height: 4,
+        });
+
+      devDashboard.addWidgets(
+        ratioKpi('AI Share of Commits (%)', 'IF(FILL(kTotal, 0) > 0, 100 * FILL(kAi, 0) / FILL(kTotal, 0))', {
+          kAi: dailyMetric('AICommits', 'kAi'), kTotal: dailyMetric('CommitsTotal', 'kTotal'),
+        }),
+        ratioKpi('AI Merge Rate (%)', 'IF(FILL(kAi2, 0) > 0, 100 * FILL(kMerged, 0) / FILL(kAi2, 0))', {
+          kMerged: dailyMetric('MergedAICommits', 'kMerged'), kAi2: dailyMetric('AICommits', 'kAi2'),
+        }),
+        ratioKpi('Cost per Shipped Commit ($)', 'IF(FILL(kMerged2, 0) > 0, FILL(kCost, 0) / FILL(kMerged2, 0))', {
+          kCost: dailyMetric('AICostUSD', 'kCost'), kMerged2: dailyMetric('MergedAICommits', 'kMerged2'),
+        }),
+        new cloudwatch.SingleValueWidget({
+          title: 'AI Spend (range, $)',
+          metrics: [dailyMetric('AICostUSD', 'AI Spend')],
+          setPeriodToTimeRange: true,
+          width: 6,
+          height: 4,
+        }),
+      );
+
+      // --- Row 2: Org trends (native interactive charts) ---
+      devDashboard.addWidgets(
+        new cloudwatch.GraphWidget({
+          title: 'Commits / Day (AI vs Human)',
+          left: [
+            dailyMetric('AICommits', 'AI commits'),
+            dailyMetric('HumanCommits', 'Human commits'),
+          ],
+          view: cloudwatch.GraphWidgetView.BAR,
+          stacked: true,
+          width: 8,
+          height: 6,
+          leftYAxis: { min: 0, label: 'Commits' },
+        }),
+        new cloudwatch.GraphWidget({
+          title: 'AI Spend / Day',
+          left: [dailyMetric('AICostUSD', 'Spend ($)')],
+          width: 8,
+          height: 6,
+          leftYAxis: { min: 0, label: 'USD' },
+        }),
+        new cloudwatch.GraphWidget({
+          title: 'AI Merge Ratio Trend',
+          left: [
+            new cloudwatch.MathExpression({
+              expression: 'FILL(IF(FILL(tAi, 0) > 0, 100 * FILL(tMerged, 0) / FILL(tAi, 0)), REPEAT)',
+              usingMetrics: { tMerged: dailyMetric('MergedAICommits', 'tMerged'), tAi: dailyMetric('AICommits', 'tAi') },
+              label: 'Merge ratio (%)',
+              period: cdk.Duration.days(1),
+            }),
+          ],
+          width: 8,
+          height: 6,
+          leftYAxis: { min: 0, max: 100, label: 'Percent' },
+        }),
+      );
+
+      // --- Row 3: Team comparison table (custom widget, view=table) ---
       devDashboard.addWidgets(
         new cloudwatch.CustomWidget({
           functionArn: props.productivityWidgetArn,
-          title: 'Developer Productivity (org + per-developer)',
+          title: 'Team Comparison (full history)',
           width: 24,
-          height: 10,
+          height: 8,
+          params: { view: 'table' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
+        }),
+      );
+
+      // --- Row 4: Detail panel (custom widget, view=detail, follows filter) ---
+      devDashboard.addWidgets(
+        new cloudwatch.CustomWidget({
+          functionArn: props.productivityWidgetArn,
+          title: 'Detail: By Tool / By Model / Ratios',
+          width: 24,
+          height: 8,
+          params: { view: 'detail', user: USER_TOKEN },
           updateOnRefresh: true,
           updateOnResize: false,
           updateOnTimeRangeChange: true,

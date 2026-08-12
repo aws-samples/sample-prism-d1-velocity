@@ -802,6 +802,7 @@ type UserProductivity = {
     costUsd: number;
     calls: number;
     byTool: Record<string, { costUsd: number; calls: number }>;
+    byModel: Record<string, { costUsd: number; calls: number }>;
   };
   commits: {
     total: number;
@@ -835,7 +836,7 @@ function computeRatios(u: UserProductivity): void {
 function emptyUserProductivity(user: string): UserProductivity {
   return {
     user,
-    usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0, byTool: {} },
+    usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0, byTool: {}, byModel: {} },
     commits: { total: 0, ai: 0, human: 0, mergedAi: 0, revertedAi: 0 },
     ratios: { aiSharePct: null, mergeRatePct: null, defectRatePct: null, costPerAiCommit: null, costPerShippedCommit: null },
   };
@@ -1003,6 +1004,12 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
       agg.calls += t.calls;
       totals.usage.byTool[tool] = agg;
     }
+    for (const [model, m] of Object.entries(u.usage.byModel)) {
+      const agg = totals.usage.byModel[model] ?? { costUsd: 0, calls: 0 };
+      agg.costUsd += m.costUsd;
+      agg.calls += m.calls;
+      totals.usage.byModel[model] = agg;
+    }
     totals.commits.total += u.commits.total;
     totals.commits.ai += u.commits.ai;
     totals.commits.human += u.commits.human;
@@ -1033,6 +1040,11 @@ function accumulateUsage(u: UserProductivity, item: Record<string, { S?: string;
   t.costUsd = Math.round((t.costUsd + cost) * 10000) / 10000;
   t.calls += calls;
   u.usage.byTool[tool] = t;
+  const model = item.model?.S ?? 'unknown';
+  const m = u.usage.byModel[model] ?? { costUsd: 0, calls: 0 };
+  m.costUsd = Math.round((m.costUsd + cost) * 10000) / 10000;
+  m.calls += calls;
+  u.usage.byModel[model] = m;
 }
 
 // ---- Handler ----
