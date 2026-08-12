@@ -171,24 +171,27 @@ export class DashboardStack extends cdk.Stack {
           // Line 2: attribution-derived (codeburn spans, fleet aggregate).
           // Populates for any user running `codeburn sync --attribution`.
           // Divergence from line 1 indicates attribution coverage gaps.
+          // FILL materializes empty/missing series as 0 and the IF guard
+          // yields a gap (not NaN) in buckets with no AI commits. Daily
+          // period: an hourly commit ratio is too sparse to read.
           new cloudwatch.MathExpression({
-            expression: '100 * (mergedAi / aiCommits)',
+            expression: 'IF(FILL(aiCommits, 0) > 0, 100 * FILL(mergedAi, 0) / FILL(aiCommits, 0))',
             usingMetrics: {
               mergedAi: new cloudwatch.Metric({
                 namespace: METRIC_NAMESPACE,
                 metricName: 'MergedAICommits',
                 statistic: 'Sum',
-                period: DEFAULT_PERIOD,
+                period: cdk.Duration.days(1),
               }),
               aiCommits: new cloudwatch.Metric({
                 namespace: METRIC_NAMESPACE,
                 metricName: 'AICommits',
                 statistic: 'Sum',
-                period: DEFAULT_PERIOD,
+                period: cdk.Duration.days(1),
               }),
             },
             label: 'Attribution (codeburn spans)',
-            period: DEFAULT_PERIOD,
+            period: cdk.Duration.days(1),
           }),
         ],
         width: 8,
@@ -466,7 +469,7 @@ export class DashboardStack extends cdk.Stack {
             label: 'AI-to-Merge Ratio (CI, %)',
           }),
           new cloudwatch.MathExpression({
-            expression: '100 * (execMergedAi / execAiCommits)',
+            expression: 'IF(FILL(execAiCommits, 0) > 0, 100 * FILL(execMergedAi, 0) / FILL(execAiCommits, 0))',
             usingMetrics: {
               execMergedAi: new cloudwatch.Metric({
                 namespace: METRIC_NAMESPACE,
@@ -547,9 +550,13 @@ export class DashboardStack extends cdk.Stack {
             period: cdk.Duration.days(1),
             label: 'CI (per-PR)',
           }),
-          // Attribution-derived: reverted AI commits over merged AI commits
+          // Attribution-derived: reverted AI commits over merged AI commits.
+          // FILL guards both series: RevertedAICommits may not exist AT ALL
+          // until the first revert is published (a metric with zero datums is
+          // missing, not zero — unguarded math renders NaN). The IF guard
+          // gaps buckets with no merged commits instead of dividing by zero.
           new cloudwatch.MathExpression({
-            expression: '100 * (revertedAi / mergedAi)',
+            expression: 'IF(FILL(mergedAi, 0) > 0, 100 * FILL(revertedAi, 0) / FILL(mergedAi, 0))',
             usingMetrics: {
               revertedAi: new cloudwatch.Metric({
                 namespace: METRIC_NAMESPACE,
