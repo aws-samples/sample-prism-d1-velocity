@@ -74,21 +74,33 @@ async function resolveAiTool(user: string, traceId: string): Promise<{ tool: str
   if (!user || !traceId) return { tool: 'none', isAi: false };
 
   try {
-    const result = await dynamoClient.send(new QueryCommand({
-      TableName: AI_USAGE_TABLE,
-      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-      FilterExpression: 'trace_id = :tid',
-      ExpressionAttributeValues: {
-        ':pk': { S: `USER#${user}` },
-        ':prefix': { S: 'SPAN#' },
-        ':tid': { S: traceId },
-      },
-      Limit: 1,
-    }));
+    // NOTE: DynamoDB applies `Limit` BEFORE `FilterExpression` — `Limit: 1`
+    // would evaluate exactly one span and almost always miss the match,
+    // resolving every commit as human. Paginate the user's spans and stop at
+    // the first trace_id hit. Page size bounds per-call read cost; the loop
+    // bounds total pages defensively (a user with >50k spans and no match
+    // resolves as human rather than scanning forever).
+    let lastKey: import('@aws-sdk/client-dynamodb').QueryCommandOutput['LastEvaluatedKey'];
+    for (let page = 0; page < 50; page++) {
+      const result = await dynamoClient.send(new QueryCommand({
+        TableName: AI_USAGE_TABLE,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+        FilterExpression: 'trace_id = :tid',
+        ExpressionAttributeValues: {
+          ':pk': { S: `USER#${user}` },
+          ':prefix': { S: 'SPAN#' },
+          ':tid': { S: traceId },
+        },
+        Limit: 1000,
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
 
-    if ((result.Items?.length ?? 0) > 0) {
-      const tool = result.Items![0].tool?.S ?? 'unknown';
-      return { tool, isAi: true };
+      if ((result.Items?.length ?? 0) > 0) {
+        const tool = result.Items![0].tool?.S ?? 'unknown';
+        return { tool, isAi: true };
+      }
+      lastKey = result.LastEvaluatedKey;
+      if (!lastKey) break;
     }
   } catch (e) {
     console.warn(`[attribution-metrics] Failed to resolve tool for trace=${traceId}: ${e}`);
@@ -144,7 +156,15 @@ export async function handler(event: StreamEvent): Promise<void> {
 
     const { tool, isAi } = await resolveAiTool(commit.user, commit.traceId);
     const timestamp = new Date(commit.timestamp);
-    const metricTimestamp = isNaN(timestamp.getTime()) ? now : timestamp;
+    // CloudWatch rejects PutMetricData timestamps older than 2 weeks (and one
+    // bad member rejects the whole batch, wedging the stream in a retry loop).
+    // Use the commit's own time when it's inside the window so live traffic
+    // charts at commit time; clamp backfilled history to ingest time.
+    const OLDEST_ALLOWED_MS = 13 * 24 * 60 * 60 * 1000; // 13d — safety margin inside CW's 14d limit
+    const metricTimestamp =
+      isNaN(timestamp.getTime()) || now.getTime() - timestamp.getTime() > OLDEST_ALLOWED_MS
+        ? now
+        : timestamp;
 
     // For MODIFY events, we only get here if wasReverted changed to true
     if (record.eventName === 'MODIFY') {
