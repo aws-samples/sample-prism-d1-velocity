@@ -20,6 +20,7 @@ import {
   PutItemCommand,
   UpdateItemCommand,
   QueryCommand,
+  ScanCommand,
   GetItemCommand,
   ConditionalCheckFailedException,
 } from '@aws-sdk/client-dynamodb';
@@ -462,7 +463,10 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
         'SET record_type = :rt, session_id = :sid, trace_id = :tid, ' +
         '#proj = :proj, #usr = :usr, device_id = :did, ' +
         'in_main = :im, was_reverted = :wr, ' +
-        '#ts = :ts, updated_at = :now, #ttl = :ttl',
+        '#ts = :ts, updated_at = :now, #ttl = :ttl, ' +
+        // Sparse by-user GSI keys: per-developer commit queries (GET
+        // /v1/productivity) without scanning the table.
+        'gsi_user = :gu, gsi_user_sk = :gusk',
       // Only write if: item doesn't exist, OR inMain/wasReverted actually changed.
       // Suppresses no-op MODIFY stream events that would double-count metrics.
       ConditionExpression:
@@ -488,6 +492,8 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
         ':ts': { S: s.timestamp },
         ':now': { S: new Date().toISOString() },
         ':ttl': { N: String(ttl) },
+        ':gu': { S: `USER#${user}` },
+        ':gusk': { S: `COMMIT#${s.timestamp}` },
       },
     }));
     return true;
@@ -624,32 +630,17 @@ export async function queryCommitAttribution(repo: string, sha: string): Promise
   if (!traceId || !user) return null;
 
   // Step 2: Find correlated usage spans for this session's traceId.
-  // Usage spans have sk=SPAN#<ts>#<spanId> and we stored traceId on them.
-  // Query by pk=USER#<user>, sk begins_with SPAN#, filter on trace_id.
-  const usageResult = await dynamoClient.send(new QueryCommand({
-    TableName: AI_USAGE_TABLE,
-    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-    FilterExpression: 'trace_id = :tid',
-    ExpressionAttributeValues: {
-      ':pk': { S: `USER#${user}` },
-      ':prefix': { S: 'SPAN#' },
-      ':tid': { S: traceId },
-    },
-    Limit: 1, // We only need to know if ANY exist
-  }));
-
-  const hasUsageSpans = (usageResult.Items?.length ?? 0) > 0;
+  const usage = await lookupTraceUsage(user, traceId);
 
   // Step 3: Infer AI origin
   let aiOrigin: 'ai-generated' | 'human' = 'human';
   let aiTool = 'none';
   let aiModel = '';
 
-  if (hasUsageSpans) {
+  if (usage) {
     aiOrigin = 'ai-generated';
-    const usageSpan = usageResult.Items![0];
-    aiTool = usageSpan.tool?.S ?? 'unknown';
-    aiModel = usageSpan.model?.S ?? '';
+    aiTool = usage.tool;
+    aiModel = usage.model;
   }
 
   return {
@@ -685,33 +676,31 @@ export async function queryRepoCommits(repo: string, limit = 50): Promise<Commit
   }));
 
   const commits: CommitAttribution[] = [];
+  // One trace map per distinct user in the result set — replaces the
+  // previous per-commit span query (which used Limit:1 + FilterExpression;
+  // DynamoDB applies Limit BEFORE the filter, so it examined one span and
+  // misclassified nearly every commit as human).
+  const traceMaps = new Map<string, Map<string, { tool: string; model: string }>>();
   for (const item of result.Items ?? []) {
     const sha = item.sk?.S?.replace('COMMIT#', '') ?? '';
     const traceId = item.trace_id?.S ?? '';
     const user = item.user?.S ?? '';
 
-    // Batch the usage span lookup for each commit
     let aiOrigin: 'ai-generated' | 'human' = 'human';
     let aiTool = 'none';
     let aiModel = '';
 
     if (traceId && user) {
-      const usageResult = await dynamoClient.send(new QueryCommand({
-        TableName: AI_USAGE_TABLE,
-        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-        FilterExpression: 'trace_id = :tid',
-        ExpressionAttributeValues: {
-          ':pk': { S: `USER#${user}` },
-          ':prefix': { S: 'SPAN#' },
-          ':tid': { S: traceId },
-        },
-        Limit: 1,
-      }));
-
-      if ((usageResult.Items?.length ?? 0) > 0) {
+      let traceMap = traceMaps.get(user);
+      if (!traceMap) {
+        traceMap = await buildUserTraceMap(user);
+        traceMaps.set(user, traceMap);
+      }
+      const usage = traceMap.get(traceId);
+      if (usage) {
         aiOrigin = 'ai-generated';
-        aiTool = usageResult.Items![0].tool?.S ?? 'unknown';
-        aiModel = usageResult.Items![0].model?.S ?? '';
+        aiTool = usage.tool;
+        aiModel = usage.model;
       }
     }
 
@@ -762,6 +751,290 @@ async function handleAttributionQuery(event: HttpApiEvent): Promise<HttpApiRespo
   return jsonResponse(200, { repo, commits, count: commits.length });
 }
 
+// ---- Trace join helpers ----
+
+/**
+ * Build a user's traceId → {tool, model} map from their usage spans.
+ * One paginated query (projected to three attributes) replaces per-commit
+ * span lookups. NOTE: DynamoDB applies Limit BEFORE FilterExpression, so
+ * the old Limit:1 + filter pattern examined a single span and almost never
+ * found the match — every commit resolved as human.
+ */
+async function buildUserTraceMap(user: string): Promise<Map<string, { tool: string; model: string }>> {
+  const map = new Map<string, { tool: string; model: string }>();
+  let lastKey: import('@aws-sdk/client-dynamodb').QueryCommandOutput['LastEvaluatedKey'];
+  for (let page = 0; page < 100; page++) {
+    const result = await dynamoClient.send(new QueryCommand({
+      TableName: AI_USAGE_TABLE,
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+      ProjectionExpression: 'trace_id, tool, model',
+      ExpressionAttributeValues: {
+        ':pk': { S: `USER#${user}` },
+        ':prefix': { S: 'SPAN#' },
+      },
+      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+    }));
+    for (const item of result.Items ?? []) {
+      const tid = item.trace_id?.S;
+      if (tid && !map.has(tid)) {
+        map.set(tid, { tool: item.tool?.S ?? 'unknown', model: item.model?.S ?? '' });
+      }
+    }
+    lastKey = result.LastEvaluatedKey;
+    if (!lastKey) break;
+  }
+  return map;
+}
+
+/** Single traceId lookup via the trace map (small users) — kept simple. */
+async function lookupTraceUsage(user: string, traceId: string): Promise<{ tool: string; model: string } | null> {
+  const map = await buildUserTraceMap(user);
+  return map.get(traceId) ?? null;
+}
+
+// ---- Route: productivity query ----
+
+type UserProductivity = {
+  user: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+    calls: number;
+    byTool: Record<string, { costUsd: number; calls: number }>;
+  };
+  commits: {
+    total: number;
+    ai: number;
+    human: number;
+    mergedAi: number;
+    revertedAi: number;
+  };
+  ratios: {
+    aiSharePct: number | null;
+    mergeRatePct: number | null;
+    defectRatePct: number | null;
+    costPerAiCommit: number | null;
+    costPerShippedCommit: number | null;
+  };
+};
+
+function computeRatios(u: UserProductivity): void {
+  const c = u.commits;
+  const pct = (num: number, den: number): number | null =>
+    den > 0 ? Math.round((100 * num / den) * 10) / 10 : null;
+  u.ratios = {
+    aiSharePct: pct(c.ai, c.total),
+    mergeRatePct: pct(c.mergedAi, c.ai),
+    defectRatePct: pct(c.revertedAi, c.mergedAi),
+    costPerAiCommit: c.ai > 0 ? Math.round((u.usage.costUsd / c.ai) * 100) / 100 : null,
+    costPerShippedCommit: c.mergedAi > 0 ? Math.round((u.usage.costUsd / c.mergedAi) * 100) / 100 : null,
+  };
+}
+
+function emptyUserProductivity(user: string): UserProductivity {
+  return {
+    user,
+    usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0, byTool: {} },
+    commits: { total: 0, ai: 0, human: 0, mergedAi: 0, revertedAi: 0 },
+    ratios: { aiSharePct: null, mergeRatePct: null, defectRatePct: null, costPerAiCommit: null, costPerShippedCommit: null },
+  };
+}
+
+/**
+ * GET /v1/productivity?user=<email|all>&from=YYYY-MM-DD&to=YYYY-MM-DD
+ *
+ * Aggregates usage (from OTEL#DAY rollups) and commit outcomes (attribution
+ * items, AI-origin via traceId join) per developer, with fleet totals.
+ * Defaults: user=all, last 30 days. Full history at real commit timestamps —
+ * unlike the CloudWatch metrics, this path has no 2-week ingestion clamp.
+ */
+async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
+  const caller = resolveIdentity(event);
+  if (!caller) return jsonResponse(401, { message: 'No resolvable identity claim in token' });
+
+  const url = new URL(event.rawPath + '?' + (event.rawQueryString ?? ''), 'http://localhost');
+  const userParam = url.searchParams.get('user') ?? 'all';
+  const now = new Date();
+  const from = url.searchParams.get('from') ?? new Date(now.getTime() - 30 * 86400_000).toISOString().slice(0, 10);
+  const to = url.searchParams.get('to') ?? now.toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return jsonResponse(400, { message: 'from/to must be YYYY-MM-DD' });
+  }
+
+  const users = new Map<string, UserProductivity>();
+  const getUser = (email: string): UserProductivity => {
+    let u = users.get(email);
+    if (!u) { u = emptyUserProductivity(email); users.set(email, u); }
+    return u;
+  };
+
+  // --- Usage from OTEL#DAY rollups ---
+  if (userParam !== 'all') {
+    // Single user: direct key-range query.
+    let lastKey: import('@aws-sdk/client-dynamodb').QueryCommandOutput['LastEvaluatedKey'];
+    do {
+      const result = await dynamoClient.send(new QueryCommand({
+        TableName: AI_USAGE_TABLE,
+        KeyConditionExpression: 'pk = :pk AND sk BETWEEN :lo AND :hi',
+        ExpressionAttributeValues: {
+          ':pk': { S: `USER#${userParam}` },
+          ':lo': { S: `OTEL#DAY#${from}` },
+          ':hi': { S: `OTEL#DAY#${to}\uffff` },
+        },
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
+      for (const item of result.Items ?? []) accumulateUsage(getUser(userParam), item);
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+  } else {
+    // Fleet: paginated scan over the daily rollups. Item count is
+    // users × days × tools × models — small at team scale; revisit with a
+    // registry item or GSI if the fleet grows past a few hundred users.
+    let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
+    do {
+      const result = await dynamoClient.send(new ScanCommand({
+        TableName: AI_USAGE_TABLE,
+        FilterExpression: 'record_type = :rt AND #day BETWEEN :lo AND :hi',
+        ExpressionAttributeNames: { '#day': 'day' },
+        ExpressionAttributeValues: {
+          ':rt': { S: 'OTEL_DAY' },
+          ':lo': { S: from },
+          ':hi': { S: to },
+        },
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
+      for (const item of result.Items ?? []) {
+        const email = item.pk?.S?.replace('USER#', '') ?? '';
+        if (email) accumulateUsage(getUser(email), item);
+      }
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+  }
+
+  // --- Commits ---
+  type RawCommit = { user: string; traceId: string; inMain: boolean; wasReverted: boolean };
+  const rawCommits: RawCommit[] = [];
+  const commitFrom = `COMMIT#${from}`;
+  const commitTo = `COMMIT#${to}\uffff`;
+  if (userParam !== 'all') {
+    let lastKey: import('@aws-sdk/client-dynamodb').QueryCommandOutput['LastEvaluatedKey'];
+    do {
+      const result = await dynamoClient.send(new QueryCommand({
+        TableName: AI_USAGE_TABLE,
+        IndexName: 'by-user',
+        KeyConditionExpression: 'gsi_user = :pk AND gsi_user_sk BETWEEN :lo AND :hi',
+        ExpressionAttributeValues: {
+          ':pk': { S: `USER#${userParam}` },
+          ':lo': { S: commitFrom },
+          ':hi': { S: commitTo },
+        },
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
+      for (const item of result.Items ?? []) {
+        rawCommits.push({
+          user: userParam,
+          traceId: item.trace_id?.S ?? '',
+          inMain: item.in_main?.BOOL ?? false,
+          wasReverted: item.was_reverted?.BOOL ?? false,
+        });
+      }
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+  } else {
+    let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
+    do {
+      const result = await dynamoClient.send(new ScanCommand({
+        TableName: AI_USAGE_TABLE,
+        FilterExpression: 'record_type = :rt AND #ts BETWEEN :lo AND :hi',
+        ExpressionAttributeNames: { '#ts': 'timestamp' },
+        ExpressionAttributeValues: {
+          ':rt': { S: 'OTEL_ATTR_COMMIT' },
+          ':lo': { S: from },
+          ':hi': { S: `${to}\uffff` },
+        },
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
+      for (const item of result.Items ?? []) {
+        rawCommits.push({
+          user: item.user?.S ?? '',
+          traceId: item.trace_id?.S ?? '',
+          inMain: item.in_main?.BOOL ?? false,
+          wasReverted: item.was_reverted?.BOOL ?? false,
+        });
+      }
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+  }
+
+  // Classify commits via one trace map per user (AI-origin = correlated
+  // usage spans exist for the commit's traceId).
+  const traceMaps = new Map<string, Map<string, { tool: string; model: string }>>();
+  for (const c of rawCommits) {
+    if (!c.user) continue;
+    const u = getUser(c.user);
+    u.commits.total++;
+    let traceMap = traceMaps.get(c.user);
+    if (!traceMap) {
+      traceMap = await buildUserTraceMap(c.user);
+      traceMaps.set(c.user, traceMap);
+    }
+    const isAi = c.traceId !== '' && traceMap.has(c.traceId);
+    if (isAi) {
+      u.commits.ai++;
+      if (c.inMain) u.commits.mergedAi++;
+      if (c.wasReverted) u.commits.revertedAi++;
+    } else {
+      u.commits.human++;
+    }
+  }
+
+  // --- Ratios + fleet totals ---
+  const totals = emptyUserProductivity('all');
+  for (const u of users.values()) {
+    computeRatios(u);
+    totals.usage.inputTokens += u.usage.inputTokens;
+    totals.usage.outputTokens += u.usage.outputTokens;
+    totals.usage.costUsd += u.usage.costUsd;
+    totals.usage.calls += u.usage.calls;
+    for (const [tool, t] of Object.entries(u.usage.byTool)) {
+      const agg = totals.usage.byTool[tool] ?? { costUsd: 0, calls: 0 };
+      agg.costUsd += t.costUsd;
+      agg.calls += t.calls;
+      totals.usage.byTool[tool] = agg;
+    }
+    totals.commits.total += u.commits.total;
+    totals.commits.ai += u.commits.ai;
+    totals.commits.human += u.commits.human;
+    totals.commits.mergedAi += u.commits.mergedAi;
+    totals.commits.revertedAi += u.commits.revertedAi;
+  }
+  computeRatios(totals);
+  totals.usage.costUsd = Math.round(totals.usage.costUsd * 100) / 100;
+
+  return jsonResponse(200, {
+    range: { from, to },
+    scope: userParam === 'all' ? 'org' : 'user',
+    generatedAt: new Date().toISOString(),
+    users: [...users.values()].sort((a, b) => b.usage.costUsd - a.usage.costUsd),
+    totals,
+  });
+}
+
+function accumulateUsage(u: UserProductivity, item: Record<string, { S?: string; N?: string }>): void {
+  const tool = item.tool?.S ?? 'unknown';
+  const cost = Number(item.cost_usd?.N ?? 0);
+  const calls = Number(item.call_count?.N ?? 0);
+  u.usage.inputTokens += Number(item.input_tokens?.N ?? 0);
+  u.usage.outputTokens += Number(item.output_tokens?.N ?? 0);
+  u.usage.costUsd = Math.round((u.usage.costUsd + cost) * 10000) / 10000;
+  u.usage.calls += calls;
+  const t = u.usage.byTool[tool] ?? { costUsd: 0, calls: 0 };
+  t.costUsd = Math.round((t.costUsd + cost) * 10000) / 10000;
+  t.calls += calls;
+  u.usage.byTool[tool] = t;
+}
+
 // ---- Handler ----
 
 export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
@@ -776,6 +1049,9 @@ export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
   }
   if (method === 'GET' && path === '/v1/attribution') {
     return handleAttributionQuery(event);
+  }
+  if (method === 'GET' && path === '/v1/productivity') {
+    return handleProductivityQuery(event);
   }
   return jsonResponse(404, { message: 'Not found' });
 }

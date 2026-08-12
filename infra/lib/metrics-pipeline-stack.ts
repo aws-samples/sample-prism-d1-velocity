@@ -165,6 +165,10 @@ export class MetricsPipelineStack extends cdk.Stack {
       ['by-pr', 'gsi_pr', 'gsi_pr_sk'],
       ['by-commit', 'gsi_commit', 'gsi_commit_sk'],
       ['by-date', 'gsi_date', 'gsi_date_sk'],
+      // Sparse index over commit attribution items (only they carry gsi_user):
+      // pk USER#<email>, sk COMMIT#<iso-timestamp>. Powers per-developer
+      // commit queries for GET /v1/productivity without scanning.
+      ['by-user', 'gsi_user', 'gsi_user_sk'],
     ] as const) {
       this.aiUsageTable.addGlobalSecondaryIndex({
         indexName,
