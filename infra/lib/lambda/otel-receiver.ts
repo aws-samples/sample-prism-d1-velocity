@@ -460,14 +460,19 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
       },
       UpdateExpression:
         'SET record_type = :rt, session_id = :sid, trace_id = :tid, ' +
-        'project = :proj, #usr = :usr, device_id = :did, ' +
+        '#proj = :proj, #usr = :usr, device_id = :did, ' +
         'in_main = :im, was_reverted = :wr, ' +
-        '#ts = :ts, updated_at = :now, ttl = :ttl',
+        '#ts = :ts, updated_at = :now, #ttl = :ttl',
       // Only write if: item doesn't exist, OR inMain/wasReverted actually changed.
       // Suppresses no-op MODIFY stream events that would double-count metrics.
       ConditionExpression:
         'attribute_not_exists(pk) OR in_main <> :im OR was_reverted <> :wr',
       ExpressionAttributeNames: {
+        // 'project', 'ttl', 'user', and 'timestamp' are all DynamoDB
+        // reserved keywords — bare use in an expression throws
+        // ValidationException at runtime.
+        '#proj': 'project',
+        '#ttl': 'ttl',
         '#usr': 'user',
         '#ts': 'timestamp',
       },
