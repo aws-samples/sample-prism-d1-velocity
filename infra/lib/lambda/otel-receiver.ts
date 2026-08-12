@@ -438,9 +438,10 @@ async function writeSessionAttribution(user: string, s: ParsedAttributionSpan): 
 }
 
 /**
- * Write/update a commit attribution record. UPSERT — when inMain or wasReverted
- * changes, the receiver overwrites the mutable fields. The pk/sk (REPO#/COMMIT#)
- * is stable; only the boolean state evolves.
+ * Write/update a commit attribution record. Conditional UPSERT — only writes
+ * if the item doesn't exist OR the mutable state (inMain/wasReverted) changed.
+ * This prevents redundant DDB stream MODIFY events that would double-count
+ * CloudWatch metrics in the attribution-metrics-publisher.
  *
  * AI-Origin inference: done at query time by joining with usage spans via traceId.
  * If no usage spans share this traceId → origin=human, tool=none.
@@ -450,36 +451,45 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
   if (!s.repo || !s.sha) return false;
   const ttl = Math.floor(Date.now() / 1000) + COMMIT_TTL_DAYS * 24 * 60 * 60;
 
-  await dynamoClient.send(new UpdateItemCommand({
-    TableName: AI_USAGE_TABLE,
-    Key: {
-      pk: { S: `REPO#${s.repo}` },
-      sk: { S: `COMMIT#${s.sha}` },
-    },
-    UpdateExpression:
-      'SET record_type = :rt, session_id = :sid, trace_id = :tid, ' +
-      'project = :proj, #usr = :usr, device_id = :did, ' +
-      'in_main = :im, was_reverted = :wr, ' +
-      '#ts = :ts, updated_at = :now, ttl = :ttl',
-    ExpressionAttributeNames: {
-      '#usr': 'user',
-      '#ts': 'timestamp',
-    },
-    ExpressionAttributeValues: {
-      ':rt': { S: 'OTEL_ATTR_COMMIT' },
-      ':sid': { S: s.sessionId },
-      ':tid': { S: s.traceId },
-      ':proj': { S: s.project },
-      ':usr': { S: user },
-      ':did': { S: s.deviceId },
-      ':im': { BOOL: s.inMain ?? false },
-      ':wr': { BOOL: s.wasReverted ?? false },
-      ':ts': { S: s.timestamp },
-      ':now': { S: new Date().toISOString() },
-      ':ttl': { N: String(ttl) },
-    },
-  }));
-  return true;
+  try {
+    await dynamoClient.send(new UpdateItemCommand({
+      TableName: AI_USAGE_TABLE,
+      Key: {
+        pk: { S: `REPO#${s.repo}` },
+        sk: { S: `COMMIT#${s.sha}` },
+      },
+      UpdateExpression:
+        'SET record_type = :rt, session_id = :sid, trace_id = :tid, ' +
+        'project = :proj, #usr = :usr, device_id = :did, ' +
+        'in_main = :im, was_reverted = :wr, ' +
+        '#ts = :ts, updated_at = :now, ttl = :ttl',
+      // Only write if: item doesn't exist, OR inMain/wasReverted actually changed.
+      // Suppresses no-op MODIFY stream events that would double-count metrics.
+      ConditionExpression:
+        'attribute_not_exists(pk) OR in_main <> :im OR was_reverted <> :wr',
+      ExpressionAttributeNames: {
+        '#usr': 'user',
+        '#ts': 'timestamp',
+      },
+      ExpressionAttributeValues: {
+        ':rt': { S: 'OTEL_ATTR_COMMIT' },
+        ':sid': { S: s.sessionId },
+        ':tid': { S: s.traceId },
+        ':proj': { S: s.project },
+        ':usr': { S: user },
+        ':did': { S: s.deviceId },
+        ':im': { BOOL: s.inMain ?? false },
+        ':wr': { BOOL: s.wasReverted ?? false },
+        ':ts': { S: s.timestamp },
+        ':now': { S: new Date().toISOString() },
+        ':ttl': { N: String(ttl) },
+      },
+    }));
+    return true;
+  } catch (e) {
+    if (e instanceof ConditionalCheckFailedException) return false; // no-op, state unchanged
+    throw e;
+  }
 }
 
 /** Process attribution spans. Returns count of writes. */
