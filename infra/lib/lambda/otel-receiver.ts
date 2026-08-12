@@ -19,6 +19,8 @@ import {
   DynamoDBClient,
   PutItemCommand,
   UpdateItemCommand,
+  QueryCommand,
+  GetItemCommand,
   ConditionalCheckFailedException,
 } from '@aws-sdk/client-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
@@ -48,6 +50,7 @@ const PROVIDER_TO_TOOL: Record<string, string> = {
 
 interface HttpApiEvent {
   rawPath: string;
+  rawQueryString?: string;
   requestContext: {
     http: { method: string; path: string };
     authorizer?: { jwt?: { claims?: Record<string, unknown> } };
@@ -345,6 +348,7 @@ async function writeSpanIfNew(user: string, s: ParsedSpan): Promise<boolean> {
         pk: { S: `USER#${user}` },
         sk: { S: `SPAN#${s.timestamp}#${s.spanId}` },
         record_type: { S: 'OTEL_SPAN' },
+        trace_id: { S: s.traceId },
         tool: { S: s.tool },
         model: { S: s.model },
         input_tokens: { N: String(s.inputTokens) },
@@ -557,6 +561,192 @@ async function handleTraces(event: HttpApiEvent): Promise<HttpApiResponse> {
   return jsonResponse(200, {});
 }
 
+// ---- Attribution query helpers ----
+
+export interface CommitAttribution {
+  sha: string;
+  repo: string;
+  sessionId: string;
+  traceId: string;
+  user: string;
+  project: string;
+  inMain: boolean;
+  wasReverted: boolean;
+  timestamp: string;
+  /** Inferred from presence of correlated usage spans. */
+  aiOrigin: 'ai-generated' | 'human';
+  /** Tool name from correlated usage spans, or 'none' if human. */
+  aiTool: string;
+  /** Model from correlated usage spans, or empty if human. */
+  aiModel: string;
+}
+
+/**
+ * Query a commit's attribution with AI-origin inference via traceId join.
+ *
+ * 1. Get REPO#<repo>/COMMIT#<sha> → session_id, trace_id, user
+ * 2. Query USER#<user>/SPAN#* filtered by trace_id match
+ * 3. If usage spans found → ai-generated + tool from first usage span
+ * 4. If no usage spans → human, tool=none
+ */
+export async function queryCommitAttribution(repo: string, sha: string): Promise<CommitAttribution | null> {
+  // Step 1: Get the commit record
+  const commitResult = await dynamoClient.send(new GetItemCommand({
+    TableName: AI_USAGE_TABLE,
+    Key: {
+      pk: { S: `REPO#${repo}` },
+      sk: { S: `COMMIT#${sha}` },
+    },
+  }));
+
+  const item = commitResult.Item;
+  if (!item) return null;
+
+  const traceId = item.trace_id?.S ?? '';
+  const user = item.user?.S ?? '';
+  const sessionId = item.session_id?.S ?? '';
+
+  if (!traceId || !user) return null;
+
+  // Step 2: Find correlated usage spans for this session's traceId.
+  // Usage spans have sk=SPAN#<ts>#<spanId> and we stored traceId on them.
+  // Query by pk=USER#<user>, sk begins_with SPAN#, filter on trace_id.
+  const usageResult = await dynamoClient.send(new QueryCommand({
+    TableName: AI_USAGE_TABLE,
+    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+    FilterExpression: 'trace_id = :tid',
+    ExpressionAttributeValues: {
+      ':pk': { S: `USER#${user}` },
+      ':prefix': { S: 'SPAN#' },
+      ':tid': { S: traceId },
+    },
+    Limit: 1, // We only need to know if ANY exist
+  }));
+
+  const hasUsageSpans = (usageResult.Items?.length ?? 0) > 0;
+
+  // Step 3: Infer AI origin
+  let aiOrigin: 'ai-generated' | 'human' = 'human';
+  let aiTool = 'none';
+  let aiModel = '';
+
+  if (hasUsageSpans) {
+    aiOrigin = 'ai-generated';
+    const usageSpan = usageResult.Items![0];
+    aiTool = usageSpan.tool?.S ?? 'unknown';
+    aiModel = usageSpan.model?.S ?? '';
+  }
+
+  return {
+    sha,
+    repo,
+    sessionId,
+    traceId,
+    user,
+    project: item.project?.S ?? '',
+    inMain: item.in_main?.BOOL ?? false,
+    wasReverted: item.was_reverted?.BOOL ?? false,
+    timestamp: item.timestamp?.S ?? '',
+    aiOrigin,
+    aiTool,
+    aiModel,
+  };
+}
+
+/**
+ * Query all commits for a repo, with AI-origin inference for each.
+ * Returns commits sorted by timestamp descending.
+ */
+export async function queryRepoCommits(repo: string, limit = 50): Promise<CommitAttribution[]> {
+  const result = await dynamoClient.send(new QueryCommand({
+    TableName: AI_USAGE_TABLE,
+    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+    ExpressionAttributeValues: {
+      ':pk': { S: `REPO#${repo}` },
+      ':prefix': { S: 'COMMIT#' },
+    },
+    ScanIndexForward: false, // newest first
+    Limit: limit,
+  }));
+
+  const commits: CommitAttribution[] = [];
+  for (const item of result.Items ?? []) {
+    const sha = item.sk?.S?.replace('COMMIT#', '') ?? '';
+    const traceId = item.trace_id?.S ?? '';
+    const user = item.user?.S ?? '';
+
+    // Batch the usage span lookup for each commit
+    let aiOrigin: 'ai-generated' | 'human' = 'human';
+    let aiTool = 'none';
+    let aiModel = '';
+
+    if (traceId && user) {
+      const usageResult = await dynamoClient.send(new QueryCommand({
+        TableName: AI_USAGE_TABLE,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+        FilterExpression: 'trace_id = :tid',
+        ExpressionAttributeValues: {
+          ':pk': { S: `USER#${user}` },
+          ':prefix': { S: 'SPAN#' },
+          ':tid': { S: traceId },
+        },
+        Limit: 1,
+      }));
+
+      if ((usageResult.Items?.length ?? 0) > 0) {
+        aiOrigin = 'ai-generated';
+        aiTool = usageResult.Items![0].tool?.S ?? 'unknown';
+        aiModel = usageResult.Items![0].model?.S ?? '';
+      }
+    }
+
+    commits.push({
+      sha,
+      repo,
+      sessionId: item.session_id?.S ?? '',
+      traceId,
+      user,
+      project: item.project?.S ?? '',
+      inMain: item.in_main?.BOOL ?? false,
+      wasReverted: item.was_reverted?.BOOL ?? false,
+      timestamp: item.timestamp?.S ?? '',
+      aiOrigin,
+      aiTool,
+      aiModel,
+    });
+  }
+
+  return commits;
+}
+
+// ---- Route: attribution query ----
+
+async function handleAttributionQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
+  const user = resolveIdentity(event);
+  if (!user) return jsonResponse(401, { message: 'No resolvable identity claim in token' });
+
+  // Parse query params from rawPath: /v1/attribution?repo=X&sha=Y or /v1/attribution?repo=X
+  const url = new URL(event.rawPath + '?' + (event.rawQueryString ?? ''), 'http://localhost');
+  const repo = url.searchParams.get('repo');
+  const sha = url.searchParams.get('sha');
+
+  if (!repo) {
+    return jsonResponse(400, { message: 'Missing required query parameter: repo' });
+  }
+
+  if (sha) {
+    // Single commit lookup
+    const commit = await queryCommitAttribution(repo, sha);
+    if (!commit) return jsonResponse(404, { message: 'Commit not found' });
+    return jsonResponse(200, commit);
+  }
+
+  // Repo commit list
+  const limit = Math.min(Number(url.searchParams.get('limit') ?? '50'), 200);
+  const commits = await queryRepoCommits(repo, limit);
+  return jsonResponse(200, { repo, commits, count: commits.length });
+}
+
 // ---- Handler ----
 
 export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
@@ -568,6 +758,9 @@ export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
   }
   if (method === 'POST' && path === '/v1/traces') {
     return handleTraces(event);
+  }
+  if (method === 'GET' && path === '/v1/attribution') {
+    return handleAttributionQuery(event);
   }
   return jsonResponse(404, { message: 'Not found' });
 }
