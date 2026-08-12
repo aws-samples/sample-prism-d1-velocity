@@ -171,11 +171,12 @@ export class DashboardStack extends cdk.Stack {
           // Line 2: attribution-derived (codeburn spans, fleet aggregate).
           // Populates for any user running `codeburn sync --attribution`.
           // Divergence from line 1 indicates attribution coverage gaps.
-          // FILL materializes empty/missing series as 0 and the IF guard
-          // yields a gap (not NaN) in buckets with no AI commits. Daily
-          // period: an hourly commit ratio is too sparse to read.
+          // Inner FILL/IF: avoid NaN on empty buckets (gap, not 0). Outer
+          // FILL(..., REPEAT): carry the last ratio forward through gap days —
+          // commit data is sparse, and CloudWatch renders an isolated
+          // datapoint between gaps as an invisible dot, not a line.
           new cloudwatch.MathExpression({
-            expression: 'IF(FILL(aiCommits, 0) > 0, 100 * FILL(mergedAi, 0) / FILL(aiCommits, 0))',
+            expression: 'FILL(IF(FILL(aiCommits, 0) > 0, 100 * FILL(mergedAi, 0) / FILL(aiCommits, 0)), REPEAT)',
             usingMetrics: {
               mergedAi: new cloudwatch.Metric({
                 namespace: METRIC_NAMESPACE,
@@ -194,9 +195,40 @@ export class DashboardStack extends cdk.Stack {
             period: cdk.Duration.days(1),
           }),
         ],
-        width: 8,
+        width: 6,
         height: 6,
         leftYAxis: { min: 0, max: 100, label: 'Percent' },
+      }),
+      // KPI card: the aggregate ratio over the whole displayed time range.
+      // Always shows a number regardless of how sparse the daily series is —
+      // the graph next door can render near-empty when the range holds only
+      // isolated datapoints.
+      new cloudwatch.SingleValueWidget({
+        title: 'AI Merge Rate (range)',
+        metrics: [
+          new cloudwatch.MathExpression({
+            expression: 'IF(FILL(aiCommitsKpi, 0) > 0, 100 * FILL(mergedAiKpi, 0) / FILL(aiCommitsKpi, 0))',
+            usingMetrics: {
+              mergedAiKpi: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'MergedAICommits',
+                statistic: 'Sum',
+                period: cdk.Duration.days(1),
+              }),
+              aiCommitsKpi: new cloudwatch.Metric({
+                namespace: METRIC_NAMESPACE,
+                metricName: 'AICommits',
+                statistic: 'Sum',
+                period: cdk.Duration.days(1),
+              }),
+            },
+            label: 'Merged AI / AI commits (%)',
+            period: cdk.Duration.days(1),
+          }),
+        ],
+        setPeriodToTimeRange: true,
+        width: 2,
+        height: 6,
       }),
     );
 
