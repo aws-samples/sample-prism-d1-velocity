@@ -40,7 +40,7 @@ function getCodeburnPath(): string | null {
 }
 
 function buildSyncCommand(codeburnPath: string, since: string): string {
-  return `${codeburnPath} sync push --since ${since}`;
+  return `${codeburnPath} sync push --since ${since} --attribution`;
 }
 
 // ---- Linux: user crontab ----
@@ -110,6 +110,7 @@ function darwinInstallSchedule(codeburnPath: string, intervalHours: number): voi
     <string>push</string>
     <string>--since</string>
     <string>7d</string>
+    <string>--attribution</string>
   </array>
   <key>StartInterval</key>
   <integer>${intervalHours * 3600}</integer>
@@ -337,7 +338,7 @@ export default {
 
     // 5. Initial backfill push (30d — server drops >14d from CloudWatch, keeps in DDB/S3)
     console.log('\n  Pushing initial backfill (last 30 days of telemetry)...');
-    const backfill = run(`${codeburnPath} sync push --since 30d`);
+    const backfill = run(`${codeburnPath} sync push --since 30d --attribution`);
     if (backfill.ok) {
       console.log('  ✓ Backfill push complete.');
       if (backfill.stdout) console.log(`    ${backfill.stdout.split('\n').slice(-1)[0]}`);
