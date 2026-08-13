@@ -26,6 +26,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 ### For Engineering Teams (Bottom-Up Activation)
 
 - **[Team Velocity Dashboard](docs/dashboard-team.html)** ([spec](docs/data-architecture.md#cloudwatch-team-velocity-prism-d1-team-velocity)) — Real-time DORA metrics, eval gate quality by rubric, guardrail safety, MCP tool governance, cost per commit, AI vs human defect rates, Security Agent findings
+- **Developer Productivity Dashboard** (`PRISM-D1-Developer-Productivity`) — org and per-developer view of AI-assisted output, fed entirely by codeburn attribution data (no CI instrumentation required). Org KPI cards (AI share of commits, AI merge rate, cost per shipped commit, spend), daily trend charts (AI vs human commits, spend, merge ratio), and two custom-widget panels backed by the `GET /v1/productivity` API: a team comparison table (spend, commits, merge rate, defect rate, $/shipped per developer) and a detail panel with by-tool and by-model spend breakdowns. Type a developer email into the **Developer** dashboard variable to scope the detail panel; default `all` shows the organization. Unlike the metric widgets, the table panels query the attribution store directly — full history at real commit timestamps, no CloudWatch ingestion-window limits. Access to per-developer detail is gated by IAM (`lambda:InvokeFunction` on the widget Lambda), not metric visibility.
 - **4-hour workshop** (+ extensions) with hands-on exercises using Claude Code, Kiro, and Bedrock
 - **Spec-driven development** templates with [AI-DLC steering files](bootstrapper/aidlc-steering/) (adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows))
 - **AI agent development** — Strands SDK, MCP with [scope-based auth](sample-app/src/mcp/auth/), Amazon Bedrock AgentCore
@@ -64,7 +65,7 @@ npx cdk bootstrap   # First time only
 npx cdk deploy --all
 ```
 
-This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 3 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
+This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
 
 > **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
 
@@ -196,7 +197,7 @@ Monthly cost depends on team size and configuration. All resources are serverles
 | **DynamoDB** (2 tables) | $1–5 | On-demand billing; scales with commit volume |
 | **Lambda** (8 processors) | $1–3 | Invoked per event; negligible at <50 devs |
 | **EventBridge** | < $1 | $1/million events |
-| **CloudWatch** (3 dashboards, 11 alarms) | $3–10 | Per-dashboard fee + metric costs |
+| **CloudWatch** (4 dashboards, 11 alarms) | $3–10 | Per-dashboard fee + metric costs |
 | **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
 | **Bedrock Guardrails** | $1–5 | Per-invocation; depends on eval gate frequency |
 | **KMS** (1 key) | $1 | Fixed monthly fee + $0.03/10K requests |
