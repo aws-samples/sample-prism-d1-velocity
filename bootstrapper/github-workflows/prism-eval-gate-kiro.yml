@@ -372,8 +372,66 @@ jobs:
           echo "critical=${CRITICAL}" >> "$GITHUB_OUTPUT"
           echo "high=${HIGH}" >> "$GITHUB_OUTPUT"
 
+          # Persist full findings for the EventBridge emission step. A file
+          # (not a step output) sidesteps GITHUB_OUTPUT size limits and avoids
+          # interpolating finding text into a later script (injection surface).
+          echo "$FINDINGS_JSON" > "$RUNNER_TEMP/continuum-findings.json"
+
           if [ "$TOTAL" -gt 0 ]; then
             echo "$FINDINGS_JSON" | jq -r '.findingsSummaries[] | "::warning::[\(.riskLevel)] \(.name)"'
+          fi
+
+      - name: Emit Continuum findings to EventBridge
+        if: steps.security-gate.outputs.skipped != 'true' && steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.findings != ''
+        continue-on-error: true
+        env:
+          AWS_REGION: us-west-2
+          TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Feeds the Team Velocity / CISO dashboards: without this step,
+          # Continuum findings gate the PR but never reach the metrics
+          # pipeline (prism.d1.security.code_review -> metrics-processor).
+          FINDINGS_FILE="$RUNNER_TEMP/continuum-findings.json"
+          if [ ! -s "$FINDINGS_FILE" ]; then
+            echo "No findings file — nothing to emit"
+            exit 0
+          fi
+
+          # AI-Origin from git trailers when present (hook-instrumented repos);
+          # defaults to human. Shallow clones make rev-list fail -> human.
+          AI_ORIGIN="human"
+          for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || true); do
+            if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
+              AI_ORIGIN="ai-assisted"; break
+            fi
+          done
+
+          ENTRIES=$(jq --arg team_id "${TEAM_ID}" --arg repo "${REPO}" \
+            --arg ai_origin "${AI_ORIGIN}" --argjson pr_number "${PR_NUMBER}" '
+            .findingsSummaries | to_entries | map(.value as $f |
+              {Source:"prism.d1.velocity", DetailType:"prism.d1.security.code_review",
+               EventBusName:"prism-d1-metrics",
+               Detail:({team_id:$team_id, repo:$repo, timestamp:(now | todate), prism_level:3,
+                 metric:{name:"security_finding",value:1,unit:"count"},
+                 ai_context:{tool:"continuum",model:"aws-continuum",origin:$ai_origin},
+                 continuum_finding:{finding_id:($f.findingId // "cf-pr\($pr_number)-\(.key)"), phase:"code_review",
+                   severity:($f.riskLevel // "MEDIUM"),
+                   cwe_id:($f.cweId // null),
+                   ai_origin:$ai_origin, found_at:($f.createdAt // null)}
+               } | tostring)})' "$FINDINGS_FILE" 2>/dev/null || echo "[]")
+
+          TOTAL=$(echo "${ENTRIES}" | jq 'length')
+          if [ "$TOTAL" -gt 0 ]; then
+            # EventBridge accepts max 10 entries per call
+            for i in $(seq 0 10 $((TOTAL - 1))); do
+              aws events put-events --region us-west-2 \
+                --entries "$(echo "${ENTRIES}" | jq -c ".[$i:$((i+10))]")" || true
+            done
+            echo "Emitted ${TOTAL} Continuum finding events to EventBridge"
           fi
 
       - name: Fail on eval gate failure

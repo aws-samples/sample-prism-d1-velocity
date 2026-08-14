@@ -247,6 +247,15 @@ export class MetricsPipelineStack extends cdk.Stack {
       description: 'Processes PRISM D1 metric events from EventBridge into DynamoDB and CloudWatch',
     });
 
+    // Cap Lambda's own async retry of function errors (default 2, up to 6h).
+    // EventBridge target retries are bounded separately below; together these
+    // prevent the unbounded retry amplification behind the July 2026 storm.
+    new lambda.EventInvokeConfig(this, 'MetricsProcessorInvokeConfig', {
+      function: metricsProcessor,
+      retryAttempts: 1,
+      maxEventAge: cdk.Duration.hours(1),
+    });
+
     // -------------------------------------------------------
     // IAM permissions for the processor
     // -------------------------------------------------------
@@ -288,6 +297,26 @@ export class MetricsPipelineStack extends cdk.Stack {
       'prism.d1.quality',
     ];
 
+    // DLQ for events the processor fails to handle. Combined with
+    // retryAttempts: 1 this caps the blast radius of a poison event or a
+    // downstream outage — the July 2026 retry storm (~108M invocations/day,
+    // 445 GB of logs) was driven by unbounded async retries against a
+    // throttling failure. Events land here for inspection instead of looping.
+    const processorDlq = new sqs.Queue(this, 'MetricsProcessorDlq', {
+      queueName: 'prism-d1-metrics-processor-dlq',
+      encryption: sqs.QueueEncryption.KMS,
+      encryptionMasterKey: prismKmsKey,
+      retentionPeriod: cdk.Duration.days(14),
+      enforceSSL: true,
+    });
+    // EventBridge needs KMS grants to write to the CMK-encrypted DLQ —
+    // without them messages are dropped silently (no error, no metric).
+    prismKmsKey.grant(
+      new iam.ServicePrincipal('events.amazonaws.com'),
+      'kms:GenerateDataKey',
+      'kms:Decrypt',
+    );
+
     for (const detailType of detailTypes) {
       const ruleName = detailType.replace(/\./g, '-');
       new events.Rule(this, `Rule-${ruleName}`, {
@@ -297,7 +326,13 @@ export class MetricsPipelineStack extends cdk.Stack {
           source: ['prism.d1.velocity'],
           detailType: [detailType],
         },
-        targets: [new targets.LambdaFunction(metricsProcessor)],
+        targets: [
+          new targets.LambdaFunction(metricsProcessor, {
+            deadLetterQueue: processorDlq,
+            retryAttempts: 1,
+            maxEventAge: cdk.Duration.hours(1),
+          }),
+        ],
         description: `Routes ${detailType} events to the metrics processor`,
       });
     }
