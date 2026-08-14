@@ -124,43 +124,6 @@ export class DashboardStack extends cdk.Stack {
       }),
     );
 
-    // Cost breakdowns by Tool and Model. SEARCH expressions auto-discover
-    // every dimension value, so new tools/models appear without dashboard
-    // changes. Populated by the otel-metrics-publisher from codeburn usage
-    // spans (deployed by default; skip with -c skipOtelCollector=true).
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'AI Cost by Tool (USD)',
-        left: [
-          new cloudwatch.MathExpression({
-            expression: `SEARCH('{${METRIC_NAMESPACE},Tool} MetricName="AICostUSD"', 'Sum')`,
-            usingMetrics: {},
-            label: "${PROP('Dim.Tool')}",
-            period: cdk.Duration.days(1),
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
-        legendPosition: cloudwatch.LegendPosition.RIGHT,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'AI Cost by Model (USD)',
-        left: [
-          new cloudwatch.MathExpression({
-            expression: `SEARCH('{${METRIC_NAMESPACE},Model} MetricName="AICostUSD"', 'Sum')`,
-            usingMetrics: {},
-            label: "${PROP('Dim.Model')}",
-            period: cdk.Duration.days(1),
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
-        legendPosition: cloudwatch.LegendPosition.RIGHT,
-      }),
-    );
-
     if (props?.velocityWidgetArn) {
       // Rows 4-7: DDB-backed detail panels
       teamDashboard.addWidgets(velocityPanel('Eval Gates (auto-discovers rubrics, incl. kiro-headless)', 'eval', 7));
