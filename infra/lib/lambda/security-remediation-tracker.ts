@@ -21,7 +21,7 @@ interface PrEvent {
     repo: string;
     timestamp: string;
     ai_context?: { origin: string };
-    pr?: { merged_at?: string; number?: number };
+    pr?: { merged_at?: string; number?: number; commit_shas?: string[] };
   };
 }
 
@@ -90,7 +90,20 @@ export async function handler(event: PrEvent): Promise<void> {
             finding_id: finding.finding_id,
             severity: finding.severity,
             remediation_time_hours: Math.round(remediationHours * 100) / 100,
+            // WHO FIXED IT — resolved by deferred attribution join at render
+            // time, not here. These are the FIX PR's commits (not the
+            // offending commits on the finding), which is the correct signal
+            // for "who remediated this". SHAs are immutable facts; a verdict
+            // computed now can be permanently wrong because `codeburn sync
+            // --attribution` runs on a ~12h schedule and has not necessarily
+            // covered these commits yet.
+            fix_commit_shas: detail.pr?.commit_shas ?? [],
+            // Legacy trailer-derived verdict, retained for the Phase 1
+            // parallel run. Reads 'human' for everything once git hooks are
+            // removed (ai_context.origin <- ai_ratio <- trailer counting), so
+            // dashboards prefer the join above and only fall back to this.
             remediated_by_origin: detail.ai_context?.origin ?? 'unknown',
+            remediated_by_origin_source: 'git-trailers',
             fix_pr_number: detail.pr?.number ?? null,
             finding_phase: finding.phase,
           },
@@ -110,7 +123,9 @@ export async function handler(event: PrEvent): Promise<void> {
         );
 
         console.log(
-          `Remediation event: finding ${finding.finding_id} (${finding.severity}) fixed in ${remediationHours.toFixed(1)}h by ${detail.ai_context?.origin ?? 'unknown'}`,
+          `Remediation event: finding ${finding.finding_id} (${finding.severity}) fixed in ${remediationHours.toFixed(1)}h ` +
+          `in PR #${detail.pr?.number ?? '?'} (${(detail.pr?.commit_shas ?? []).length} commit SHAs for deferred origin join; ` +
+          `trailer said ${detail.ai_context?.origin ?? 'unknown'})`,
         );
       }
     }

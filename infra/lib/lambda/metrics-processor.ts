@@ -117,7 +117,17 @@ interface SecurityRemediationDetail {
   finding_id: string;
   severity: string;
   remediation_time_hours: number;
+  /**
+   * Trailer-derived verdict for who fixed the finding. Legacy — reads 'human'
+   * for everything once git hooks are removed. Dashboards prefer
+   * `fix_commit_shas` and only fall back to this. See the deferred-join note
+   * on SecurityAgentFinding.commit_shas.
+   */
   remediated_by_origin: string;
+  remediated_by_origin_source?: string;
+  /** Fix PR's commit SHAs — joined against the attribution store at render time. */
+  fix_commit_shas?: string[];
+  fix_pr_number?: number | null;
   finding_phase: string;
 }
 
@@ -241,9 +251,25 @@ async function writeEventToDynamo(
     }
   }
 
+  // Sort key. Events that fan out PER FINDING (security findings, and one
+  // remediation per finding resolved by a merged PR) all carry the SAME
+  // timestamp — the scan time or the PR merge time. With sk = timestamp alone
+  // they collide on (pk, sk) and silently overwrite each other: a PR fixing
+  // three findings stored exactly one remediation event. Appending the
+  // finding id disambiguates them while preserving the timestamp prefix, so
+  // `sk BETWEEN :from AND :to` range queries and lexicographic time ordering
+  // still work. Follows the existing `SPAN#${ts}#${spanId}` convention in
+  // otel-receiver.ts. Pre-existing items keep bare-timestamp sks; readers
+  // split on '#', which is a no-op for those.
+  const findingDiscriminator =
+    detail.security_agent_finding?.finding_id ?? detail.security_remediation?.finding_id;
+  const sortKey = findingDiscriminator
+    ? `${detail.timestamp}#${findingDiscriminator}`
+    : detail.timestamp;
+
   const item: Record<string, { S?: string; N?: string }> = {
     pk: { S: `${detail.team_id}#${detail.repo}` },
-    sk: { S: detail.timestamp },
+    sk: { S: sortKey },
     detail_type: { S: detailType },
     data: { S: JSON.stringify(data) },
     ttl: { N: ttl.toString() },
@@ -705,6 +731,13 @@ async function publishCloudWatchMetrics(
   // Security remediation metrics
   if (detail.security_remediation) {
     const remediation = detail.security_remediation;
+    // NOTE: the AIOrigin dimension here is trailer-derived and therefore
+    // legacy — dashboards resolve "who fixed it" from fix_commit_shas via the
+    // deferred attribution join instead. It is kept, and kept UNCONDITIONAL,
+    // on purpose: emitting this metric sometimes with AIOrigin and sometimes
+    // without would create a partial dimension set, which is exactly the
+    // failure that left three CISO widgets permanently empty. Full set or
+    // nothing. The dimensionless copy below is what the SLA panels read.
     metricData.push({
       MetricName: 'SecurityRemediationTimeHours',
       Value: remediation.remediation_time_hours,

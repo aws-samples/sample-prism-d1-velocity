@@ -101,7 +101,11 @@ async function queryEvents(detailType: string, fromIso: string, toIso: string): 
     for (const item of resp.Items ?? []) {
       try {
         out.push({
-          timestamp: item.sk?.S ?? '',
+          // sk may be `${timestamp}#${finding_id}` for per-finding fan-out
+          // events (see the sort-key note in metrics-processor.ts). Strip the
+          // discriminator so Date.parse and slice() see a clean ISO string.
+          // No-op for the bare-timestamp sks written before that change.
+          timestamp: (item.sk?.S ?? '').split('#')[0],
           detail_type: detailType,
           data: JSON.parse(item.data?.S ?? '{}'),
         });
@@ -539,6 +543,34 @@ async function findingOrigin(
   return { origin: 'unknown', source: 'none' };
 }
 
+/**
+ * Resolve who remediated a finding, using the FIX PR's commit SHAs.
+ *
+ * Same deferred-join rationale as findingOrigin, but note this was a SECOND
+ * and separate trailer path: the remediation tracker copied
+ * `ai_context.origin` off the merged-PR event, which `prism-ai-metrics.yml`
+ * derived from `ai_ratio` — itself computed by counting AI-Origin trailers.
+ * So "which code had findings" and "who fixed them" both silently degraded to
+ * human at hook removal, via different routes.
+ */
+async function remediationOrigin(
+  r: PrismEvent,
+  cache: Map<string, ResolvedOrigin>,
+): Promise<{ origin: ResolvedOrigin; source: 'attribution' | 'trailer' | 'none' }> {
+  const d = r.data.security_remediation ?? {};
+  const shas: string[] = Array.isArray(d.fix_commit_shas) ? d.fix_commit_shas : [];
+  if (shas.length > 0) {
+    const origin = await resolveOriginForShas(r.data.repo ?? '', shas, cache);
+    if (origin !== 'unknown') return { origin, source: 'attribution' };
+  }
+  // 'unknown' is the tracker's own default when the PR event carried no
+  // ai_context at all — treat it as no signal rather than as a human fix.
+  if (d.remediated_by_origin && d.remediated_by_origin !== 'unknown') {
+    return { origin: d.remediated_by_origin === 'human' ? 'human' : 'ai', source: 'trailer' };
+  }
+  return { origin: 'unknown', source: 'none' };
+}
+
 // ---- Shared security event access ----
 
 /** Remediation SLA budgets per the AI-DLC steering baseline (SECURITY-09). */
@@ -816,7 +848,7 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
   // --- Remediation SLA (steering file SECURITY-09: 24h Critical, 72h High,
   // 30d Medium). Closure is half the security story — findings alone don't
   // tell you whether the team is actually fixing them.
-  let remedHoursSum = 0, withinSla = 0, slaEligible = 0, remedAi = 0, remedHuman = 0;
+  let remedHoursSum = 0, withinSla = 0, slaEligible = 0, remedAi = 0, remedHuman = 0, remedUnknown = 0;
   const remedBySev = new Map<string, { count: number; hoursSum: number; within: number }>();
   for (const r of remediations) {
     const d = r.data.security_remediation;
@@ -832,7 +864,14 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
       if (hours <= budget) { withinSla += 1; agg.within += 1; }
     }
     remedBySev.set(sev, agg);
-    if (d.remediated_by_origin && d.remediated_by_origin !== 'human') remedAi += 1; else remedHuman += 1;
+    // Deferred join on the fix PR's commits — see remediationOrigin. Shares
+    // originCache with the findings loop above, so overlapping PRs are
+    // resolved once per render.
+    const { origin: remOrigin, source: remSource } = await remediationOrigin(r, originCache);
+    if (remSource !== 'none') originSources.add(remSource);
+    if (remOrigin === 'ai') remedAi += 1;
+    else if (remOrigin === 'human') remedHuman += 1;
+    else remedUnknown += 1;
   }
   const avgRemedHours = remediations.length ? remedHoursSum / remediations.length : null;
   const slaPct = slaEligible > 0 ? (withinSla / slaEligible) * 100 : null;
@@ -851,7 +890,7 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
       { label: 'Remediated', value: num(remediations.length) },
       { label: 'Avg Time', value: avgRemedHours === null ? '—' : `${Math.round(avgRemedHours * 10) / 10}h` },
       { label: 'Within SLA', value: pct(slaPct), color: slaPct === null ? undefined : slaPct >= 90 ? p.ok : slaPct >= 70 ? p.warn : p.danger },
-      { label: 'Fixed by AI', value: num(remedAi), note: `${num(remedHuman)} by human` },
+      { label: 'Fixed by AI', value: num(remedAi), note: `${num(remedHuman)} by human` + (remedUnknown > 0 ? ` · ${num(remedUnknown)} unresolved` : '') },
     ], p) + table(['Severity', 'Fixed', 'Avg Hours', 'Within SLA'],
       [...remedBySev.entries()].sort((a, b) => b[1].count - a[1].count).map(([sev, v]) => [
         esc(sev),
@@ -1119,33 +1158,34 @@ async function renderCisoRisk(fromIso: string, toIso: string, p: Palette): Promi
       ];
     });
 
-  // Remediation latency by who fixed it. Still trailer-derived on the
-  // remediation path, so it is labelled rather than silently trusted.
+  // Remediation latency by who fixed it — now resolved by the same deferred
+  // attribution join as the findings, so this survives hook removal.
   const remedByOrigin = new Map<string, { count: number; hoursSum: number }>();
   for (const r of remediations) {
-    const d = r.data.security_remediation;
-    const key = d.remediated_by_origin ? (d.remediated_by_origin === 'human' ? 'human' : 'ai') : 'unlabelled';
+    const { origin, source } = await remediationOrigin(r, cache);
+    if (source !== 'none') sources.add(source);
+    const key = origin === 'unknown' ? 'unresolved' : origin;
     const agg = remedByOrigin.get(key) ?? { count: 0, hoursSum: 0 };
     agg.count += 1;
-    agg.hoursSum += Number(d.remediation_time_hours ?? 0);
+    agg.hoursSum += Number(r.data.security_remediation?.remediation_time_hours ?? 0);
     remedByOrigin.set(key, agg);
   }
-  const remedRows = [...remedByOrigin.entries()].map(([k, v]) => [
-    esc(k), num(v.count), (v.hoursSum / v.count).toFixed(1),
-  ]);
+  const remedRows = [...remedByOrigin.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .map(([k, v]) => [esc(k), num(v.count), (v.hoursSum / v.count).toFixed(1)]);
 
   const volumeWarn = aiCommits === null
     ? footnote('Attribution store unreachable — rates cannot be normalized, so only raw counts are shown. Raw counts are not comparable when AI and human commit volumes differ.', p)
     : '';
   const trailerWarn = sources.has('trailer')
-    ? footnote('Some finding origins came from legacy git trailers (events predating the commit-SHA cutover). Trailers disappear at Phase 3 hook removal; new findings resolve against the attribution store.', p)
+    ? footnote('Some origins came from legacy git trailers (events predating the commit-SHA cutover, on either the finding or the remediation path). Trailers disappear at Phase 3 hook removal; new events resolve against the attribution store.', p)
     : '';
 
   return normalized
     + `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Origin × severity</div>`
     + table(['Origin', ...sevOrder, 'Total'], matrixRows, p)
     + (remedRows.length
-      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Remediation latency by fixer (trailer-derived — see note)</div>`
+      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Remediation latency by fixer</div>`
         + table(['Fixed by', 'Count', 'Avg Hours'], remedRows, p)
       : '')
     + volumeWarn
