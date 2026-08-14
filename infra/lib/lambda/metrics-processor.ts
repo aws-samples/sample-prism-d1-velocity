@@ -95,7 +95,19 @@ interface SecurityAgentFinding {
   cwe_id: string | null;
   exploit_validated: boolean;
   compliance_mappings: string[];
-  ai_origin: string;
+  /**
+   * Trailer-derived origin. Legacy — emitters now send `commit_shas` instead
+   * and dashboards resolve origin at render time against the attribution
+   * store. Retained so events emitted before the cutover still parse.
+   */
+  ai_origin?: string;
+  /**
+   * Commit SHAs the finding's PR introduced. Immutable facts — the deferred
+   * join reads these at query time, which is correct even when the PR merged
+   * before `codeburn sync --attribution` had run for those commits.
+   */
+  commit_shas?: string[];
+  pr_number?: number;
   spec_ref: string | null;
   found_at: string;
   remediated_at: string | null;

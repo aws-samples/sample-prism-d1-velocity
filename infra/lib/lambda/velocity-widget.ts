@@ -458,6 +458,81 @@ async function renderExec(fromIso: string, toIso: string, days: number, p: Palet
     + footnote('Observed level is computed from outcomes and capped at L4; L5 needs an autonomy signal no emitter produces. It is not the scanner\'s capability score — divergence between the two is expected and informative.', p);
 }
 
+// ---- Deferred origin resolution (attribution join at render time) ----
+
+/**
+ * Resolve AI-vs-human origin for a set of commit SHAs by looking them up in
+ * the attribution store.
+ *
+ * Why this happens here and not in CI: attribution spans land when a
+ * developer's machine runs `codeburn sync push --attribution`, which the
+ * installer schedules every ~12 hours. CI emits events at PR merge, usually
+ * before those spans exist — so an origin verdict computed in the workflow is
+ * frequently wrong and then permanently baked into an immutable event. The
+ * workflows therefore emit commit SHAs (facts that never expire) and this
+ * runs the join at query time, by which point attribution has landed. A PR
+ * merged before its sync simply renders correctly on the next look.
+ *
+ * Returns 'ai' if ANY commit in the set is AI-attributed, 'human' if all are
+ * classified human, and 'unknown' when no SHA is found in the store (not yet
+ * synced, or the author never onboarded codeburn). 'unknown' is deliberately
+ * distinct from 'human' — conflating them would silently undercount AI origin
+ * on a partially-onboarded team.
+ */
+type ResolvedOrigin = 'ai' | 'human' | 'unknown';
+
+async function resolveOriginForShas(
+  repo: string,
+  shas: string[],
+  cache: Map<string, ResolvedOrigin>,
+): Promise<ResolvedOrigin> {
+  if (!repo || shas.length === 0) return 'unknown';
+  const cacheKey = `${repo}|${shas.join(',')}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  let sawHuman = false;
+  for (const sha of shas) {
+    try {
+      const commit = await invokeReceiver('/v1/attribution', `repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`);
+      // The receiver infers origin from correlated usage spans (traceId join):
+      // a commit with LLM API calls in its session is AI-generated.
+      if (commit?.aiOrigin === 'ai-generated' || commit?.aiOrigin === 'ai-assisted' || commit?.ai_origin === 'ai-generated') {
+        cache.set(cacheKey, 'ai');
+        return 'ai';
+      }
+      sawHuman = true;
+    } catch {
+      // 404 (not synced yet) or transport failure — treat as no signal for
+      // this SHA and keep checking the rest.
+    }
+  }
+  const result: ResolvedOrigin = sawHuman ? 'human' : 'unknown';
+  cache.set(cacheKey, result);
+  return result;
+}
+
+/**
+ * Resolve origin for a finding, preferring the deferred attribution join and
+ * falling back to the legacy trailer-derived `ai_origin` for events emitted
+ * before the cutover.
+ */
+async function findingOrigin(
+  f: PrismEvent,
+  cache: Map<string, ResolvedOrigin>,
+): Promise<{ origin: ResolvedOrigin; source: 'attribution' | 'trailer' | 'none' }> {
+  const d = f.data.security_agent_finding ?? {};
+  const shas: string[] = Array.isArray(d.commit_shas) ? d.commit_shas : [];
+  if (shas.length > 0) {
+    const origin = await resolveOriginForShas(f.data.repo ?? '', shas, cache);
+    if (origin !== 'unknown') return { origin, source: 'attribution' };
+  }
+  if (d.ai_origin) {
+    return { origin: d.ai_origin === 'human' ? 'human' : 'ai', source: 'trailer' };
+  }
+  return { origin: 'unknown', source: 'none' };
+}
+
 // ---- View: exec-security (condensed posture strip; CISO dashboard has depth) ----
 
 async function renderExecSecurity(fromIso: string, toIso: string, p: Palette): Promise<string> {
@@ -689,13 +764,21 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
 
   const bySev = new Map<string, number>();
   const byPhase = new Map<string, number>();
-  let ai = 0, human = 0, exploitValidated = 0;
+  let ai = 0, human = 0, unknownOrigin = 0, exploitValidated = 0;
   const cvssScores: number[] = [];
+  const originCache = new Map<string, ResolvedOrigin>();
+  const originSources = new Set<string>();
   for (const f of findings) {
     const d = f.data.security_agent_finding;
     bySev.set(d.severity ?? 'UNKNOWN', (bySev.get(d.severity ?? 'UNKNOWN') ?? 0) + 1);
     byPhase.set(d.phase ?? 'unknown', (byPhase.get(d.phase ?? 'unknown') ?? 0) + 1);
-    if (d.ai_origin && d.ai_origin !== 'human') ai += 1; else human += 1;
+    // Deferred join — see resolveOriginForShas. Falls back to the legacy
+    // trailer field for events emitted before the cutover.
+    const { origin, source } = await findingOrigin(f, originCache);
+    if (source !== 'none') originSources.add(source);
+    if (origin === 'ai') ai += 1;
+    else if (origin === 'human') human += 1;
+    else unknownOrigin += 1;
     if (d.exploit_validated) exploitValidated += 1;
     if (typeof d.cvss_score === 'number') cvssScores.push(d.cvss_score);
   }
@@ -732,7 +815,7 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
     { label: 'Total Findings', value: num(findings.length), note: [...bySev.entries()].map(([s, n]) => `${s}:${n}`).join(' · ') },
     { label: 'Exploit Validated', value: num(exploitValidated), note: 'pen-test proven — immediate blocker', color: exploitValidated > 0 ? p.danger : p.ok },
     { label: 'Avg CVSS', value: avgCvss === null ? '—' : avgCvss.toFixed(1), color: avgCvss !== null && avgCvss >= 7 ? p.danger : undefined },
-    { label: 'AI-Origin', value: num(ai), note: `${num(human)} human-origin` },
+    { label: 'AI-Origin', value: num(ai), note: `${num(human)} human` + (unknownOrigin > 0 ? ` · ${num(unknownOrigin)} unresolved` : '') },
   ], p);
 
   const remedKpis = remediations.length === 0
@@ -750,9 +833,14 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
         `<span style="color:${v.within === v.count ? p.ok : p.warn}">${v.within} / ${v.count}</span>`,
       ]), p);
 
-  const recent = findings.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 8).map(f => {
+  const recentFindings = findings.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 8);
+  const recent = await Promise.all(recentFindings.map(async f => {
     const d = f.data.security_agent_finding;
     const sevColor = d.severity === 'CRITICAL' || d.severity === 'HIGH' ? p.danger : d.severity === 'MEDIUM' ? p.warn : p.mut;
+    // originCache is already warm from the KPI loop above, so this adds no
+    // extra receiver invokes for findings we have already resolved.
+    const { origin, source } = await findingOrigin(f, originCache);
+    const originLabel = origin === 'unknown' ? '—' : origin === 'ai' ? 'ai' : 'human';
     return [
       esc(f.timestamp.slice(0, 16).replace('T', ' ')),
       `<span style="color:${sevColor}">${esc(d.severity ?? '—')}</span>`,
@@ -760,14 +848,19 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
       esc(d.phase ?? '—'),
       esc(d.cwe_id ?? '—'),
       d.exploit_validated ? `<span style="color:${p.danger}">yes</span>` : '—',
-      esc(d.ai_origin ?? '—'),
+      `${esc(originLabel)}${source === 'trailer' ? `<span style="color:${p.mut}"> (trailer)</span>` : ''}`,
       esc(f.data.repo ?? '—'),
     ];
-  });
+  }));
+
+  const originNote = originSources.has('trailer')
+    ? footnote('Some origins resolved from legacy git trailers — those events predate the commit-SHA cutover. New findings resolve against the attribution store at render time.', p)
+    : '';
 
   return kpis + remedKpis
     + `<div style="color:${p.mut};font-size:11px;margin-top:12px">Recent findings · by phase: ${esc([...byPhase.entries()].map(([ph, n]) => `${ph}:${n}`).join(' · ') || 'none')}</div>`
-    + table(['Time (UTC)', 'Severity', 'CVSS', 'Phase', 'CWE', 'Exploit', 'Origin', 'Repo'], recent, p, 99);
+    + table(['Time (UTC)', 'Severity', 'CVSS', 'Phase', 'CWE', 'Exploit', 'Origin', 'Repo'], recent, p, 99)
+    + originNote;
 }
 
 // ---- Handler ----

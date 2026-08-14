@@ -401,27 +401,35 @@ jobs:
             exit 0
           fi
 
-          # AI-Origin from git trailers when present (hook-instrumented repos);
-          # defaults to human. Shallow clones make rev-list fail -> human.
-          AI_ORIGIN="human"
-          for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || true); do
-            if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
-              AI_ORIGIN="ai-assisted"; break
-            fi
-          done
+          # Emit the PR's commit SHAs, NOT a derived AI-origin verdict.
+          #
+          # Deferred join: dashboards resolve origin at render time by looking
+          # these SHAs up in the attribution store. Two reasons not to decide
+          # here: (1) trailer grep dies with the git hooks, and (2) attribution
+          # spans arrive via `codeburn sync push --attribution` on a ~12h
+          # schedule, so at merge time the data usually does not exist yet — a
+          # verdict computed now would be wrong and permanently baked into an
+          # immutable event. SHAs are facts that never expire, so a PR merged
+          # before its attribution syncs simply renders correctly the next day.
+          #
+          # Capped at 50 to bound event size; PRs larger than that are rare and
+          # a partial sample is enough to classify origin.
+          COMMIT_SHAS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
+          echo "Emitting findings with $(echo "${COMMIT_SHAS}" | jq 'length') commit SHAs for deferred origin resolution"
 
           ENTRIES=$(jq --arg team_id "${TEAM_ID}" --arg repo "${REPO}" \
-            --arg ai_origin "${AI_ORIGIN}" --argjson pr_number "${PR_NUMBER}" '
+            --argjson commit_shas "${COMMIT_SHAS}" --argjson pr_number "${PR_NUMBER}" '
             .findingsSummaries | to_entries | map(.value as $f |
               {Source:"prism.d1.velocity", DetailType:"prism.d1.security.code_review",
                EventBusName:"prism-d1-metrics",
                Detail:({team_id:$team_id, repo:$repo, timestamp:(now | todate), prism_level:3,
                  metric:{name:"security_finding",value:1,unit:"count"},
-                 ai_context:{tool:"continuum",model:"aws-continuum",origin:$ai_origin},
+                 ai_context:{tool:"continuum",model:"aws-continuum"},
                  security_agent_finding:{finding_id:($f.findingId // "cf-pr\($pr_number)-\(.key)"), phase:"code_review",
                    severity:($f.riskLevel // "MEDIUM"),
                    cwe_id:($f.cweId // null),
-                   ai_origin:$ai_origin, found_at:($f.createdAt // null)}
+                   commit_shas:$commit_shas, pr_number:$pr_number,
+                   found_at:($f.createdAt // null)}
                } | tostring)})' "$FINDINGS_FILE" 2>/dev/null || echo "[]")
 
           TOTAL=$(echo "${ENTRIES}" | jq 'length')

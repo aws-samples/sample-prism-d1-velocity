@@ -162,6 +162,14 @@ jobs:
           TEAM_ID="${{ steps.prism-config.outputs.team_id }}"
           REPO="${{ github.repository }}"
 
+          # Commit SHAs for deferred origin resolution. Dashboards join these
+          # against the attribution store at render time rather than trusting
+          # the trailer-derived ai_context.origin below, which (a) dies with the
+          # git hooks and (b) is computed before `codeburn sync --attribution`
+          # has necessarily run for these commits. SHAs never expire; a verdict
+          # baked in at merge time can be permanently wrong.
+          COMMIT_SHAS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
+
           PR_EVENT=$(jq -n \
             --arg team_id "${TEAM_ID}" \
             --arg repo "${REPO}" \
@@ -181,6 +189,7 @@ jobs:
             --argjson total_input_tokens "${{ steps.ai-ratio.outputs.total_input_tokens }}" \
             --argjson total_output_tokens "${{ steps.ai-ratio.outputs.total_output_tokens }}" \
             --arg total_cost "${{ steps.ai-ratio.outputs.total_cost }}" \
+            --argjson commit_shas "${COMMIT_SHAS}" \
             '{
               "team_id": $team_id,
               "repo": $repo,
@@ -194,7 +203,8 @@ jobs:
               "ai_context": {
                 "tool": "github-actions",
                 "model": "n/a",
-                "origin": (if $ai_ratio > 0.5 then "ai-assisted" elif $ai_ratio > 0 then "ai-assisted" else "human" end)
+                "origin": (if $ai_ratio > 0 then "ai-assisted" else "human" end),
+                "origin_source": "git-trailers"
               },
               "dora": {
                 "deployment_frequency": 1,
@@ -215,7 +225,8 @@ jobs:
                 "number": ($pr_number | tonumber),
                 "author": $pr_author,
                 "reviews_approved": $approved,
-                "reviews_changes_requested": $changes_requested
+                "reviews_changes_requested": $changes_requested,
+                "commit_shas": $commit_shas
               }
             }')
 
