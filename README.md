@@ -17,7 +17,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 ### For Engineering Leaders (Top-Down Visibility)
 
 - **[Executive Readout Dashboard](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)** — Business outcomes and an **observed PRISM level** computed live from outcome metrics (AI share, eval gates, cost attribution, governance) rather than static repo signals, with a gate table showing what blocks the next level. Plus unit economics (cost per shipped commit), AI-vs-human quality comparison, labeled delivery proxies, and a condensed security posture strip.
-- **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security posture, AI code risk profile, shift-left effectiveness, remediation SLA tracking
+- **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security depth in 6 rows: exposure and finding aging, per-severity remediation SLA compliance with breaches named, **AI code risk normalized per 100 commits** (findings joined to attribution commit volume — raw counts aren't comparable when AI writes more code), shift-left effectiveness with a computed finding survival rate, CWE and compliance-framework coverage, and runtime governance.
 - **[Enhanced DORA metrics](#enhanced-ai-dora-metrics)** with 4 AI-specific dimensions — acceptance rate, AI-to-merge ratio, post-merge defect rate, and eval gate pass rate
 - **[Executive readout templates](docs/leader-guide/executive-readout-template.md)** connecting engineering metrics to business outcomes
 

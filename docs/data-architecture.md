@@ -23,11 +23,13 @@
 
 Installed via `bootstrapper/metric-hooks/install.sh`. Fire automatically on every commit and merge.
 
-> ⚠️ **Deprecated — being removed.** Git hooks are superseded by codeburn attribution spans (`codeburn sync push --attribution`), which classify AI origin from actual LLM API calls rather than "you were inside an AI tool's terminal". Migration phases: **1)** run both in parallel and compare, **2)** rewrite CI workflows to query `GET /v1/attribution` instead of grepping trailers, **3)** remove the hooks. `AIAcceptanceRate` is the one metric that stays CI-fed permanently — it needs the GitHub PR review API (APPROVED / CHANGES_REQUESTED verdicts), which has no equivalent in attribution spans.
+> ⚠️ **Deprecated — being removed.** Git hooks are superseded by codeburn attribution spans (`codeburn sync push --attribution`), which classify AI origin from actual LLM API calls rather than "you were inside an AI tool's terminal". Migration phases: **1)** run both in parallel and compare, **2)** stop deriving origin in CI — emit commit SHAs and join against attribution at render time (see [AI Origin Resolution](#ai-origin-resolution-deferred-attribution-join)), **3)** remove the hooks. `AIAcceptanceRate` is the one metric that stays CI-fed permanently — it needs the GitHub PR review API (APPROVED / CHANGES_REQUESTED verdicts), which has no equivalent in attribution spans.
 >
 > Two consequences that are easy to miss:
 > - Anything derived from a trailer goes dark at Phase 3 unless rewired. That includes `Spec-Ref` (spec-to-code hours, spec coverage) — attribution spans carry no spec reference, so that needs a new source, not just a rewrite.
 > - `post-commit` / `post-merge` write JSON to `.prism/metrics/` but **nothing emits `prism.d1.commit` events today**. Processors that depend on commit events (the defect-correlator's AI-vs-human split, spec-to-code calculation) therefore do not fire on any real deployment, hooks installed or not.
+>
+> **Phase 2 is done for the security path.** `prism-eval-gate-kiro.yml` (findings) and `prism-ai-metrics.yml` (PR events feeding remediation) no longer grep `AI-Origin:` trailers — both emit `commit_shas` and the widget resolves origin at render time. Note there were **two** trailer paths, not one: findings greped trailers directly, while remediation origin came from `ai_context.origin`, itself computed from `ai_ratio` which was also trailer-derived. Both silently degraded to `human` rather than erroring, so both needed the rewire.
 
 | Hook | Trigger | Data Captured | Output |
 |------|---------|---------------|--------|
@@ -163,8 +165,52 @@ Events may include additional top-level fields depending on their type:
 | `cost` | `prism.d1.cost` | Commit SHA, total tokens, total cost, models used, correlation window |
 | `quality` | `prism.d1.quality` | AI defect rate, human defect rate, AI/human commit counts |
 | `security` | `prism.d1.security` | Alert type, table name, principal ARN, read count |
-| `security_agent_finding` | `prism.d1.security.{design_review,code_review,pen_test}` | Finding ID, phase, severity, CVSS, category, CWE, exploit validated, compliance mappings, AI origin, spec ref |
+| `security_agent_finding` | `prism.d1.security.{design_review,code_review,pen_test}` | Finding ID, phase, severity, CVSS, category, CWE, exploit validated, compliance mappings, **commit SHAs**, spec ref |
 | `security_remediation` | `prism.d1.security.remediation` | Finding ID, severity, remediation time hours, remediated by origin, fix PR number |
+
+---
+
+## AI Origin Resolution: Deferred Attribution Join
+
+AI-vs-human origin is **not** resolved at emit time. Workflows emit the PR's commit SHA list and the join against the attribution store happens when a dashboard panel renders.
+
+### Why not resolve it in CI
+
+The obvious design — have `prism-ai-metrics.yml` and `prism-eval-gate-kiro.yml` look up origin and write a verdict onto the event — fails for two independent reasons.
+
+**Auth.** The receiver's API Gateway uses a JWT authorizer (`HttpJwtAuthorizer`, audience = the Cognito client ID) built for codeburn's device flow on developer machines. CI authenticates with an IAM role via OIDC, not a Cognito user token, so `curl https://.../v1/attribution` from a workflow returns 401. This one is solvable — CI could direct-invoke the receiver Lambda with a synthetic HTTP event, the same pattern the widget Lambdas use.
+
+**Timing — the one that actually decides the design.** Attribution spans land when a developer's machine runs `codeburn sync push --attribution`, which the installer schedules **every ~12 hours**. CI runs at PR merge, often minutes after the commit was authored. A synchronous lookup would frequently find nothing, fall back to `human`, and then bake that wrong verdict into an immutable event — reproducing the exact failure being fixed, with a different cause.
+
+| | Resolve in CI | Resolve at render (chosen) |
+|---|---|---|
+| When | At merge — attribution may not exist yet | At dashboard render — attribution has landed |
+| Correctness | Races the 12h sync window | Eventually correct, always |
+| CI requires | `lambda:InvokeFunction` + retry logic | Nothing |
+| Event carries | A verdict (wrong if early) | Commit SHAs (immutable facts) |
+| Backfill | Impossible — event already written | Automatic on next render |
+
+### How it works
+
+1. **Emit** — the workflows compute `git rev-list "${BASE_SHA}..${HEAD_SHA}"` (capped at 50 SHAs) and emit it as `commit_shas`. No origin verdict is derived.
+2. **Persist** — `metrics-processor.ts` stores `commit_shas` and `pr_number` on the finding / PR payload. Origin-dimensioned metrics are simply skipped when `ai_origin` is absent rather than defaulting.
+3. **Join** — `velocity-widget.ts` `resolveOriginForShas()` calls `GET /v1/attribution` per SHA at render time. The receiver classifies a commit as AI-generated when correlated LLM usage spans share its `traceId`.
+
+A finding from a PR that merged before its author's next sync shows the correct origin the following day, with no reprocessing.
+
+### Three states, not two
+
+| Resolved | Condition |
+|---|---|
+| `ai` | any commit in the set has correlated usage spans |
+| `human` | all commits found in the store, none AI-attributed |
+| `unresolved` | no commit SHA found in the store |
+
+`unresolved` is deliberately **not** collapsed into `human`. A missing SHA means "not synced yet, or this author never onboarded codeburn" — treating that as "a human wrote it" is the same class of silent undercount the deferred join exists to eliminate, and it is the failure mode that looks correct.
+
+### Coverage caveat
+
+Attribution only covers commits from developers running codeburn sync. A commit from an uninstrumented machine has no spans, and per the receiver's inference rule that yields `human`. This is documented and intended behavior, but on a partially-onboarded team it undercounts AI origin. The legacy trailer field is therefore **retained** on PR events tagged `origin_source: git-trailers`, so the Phase 1 parallel run can compare the two lines — divergence is what surfaces onboarding gaps before hooks are removed. Panels that fall back to a trailer say so inline.
 
 ---
 
@@ -333,6 +379,10 @@ Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#`/`
 | `PenTestExploitCount` | Count | Security-agent-processor Lambda (validated exploits) |
 | `SecurityScanCount` | Count | Security-agent-processor Lambda (dims: Phase) |
 | `SecurityRemediationTimeHours` | Count (hours) | Security-remediation-tracker Lambda (dims: Severity, AIOrigin) |
+
+> ⚠️ **All-or-nothing dimensions.** `metrics-processor.ts` publishes each metric twice — once with the **full** dimension set and once with **no dimensions** as an aggregate copy. It never publishes a subset. A widget or alarm querying a *partial* set (e.g. `{AIOrigin}` alone, or `{Phase}` alone) matches neither variant and renders empty / sits in `INSUFFICIENT_DATA` — silently, because CloudWatch does not error on a query that matches nothing. Three CISO widgets shipped broken this way for exactly this reason. Query either the full set or no dimensions, use a `SEARCH()` expression, or read the events table directly.
+>
+> `SecurityScanCount` is also **emitted once per finding**, not once per scan — despite the name. Do not build a scan-volume widget on it.
 
 ---
 
@@ -572,14 +622,82 @@ Cross-links to Team Velocity (delivery detail), Developer Productivity (per-deve
 ### CloudWatch: CISO Compliance (`PRISM-D1-CISO-Compliance`)
 
 **Audience:** CISOs, security leaders, compliance officers
-**Update frequency:** Near real-time (30-day metric periods)
-**Purpose:** Security posture across all teams, AI code risk assessment, remediation SLA tracking.
+**Update frequency:** On dashboard refresh / time-range change (reads events directly)
+**Purpose:** Security **depth** — exposure, remediation SLA compliance, AI code risk normalized by commit volume, shift-left effectiveness, and vulnerability classes.
 
-| Section | Widgets | What It Shows |
-|---------|---------|---------------|
-| **Security Posture** | Open critical findings, validated exploits, avg remediation time, scan volume | Overall security health at a glance |
-| **AI Code Risk Profile** | Security findings by code origin (AI vs human), remediation time by origin | Whether AI-generated code introduces more or fewer security issues |
-| **Shift-Left Effectiveness** | Findings by phase (design/code/pen test), guardrail + exfiltration trends | Whether teams are catching issues earlier in the lifecycle over time |
+This dashboard is deliberately the depth view. The Executive Readout's `exec-security` strip owns the headline posture numbers; everything past Row 2 here is detail the exec view omits. Rows 1 and 2 intentionally repeat exposure and SLA so a CISO landing here does not have to bounce to another dashboard for their own headline.
+
+#### Architecture: why rows 1–5 are DDB panels, not metric graphs
+
+The previous layout used seven metric graphs and **three of them could never render** — and those three were the ones carrying the CISO-specific value.
+
+`metrics-processor.ts` publishes each security metric twice: once with the **full** dimension set (`[TeamId, Repository, Phase, Severity, AIOrigin]`) and once with **no dimensions at all** as an aggregate copy. It never publishes a subset. The broken widgets each queried a *partial* set — `{AIOrigin}` alone, or `{Phase}` alone — which matches neither variant, so they silently rendered empty:
+
+| Old widget | Queried | Publisher emits | Result |
+|---|---|---|---|
+| Findings: AI vs Human Code | `{AIOrigin: 'ai-assisted'}` | full set, or `[]` | never matched |
+| Remediation Time by Origin | `{AIOrigin: 'ai-assisted'}` | full set, or `[]` | never matched |
+| Findings by Phase (Monthly) | `{Phase: 'design_review'}` | full set, or `[]` | never matched |
+
+This is a subtler variant of the usual dimension-matching trap: not "dimensionless query vs dimensioned metric," but **partial-dimension query vs all-or-nothing publish**. The processor's own comment ("the dashboard widgets query without dimensions, so we need both") was true for the aggregate KPIs and quietly false for these three.
+
+Reading the events table directly sidesteps dimension matching entirely, and unlocks two things CloudWatch metrics cannot represent at all — see rows 3 and 5.
+
+#### Row 1: Current Exposure (`view=ciso-exposure`, custom widget)
+
+| KPI | Source | Notes |
+|---|---|---|
+| Open Critical + High | finding `severity` | Severity breakdown in the sub-label |
+| Exploit Validated | `exploit_validated` | Pen-test proven — immediate blocker |
+| Max CVSS / Avg CVSS | `cvss_score` | Sub-label states how many findings were actually scored |
+| Oldest Unremediated | `found_at` vs remediation events | A finding is open until a remediation event references its `finding_id` |
+| Findings Recorded | event count | See note below |
+
+> **"Findings Recorded", not "Scans Run".** The old dashboard had a *Security Scans Run* KPI backed by `SecurityScanCount` — but that metric is emitted **once per finding**, inside the per-finding loop, not once per scan. A scan-count label on a finding count is a mislabel, so the KPI now says what it actually measures.
+
+#### Row 2: Remediation SLA Compliance (`view=ciso-sla`, custom widget)
+
+Overall SLA percentage plus a per-severity table: **severity · budget · fixed · avg hours · worst · within SLA · breached**.
+
+Budgets come from the AI-DLC steering baseline (SECURITY-09): **24h Critical, 72h High, 30d Medium/Low**. Breaches are counted per severity rather than folded into a single average, because one 200-hour Critical is not offset by ten fast Lows.
+
+#### Row 3: AI Code Risk Profile (`view=ciso-risk`, custom widget)
+
+**Findings per 100 commits, by origin** — the headline answer to "is AI code riskier?"
+
+The old widget compared raw counts ("AI code: 12 findings, human code: 8"), which is meaningless if AI wrote three times the code. This view joins security findings (events table) to commit volume by origin (attribution store, via `GET /v1/productivity`) and reports a **rate**, plus the AI:human ratio against the L2 ≤1.2x / L4 ≤0.9x targets. **No CloudWatch metric can express this** — it spans two datasets.
+
+Also shows an origin × severity matrix and remediation latency by fixer.
+
+Origin is resolved by [deferred attribution join](#ai-origin-resolution-deferred-attribution-join), not git trailers. Three states are tracked, and `unresolved` is deliberately distinct from `human`:
+
+| Resolved | Meaning |
+|---|---|
+| `ai` | at least one commit in the PR has correlated LLM usage spans |
+| `human` | all commits found in the store, none AI-attributed |
+| `unresolved` | no commit SHA found — not synced yet, or the author never onboarded codeburn |
+
+When the ratio cannot be computed the KPI says which side is missing ("no human-origin findings to compare against" vs "commit volume unavailable") rather than showing a bare dash.
+
+#### Row 4: Shift-Left Effectiveness (`view=ciso-shiftleft`, custom widget)
+
+Findings per phase (`design_review` / `code_review` / `pen_test`) with per-phase sparklines, plus a computed **Finding Survival Rate**.
+
+Survival rate is defined in both steering files and **nothing emitted it**. It is computed here by matching issue classes (`cwe_id`, else `category`) raised at design review against later phases: a class flagged early that reappears in code review or pen test was surfaced but not actually prevented. Lower is better. The panel also lists the specific classes that survived, so the number is auditable rather than asserted.
+
+#### Row 5: Vulnerability Classes & Compliance Coverage (`view=ciso-classes`, custom widget)
+
+Top CWEs (count, worst severity, avg CVSS), category breakdown, and **compliance framework coverage**.
+
+`compliance_mappings` is a **string array** on every finding. It cannot be a CloudWatch dimension under any encoding, so it was stored and never displayed anywhere until this view existed. For many CISOs "which frameworks do our open findings map to" is the entire reason the dashboard exists.
+
+> **Expect sparse category / framework tables on a kiro-only deployment.** The kiro eval-gate's inline emission carries only `finding_id`, `phase`, `severity`, `cwe_id` and `commit_shas`. `category`, `compliance_mappings` and `cvss_score` are populated by the `security-agent-processor` webhook path. The panel says so inline rather than rendering an unexplained empty table.
+
+#### Row 6: Runtime Governance (native graphs)
+
+Guardrail triggers vs blocks · MCP authorization denials · exfiltration alerts.
+
+These stay native metric graphs: they query dimensionlessly and the publisher's dimensionless copy matches correctly. Verified rather than assumed — the dual-publish is unconditional (`.filter(m => m.Dimensions.length > 0).map(... Dimensions: [])`), so every dimensioned metric gets an aggregate twin.
 
 ---
 
