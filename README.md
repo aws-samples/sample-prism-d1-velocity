@@ -16,7 +16,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 ### For Engineering Leaders (Top-Down Visibility)
 
-- **[Executive Readout Dashboard](docs/dashboard-executive.html)** ([spec](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)) — PRISM level, DORA summary, AI contribution trends, security & compliance posture, cost intelligence
+- **[Executive Readout Dashboard](docs/dashboard-executive.html)** ([spec](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)) — Business outcomes and an **observed PRISM level** computed live from outcome metrics (AI share, eval gates, cost attribution, governance) rather than static repo signals, with a gate table showing what blocks the next level. Plus unit economics (cost per shipped commit), AI-vs-human quality comparison, labeled delivery proxies, and a condensed security posture strip.
 - **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security posture, AI code risk profile, shift-left effectiveness, remediation SLA tracking
 - **[Enhanced DORA metrics](#enhanced-ai-dora-metrics)** with 4 AI-specific dimensions — acceptance rate, AI-to-merge ratio, post-merge defect rate, and eval gate pass rate
 - **[Executive readout templates](docs/leader-guide/executive-readout-template.md)** connecting engineering metrics to business outcomes
@@ -63,7 +63,7 @@ npx cdk bootstrap   # First time only
 npx cdk deploy --all
 ```
 
-This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, 11 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
+This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, 10 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
 
 > **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
 
@@ -195,7 +195,7 @@ Monthly cost depends on team size and configuration. All resources are serverles
 | **DynamoDB** (2 tables) | $1–5 | On-demand billing; scales with commit volume |
 | **Lambda** (8 processors) | $1–3 | Invoked per event; negligible at <50 devs |
 | **EventBridge** | < $1 | $1/million events |
-| **CloudWatch** (4 dashboards, 11 alarms) | $3–10 | Per-dashboard fee + metric costs |
+| **CloudWatch** (4 dashboards, 10 alarms) | $3–10 | Per-dashboard fee + metric costs |
 | **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
 | **Bedrock Guardrails** | $1–5 | Per-invocation; depends on eval gate frequency |
 | **KMS** (1 key) | $1 | Fixed monthly fee + $0.03/10K requests |
@@ -358,7 +358,7 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 
 | Resource | Description |
 |----------|-------------|
-| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 11 alarms |
+| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 10 alarms |
 | **[Community Roadmap](docs/ROADMAP.md)** | Prioritized backlog across 9 phases |
 | **[Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md)** | 8-step guide: deploy, domain verification, GitHub connection, pen test config, webhook, GitHub variables, verification |
 | **[AI-DLC Steering Files](bootstrapper/aidlc-steering/)** | Development workflow rules adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows) |

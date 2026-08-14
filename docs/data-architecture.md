@@ -345,14 +345,15 @@ Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#`/`
 | Change Failure Rate High | ChangeFailureRate | > 20% | 6 hours | Yes — `prism-dora-weekly.yml` |
 | Agent Success Rate Low | AgentSuccessRate | < 80% | 1 hour | Yes — while the sample-app agent runs |
 | Guardrail Block Rate High | GuardrailBlockCount | > 50 | 1 hour | Yes — while the sample-app agent runs |
-| Bedrock Daily Cost High | BedrockCostUSD | > $100 | 1 day | ⚠️ No — demo-only metric |
-| Token Efficiency Low | TokenEfficiency | > 500 | 6 hours | ⚠️ No — demo-only metric |
+| Bedrock Daily Cost High | AICostUSD | > $100 | 1 day | Yes — repointed from the demo-only `BedrockCostUSD` |
 | Exfiltration Alert | ExfiltrationAlertCount | ≥ 1 | 1 hour | Yes — exfiltration-detector Lambda |
 | Security Critical Finding | SecurityCriticalFindingCount | ≥ 1 | 1 hour | Yes — Continuum findings via the eval gate |
 | Security Remediation SLA | SecurityRemediationTimeHours | avg > 72h | 1 day | Yes — security-remediation-tracker |
 | Security Finding Rate High | SecurityFindingCount | > 50 | 6 hours | Yes — Continuum findings |
 
-**11 alarms total.** None have SNS actions wired by default — operators attach notification topics post-deployment (cdk-nag suppressions `AwsSolutions-SNS2/SNS3` document this).
+**10 alarms total.** None have SNS actions wired by default — operators attach notification topics post-deployment (cdk-nag suppressions `AwsSolutions-SNS2/SNS3` document this).
+
+A `TokenEfficiency` alarm was removed: the metric has no emitter, so it sat in `INSUFFICIENT_DATA` permanently. The daily cost alarm was repointed from `BedrockCostUSD` (demo-generator-only) to `AICostUSD` for the same reason.
 
 > **Alarms stay on CloudWatch metrics even where dashboards moved to DynamoDB.** You cannot alarm on a DDB query, so the metrics-processor keeps publishing regardless of which widget type renders the data. Alarms therefore remain subject to the dimension-matching rule — an alarm querying a dimension set nothing publishes sits in `INSUFFICIENT_DATA` forever rather than erroring.
 
@@ -493,48 +494,78 @@ Reads `prism.d1.security.{code_review,design_review,pen_test}` for findings and 
 ### CloudWatch: Executive Readout (`PRISM-D1-Executive-Readout`)
 
 **Audience:** CTOs, VPEs, engineering directors, board members
-**Update frequency:** Near real-time (7-day/30-day metric periods)
-**Purpose:** Leadership view connecting AI adoption to business outcomes, security posture, and cost management.
+**Update frequency:** Panels refresh on load / refresh / time-range change; native graphs use 7-day periods
+**Purpose:** Leadership view connecting AI adoption to business outcomes, unit economics, delivery health, and security posture.
 
-#### Strategic Overview
+Same hybrid architecture as Team Velocity (DDB custom-widget panels + native graphs), held to a stricter bar because of the audience: **every widget must be backed by a real emitter, units are humanized, and proxies say so in their own label.** An engineer seeing an empty panel shrugs; an exec either concludes the program isn't working or quotes a number that came from demo data.
+
+#### Row 1–2: Business Outcomes & Observed Maturity (`view=exec`, custom widget)
+
+Attribution store (via `GET /v1/productivity`) + eval, MCP, guardrail, deploy, PR, and assessment events.
+
+**Observed PRISM level.** Computed live from outcome metrics — *not* the scanner's score:
+
+| | Scanner (`prism-cli assessment`) | Observed (this widget) |
+|---|---|---|
+| Measures | **Capability** — static repo signals (does `CLAUDE.md` exist, is there a `specs/` dir, are AI trailers in commit conventions) worth 103 points | **Outcomes** — is AI code actually shipping, are gates passing, is spend attributed |
+| Updates | When someone re-runs a scan | Every dashboard refresh |
+| Can be wrong by | Showing L4 while zero AI code ships | Showing L2 while all the tooling is configured |
+
+The two disagreeing is expected and informative: capability above observed means the tooling is built but unused; observed above capability means AI code is shipping without the governance to match.
+
+Gate thresholds (cumulative — the first failed gate caps the level):
+
+| Level | Gate |
+|-------|------|
+| L2 Structured | AI share of commits >= 30% |
+| L3 Integrated | L2 + eval gate pass >= 80% + AI merge rate >= 20% |
+| L4 Orchestrated | L3 + cost attribution present + governance events (MCP or guardrail) > 0 + AI defect rate <= 20% |
+| L5 Autonomous | **Not computable.** ">20% autonomous deployments" requires a signal that distinguishes autonomous from assisted work; no emitter produces one. The widget caps at L4 rather than fabricating L5. |
+
+A gate table renders alongside the level showing which threshold blocks the next level and by how much. When attribution is absent the widget reports **"insufficient data"**, deliberately distinct from L1 — no data means the pipeline isn't reporting, whereas L1 is a real finding ("ad hoc AI use, no metrics").
+
+**Business KPIs:** AI Share of Commits · AI Merge Rate · $ / Shipped Commit · AI Spend (range) · Eval Gate Pass — all threshold-colored against L2/L4 targets.
+
+**Delivery proxies** (own sub-row, humanized units, explicit labels): Merge Frequency `/day` (deploy proxy) · PR Cycle Time `hours` (lead-time proxy) · Revert Rate `%` (change-failure proxy) · Revert Turnaround `hours` (MTTR proxy). The previous build showed lead time and MTTR in **raw seconds** inside a KPI card, and grouped them under "Enhanced DORA Summary" — which invited benchmark comparisons the data does not support.
+
+#### Row 3: Adoption & cost trends (native graphs, weekly periods)
 
 | Widget | Type | What It Shows |
 |--------|------|---------------|
-| PRISM Level Progress | Single value | Current maturity level (L1-L5). The north-star metric for AI adoption maturity. |
-| Enhanced DORA Summary | Multi-value | 7-day snapshot of all 4 DORA metrics in one row. At-a-glance health check. |
-| Cost per AI-Assisted Feature | Single value | Average spec-to-code hours. Proxy for "how much does a feature cost in AI-accelerated development?" |
+| AI vs Human Commits (Weekly) | Stacked bar | `AICommits` + `HumanCommits`. Adoption volume, hook-free. |
+| AI Spend Trend (Weekly) | Line | `AICostUSD` from codeburn usage spans. |
+| Cost per Shipped Commit (Weekly) | Line | `AICostUSD / MergedAICommits`. **The ROI narrative** — spend can rise while this falls, which means AI is getting more efficient per unit of shipped work. |
 
-#### Trends
-
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| AI Contribution Trend | Multi-line (3 metrics) | 30-day trend of acceptance rate, merge ratio, and test coverage delta. Shows whether AI adoption is growing or plateauing. |
-| Feature Cycle Time Trend | Dual-line | Spec-to-code hours and lead time together. Both should trend down as AI adoption matures. |
-
-#### Quality Gates
+#### Row 4: Quality — "is AI code as reliable as human code?"
 
 | Widget | Type | What It Shows |
 |--------|------|---------------|
-| Eval Gate Pass Rate | Gauge (0-100%) | 7-day average pass rate. If below 70%, AI output quality needs attention. |
-| Post-Merge Defect Rate | Time series | Overall defect rate trend. Should decrease as eval gates catch issues pre-merge. |
-| Deployment Frequency (Weekly) | Bar chart | Weekly deploy cadence. Visual proof of velocity improvement. |
+| Merge Rate: AI vs Human (Weekly) | Dual-line | Divergence is the signal. AI merging materially below human means review friction or quality problems, not just heavy AI use. |
+| AI Defect Trend (Weekly) | Line | `RevertedAICommits / MergedAICommits`. |
 
-#### Security & Compliance
+Both use `FILL`/`IF` guards — `RevertedAICommits` may not exist at all until the first revert is published, and a metric with zero datums is *missing*, not zero.
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| Guardrail Blocks (7d) | Single value | Total content blocks in the past week. High = either effective guardrails or concerning prompt patterns. |
-| Guardrail Trigger Trend | Time series | Daily trigger count. Sustained increase warrants investigation. |
-| MCP Auth Denied (7d) | Single value | Unauthorized tool access attempts. Non-zero = agents probing beyond their scope. |
-| Exfiltration Alerts (7d) | Single value | Data exfiltration pattern detections. Any non-zero value triggers the alarm. |
+#### Row 5: Security & Governance Posture (`view=exec-security`, custom widget)
 
-#### Cost Intelligence
+Six KPIs in one panel: Open Critical + High · Exploit Validated · Within Remediation SLA (24h Critical / 72h High per SECURITY-09) · Guardrail Blocks · MCP Denials · Exfiltration Alerts.
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| Weekly Bedrock Cost | Bar chart | Week-over-week Bedrock spend. Budget planning signal for CFOs. |
-| Cost per Deploy | Single value | Average cost per AI-assisted commit. Efficiency benchmark. |
-| AI vs Human Defect Rate | Dual single value | Side-by-side 7-day defect rate comparison. The "is AI code reliable?" answer for the board. |
+This replaced a 7-widget security section that duplicated the CISO Compliance dashboard *and* contained two near-identical guardrail trend widgets. An exec needs the headline plus a link; CISO Compliance owns the severity/phase/origin breakdowns. The panel footer links there.
+
+#### Footer
+
+Cross-links to Team Velocity (delivery detail), Developer Productivity (per-developer spend), and CISO Compliance (full security posture).
+
+#### Widgets removed in the rebuild
+
+| Removed | Why |
+|---|---|
+| PRISM Level Progress | `PRISMLevel` has no emitter — the scanner computes a level but never publishes it. Replaced by the computed observed level. |
+| AI Cost & Cycle Time | Half the widget was `SpecToCodeHours`, which has no emitter. |
+| Feature Cycle Time Trend | Both series broken: `SpecToCodeHours` phantom, lead time a merge proxy shown in raw seconds. |
+| Weekly Bedrock Cost | `BedrockCostUSD` is demo-generator-only — and it sat beside a real `AICostUSD` widget, so a CFO saw two "AI cost" charts, one always empty. |
+| AI vs Human Defect Rate | `PostMergeDefectRateAI/Human` come from the defect-correlator, which never fires (needs `prism.d1.commit` events nothing emits). |
+| `AITestCoverageDelta` line | Phantom metric on a 4-line chart that was unreadable regardless. |
+| 5 of 7 security widgets | Folded into the `exec-security` panel. |
 
 ---
 
