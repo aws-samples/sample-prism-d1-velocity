@@ -23,11 +23,17 @@
 
 Installed via `bootstrapper/metric-hooks/install.sh`. Fire automatically on every commit and merge.
 
+> ⚠️ **Deprecated — being removed.** Git hooks are superseded by codeburn attribution spans (`codeburn sync push --attribution`), which classify AI origin from actual LLM API calls rather than "you were inside an AI tool's terminal". Migration phases: **1)** run both in parallel and compare, **2)** rewrite CI workflows to query `GET /v1/attribution` instead of grepping trailers, **3)** remove the hooks. `AIAcceptanceRate` is the one metric that stays CI-fed permanently — it needs the GitHub PR review API (APPROVED / CHANGES_REQUESTED verdicts), which has no equivalent in attribution spans.
+>
+> Two consequences that are easy to miss:
+> - Anything derived from a trailer goes dark at Phase 3 unless rewired. That includes `Spec-Ref` (spec-to-code hours, spec coverage) — attribution spans carry no spec reference, so that needs a new source, not just a rewrite.
+> - `post-commit` / `post-merge` write JSON to `.prism/metrics/` but **nothing emits `prism.d1.commit` events today**. Processors that depend on commit events (the defect-correlator's AI-vs-human split, spec-to-code calculation) therefore do not fire on any real deployment, hooks installed or not.
+
 | Hook | Trigger | Data Captured | Output |
 |------|---------|---------------|--------|
-| **prepare-commit-msg** | Before commit message editor | Detects AI tool via env vars, scans for Co-Authored-By, detects spec files in staged changes | Adds trailers: `AI-Origin`, `AI-Tool`, `AI-Model`, `Spec-Ref` |
-| **post-commit** | After successful commit | SHA, author, files changed, lines added/removed, all trailers from message | JSON to `.prism/metrics/` + async emit to EventBridge |
-| **post-merge** | After merge or git pull | AI commits vs human commits on branch, lead time (first commit → merge), AI-to-merge ratio | JSON to `.prism/metrics/` + async emit to EventBridge |
+| **prepare-commit-msg** | Before commit message editor | Detects AI tool via env vars, scans for Co-Authored-By | Adds trailers: `AI-Origin`, `AI-Tool`, `AI-Model`, token/cost trailers via codeburn |
+| **post-commit** | After successful commit | SHA, author, files changed, lines added/removed, all trailers from message | JSON to `.prism/metrics/` |
+| **post-merge** | After merge or git pull | AI commits vs human commits on branch, lead time (first commit → merge), AI-to-merge ratio | JSON to `.prism/metrics/` |
 
 **AI Tool Detection Logic:**
 
@@ -282,18 +288,38 @@ Published to namespace `PRISM/D1/Velocity` with dimensions:
 
 | Metric Name | Unit | Source |
 |------------|------|--------|
-| `BedrockTokensInput` | Count | CloudTrail → token-processor Lambda |
-| `BedrockTokensOutput` | Count | CloudTrail → token-processor Lambda |
-| `BedrockCostUSD` | None (USD) | Token-processor × pricing table |
-| `CostPerCommit` | None (USD) | Token-commit-correlator Lambda |
-| `TokenEfficiency` | None | Tokens per line of code changed |
+| `AIInputTokens` | Count | otel-metrics-publisher (codeburn usage spans) when the OTEL collector is enabled; git-trailer PR sums otherwise |
+| `AIOutputTokens` | Count | Same as above |
+| `AICostUSD` | None (USD) | Same as above. Also published with `Tool` and `Model` dimensions for breakdowns. |
+| `BedrockTokensInput` | Count | ⚠️ **Demo-only** — designed for a CloudTrail → token-processor Lambda that is not implemented |
+| `BedrockTokensOutput` | Count | ⚠️ **Demo-only** — same |
+| `BedrockCostUSD` | None (USD) | ⚠️ **Demo-only** — only emitted by `prism-cli workshop generate-demo-data` |
+| `CostPerCommit` | None (USD) | ⚠️ **Demo-only** — token-commit-correlator Lambda is not implemented |
+| `TokenEfficiency` | None | ⚠️ **Demo-only** — no real emitter computes tokens per line changed |
+
+> **On the demo-only metrics.** These are emitted exclusively by `prism-cli workshop generate-demo-data`, so they populate during workshops and stay empty on real deployments (their alarms sit in `INSUFFICIENT_DATA`). They are documented here so the gap is explicit — they are not wired into any dashboard panel. Real AI spend comes from `AICostUSD` via the OTEL path.
+
+### Attribution Metrics (codeburn spans — no git hooks required)
+
+Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#`/`COMMIT#` items. All are published **dimensionless** (plus a `Tool` dimension where noted), which is why the native dashboard graphs query them without a `dimensionsMap`.
+
+| Metric Name | Unit | Meaning |
+|------------|------|---------|
+| `CommitsTotal` | Count | All attributed commits |
+| `AICommits` | Count | Commits with correlated LLM usage spans (traceId join) |
+| `HumanCommits` | Count | Commits with no correlated usage spans |
+| `MergedAICommits` | Count | AI commits that reached the main branch (also by `Tool`) |
+| `MergedHumanCommits` | Count | Human commits that reached the main branch |
+| `RevertedAICommits` | Count | AI commits later reverted — the defect signal |
+
+> **Timestamp clamping.** `PutMetricData` rejects datapoints older than 14 days and silently drops the *entire batch* if any datapoint is invalid. The publisher clamps commit timestamps older than 13 days to ingest time, so a first publish over historical data lands as "today". The DDB-backed dashboard panels are unaffected — they read real commit timestamps.
 
 ### Quality & Attribution Metrics
 
 | Metric Name | Unit | Source |
 |------------|------|--------|
-| `PostMergeDefectRateAI` | Percent | Defect-correlator Lambda |
-| `PostMergeDefectRateHuman` | Percent | Defect-correlator Lambda |
+| `PostMergeDefectRateAI` | Percent | Defect-correlator Lambda — ⚠️ requires `prism.d1.commit` events, which nothing currently emits (the git hook writes trailers, it does not call `put-events`) |
+| `PostMergeDefectRateHuman` | Percent | Same caveat. The attribution-derived defect signal (`RevertedAICommits/MergedAICommits`) is the one that works today and survives hook removal. |
 
 ### Security Metrics
 
@@ -312,90 +338,155 @@ Published to namespace `PRISM/D1/Velocity` with dimensions:
 
 ## Active Alarms
 
-| Alarm | Metric | Threshold | Period |
-|-------|--------|-----------|--------|
-| AI Acceptance Rate Low | AIAcceptanceRate | < 20% | 6 hours |
-| Eval Gate Pass Rate Low | EvalGatePassRate | < 70% | 6 hours |
-| Change Failure Rate High | ChangeFailureRate | > 20% | 6 hours |
-| Agent Success Rate Low | AgentSuccessRate | < 80% | 1 hour |
-| Guardrail Block Rate High | GuardrailBlockCount | > 50 | 1 hour |
-| Bedrock Daily Cost High | BedrockCostUSD | > $100 | 1 day |
-| Token Efficiency Low | TokenEfficiency | > 500 | 6 hours |
-| Exfiltration Alert | ExfiltrationAlertCount | ≥ 1 | 1 hour |
-| Security Critical Finding | SecurityCriticalFindingCount | ≥ 1 | 1 hour |
-| Pen Test Exploit Detected | PenTestExploitCount | ≥ 1 | 1 hour |
-| Security Remediation SLA | SecurityRemediationTimeHours | avg > 72h | 1 day |
-| Security Finding Rate High | SecurityFindingCount | > 50 | 6 hours |
+| Alarm | Metric | Threshold | Period | Can fire today? |
+|-------|--------|-----------|--------|---|
+| AI Acceptance Rate Low | AIAcceptanceRate | < 20% | 6 hours | Only with git hooks + `prism-ai-metrics.yml` installed |
+| Eval Gate Pass Rate Low | EvalGatePassRate | < 70% | 6 hours | Requires `prism-agent-eval.yml` (the eval-gate workflows emit per-rubric metrics, not this one) |
+| Change Failure Rate High | ChangeFailureRate | > 20% | 6 hours | Yes — `prism-dora-weekly.yml` |
+| Agent Success Rate Low | AgentSuccessRate | < 80% | 1 hour | Yes — while the sample-app agent runs |
+| Guardrail Block Rate High | GuardrailBlockCount | > 50 | 1 hour | Yes — while the sample-app agent runs |
+| Bedrock Daily Cost High | BedrockCostUSD | > $100 | 1 day | ⚠️ No — demo-only metric |
+| Token Efficiency Low | TokenEfficiency | > 500 | 6 hours | ⚠️ No — demo-only metric |
+| Exfiltration Alert | ExfiltrationAlertCount | ≥ 1 | 1 hour | Yes — exfiltration-detector Lambda |
+| Security Critical Finding | SecurityCriticalFindingCount | ≥ 1 | 1 hour | Yes — Continuum findings via the eval gate |
+| Security Remediation SLA | SecurityRemediationTimeHours | avg > 72h | 1 day | Yes — security-remediation-tracker |
+| Security Finding Rate High | SecurityFindingCount | > 50 | 6 hours | Yes — Continuum findings |
+
+**11 alarms total.** None have SNS actions wired by default — operators attach notification topics post-deployment (cdk-nag suppressions `AwsSolutions-SNS2/SNS3` document this).
+
+> **Alarms stay on CloudWatch metrics even where dashboards moved to DynamoDB.** You cannot alarm on a DDB query, so the metrics-processor keeps publishing regardless of which widget type renders the data. Alarms therefore remain subject to the dimension-matching rule — an alarm querying a dimension set nothing publishes sits in `INSUFFICIENT_DATA` forever rather than erroring.
 
 ---
 
 ## Dashboard Guide
 
-PRISM ships **5 dashboards** across two AWS services, each targeting a specific audience and decision level.
+PRISM ships **6 dashboards** across two AWS services, each targeting a specific audience and decision level.
 
 ### CloudWatch: Team Velocity (`PRISM-D1-Team-Velocity`)
 
 **Audience:** Engineering teams, tech leads, ICs
-**Update frequency:** Real-time (1-hour metric periods)
-**Purpose:** Day-to-day operational view of how AI tools are impacting team velocity, code quality, and safety.
+**Update frequency:** Panels refresh on dashboard load / refresh / time-range change; native graphs use 1-day metric periods
+**Purpose:** Day-to-day operational view of delivery health — DORA proxies, AI-DORA quality, eval gates, governance, and security. Spend and per-developer output live on **Developer Productivity**, not here.
 
-#### DORA & AI-DORA Metrics
+#### Architecture: hybrid DDB panels + native graphs
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| AI Acceptance Rate | Time series | % of AI-generated suggestions accepted by developers. Dropping trend signals review friction or quality issues. |
-| Deployment Frequency | Bar chart | Deploys per day. Core DORA velocity signal — higher is better at L3+. |
-| Lead Time for Changes | Time series | Seconds from PR creation to deploy. Measures how fast code moves through the pipeline. |
-| Eval Gate Pass Rate | Gauge (0-100%) | % of AI-generated files passing Bedrock evaluation. Below 70% triggers an alarm. |
-| AI Test Coverage Delta | Time series | Isolated AI contribution to test coverage changes — separates AI testing value from human effort. |
-| Change Failure Rate | Time series | % of deployments causing a rollback or hotfix. Above 20% triggers an alarm. |
-| Mean Time to Recovery | Time series | Seconds from incident to resolution. Measures operational resilience. |
-| AI to Merge Ratio | Time series | % of merged code originating from AI tools. Tracks how much of the codebase AI is writing. |
+This dashboard is **not** a pure CloudWatch-metrics dashboard. It mixes two widget types, chosen per panel by where the trustworthy data lives:
 
-#### Agent Operations
+| Widget type | Data source | Why |
+|---|---|---|
+| **Custom widgets** (`prism-d1-velocity-widget` Lambda) | `prism-d1-events` table via the `by-detail-type` GSI, plus the attribution store via `otel-receiver` direct invoke | Full 365-day history at real event timestamps. No CloudWatch metric-dimension matching, no 14-day `PutMetricData` ingestion clamp, and honest empty states that name the missing emitter instead of rendering a blank graph. |
+| **Native graphs** | CloudWatch metrics published by the attribution and OTEL publishers | These series are published **dimensionless**, so plain metric queries match them, and native graphs give interactive zoom/hover that server-rendered HTML cannot. |
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| Agent Invocations | Time series | Total agent executions per hour. Volume signal for agentic workloads. |
-| Agent Success Rate | Time series | % of agent invocations completing successfully. Below 80% triggers alarm. |
-| Agent Avg Duration | Time series | Mean execution time per agent invocation in milliseconds. |
+Two consequences worth knowing:
 
-#### Eval Gate Quality by Rubric
+- **Panel access is gated by IAM**, not metric visibility. Viewing a custom-widget panel requires `lambda:InvokeFunction` on the velocity widget Lambda. This is finer-grained than CloudWatch metric access.
+- **Custom widgets cannot execute JavaScript.** Trend visuals inside panels are server-rendered inline SVG sparklines — no Chart.js, no `<canvas>`.
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| Eval Pass Rate by Rubric | Multi-line chart | Pass rate broken down by rubric (code-quality, api-response, agent, security, spec-compliance). Shows which rubric is failing most. |
-| Eval Score Trend | Time series | Average evaluation score (0-1) over time. Declining trend = AI output quality degrading. |
+> **Dimension matching is the classic failure mode here.** A CloudWatch widget must query the *exact* dimension set a metric was published with; a dimensionless query does **not** aggregate dimensioned series — it silently renders empty. The metrics-processor publishes with `[TeamId, Repository]` (plus extras) **and** dual-publishes a dimensionless copy for aggregate queries. When a native widget is unexpectedly empty, diff its `dimensionsMap` against the publisher's `Dimensions` before assuming the data is missing.
 
-#### Guardrails & Safety
+#### Row 1: Delivery KPIs (`view=dora`, custom widget)
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| Guardrail Triggers by Category | Stacked bar | Triggers broken down: CONTENT_FILTER, DENIED_TOPIC, SENSITIVE_INFO, WORD_FILTER. Spikes indicate prompt attack attempts or policy violations. |
-| Guardrail Actions: Block vs Anonymize | Dual-line chart | Ratio of hard blocks (content rejected) vs soft anonymization (PII scrubbed). High block rate = potential misconfiguration or attack. |
+Reads `prism.d1.deploy`, `prism.d1.pr`, and `prism.d1.assessment` events.
 
-#### MCP Tool Governance
+| KPI | What It Shows | Honest definition |
+|--------|---------------|---|
+| Merge Frequency | Merged PRs per day | **Deploy proxy.** `prism.d1.deploy` fires on PR merge with a hardcoded `deployment_frequency: 1` — there is no CodePipeline/GitHub Deployments integration. Accurate for teams that deploy on merge. |
+| PR Cycle Time | Average hours from PR open to merge | **Lead-time proxy.** Deploy latency is not measured. |
+| Revert Rate | % of merged PRs whose title matches `revert\|hotfix\|rollback` | **Change-failure proxy** (weekly title-regex scan). Misses failures that were not shipped as titled reverts. |
+| Revert Turnaround | Average open→merge time of revert/hotfix PRs | **MTTR proxy.** Not incident→resolution; nothing emits `prism.d1.incident` today. |
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| MCP Tool Call Volume | Time series | Total MCP tool invocations per hour. Tracks agent-to-tool activity. |
-| MCP Auth Denied Rate | Time series | Unauthorized tool call attempts. Non-zero = agents attempting out-of-scope actions. |
+These are labeled as proxies on the dashboard itself. True deploy/incident metrics require a deployment-event emitter — tracked on the roadmap.
 
-#### Cost Intelligence
+#### Row 2: AI-DORA KPIs (`view=aidora`, custom widget)
 
-| Widget | Type | What It Shows |
-|--------|------|---------------|
-| Daily Token Usage (Input vs Output) | Stacked area | Input vs output token consumption per day. Output-heavy = generative workloads; input-heavy = RAG/context workloads. |
-| Cost per Commit Trend | Time series | Average Bedrock cost per AI-assisted commit. Rising trend = inefficient prompting or context bloat. |
-| Bedrock Cost (USD) | Time series | Total daily Bedrock spend. Tracks budget consumption. Above $100/day triggers alarm. |
-| Token Efficiency | Time series | Tokens consumed per line of code changed. Lower = more efficient AI usage. Above 500 triggers alarm. |
+Attribution store (via `GET /v1/productivity`) plus `prism.d1.eval` events, with L2/L4 target coloring.
 
-#### AI Attribution & Quality
+| KPI | Source | Target |
+|--------|--------|---|
+| AI Share of Commits | Attribution — AI commits / total commits | L2 ≥ 30% |
+| AI → Merge Rate | Attribution — merged AI commits / AI commits | L2 ≥ 20%, L4 ≥ 45% |
+| AI Defect Proxy | Attribution — reverted AI / merged AI commits | Lower is better |
+| $ / Shipped Commit | Attribution — AI spend / merged AI commits | Unit economics |
+| Eval Gate Pass | `prism.d1.eval` — PASS runs / total runs | L2 ≥ 80%, L4 ≥ 95% |
+
+#### Row 3: Contribution & quality trends (native graphs)
 
 | Widget | Type | What It Shows |
 |--------|------|---------------|
-| Defect Rate: AI vs Human Code | Dual-line chart | Side-by-side post-merge defect rates. Answers "is AI code as reliable as human code?" |
-| Spec-to-Code Hours | Time series | Hours from spec approval to code PR merge. Measures AI impact on the full feature lifecycle. |
+| Commits / Day (AI vs Human) | Stacked bar | `AICommits` + `HumanCommits`. Adoption volume, hook-free (attribution spans). |
+| Merge Ratio: AI vs Human | Dual-line | `MergedAICommits/AICommits` vs `MergedHumanCommits/HumanCommits`. **Divergence is the signal** — AI code merging materially below human code means review friction or quality problems, not just heavy AI use. |
+| AI Defect Trend | Line + right-axis bars | `RevertedAICommits/MergedAICommits` (%) with reverted count on the right axis. |
+
+All three use `FILL`/`IF` guards. Two reasons: commit data is sparse, so an unguarded ratio renders `NaN` on empty buckets; and `RevertedAICommits` may not exist at all until the first revert is published — a metric with zero datums is *missing*, not zero. `FILL(..., REPEAT)` carries the last value through gap days so the series draws a line instead of invisible isolated dots.
+
+#### Row 4: Repository Breakdown (`view=repos`, custom widget)
+
+Per-repo commit outcomes from the attribution store via `GET /v1/repos`. Answers "which repos are AI-heavy, and which have low merge rates or high revert rates" — the team-level cut that per-developer views can't give.
+
+| Column | What It Shows |
+|--------|---------------|
+| Commits | Total commits in range (bar-scaled) |
+| AI / Human | Commit split by inferred origin |
+| AI Share / AI Merge Rate / AI Defect Rate | Per-repo ratios, threshold-colored |
+| Devs | Distinct contributors |
+| Last Activity | Most recent commit date |
+
+**Spend is deliberately excluded.** Usage rollups are keyed by user/day, not by repo, so per-repo cost cannot be derived without double-counting sessions that touch multiple repos.
+
+#### Row 5: Eval Gates (`view=eval`, custom widget)
+
+Reads `prism.d1.eval` events and **auto-discovers rubric names from the data** — no hardcoded list. Handles `kiro-headless` (the recommended kiro-cli headless gate, one holistic review per PR) and the five legacy Bedrock rubrics (`code-quality`, `api-response-quality`, `agent-quality`, `security-compliance`, `spec-compliance`) equally, plus anything a team adds later.
+
+| Element | What It Shows |
+|--------|---------------|
+| Avg score / day sparkline | Server-rendered SVG trend of eval score (0–1) |
+| Avg findings / PR sparkline | Finding volume trend |
+| High-severity findings | Range total; red when non-zero |
+| Rubric table | Pass rate, avg score, run count per rubric/gate |
+| Recent gate runs | Timestamp, rubric, result, score, PR, repo |
+
+#### Row 6: Governance — Guardrails & MCP (`view=governance`, custom widget)
+
+Reads `prism.d1.guardrail` and `prism.d1.mcp.tool_call`. **Populates only while the sample-app agent and MCP server are running** (Module 02 exercises) — an empty panel on a quiet day is correct, not broken.
+
+| Element | What It Shows |
+|--------|---------------|
+| Guardrail Triggers | Total, with per-category breakdown (CONTENT_FILTER, DENIED_TOPIC, SENSITIVE_INFO, WORD_FILTER) |
+| Blocked / Anonymized | Hard rejects vs soft PII scrubbing |
+| MCP Tool Calls / High-Risk Calls / Denied | Volume, `risk_level` high/critical count, unauthorized attempts |
+| Tool table | Per-tool risk level, scopes used, calls, denials |
+
+#### Row 7: Agent Operations (`view=agents`, custom widget)
+
+Reads `prism.d1.agent`. Same runtime-driven caveat as governance.
+
+| Element | What It Shows |
+|--------|---------------|
+| KPIs | Invocations, success rate, avg duration, tokens used, guardrails hit |
+| Per-agent table | Runs, success %, avg ms, avg steps, avg tools, tokens, guardrails triggered |
+
+#### Row 8: Security — Findings & Remediation SLA (`view=security`, custom widget)
+
+Reads `prism.d1.security.{code_review,design_review,pen_test}` for findings and `prism.d1.security.remediation` for closure.
+
+| Element | What It Shows |
+|--------|---------------|
+| Critical + High | Blocking finding count |
+| Total Findings | With per-severity breakdown |
+| Exploit Validated | Pen-test-proven findings — immediate blockers per SECURITY-09 |
+| Avg CVSS | Mean CVSS across findings with scores |
+| AI-Origin | Findings in AI- vs human-attributed code |
+| Remediation KPIs | Count fixed, avg hours, **% within SLA** (24h Critical / 72h High / 30d Medium per SECURITY-09), AI-vs-human fixer split |
+| Per-severity remediation table | Fixed count, avg hours, within-SLA ratio |
+| Recent findings | Timestamp, severity, CVSS, phase, CWE, exploit flag, origin, repo |
+
+#### Widgets deliberately NOT on this dashboard
+
+| Removed / omitted | Why |
+|---|---|
+| AI Input/Output Tokens, AI Cost, Cost by Tool, Cost by Model | Duplicated by **Developer Productivity**, which reads the attribution store directly (full history, no 2-week CloudWatch clamp, plus per-developer and per-model breakdowns). |
+| `TokenEfficiency`, `BedrockCostUSD`, `AITestCoverageDelta` | **No real emitter exists.** The only source is `prism-cli workshop generate-demo-data`. On a real deployment these widgets are permanently empty and their alarms sit in `INSUFFICIENT_DATA`. |
+| Spec Coverage | Computed by grepping `Spec-Ref:` git trailers, so it does not survive git-hook removal, and attribution spans carry no spec-ref equivalent. Needs a post-hook source decision first. |
 
 ---
 
@@ -491,6 +582,29 @@ PRISM ships **5 dashboards** across two AWS services, each targeting a specific 
 | **Security Posture** | Open critical findings, validated exploits, avg remediation time, scan volume | Overall security health at a glance |
 | **AI Code Risk Profile** | Security findings by code origin (AI vs human), remediation time by origin | Whether AI-generated code introduces more or fewer security issues |
 | **Shift-Left Effectiveness** | Findings by phase (design/code/pen test), guardrail + exfiltration trends | Whether teams are catching issues earlier in the lifecycle over time |
+
+---
+
+### CloudWatch: Developer Productivity (`PRISM-D1-Developer-Productivity`)
+
+**Audience:** Engineering managers, tech leads
+**Update frequency:** Metric widgets near real-time; table panels refresh on load / refresh / time-range change
+**Purpose:** Org and per-developer view of AI-assisted output and what it costs. **Fed entirely by codeburn attribution data — no CI instrumentation or git hooks required.**
+
+Created only when the OTEL collector is deployed (default on; skip with `-c skipOtelCollector=true`), since the panels depend on its receiver and widget Lambdas.
+
+| Row | Widgets | Source |
+|-----|---------|--------|
+| **1: Org KPIs** | AI Share of Commits, AI Merge Rate, Cost per Shipped Commit, AI Spend (range) | CloudWatch metric math, NaN-guarded, follows the dashboard time range |
+| **2: Org trends** | Commits/Day (AI vs Human, stacked), AI Spend/Day, AI Merge Ratio Trend | Native graphs — attribution + OTEL series |
+| **3: Team Comparison** | Per-developer table: spend, calls, AI/total commits, shipped, merge rate, defect rate, $/shipped | Custom widget → `GET /v1/productivity` |
+| **4: Detail panel** | By-tool and by-model spend breakdown + ratio card for the selected scope | Custom widget → `GET /v1/productivity`, scoped by the `Developer` variable |
+
+**Developer variable.** A `PATTERN`-type dashboard variable (default `all`) literal-replaces a token in the dashboard JSON. Type a developer email to scope the detail panel; `all` shows the organization.
+
+**Why the table panels differ from the metric widgets.** Rows 1–2 read CloudWatch, so backfilled data is subject to the 14-day `PutMetricData` timestamp limit (the attribution publisher clamps older commit timestamps to ingest time). Rows 3–4 query the attribution store directly — full history at real commit timestamps, no clamp. Divergence between the two is expected on backfills, not a bug.
+
+**Access control.** Per-developer detail is gated by `lambda:InvokeFunction` on the productivity widget Lambda, not by metric visibility.
 
 ---
 
