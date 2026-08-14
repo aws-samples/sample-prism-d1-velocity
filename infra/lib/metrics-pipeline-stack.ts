@@ -27,6 +27,8 @@ export class MetricsPipelineStack extends cdk.Stack {
   public readonly guardrail: BedrockGuardrailConstruct;
   public readonly securityAgent?: SecurityAgentConstruct;
   public readonly otelCollector?: OtelCollectorConstruct;
+  /** ARN of the Team Velocity custom-widget Lambda (DDB-backed panels). */
+  public velocityWidgetArn!: string;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -528,6 +530,63 @@ export class MetricsPipelineStack extends cdk.Stack {
         true,
       );
     }
+
+    // -------------------------------------------------------
+    // Velocity custom-widget Lambda — DDB-backed panels for the
+    // Team Velocity dashboard. Reads the events table via the
+    // by-detail-type GSI (full history, no metric-dimension matching).
+    // Invoked by CloudWatch dashboards with the viewing user's IAM creds.
+    // -------------------------------------------------------
+    const velocityWidget = new lambda.Function(this, 'VelocityWidget', {
+      functionName: 'prism-d1-velocity-widget',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'velocity-widget.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
+        bundling: {
+          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            [
+              'npm init -y > /dev/null 2>&1',
+              'npm install --save @aws-sdk/client-dynamodb @aws-sdk/client-lambda esbuild > /dev/null 2>&1',
+              'npx esbuild velocity-widget.ts --bundle --platform=node --target=node22 --outfile=/asset-output/velocity-widget.js --external:@aws-sdk/*',
+            ].join(' && '),
+          ],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              try {
+                require('child_process').execSync(
+                  `npx esbuild ${path.join(__dirname, 'lambda', 'velocity-widget.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'velocity-widget.js')} --external:@aws-sdk/*`,
+                  { stdio: 'pipe' },
+                );
+                return true;
+              } catch { return false; }
+            },
+          },
+        },
+      }),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        EVENTS_TABLE: this.eventsTable.tableName,
+        RECEIVER_FUNCTION: 'prism-d1-otel-receiver',
+      },
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      description: 'CloudWatch custom widget: Team Velocity panels from the PRISM events table',
+    });
+    this.eventsTable.grantReadData(velocityWidget);
+    if (this.otelCollector) {
+      // aidora view delegates attribution KPIs to the receiver; without the
+      // collector the view degrades gracefully (eval KPI only).
+      this.otelCollector.receiverFunction.grantInvoke(velocityWidget);
+    }
+    this.velocityWidgetArn = velocityWidget.functionArn;
+    NagSuppressions.addResourceSuppressions(
+      velocityWidget,
+      [{ id: 'AwsSolutions-IAM4', reason: 'AWSLambdaBasicExecutionRole for CloudWatch Logs' },
+       { id: 'AwsSolutions-IAM5', reason: 'Table read grant includes index ARNs (table/*/index/*)' }],
+      true,
+    );
 
     // -------------------------------------------------------
     // AWS Security Agent (opt-in — requires Security Agent access)

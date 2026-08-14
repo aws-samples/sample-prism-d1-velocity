@@ -418,7 +418,7 @@ jobs:
                Detail:({team_id:$team_id, repo:$repo, timestamp:(now | todate), prism_level:3,
                  metric:{name:"security_finding",value:1,unit:"count"},
                  ai_context:{tool:"continuum",model:"aws-continuum",origin:$ai_origin},
-                 continuum_finding:{finding_id:($f.findingId // "cf-pr\($pr_number)-\(.key)"), phase:"code_review",
+                 security_agent_finding:{finding_id:($f.findingId // "cf-pr\($pr_number)-\(.key)"), phase:"code_review",
                    severity:($f.riskLevel // "MEDIUM"),
                    cwe_id:($f.cweId // null),
                    ai_origin:$ai_origin, found_at:($f.createdAt // null)}

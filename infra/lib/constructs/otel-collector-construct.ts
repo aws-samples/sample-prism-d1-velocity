@@ -56,6 +56,9 @@ export class OtelCollectorConstruct extends Construct {
   public readonly userPoolClient?: cognito.UserPoolClient;
   /** ARN of the CloudWatch custom-widget Lambda (Developer Productivity table). */
   public productivityWidgetArn?: string;
+  /** The otel-receiver Lambda — other constructs may grant themselves invoke
+   *  for direct aggregation queries (single implementation, no drift). */
+  public receiverFunction!: lambda.Function;
 
   constructor(scope: Construct, id: string, props: OtelCollectorConstructProps) {
     super(scope, id);
@@ -198,6 +201,7 @@ export class OtelCollectorConstruct extends Construct {
     props.aiUsageTable.grantReadWriteData(receiver);
     this.archiveBucket.grantPut(receiver);
     props.kmsKey.grantEncryptDecrypt(receiver);
+    this.receiverFunction = receiver;
 
     // -------------------------------------------------------
     // CloudWatch Custom Widget: Developer Productivity

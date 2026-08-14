@@ -214,17 +214,19 @@ async function writeEventToDynamo(
     prism_level: detail.prism_level ?? '1',
   };
 
-  if (detail.metric) {
-    data.metric = detail.metric;
-  }
-  if (detail.ai_context) {
-    data.ai_context = detail.ai_context;
-  }
-  if (detail.dora) {
-    data.dora = detail.dora;
-  }
-  if (detail.ai_dora) {
-    data.ai_dora = detail.ai_dora;
+  // Persist every payload section — the events table is the source of truth
+  // for DDB-backed dashboard panels and replay. (Previously only the first
+  // four were stored, silently dropping eval/guardrail/mcp/agent/security
+  // payloads from the durable record.)
+  const sections = [
+    'metric', 'ai_context', 'dora', 'ai_dora', 'eval', 'guardrail',
+    'mcp_tool_call', 'agent', 'quality', 'security',
+    'security_agent_finding', 'security_remediation',
+  ] as const;
+  for (const key of sections) {
+    if ((detail as Record<string, unknown>)[key]) {
+      data[key] = (detail as Record<string, unknown>)[key];
+    }
   }
 
   const item: Record<string, { S?: string; N?: string }> = {

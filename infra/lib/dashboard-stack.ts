@@ -9,6 +9,8 @@ const DEFAULT_PERIOD = cdk.Duration.hours(1);
 export interface DashboardStackProps extends cdk.StackProps {
   /** ARN of the productivity custom-widget Lambda (from the OTEL collector construct). */
   readonly productivityWidgetArn?: string;
+  /** ARN of the Team Velocity custom-widget Lambda (DDB-backed panels). */
+  readonly velocityWidgetArn?: string;
 }
 
 export class DashboardStack extends cdk.Stack {
@@ -36,272 +38,96 @@ export class DashboardStack extends cdk.Stack {
       defaultInterval: cdk.Duration.days(7),
     });
 
-    // --- AI Acceptance Rate (time series) ---
-    const aiAcceptanceMetric = new cloudwatch.Metric({
-      namespace: METRIC_NAMESPACE,
-      metricName: 'AIAcceptanceRate',
-      statistic: 'Average',
-      period: DEFAULT_PERIOD,
-      label: 'AI Acceptance Rate (%)',
-    });
+    // --- Hybrid layout ---
+    // KPI and detail panels are DDB-backed custom widgets (velocity-widget
+    // Lambda) reading the events table via the by-detail-type GSI: full
+    // 365-day history, real event timestamps, no CloudWatch metric-dimension
+    // matching, and honest empty states naming the missing emitter. Native
+    // graphs are retained only for attribution/OTEL-fed series, which are
+    // dimensionless and verified live. Access to panel data is gated by
+    // lambda:InvokeFunction on the widget Lambda (viewer's IAM creds).
+    const velocityPanel = (title: string, view: string, height: number): cloudwatch.CustomWidget =>
+      new cloudwatch.CustomWidget({
+        functionArn: props?.velocityWidgetArn ?? '',
+        title,
+        width: 24,
+        height,
+        params: { view },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
+      });
 
     teamDashboard.addWidgets(
       new cloudwatch.TextWidget({
-        markdown: '# PRISM D1 - Team Velocity Dashboard\nReal-time AI-enhanced DORA metrics for engineering teams.',
+        markdown:
+          '# PRISM D1 - Team Velocity Dashboard\n' +
+          'Delivery health: DORA proxies, AI-DORA quality, eval gates, governance, security. ' +
+          'Spend and per-developer output live on **PRISM-D1-Developer-Productivity**.',
         width: 24,
-        height: 1,
+        height: 2,
       }),
     );
 
+    if (props?.velocityWidgetArn) {
+      // Row 1: DORA proxy KPIs (merge frequency, PR cycle time, revert rate/turnaround)
+      teamDashboard.addWidgets(velocityPanel('Delivery KPIs (DORA proxies)', 'dora', 4));
+      // Row 2: AI-DORA KPIs (attribution store + eval events, L2/L4 coloring)
+      teamDashboard.addWidgets(velocityPanel('AI-DORA KPIs', 'aidora', 4));
+    }
+
+    // Row 3: native graphs — attribution/OTEL-fed series only
     teamDashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: 'AI Acceptance Rate',
-        left: [aiAcceptanceMetric],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Percent' },
-        statistic: 'Average',
-        period: DEFAULT_PERIOD,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Deployment Frequency',
+        title: 'Commits / Day (AI vs Human)',
         left: [
           new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'DeploymentFrequency',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Deploys / Day',
+            namespace: METRIC_NAMESPACE, metricName: 'AICommits',
+            statistic: 'Sum', period: cdk.Duration.days(1), label: 'AI commits',
+          }),
+          new cloudwatch.Metric({
+            namespace: METRIC_NAMESPACE, metricName: 'HumanCommits',
+            statistic: 'Sum', period: cdk.Duration.days(1), label: 'Human commits',
           }),
         ],
-        width: 12,
-        height: 6,
         view: cloudwatch.GraphWidgetView.BAR,
-        leftYAxis: { min: 0, label: 'Deployments' },
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Lead Time for Changes',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'LeadTimeForChanges',
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'Lead Time (seconds)',
-          }),
-        ],
-        width: 8,
+        stacked: true,
+        width: 12,
         height: 6,
-        leftYAxis: { min: 0, label: 'Seconds' },
-      }),
-      new cloudwatch.GaugeWidget({
-        title: 'Eval Gate Pass Rate',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'EvalGatePassRate',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Eval Pass Rate (%)',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, max: 100 },
+        leftYAxis: { min: 0, label: 'Commits' },
       }),
       new cloudwatch.GraphWidget({
-        title: 'AI Test Coverage Delta',
+        title: 'AI to Merge Ratio (attribution)',
         left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AITestCoverageDelta',
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'Coverage Delta (%)',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { label: 'Percent' },
-      }),
-    );
-
-    // --- Additional team metrics row ---
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Change Failure Rate',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'ChangeFailureRate',
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'Change Failure Rate (%)',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Percent' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Mean Time to Recovery',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'MTTR',
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'MTTR (seconds)',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Seconds' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'AI to Merge Ratio',
-        left: [
-          // Line 1: CI-fed metric (git trailers, computed per PR at merge time
-          // by prism-ai-metrics.yml). Requires an instrumented repo.
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AIToMergeRatio',
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'CI (git trailers, per-PR)',
-          }),
-          // Line 2: attribution-derived (codeburn spans, fleet aggregate).
-          // Populates for any user running `codeburn sync --attribution`.
-          // Divergence from line 1 indicates attribution coverage gaps.
           // Inner FILL/IF: avoid NaN on empty buckets (gap, not 0). Outer
-          // FILL(..., REPEAT): carry the last ratio forward through gap days —
-          // commit data is sparse, and CloudWatch renders an isolated
-          // datapoint between gaps as an invisible dot, not a line.
+          // FILL(..., REPEAT): carry the last ratio through gap days —
+          // commit data is sparse and isolated datapoints render invisibly.
           new cloudwatch.MathExpression({
             expression: 'FILL(IF(FILL(aiCommits, 0) > 0, 100 * FILL(mergedAi, 0) / FILL(aiCommits, 0)), REPEAT)',
             usingMetrics: {
               mergedAi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'MergedAICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
+                namespace: METRIC_NAMESPACE, metricName: 'MergedAICommits',
+                statistic: 'Sum', period: cdk.Duration.days(1),
               }),
               aiCommits: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'AICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
-              }),
-            },
-            label: 'Attribution (codeburn spans)',
-            period: cdk.Duration.days(1),
-          }),
-        ],
-        width: 6,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Percent' },
-      }),
-      // KPI card: the aggregate ratio over the whole displayed time range.
-      // Always shows a number regardless of how sparse the daily series is —
-      // the graph next door can render near-empty when the range holds only
-      // isolated datapoints.
-      new cloudwatch.SingleValueWidget({
-        title: 'AI Merge Rate (range)',
-        metrics: [
-          new cloudwatch.MathExpression({
-            expression: 'IF(FILL(aiCommitsKpi, 0) > 0, 100 * FILL(mergedAiKpi, 0) / FILL(aiCommitsKpi, 0))',
-            usingMetrics: {
-              mergedAiKpi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'MergedAICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
-              }),
-              aiCommitsKpi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'AICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
+                namespace: METRIC_NAMESPACE, metricName: 'AICommits',
+                statistic: 'Sum', period: cdk.Duration.days(1),
               }),
             },
             label: 'Merged AI / AI commits (%)',
             period: cdk.Duration.days(1),
           }),
         ],
-        setPeriodToTimeRange: true,
-        width: 2,
+        width: 12,
         height: 6,
-      }),
-    );
-
-    // --- Agent Metrics Row ---
-    const teamId = 'ALL';
-    const repository = 'ALL';
-
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### AI Token Usage & Cost',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'AI Input Tokens',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AIInputTokens',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Input Tokens',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Tokens' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'AI Output Tokens',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AIOutputTokens',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Output Tokens',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Tokens' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'AI Cost (USD)',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AICostUSD',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Cost (USD)',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
+        leftYAxis: { min: 0, max: 100, label: 'Percent' },
       }),
     );
 
     // Cost breakdowns by Tool and Model. SEARCH expressions auto-discover
     // every dimension value, so new tools/models appear without dashboard
-    // changes. These series are populated by the otel-metrics-publisher
-    // (deployed by default; skip with -c skipOtelCollector=true); the trailer
-    // path has no per-tool/per-model breakdown and leaves these widgets empty.
+    // changes. Populated by the otel-metrics-publisher from codeburn usage
+    // spans (deployed by default; skip with -c skipOtelCollector=true).
     teamDashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'AI Cost by Tool (USD)',
@@ -309,8 +135,6 @@ export class DashboardStack extends cdk.Stack {
           new cloudwatch.MathExpression({
             expression: `SEARCH('{${METRIC_NAMESPACE},Tool} MetricName="AICostUSD"', 'Sum')`,
             usingMetrics: {},
-            // Dynamic label: each discovered series is legend-labeled with
-            // its Tool dimension value (e.g. "claude-code").
             label: "${PROP('Dim.Tool')}",
             period: cdk.Duration.days(1),
           }),
@@ -326,8 +150,6 @@ export class DashboardStack extends cdk.Stack {
           new cloudwatch.MathExpression({
             expression: `SEARCH('{${METRIC_NAMESPACE},Model} MetricName="AICostUSD"', 'Sum')`,
             usingMetrics: {},
-            // Dynamic label: each discovered series is legend-labeled with
-            // its Model dimension value (e.g. "claude-sonnet-4-5-20250929").
             label: "${PROP('Dim.Model')}",
             period: cdk.Duration.days(1),
           }),
@@ -339,60 +161,20 @@ export class DashboardStack extends cdk.Stack {
       }),
     );
 
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Agent Operations',
-        width: 24,
-        height: 1,
-      }),
-    );
+    if (props?.velocityWidgetArn) {
+      // Rows 4-7: DDB-backed detail panels
+      teamDashboard.addWidgets(velocityPanel('Eval Gates (auto-discovers rubrics, incl. kiro-headless)', 'eval', 7));
+      teamDashboard.addWidgets(velocityPanel('Governance — Guardrails & MCP (populates during sample-app runs)', 'governance', 6));
+      teamDashboard.addWidgets(velocityPanel('Agent Operations (populates during sample-app runs)', 'agents', 6));
+      teamDashboard.addWidgets(velocityPanel('Security — Continuum Findings', 'security', 7));
+    }
 
     teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Agent Invocations',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AgentInvocationCount',
-            dimensionsMap: { TeamId: teamId, Repository: repository },
-            statistic: 'Sum',
-            period: DEFAULT_PERIOD,
-            label: 'Invocations',
-          }),
-        ],
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Agent Success Rate',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AgentSuccessRate',
-            dimensionsMap: { TeamId: teamId, Repository: repository },
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'Success Rate (%)',
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Percent' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Agent Avg Duration',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AgentDurationMs',
-            dimensionsMap: { TeamId: teamId, Repository: repository },
-            statistic: 'Average',
-            period: DEFAULT_PERIOD,
-            label: 'Duration (ms)',
-          }),
-        ],
-        width: 8,
-        height: 6,
+      new cloudwatch.TextWidget({
+        markdown:
+          `Spend, tokens, and per-developer breakdowns: [PRISM-D1-Developer-Productivity](https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Developer-Productivity)`,
+        width: 24,
+        height: 1,
       }),
     );
 
@@ -703,389 +485,6 @@ export class DashboardStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
-
-    // =======================================================
-    // Team Dashboard: Eval Gate by Rubric (Pillar 2)
-    // =======================================================
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Eval Gate Quality by Rubric',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    const rubricNames = ['code-quality', 'api-response-quality', 'agent-quality', 'security-compliance', 'spec-compliance'];
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Eval Pass Rate by Rubric',
-        left: rubricNames.map((rubric) =>
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'EvalGatePassRateByRubric',
-            dimensionsMap: { RubricName: rubric },
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: rubric,
-          }),
-        ),
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Pass Rate (%)' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Eval Score Trend',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'EvalScore',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Avg Eval Score',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, max: 1, label: 'Score (0-1)' },
-      }),
-    );
-
-    // =======================================================
-    // Team Dashboard: Guardrails & Safety (Pillar 4)
-    // =======================================================
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Guardrails & Safety',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    const guardrailCategories = ['CONTENT_FILTER', 'DENIED_TOPIC', 'SENSITIVE_INFO', 'WORD_FILTER'];
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Guardrail Triggers by Category',
-        left: guardrailCategories.map((category) =>
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'GuardrailTriggerCount',
-            dimensionsMap: { TriggerCategory: category },
-            statistic: 'Sum',
-            period: DEFAULT_PERIOD,
-            label: category,
-          }),
-        ),
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Triggers' },
-        view: cloudwatch.GraphWidgetView.BAR,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Guardrail Actions: Block vs Anonymize',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'GuardrailBlockCount',
-            statistic: 'Sum',
-            period: DEFAULT_PERIOD,
-            label: 'Blocked',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'GuardrailAnonymizeCount',
-            statistic: 'Sum',
-            period: DEFAULT_PERIOD,
-            label: 'Anonymized',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Count' },
-      }),
-    );
-
-    // =======================================================
-    // Team Dashboard: MCP Tool Governance (Pillar 3)
-    // =======================================================
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### MCP Tool Governance',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'MCP Tool Call Volume',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'MCPToolCallCount',
-            statistic: 'Sum',
-            period: DEFAULT_PERIOD,
-            label: 'Tool Calls',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Calls' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'MCP Auth Denied Rate',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'MCPAuthDeniedCount',
-            statistic: 'Sum',
-            period: DEFAULT_PERIOD,
-            label: 'Denied Calls',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Denied' },
-      }),
-    );
-
-    // =======================================================
-    // Team Dashboard: Cost Intelligence (Pillar 5)
-    // =======================================================
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Cost Intelligence',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Bedrock Cost (USD)',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'BedrockCostUSD',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Daily Cost ($)',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Token Efficiency',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'TokenEfficiency',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Tokens per Line Changed',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Tokens/Line' },
-      }),
-    );
-
-    // =======================================================
-    // Team Dashboard: AI Attribution (Pillar 7)
-    // =======================================================
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### AI Attribution & Quality',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Defect Rate: AI vs Human Code',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'PostMergeDefectRateAI',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'AI Code Defect Rate (%)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'PostMergeDefectRateHuman',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Human Code Defect Rate (%)',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Defect Rate (%)' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Spec-to-Code Hours',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SpecToCodeHours',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Avg Hours',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Hours' },
-      }),
-    );
-
-    // =======================================================
-    // Team Dashboard: Security Agent Findings
-    // =======================================================
-    teamDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Security Agent Findings',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.SingleValueWidget({
-        title: 'Open Critical/High Findings',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityCriticalFindingCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Critical + High',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Finding Trend by Severity',
-        left: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((severity) =>
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingCount',
-            dimensionsMap: { Severity: severity },
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: severity,
-          }),
-        ),
-        width: 8,
-        height: 4,
-        leftYAxis: { min: 0, label: 'Findings' },
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'Avg Remediation (hrs)',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityRemediationTimeHours',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Hours',
-          }),
-        ],
-        width: 4,
-        height: 4,
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Findings: AI vs Human Code',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingByOrigin',
-            dimensionsMap: { AIOrigin: 'ai-assisted' },
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'AI Code',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingByOrigin',
-            dimensionsMap: { AIOrigin: 'human' },
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Human Code',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Findings' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Remediation Time: AI vs Human',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityRemediationTimeHours',
-            dimensionsMap: { AIOrigin: 'ai-assisted' },
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'AI Code Fix Time (hrs)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityRemediationTimeHours',
-            dimensionsMap: { AIOrigin: 'human' },
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Human Code Fix Time (hrs)',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Hours' },
-      }),
-    );
-
-    teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Findings by Phase',
-        left: ['design_review', 'code_review', 'pen_test'].map((phase) =>
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingCount',
-            dimensionsMap: { Phase: phase },
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: phase.replace('_', ' '),
-          }),
-        ),
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Findings' },
-        view: cloudwatch.GraphWidgetView.BAR,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Security Scan Volume',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityScanCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Scans / Day',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Scans' },
-      }),
-    );
 
     // =======================================================
     // Executive Dashboard: Security & Compliance section
@@ -1511,11 +910,13 @@ export class DashboardStack extends cdk.Stack {
     });
 
     // Alarm: Agent success rate dropping below 80%
+    // Uses the dimensionless aggregate series (dual-published by the
+    // processor). The previous TeamId=ALL/Repository=ALL dimensions never
+    // matched real events, so the alarm sat in INSUFFICIENT_DATA forever.
     new cloudwatch.Alarm(this, 'AgentSuccessRateAlarm', {
       metric: new cloudwatch.Metric({
         namespace: METRIC_NAMESPACE,
         metricName: 'AgentSuccessRate',
-        dimensionsMap: { TeamId: teamId, Repository: repository },
         statistic: 'Average',
         period: cdk.Duration.hours(1),
       }),
@@ -1523,7 +924,7 @@ export class DashboardStack extends cdk.Stack {
       evaluationPeriods: 3,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       alarmDescription: 'Agent success rate below 80% for 3 consecutive hours',
-      alarmName: `prism-d1-${teamId}-agent-success-rate`,
+      alarmName: 'prism-d1-agent-success-rate',
     });
 
     // -------------------------------------------------------
