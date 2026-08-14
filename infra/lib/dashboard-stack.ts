@@ -386,68 +386,72 @@ export class DashboardStack extends cdk.Stack {
 
     // =======================================================
     // Dashboard 3: CISO Compliance
+    //
+    // This dashboard is DEPTH. The Executive Readout owns the headline
+    // posture strip; everything past Row 2 here is detail the exec view
+    // deliberately omits.
+    //
+    // Rows 1-5 are DDB-backed custom widgets rather than metric graphs. The
+    // previous build used metric graphs and three of them could never render:
+    // the metrics publisher emits either the FULL dimension set
+    // ([TeamId, Repository, Phase, Severity, AIOrigin]) or a dimensionless
+    // aggregate copy — never a subset. Widgets querying a partial set
+    // ({AIOrigin} or {Phase} alone) silently matched nothing. Reading events
+    // directly sidesteps dimension matching, and is the only way to surface
+    // compliance_mappings, which is a string array and therefore cannot be a
+    // CloudWatch dimension at all.
     // =======================================================
     const cisoDashboard = new cloudwatch.Dashboard(this, 'CISOComplianceDashboard', {
       dashboardName: 'PRISM-D1-CISO-Compliance',
       defaultInterval: cdk.Duration.days(30),
     });
 
-    cisoDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '# PRISM D1 - CISO Compliance Dashboard\nSecurity posture, remediation SLAs, and AI code risk profile across all teams.',
+    const cisoPanel = (title: string, view: string, height: number): cloudwatch.CustomWidget =>
+      new cloudwatch.CustomWidget({
+        functionArn: props?.velocityWidgetArn ?? '',
+        title,
         width: 24,
-        height: 1,
-      }),
-    );
-
-    cisoDashboard.addWidgets(
-      new cloudwatch.SingleValueWidget({
-        title: 'Open Critical Findings',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityCriticalFindingCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(30),
-            label: 'Critical + High (30d)',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'Avg Remediation Time',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityRemediationTimeHours',
-            statistic: 'Average',
-            period: cdk.Duration.days(30),
-            label: 'Hours (30d avg)',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'Security Scans Run',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityScanCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(30),
-            label: 'Scans (30d)',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-    );
+        height,
+        params: { view },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
+      });
 
     cisoDashboard.addWidgets(
       new cloudwatch.TextWidget({
-        markdown: '### AI Code Risk Profile',
+        markdown:
+          '# PRISM D1 - CISO Compliance Dashboard\n' +
+          'Security depth: exposure, remediation SLA compliance, AI code risk normalized by ' +
+          'commit volume, shift-left effectiveness, and vulnerability classes. ' +
+          'Headline posture is on **PRISM-D1-Executive-Readout**.',
+        width: 24,
+        height: 2,
+      }),
+    );
+
+    // Row 1 — current exposure
+    cisoDashboard.addWidgets(cisoPanel('Current Exposure', 'ciso-exposure', 5));
+
+    // Row 2 — remediation SLA compliance (SECURITY-09 budgets)
+    cisoDashboard.addWidgets(cisoPanel('Remediation SLA Compliance', 'ciso-sla', 8));
+
+    // Row 3 — AI code risk, normalized. Raw finding counts are not comparable
+    // across origins; this joins findings to attribution commit volume.
+    cisoDashboard.addWidgets(cisoPanel('AI Code Risk Profile (per 100 commits)', 'ciso-risk', 10));
+
+    // Row 4 — shift-left effectiveness, incl. computed finding survival rate
+    cisoDashboard.addWidgets(cisoPanel('Shift-Left Effectiveness', 'ciso-shiftleft', 10));
+
+    // Row 5 — vulnerability classes + compliance framework coverage
+    cisoDashboard.addWidgets(cisoPanel('Vulnerability Classes & Compliance Coverage', 'ciso-classes', 12));
+
+    // Row 6 — runtime governance. These stay native graphs: the guardrail /
+    // MCP / exfiltration metrics are published with a dimensionless copy and
+    // these widgets query dimensionlessly, so they match correctly.
+    cisoDashboard.addWidgets(
+      new cloudwatch.TextWidget({
+        markdown: '### Runtime Governance',
         width: 24,
         height: 1,
       }),
@@ -455,109 +459,66 @@ export class DashboardStack extends cdk.Stack {
 
     cisoDashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: 'Security Findings: AI vs Human Code',
+        title: 'Guardrail Triggers vs Blocks',
         left: [
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingByOrigin',
-            dimensionsMap: { AIOrigin: 'ai-assisted' },
+            metricName: 'GuardrailTriggerCount',
             statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'AI Code Findings',
+            period: cdk.Duration.days(1),
+            label: 'Triggers',
           }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingByOrigin',
-            dimensionsMap: { AIOrigin: 'human' },
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Human Code Findings',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Findings' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Remediation Time by Code Origin',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityRemediationTimeHours',
-            dimensionsMap: { AIOrigin: 'ai-assisted' },
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'AI Code (hrs)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityRemediationTimeHours',
-            dimensionsMap: { AIOrigin: 'human' },
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Human Code (hrs)',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Hours' },
-      }),
-    );
-
-    cisoDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Shift-Left Effectiveness',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    cisoDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Findings by Phase (Monthly Trend)',
-        left: ['design_review', 'code_review', 'pen_test'].map((phase) =>
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SecurityFindingCount',
-            dimensionsMap: { Phase: phase },
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: phase.replace('_', ' '),
-          }),
-        ),
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Findings' },
-        view: cloudwatch.GraphWidgetView.BAR,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Guardrail + Exfiltration Trends',
-        left: [
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
             metricName: 'GuardrailBlockCount',
             statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Guardrail Blocks',
+            period: cdk.Duration.days(1),
+            label: 'Blocks',
           }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'ExfiltrationAlertCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Exfiltration Alerts',
-          }),
+        ],
+        width: 8,
+        height: 6,
+        leftYAxis: { min: 0, label: 'Count' },
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'MCP Authorization Denials',
+        left: [
           new cloudwatch.Metric({
             namespace: METRIC_NAMESPACE,
             metricName: 'MCPAuthDeniedCount',
             statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'MCP Auth Denied',
+            period: cdk.Duration.days(1),
+            label: 'Out-of-scope tool calls',
           }),
         ],
-        width: 12,
+        width: 8,
         height: 6,
         leftYAxis: { min: 0, label: 'Count' },
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Exfiltration Alerts',
+        left: [
+          new cloudwatch.Metric({
+            namespace: METRIC_NAMESPACE,
+            metricName: 'ExfiltrationAlertCount',
+            statistic: 'Sum',
+            period: cdk.Duration.days(1),
+            label: 'Alerts',
+          }),
+        ],
+        width: 8,
+        height: 6,
+        leftYAxis: { min: 0, label: 'Count' },
+      }),
+    );
+
+    cisoDashboard.addWidgets(
+      new cloudwatch.TextWidget({
+        markdown:
+          `**Related:** [Executive Readout](https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Executive-Readout) (headline posture) · ` +
+          `[Team Velocity](https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Team-Velocity) (per-repo delivery and security)`,
+        width: 24,
+        height: 2,
       }),
     );
 

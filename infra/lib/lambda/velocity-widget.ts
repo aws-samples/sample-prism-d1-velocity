@@ -30,18 +30,24 @@ interface WidgetEvent {
   widgetContext?: { timeRange?: { start: number; end: number }; theme?: string };
 }
 
-const DOCS = `## Team Velocity / Executive Panels
+const DOCS = `## Team Velocity / Executive / CISO Panels
 DDB-backed panels reading the PRISM events table (by-detail-type GSI) and
 the attribution store. Full history, real event timestamps.
 
 ### Parameters
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| view | string | dora | dora, aidora, repos, eval, governance, agents, security, exec, exec-security |
+| view | string | dora | dora, aidora, repos, eval, governance, agents, security, exec, exec-security, ciso-exposure, ciso-sla, ciso-risk, ciso-shiftleft, ciso-classes |
 
 The \`exec\` view additionally computes an **observed** PRISM level from
 outcome metrics (capped at L4 — L5 requires an autonomy signal that no
 emitter produces). This is not the scanner's capability score.
+
+The \`ciso-*\` views read finding events directly rather than CloudWatch
+metrics, because the metric publisher emits either the full dimension set
+or none — a widget querying a **partial** set (e.g. AIOrigin alone) never
+matches. \`ciso-classes\` additionally surfaces \`compliance_mappings\`,
+a string array that cannot be a CloudWatch dimension at all.
 `;
 
 type Palette = { fg: string; mut: string; bord: string; accent: string; ok: string; warn: string; danger: string };
@@ -533,19 +539,48 @@ async function findingOrigin(
   return { origin: 'unknown', source: 'none' };
 }
 
+// ---- Shared security event access ----
+
+/** Remediation SLA budgets per the AI-DLC steering baseline (SECURITY-09). */
+const SLA_HOURS: Record<string, number> = { CRITICAL: 24, HIGH: 72, MEDIUM: 720, LOW: 720 };
+const FINDING_TYPES = [
+  'prism.d1.security.code_review',
+  'prism.d1.security.design_review',
+  'prism.d1.security.pen_test',
+];
+
+interface SecurityCorpus {
+  findings: PrismEvent[];
+  remediations: PrismEvent[];
+}
+
+/** Findings across all three review phases plus their remediation events. */
+async function loadSecurityCorpus(fromIso: string, toIso: string): Promise<SecurityCorpus> {
+  const [findingEvents, remediationEvents] = await Promise.all([
+    Promise.all(FINDING_TYPES.map(t => queryEvents(t, fromIso, toIso))).then(r => r.flat()),
+    queryEvents('prism.d1.security.remediation', fromIso, toIso),
+  ]);
+  return {
+    findings: findingEvents.filter(e => e.data.security_agent_finding),
+    remediations: remediationEvents.filter(e => e.data.security_remediation),
+  };
+}
+
+const noFindings = (p: Palette): string => emptyState(
+  'security finding',
+  'Populated by the Continuum scan step (prism-eval-gate-kiro.yml) and the security-agent-processor webhook.',
+  p,
+);
+
 // ---- View: exec-security (condensed posture strip; CISO dashboard has depth) ----
 
 async function renderExecSecurity(fromIso: string, toIso: string, p: Palette): Promise<string> {
-  const types = ['prism.d1.security.code_review', 'prism.d1.security.design_review', 'prism.d1.security.pen_test'];
-  const [findingEvents, remediationEvents, guardrails, mcp, exfil] = await Promise.all([
-    Promise.all(types.map(t => queryEvents(t, fromIso, toIso))).then(r => r.flat()),
-    queryEvents('prism.d1.security.remediation', fromIso, toIso),
+  const [{ findings, remediations }, guardrails, mcp, exfil] = await Promise.all([
+    loadSecurityCorpus(fromIso, toIso),
     queryEvents('prism.d1.guardrail', fromIso, toIso),
     queryEvents('prism.d1.mcp.tool_call', fromIso, toIso),
     queryEvents('prism.d1.security', fromIso, toIso),
   ]);
-  const findings = findingEvents.filter(e => e.data.security_agent_finding);
-  const remediations = remediationEvents.filter(e => e.data.security_remediation);
 
   if (findings.length === 0 && remediations.length === 0 && guardrails.length === 0 && mcp.length === 0) {
     return emptyState('security / governance', 'Populated by the Continuum scan step and the sample-app runtime.', p);
@@ -561,7 +596,6 @@ async function renderExecSecurity(fromIso: string, toIso: string, p: Palette): P
   const critHigh = (bySev.get('CRITICAL') ?? 0) + (bySev.get('HIGH') ?? 0);
 
   // SLA per the AI-DLC steering baseline (SECURITY-09).
-  const SLA_HOURS: Record<string, number> = { CRITICAL: 24, HIGH: 72, MEDIUM: 720, LOW: 720 };
   let withinSla = 0, slaEligible = 0;
   for (const r of remediations) {
     const sev = String(r.data.security_remediation.severity ?? '').toUpperCase();
@@ -750,13 +784,7 @@ async function renderAgents(fromIso: string, toIso: string, p: Palette): Promise
 // ---- View: security ----
 
 async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promise<string> {
-  const types = ['prism.d1.security.code_review', 'prism.d1.security.design_review', 'prism.d1.security.pen_test'];
-  const [findingEvents, remediationEvents] = await Promise.all([
-    Promise.all(types.map(t => queryEvents(t, fromIso, toIso))).then(r => r.flat()),
-    queryEvents('prism.d1.security.remediation', fromIso, toIso),
-  ]);
-  const findings = findingEvents.filter(e => e.data.security_agent_finding);
-  const remediations = remediationEvents.filter(e => e.data.security_remediation);
+  const { findings, remediations } = await loadSecurityCorpus(fromIso, toIso);
 
   if (findings.length === 0 && remediations.length === 0) {
     return emptyState('security finding', 'Populated by the Continuum scan step in prism-eval-gate-kiro.yml when findings exist.', p);
@@ -788,7 +816,6 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
   // --- Remediation SLA (steering file SECURITY-09: 24h Critical, 72h High,
   // 30d Medium). Closure is half the security story — findings alone don't
   // tell you whether the team is actually fixing them.
-  const SLA_HOURS: Record<string, number> = { CRITICAL: 24, HIGH: 72, MEDIUM: 720, LOW: 720 };
   let remedHoursSum = 0, withinSla = 0, slaEligible = 0, remedAi = 0, remedHuman = 0;
   const remedBySev = new Map<string, { count: number; hoursSum: number; within: number }>();
   for (const r of remediations) {
@@ -863,6 +890,432 @@ async function renderSecurity(fromIso: string, toIso: string, p: Palette): Promi
     + originNote;
 }
 
+// ---- CISO views (depth; the exec strip owns the headline numbers) ----
+
+// --- Row 1: current exposure ---
+
+async function renderCisoExposure(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  const { findings, remediations } = await loadSecurityCorpus(fromIso, toIso);
+  if (findings.length === 0) return noFindings(p);
+
+  const bySev = new Map<string, number>();
+  const cvss: number[] = [];
+  let exploitValidated = 0;
+  for (const f of findings) {
+    const d = f.data.security_agent_finding;
+    const sev = String(d.severity ?? 'UNKNOWN').toUpperCase();
+    bySev.set(sev, (bySev.get(sev) ?? 0) + 1);
+    if (d.exploit_validated) exploitValidated += 1;
+    if (typeof d.cvss_score === 'number') cvss.push(d.cvss_score);
+  }
+  const critHigh = (bySev.get('CRITICAL') ?? 0) + (bySev.get('HIGH') ?? 0);
+
+  // Aging: a finding is open until a remediation event references its id.
+  const remediatedIds = new Set(
+    remediations.map(r => r.data.security_remediation?.finding_id).filter(Boolean),
+  );
+  const now = Date.parse(toIso);
+  let oldestOpenDays: number | null = null;
+  let openCount = 0;
+  for (const f of findings) {
+    const d = f.data.security_agent_finding;
+    if (d.finding_id && remediatedIds.has(d.finding_id)) continue;
+    openCount += 1;
+    const found = Date.parse(d.found_at ?? f.timestamp);
+    if (Number.isNaN(found)) continue;
+    const ageDays = (now - found) / 86400000;
+    if (oldestOpenDays === null || ageDays > oldestOpenDays) oldestOpenDays = ageDays;
+  }
+
+  const cvssNote = cvss.length === 0
+    ? 'not scored by this emitter'
+    : `${num(cvss.length)} of ${num(findings.length)} scored`;
+
+  return kpiRow([
+    {
+      label: 'Open Critical + High',
+      value: num(critHigh),
+      note: [...bySev.entries()].sort().map(([s, n]) => `${s}:${n}`).join(' · '),
+      color: critHigh > 0 ? p.danger : p.ok,
+    },
+    {
+      label: 'Exploit Validated',
+      value: num(exploitValidated),
+      note: 'pen-test proven — immediate blocker',
+      color: exploitValidated > 0 ? p.danger : p.ok,
+    },
+    {
+      label: 'Max CVSS',
+      value: cvss.length ? Math.max(...cvss).toFixed(1) : '—',
+      note: cvssNote,
+      color: cvss.length && Math.max(...cvss) >= 9 ? p.danger : cvss.length && Math.max(...cvss) >= 7 ? p.warn : undefined,
+    },
+    {
+      label: 'Avg CVSS',
+      value: cvss.length ? (cvss.reduce((a, b) => a + b, 0) / cvss.length).toFixed(1) : '—',
+    },
+    {
+      label: 'Oldest Unremediated',
+      value: oldestOpenDays === null ? '—' : `${Math.floor(oldestOpenDays)}d`,
+      note: `${num(openCount)} still open`,
+      color: oldestOpenDays !== null && oldestOpenDays > 30 ? p.danger : oldestOpenDays !== null && oldestOpenDays > 7 ? p.warn : p.ok,
+    },
+    {
+      label: 'Findings Recorded',
+      value: num(findings.length),
+      note: 'in selected range',
+    },
+  ], p) + footnote(
+    'Open = no remediation event references the finding id. "Findings Recorded" counts findings, not scan runs — the SecurityScanCount metric is emitted once per finding, so a scan-count KPI would be double-labelled.',
+    p,
+  );
+}
+
+// --- Row 2: remediation SLA compliance ---
+
+async function renderCisoSla(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  const { remediations } = await loadSecurityCorpus(fromIso, toIso);
+  if (remediations.length === 0) {
+    return emptyState(
+      'prism.d1.security.remediation',
+      'Populated by security-remediation-tracker when a finding is closed. No remediations in range means nothing has been fixed yet — or the tracker is not wired.',
+      p,
+    );
+  }
+
+  const bySev = new Map<string, { count: number; hoursSum: number; within: number; worst: number }>();
+  let withinTotal = 0, eligibleTotal = 0;
+  for (const r of remediations) {
+    const d = r.data.security_remediation;
+    const sev = String(d.severity ?? 'UNKNOWN').toUpperCase();
+    const hours = Number(d.remediation_time_hours ?? 0);
+    const agg = bySev.get(sev) ?? { count: 0, hoursSum: 0, within: 0, worst: 0 };
+    agg.count += 1;
+    agg.hoursSum += hours;
+    if (hours > agg.worst) agg.worst = hours;
+    const budget = SLA_HOURS[sev];
+    if (budget !== undefined) {
+      eligibleTotal += 1;
+      if (hours <= budget) { agg.within += 1; withinTotal += 1; }
+    }
+    bySev.set(sev, agg);
+  }
+  const slaPct = eligibleTotal > 0 ? (withinTotal / eligibleTotal) * 100 : null;
+  const breached = eligibleTotal - withinTotal;
+
+  const order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+  const rows = [...bySev.entries()]
+    .sort((a, b) => (order.indexOf(a[0]) + 99 * (order.indexOf(a[0]) < 0 ? 1 : 0)) - (order.indexOf(b[0]) + 99 * (order.indexOf(b[0]) < 0 ? 1 : 0)))
+    .map(([sev, v]) => {
+      const budget = SLA_HOURS[sev];
+      const breach = budget === undefined ? 0 : v.count - v.within;
+      return [
+        esc(sev),
+        budget === undefined ? '—' : budget >= 720 ? `${budget / 24}d` : `${budget}h`,
+        num(v.count),
+        (v.hoursSum / v.count).toFixed(1),
+        v.worst.toFixed(1),
+        budget === undefined ? '—' : `<span style="color:${v.within === v.count ? p.ok : p.warn}">${v.within} / ${v.count}</span>`,
+        breach > 0 ? `<span style="color:${p.danger}">${num(breach)}</span>` : '0',
+      ];
+    });
+
+  return kpiRow([
+    {
+      label: 'Within Remediation SLA',
+      value: pct(slaPct),
+      note: `${num(withinTotal)} of ${num(eligibleTotal)} eligible`,
+      color: slaPct === null ? undefined : slaPct >= 90 ? p.ok : slaPct >= 70 ? p.warn : p.danger,
+    },
+    { label: 'SLA Breaches', value: num(breached), note: 'named per severity below', color: breached > 0 ? p.danger : p.ok },
+    { label: 'Findings Closed', value: num(remediations.length) },
+  ], p)
+    + table(['Severity', 'Budget', 'Fixed', 'Avg Hours', 'Worst', 'Within SLA', 'Breached'], rows, p)
+    + footnote('Budgets from the AI-DLC steering baseline (SECURITY-09): 24h Critical, 72h High, 30d Medium/Low. Breaches are counted per severity rather than averaged into a single number, because one 200h Critical is not offset by ten fast Lows.', p);
+}
+
+// --- Row 3: AI code risk profile, normalized by commit volume ---
+
+async function renderCisoRisk(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  const [{ findings, remediations }, report] = await Promise.all([
+    loadSecurityCorpus(fromIso, toIso),
+    fetchProductivity(fromIso, toIso).catch(() => null),
+  ]);
+  if (findings.length === 0) return noFindings(p);
+
+  const cache = new Map<string, ResolvedOrigin>();
+  const sources = new Set<string>();
+  // origin -> severity -> count
+  const matrix = new Map<ResolvedOrigin, Map<string, number>>();
+  const totals = new Map<ResolvedOrigin, number>();
+  for (const f of findings) {
+    const { origin, source } = await findingOrigin(f, cache);
+    if (source !== 'none') sources.add(source);
+    const sev = String(f.data.security_agent_finding.severity ?? 'UNKNOWN').toUpperCase();
+    const row = matrix.get(origin) ?? new Map<string, number>();
+    row.set(sev, (row.get(sev) ?? 0) + 1);
+    matrix.set(origin, row);
+    totals.set(origin, (totals.get(origin) ?? 0) + 1);
+  }
+
+  const aiCommits = report?.totals?.commits?.ai ?? null;
+  const humanCommits = report?.totals?.commits?.human ?? null;
+  const aiFindings = totals.get('ai') ?? 0;
+  const humanFindings = totals.get('human') ?? 0;
+  const unresolved = totals.get('unknown') ?? 0;
+
+  const per100 = (f: number, c: number | null): number | null =>
+    c === null || c === 0 ? null : (f / c) * 100;
+  const aiRate = per100(aiFindings, aiCommits);
+  const humanRate = per100(humanFindings, humanCommits);
+  const ratio = aiRate !== null && humanRate !== null && humanRate > 0 ? aiRate / humanRate : null;
+
+  const normalized = kpiRow([
+    {
+      label: 'AI findings / 100 commits',
+      value: aiRate === null ? '—' : aiRate.toFixed(1),
+      note: aiCommits === null ? 'commit volume unavailable' : `${num(aiFindings)} findings / ${num(aiCommits)} AI commits`,
+    },
+    {
+      label: 'Human findings / 100 commits',
+      value: humanRate === null ? '—' : humanRate.toFixed(1),
+      note: humanCommits === null ? 'commit volume unavailable' : `${num(humanFindings)} findings / ${num(humanCommits)} human commits`,
+    },
+    {
+      label: 'AI : Human risk ratio',
+      value: ratio === null ? '—' : `${ratio.toFixed(2)}x`,
+      // A bare dash invites the reader to assume the worst. Say which side is
+      // missing: no human baseline is a very different situation from no data.
+      note: ratio !== null
+        ? 'L2 ≤1.2x · L4 ≤0.9x'
+        : humanCommits === null
+          ? 'commit volume unavailable'
+          : humanRate === 0
+            ? 'no human-origin findings to compare against'
+            : 'insufficient data',
+      color: ratio === null ? undefined : ratio <= 0.9 ? p.ok : ratio <= 1.2 ? p.warn : p.danger,
+    },
+    {
+      label: 'Unresolved Origin',
+      value: num(unresolved),
+      note: unresolved > 0 ? 'SHAs not in attribution store' : 'all findings attributed',
+      color: unresolved > 0 ? p.warn : p.ok,
+    },
+  ], p);
+
+  const sevOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
+  const matrixRows = (['ai', 'human', 'unknown'] as ResolvedOrigin[])
+    .filter(o => totals.has(o))
+    .map(o => {
+      const row = matrix.get(o) ?? new Map<string, number>();
+      return [
+        o === 'unknown' ? 'unresolved' : o,
+        ...sevOrder.map(s => {
+          const n = row.get(s) ?? 0;
+          const color = n === 0 ? p.mut : s === 'CRITICAL' || s === 'HIGH' ? p.danger : p.fg;
+          return `<span style="color:${color}">${num(n)}</span>`;
+        }),
+        num(totals.get(o) ?? 0),
+      ];
+    });
+
+  // Remediation latency by who fixed it. Still trailer-derived on the
+  // remediation path, so it is labelled rather than silently trusted.
+  const remedByOrigin = new Map<string, { count: number; hoursSum: number }>();
+  for (const r of remediations) {
+    const d = r.data.security_remediation;
+    const key = d.remediated_by_origin ? (d.remediated_by_origin === 'human' ? 'human' : 'ai') : 'unlabelled';
+    const agg = remedByOrigin.get(key) ?? { count: 0, hoursSum: 0 };
+    agg.count += 1;
+    agg.hoursSum += Number(d.remediation_time_hours ?? 0);
+    remedByOrigin.set(key, agg);
+  }
+  const remedRows = [...remedByOrigin.entries()].map(([k, v]) => [
+    esc(k), num(v.count), (v.hoursSum / v.count).toFixed(1),
+  ]);
+
+  const volumeWarn = aiCommits === null
+    ? footnote('Attribution store unreachable — rates cannot be normalized, so only raw counts are shown. Raw counts are not comparable when AI and human commit volumes differ.', p)
+    : '';
+  const trailerWarn = sources.has('trailer')
+    ? footnote('Some finding origins came from legacy git trailers (events predating the commit-SHA cutover). Trailers disappear at Phase 3 hook removal; new findings resolve against the attribution store.', p)
+    : '';
+
+  return normalized
+    + `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Origin × severity</div>`
+    + table(['Origin', ...sevOrder, 'Total'], matrixRows, p)
+    + (remedRows.length
+      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Remediation latency by fixer (trailer-derived — see note)</div>`
+        + table(['Fixed by', 'Count', 'Avg Hours'], remedRows, p)
+      : '')
+    + volumeWarn
+    + trailerWarn
+    + footnote('Rates are the only defensible answer to "is AI code riskier?" — raw finding counts scale with how much code each origin produced.', p);
+}
+
+// --- Row 4: shift-left effectiveness ---
+
+async function renderCisoShiftleft(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  const { findings } = await loadSecurityCorpus(fromIso, toIso);
+  if (findings.length === 0) return noFindings(p);
+
+  const PHASES = ['design_review', 'code_review', 'pen_test'];
+  const byPhase = new Map<string, PrismEvent[]>();
+  for (const f of findings) {
+    const phase = String(f.data.security_agent_finding.phase ?? 'unknown');
+    const arr = byPhase.get(phase) ?? [];
+    arr.push(f);
+    byPhase.set(phase, arr);
+  }
+
+  // Survival rate: a class of issue (CWE, else category) raised at design
+  // review that reappears in a later phase was not actually fixed early.
+  // Both steering files define this metric and nothing emits it.
+  const classOf = (f: PrismEvent): string | null => {
+    const d = f.data.security_agent_finding;
+    return d.cwe_id ?? d.category ?? null;
+  };
+  const designClasses = new Set(
+    (byPhase.get('design_review') ?? []).map(classOf).filter((c): c is string => !!c),
+  );
+  const laterClasses = new Set(
+    [...(byPhase.get('code_review') ?? []), ...(byPhase.get('pen_test') ?? [])]
+      .map(classOf).filter((c): c is string => !!c),
+  );
+  const survived = [...designClasses].filter(c => laterClasses.has(c));
+  const survivalPct = designClasses.size > 0 ? (survived.length / designClasses.size) * 100 : null;
+
+  const phaseKpis = kpiRow([
+    ...PHASES.map(ph => ({
+      label: ph.replace(/_/g, ' '),
+      value: num((byPhase.get(ph) ?? []).length),
+      note: ph === 'design_review' ? 'cheapest to fix' : ph === 'pen_test' ? 'most expensive' : undefined,
+    })),
+    {
+      label: 'Finding Survival Rate',
+      value: pct(survivalPct),
+      note: designClasses.size === 0
+        ? 'no design-phase findings to track'
+        : `${survived.length} of ${designClasses.size} classes resurfaced`,
+      color: survivalPct === null ? undefined : survivalPct <= 10 ? p.ok : survivalPct <= 30 ? p.warn : p.danger,
+    },
+  ], p);
+
+  const trends = `<div style="display:flex;gap:24px;margin:14px 0 0;flex-wrap:wrap">${PHASES.map(ph => {
+    const chrono = (byPhase.get(ph) ?? []).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const series = dailySeries(chrono, e => e.timestamp, bucket => bucket.length);
+    return `<div>
+      <div style="color:${p.mut};font-size:11px">${esc(ph.replace(/_/g, ' '))} findings / day</div>
+      ${sparkline(series, p, { color: ph === 'pen_test' ? p.danger : ph === 'code_review' ? p.warn : p.accent, width: 200 })}
+    </div>`;
+  }).join('')}</div>`;
+
+  const survivedRows = survived.slice(0, 10).map(c => {
+    const design = (byPhase.get('design_review') ?? []).filter(f => classOf(f) === c).length;
+    const later = [...(byPhase.get('code_review') ?? []), ...(byPhase.get('pen_test') ?? [])]
+      .filter(f => classOf(f) === c).length;
+    return [esc(c), num(design), num(later)];
+  });
+
+  const unknownPhase = (byPhase.get('unknown') ?? []).length;
+
+  return phaseKpis
+    + trends
+    + (survivedRows.length
+      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Issue classes that survived design review</div>`
+        + table(['CWE / Category', 'At Design', 'Later Phases'], survivedRows, p)
+      : '')
+    + (unknownPhase > 0 ? footnote(`${unknownPhase} finding(s) carry no phase and are excluded from shift-left analysis.`, p) : '')
+    + footnote('Survival rate matches issue classes (CWE, else category) across phases — lower is better. A class raised at design that reappears in code review or pen test was flagged early but not actually prevented.', p);
+}
+
+// --- Row 5: vulnerability classes and compliance coverage ---
+
+async function renderCisoClasses(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  const { findings } = await loadSecurityCorpus(fromIso, toIso);
+  if (findings.length === 0) return noFindings(p);
+
+  const SEV_RANK: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, UNKNOWN: 0 };
+  const byCwe = new Map<string, { count: number; worst: string; cvss: number[] }>();
+  const byCategory = new Map<string, number>();
+  const byFramework = new Map<string, number>();
+  let taggedCwe = 0, taggedCategory = 0, taggedCompliance = 0;
+
+  for (const f of findings) {
+    const d = f.data.security_agent_finding;
+    const sev = String(d.severity ?? 'UNKNOWN').toUpperCase();
+    if (d.cwe_id) {
+      taggedCwe += 1;
+      const agg = byCwe.get(d.cwe_id) ?? { count: 0, worst: 'UNKNOWN', cvss: [] };
+      agg.count += 1;
+      if ((SEV_RANK[sev] ?? 0) > (SEV_RANK[agg.worst] ?? 0)) agg.worst = sev;
+      if (typeof d.cvss_score === 'number') agg.cvss.push(d.cvss_score);
+      byCwe.set(d.cwe_id, agg);
+    }
+    if (d.category) {
+      taggedCategory += 1;
+      byCategory.set(d.category, (byCategory.get(d.category) ?? 0) + 1);
+    }
+    const mappings: unknown = d.compliance_mappings;
+    if (Array.isArray(mappings) && mappings.length > 0) {
+      taggedCompliance += 1;
+      for (const m of mappings) {
+        const key = String(m);
+        byFramework.set(key, (byFramework.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  const cweMax = Math.max(...[...byCwe.values()].map(v => v.count), 1);
+  const cweRows = [...byCwe.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 12)
+    .map(([cwe, v]) => [
+      esc(cwe),
+      `${bar(v.count, cweMax, (SEV_RANK[v.worst] ?? 0) >= 3 ? p.danger : p.accent)}${num(v.count)}`,
+      `<span style="color:${(SEV_RANK[v.worst] ?? 0) >= 3 ? p.danger : p.fg}">${esc(v.worst)}</span>`,
+      v.cvss.length ? (v.cvss.reduce((a, b) => a + b, 0) / v.cvss.length).toFixed(1) : '—',
+    ]);
+
+  const catRows = [...byCategory.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([c, n]) => [esc(c), num(n)]);
+
+  const fwRows = [...byFramework.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([fw, n]) => [esc(fw), num(n), pct((n / findings.length) * 100)]);
+
+  const coverage = kpiRow([
+    { label: 'Distinct CWEs', value: num(byCwe.size), note: `${num(taggedCwe)} of ${num(findings.length)} findings tagged` },
+    { label: 'Categories', value: num(byCategory.size), note: `${num(taggedCategory)} tagged` },
+    { label: 'Frameworks Touched', value: num(byFramework.size), note: `${num(taggedCompliance)} findings mapped` },
+  ], p);
+
+  // The kiro workflow's inline emission only carries finding_id, phase,
+  // severity, cwe_id and commit_shas. category / compliance_mappings /
+  // cvss_score come from the security-agent-processor webhook path, so a
+  // kiro-only deployment legitimately has empty category and framework tables.
+  const emitterNote = (taggedCategory === 0 || taggedCompliance === 0)
+    ? footnote('Empty category / framework tables mean findings arrived via the kiro eval-gate inline emission, which carries only finding_id, phase, severity, cwe_id and commit_shas. category and compliance_mappings are populated by the security-agent-processor webhook path.', p)
+    : '';
+
+  return coverage
+    + (cweRows.length
+      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Top CWEs</div>`
+        + table(['CWE', 'Findings', 'Worst Severity', 'Avg CVSS'], cweRows, p)
+      : footnote('No findings carry a cwe_id in this range.', p))
+    + (catRows.length
+      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Vulnerability categories</div>` + table(['Category', 'Findings'], catRows, p)
+      : '')
+    + (fwRows.length
+      ? `<div style="color:${p.mut};font-size:11px;margin:14px 0 0">Compliance framework coverage</div>`
+        + table(['Framework', 'Findings', '% of all findings'], fwRows, p)
+      : '')
+    + emitterNote
+    + footnote('compliance_mappings is a string array on each finding — it cannot be expressed as a CloudWatch dimension, so this view is only possible by reading events directly.', p);
+}
+
 // ---- Handler ----
 
 export async function handler(event: WidgetEvent): Promise<string> {
@@ -889,6 +1342,11 @@ export async function handler(event: WidgetEvent): Promise<string> {
       case 'governance': body = await renderGovernance(fromIso, toIso, p); break;
       case 'agents': body = await renderAgents(fromIso, toIso, p); break;
       case 'security': body = await renderSecurity(fromIso, toIso, p); break;
+      case 'ciso-exposure': body = await renderCisoExposure(fromIso, toIso, p); break;
+      case 'ciso-sla': body = await renderCisoSla(fromIso, toIso, p); break;
+      case 'ciso-risk': body = await renderCisoRisk(fromIso, toIso, p); break;
+      case 'ciso-shiftleft': body = await renderCisoShiftleft(fromIso, toIso, p); break;
+      case 'ciso-classes': body = await renderCisoClasses(fromIso, toIso, p); break;
       default: body = `<div style="color:${p.danger}">Unknown view: ${esc(view)}</div>`;
     }
     return `<div style="font-family:'Amazon Ember',Helvetica,Arial,sans-serif;color:${p.fg};font-size:13px">${body}</div>`;
