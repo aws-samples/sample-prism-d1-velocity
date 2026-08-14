@@ -1028,6 +1028,128 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
   });
 }
 
+// ---- Route: per-repo attribution query ----
+
+type RepoProductivity = {
+  repo: string;
+  commits: { total: number; ai: number; human: number; mergedAi: number; revertedAi: number };
+  contributors: number;
+  ratios: { aiSharePct: number | null; mergeRatePct: number | null; defectRatePct: number | null };
+  lastActivity: string | null;
+};
+
+/**
+ * GET /v1/repos?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *
+ * Aggregates commit outcomes by repository. The per-developer view
+ * (/v1/productivity) answers "who", this answers "where" — which repos are
+ * AI-heavy, which have low merge rates or high revert rates. Repo comes from
+ * the commit item pk (REPO#<repo>); AI-origin classification uses the same
+ * traceId-join rule as /v1/productivity (a commit is AI-generated only if
+ * correlated usage spans exist for its trace).
+ *
+ * Spend is deliberately NOT included: usage rollups are keyed by user/day,
+ * not by repo, so per-repo cost cannot be derived without double-counting
+ * sessions that touch multiple repos.
+ */
+async function handleReposQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
+  const caller = resolveIdentity(event);
+  if (!caller) return jsonResponse(401, { message: 'No resolvable identity claim in token' });
+
+  const url = new URL(event.rawPath + '?' + (event.rawQueryString ?? ''), 'http://localhost');
+  const now = new Date();
+  const from = url.searchParams.get('from') ?? new Date(now.getTime() - 30 * 86400_000).toISOString().slice(0, 10);
+  const to = url.searchParams.get('to') ?? now.toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return jsonResponse(400, { message: 'from/to must be YYYY-MM-DD' });
+  }
+
+  type RawCommit = { repo: string; user: string; traceId: string; inMain: boolean; wasReverted: boolean; ts: string };
+  const rawCommits: RawCommit[] = [];
+  let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
+  do {
+    const result = await dynamoClient.send(new ScanCommand({
+      TableName: AI_USAGE_TABLE,
+      FilterExpression: 'record_type = :rt AND #ts BETWEEN :lo AND :hi',
+      ExpressionAttributeNames: { '#ts': 'timestamp' },
+      ExpressionAttributeValues: {
+        ':rt': { S: 'OTEL_ATTR_COMMIT' },
+        ':lo': { S: from },
+        ':hi': { S: `${to}\uffff` },
+      },
+      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+    }));
+    for (const item of result.Items ?? []) {
+      rawCommits.push({
+        // pk is REPO#<repo>; strip the prefix for display.
+        repo: (item.pk?.S ?? '').replace(/^REPO#/, ''),
+        user: item.user?.S ?? '',
+        traceId: item.trace_id?.S ?? '',
+        inMain: item.in_main?.BOOL ?? false,
+        wasReverted: item.was_reverted?.BOOL ?? false,
+        ts: item.timestamp?.S ?? '',
+      });
+    }
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  // One trace map per user (cached across repos — a user's spans are the same
+  // regardless of which repo the commit landed in).
+  const traceMaps = new Map<string, Map<string, { tool: string; model: string }>>();
+  const repos = new Map<string, RepoProductivity>();
+  const contributors = new Map<string, Set<string>>();
+
+  for (const c of rawCommits) {
+    if (!c.repo) continue;
+    let r = repos.get(c.repo);
+    if (!r) {
+      r = {
+        repo: c.repo,
+        commits: { total: 0, ai: 0, human: 0, mergedAi: 0, revertedAi: 0 },
+        contributors: 0,
+        ratios: { aiSharePct: null, mergeRatePct: null, defectRatePct: null },
+        lastActivity: null,
+      };
+      repos.set(c.repo, r);
+      contributors.set(c.repo, new Set());
+    }
+    r.commits.total++;
+    if (c.user) contributors.get(c.repo)!.add(c.user);
+    if (!r.lastActivity || c.ts > r.lastActivity) r.lastActivity = c.ts;
+
+    let traceMap = c.user ? traceMaps.get(c.user) : undefined;
+    if (c.user && !traceMap) {
+      traceMap = await buildUserTraceMap(c.user);
+      traceMaps.set(c.user, traceMap);
+    }
+    const isAi = c.traceId !== '' && !!traceMap?.has(c.traceId);
+    if (isAi) {
+      r.commits.ai++;
+      if (c.inMain) r.commits.mergedAi++;
+      if (c.wasReverted) r.commits.revertedAi++;
+    } else {
+      r.commits.human++;
+    }
+  }
+
+  const pct = (num: number, den: number): number | null =>
+    den > 0 ? Math.round((100 * num / den) * 10) / 10 : null;
+  for (const r of repos.values()) {
+    r.contributors = contributors.get(r.repo)?.size ?? 0;
+    r.ratios = {
+      aiSharePct: pct(r.commits.ai, r.commits.total),
+      mergeRatePct: pct(r.commits.mergedAi, r.commits.ai),
+      defectRatePct: pct(r.commits.revertedAi, r.commits.mergedAi),
+    };
+  }
+
+  return jsonResponse(200, {
+    range: { from, to },
+    generatedAt: new Date().toISOString(),
+    repos: [...repos.values()].sort((a, b) => b.commits.total - a.commits.total),
+  });
+}
+
 function accumulateUsage(u: UserProductivity, item: Record<string, { S?: string; N?: string }>): void {
   const tool = item.tool?.S ?? 'unknown';
   const cost = Number(item.cost_usd?.N ?? 0);
@@ -1064,6 +1186,9 @@ export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
   }
   if (method === 'GET' && path === '/v1/productivity') {
     return handleProductivityQuery(event);
+  }
+  if (method === 'GET' && path === '/v1/repos') {
+    return handleReposQuery(event);
   }
   return jsonResponse(404, { message: 'Not found' });
 }

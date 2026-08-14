@@ -76,60 +76,96 @@ export class DashboardStack extends cdk.Stack {
       teamDashboard.addWidgets(velocityPanel('AI-DORA KPIs', 'aidora', 4));
     }
 
-    // Row 3: native graphs — attribution/OTEL-fed series only
+    // Row 3: native graphs — attribution/OTEL-fed series only. These are the
+    // dimensionless series published by the attribution/OTEL publishers, so
+    // plain (dimensionless) metric queries match. FILL/IF guards throughout:
+    // commit data is sparse and an unguarded ratio renders NaN on empty
+    // buckets; FILL(..., REPEAT) carries the last value through gap days so
+    // the series draws a line instead of invisible isolated dots.
+    const dailySum = (metricName: string, label?: string): cloudwatch.Metric =>
+      new cloudwatch.Metric({
+        namespace: METRIC_NAMESPACE,
+        metricName,
+        statistic: 'Sum',
+        period: cdk.Duration.days(1),
+        ...(label ? { label } : {}),
+      });
+
     teamDashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'Commits / Day (AI vs Human)',
         left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE, metricName: 'AICommits',
-            statistic: 'Sum', period: cdk.Duration.days(1), label: 'AI commits',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE, metricName: 'HumanCommits',
-            statistic: 'Sum', period: cdk.Duration.days(1), label: 'Human commits',
-          }),
+          dailySum('AICommits', 'AI commits'),
+          dailySum('HumanCommits', 'Human commits'),
         ],
         view: cloudwatch.GraphWidgetView.BAR,
         stacked: true,
-        width: 12,
+        width: 8,
         height: 6,
         leftYAxis: { min: 0, label: 'Commits' },
       }),
       new cloudwatch.GraphWidget({
-        title: 'AI to Merge Ratio (attribution)',
+        title: 'Merge Ratio: AI vs Human',
         left: [
-          // Inner FILL/IF: avoid NaN on empty buckets (gap, not 0). Outer
-          // FILL(..., REPEAT): carry the last ratio through gap days —
-          // commit data is sparse and isolated datapoints render invisibly.
+          // Both lines from attribution spans. Divergence is the signal:
+          // AI code merging at a materially lower rate than human code means
+          // review friction or quality problems, not just "AI is used a lot".
           new cloudwatch.MathExpression({
             expression: 'FILL(IF(FILL(aiCommits, 0) > 0, 100 * FILL(mergedAi, 0) / FILL(aiCommits, 0)), REPEAT)',
             usingMetrics: {
-              mergedAi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE, metricName: 'MergedAICommits',
-                statistic: 'Sum', period: cdk.Duration.days(1),
-              }),
-              aiCommits: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE, metricName: 'AICommits',
-                statistic: 'Sum', period: cdk.Duration.days(1),
-              }),
+              mergedAi: dailySum('MergedAICommits'),
+              aiCommits: dailySum('AICommits'),
             },
-            label: 'Merged AI / AI commits (%)',
+            label: 'AI merge rate (%)',
+            period: cdk.Duration.days(1),
+          }),
+          new cloudwatch.MathExpression({
+            expression: 'FILL(IF(FILL(humanCommits, 0) > 0, 100 * FILL(mergedHuman, 0) / FILL(humanCommits, 0)), REPEAT)',
+            usingMetrics: {
+              mergedHuman: dailySum('MergedHumanCommits'),
+              humanCommits: dailySum('HumanCommits'),
+            },
+            label: 'Human merge rate (%)',
             period: cdk.Duration.days(1),
           }),
         ],
-        width: 12,
+        width: 8,
         height: 6,
         leftYAxis: { min: 0, max: 100, label: 'Percent' },
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'AI Defect Trend (reverted / merged)',
+        left: [
+          // RevertedAICommits may not exist at all until the first revert is
+          // published — a metric with zero datums is MISSING, not zero, so the
+          // inner FILL is required or the whole expression renders NaN.
+          new cloudwatch.MathExpression({
+            expression: 'FILL(IF(FILL(mergedAi2, 0) > 0, 100 * FILL(revertedAi, 0) / FILL(mergedAi2, 0)), REPEAT)',
+            usingMetrics: {
+              revertedAi: dailySum('RevertedAICommits'),
+              mergedAi2: dailySum('MergedAICommits'),
+            },
+            label: 'AI defect rate (%)',
+            period: cdk.Duration.days(1),
+          }),
+        ],
+        right: [dailySum('RevertedAICommits', 'Reverted AI commits')],
+        width: 8,
+        height: 6,
+        leftYAxis: { min: 0, label: 'Percent' },
+        rightYAxis: { min: 0, label: 'Count' },
       }),
     );
 
     if (props?.velocityWidgetArn) {
-      // Rows 4-7: DDB-backed detail panels
-      teamDashboard.addWidgets(velocityPanel('Eval Gates (auto-discovers rubrics, incl. kiro-headless)', 'eval', 7));
-      teamDashboard.addWidgets(velocityPanel('Governance — Guardrails & MCP (populates during sample-app runs)', 'governance', 6));
-      teamDashboard.addWidgets(velocityPanel('Agent Operations (populates during sample-app runs)', 'agents', 6));
-      teamDashboard.addWidgets(velocityPanel('Security — Continuum Findings', 'security', 7));
+      // Row 4: per-repo drill-down — bridges org-level trends above to the
+      // per-concern detail panels below. Attribution store, full history.
+      teamDashboard.addWidgets(velocityPanel('Repository Breakdown (attribution, full history)', 'repos', 7));
+      // Rows 5-8: DDB-backed detail panels
+      teamDashboard.addWidgets(velocityPanel('Eval Gates (auto-discovers rubrics, incl. kiro-headless)', 'eval', 9));
+      teamDashboard.addWidgets(velocityPanel('Governance — Guardrails & MCP (populates during sample-app runs)', 'governance', 7));
+      teamDashboard.addWidgets(velocityPanel('Agent Operations (populates during sample-app runs)', 'agents', 7));
+      teamDashboard.addWidgets(velocityPanel('Security — Continuum Findings & Remediation SLA', 'security', 10));
     }
 
     teamDashboard.addWidgets(
