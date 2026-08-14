@@ -180,137 +180,114 @@ export class DashboardStack extends cdk.Stack {
     // =======================================================
     // Dashboard 2: Executive Readout
     // =======================================================
+    // Same hybrid approach as Team Velocity, with a stricter bar: this is the
+    // highest-stakes audience, so every widget must be backed by a real
+    // emitter, units are humanized (hours, not seconds), and proxies say so.
+    // Deleted in the rebuild: PRISM Level Progress, AI Cost & Cycle Time,
+    // Feature Cycle Time Trend, Weekly Bedrock Cost, and AI vs Human Defect
+    // Rate — all fed only by `prism-cli workshop generate-demo-data`. Security
+    // collapsed from 7 widgets to 1 panel; CISO Compliance owns the depth.
     const execDashboard = new cloudwatch.Dashboard(this, 'ExecutiveReadoutDashboard', {
       dashboardName: 'PRISM-D1-Executive-Readout',
       defaultInterval: cdk.Duration.days(30),
     });
 
+    const execPanel = (title: string, view: string, height: number): cloudwatch.CustomWidget =>
+      new cloudwatch.CustomWidget({
+        functionArn: props?.velocityWidgetArn ?? '',
+        title,
+        width: 24,
+        height,
+        params: { view },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
+      });
+
     execDashboard.addWidgets(
       new cloudwatch.TextWidget({
-        markdown: '# PRISM D1 - Executive Readout\nLeadership view of AI-assisted engineering velocity and DORA performance.',
+        markdown:
+          '# PRISM D1 - Executive Readout\n' +
+          'AI adoption, unit economics, delivery health, and security posture. ' +
+          'Delivery figures are merge-based proxies, labeled as such.',
         width: 24,
-        height: 1,
+        height: 2,
       }),
     );
 
-    // --- PRISM Level Progress + Enhanced DORA Summary row ---
-    execDashboard.addWidgets(
-      new cloudwatch.SingleValueWidget({
-        title: 'PRISM Level Progress',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'PRISMLevel',
-            statistic: 'Maximum',
-            period: cdk.Duration.days(1),
-            label: 'Current PRISM Level',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'Enhanced DORA Summary',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'DeploymentFrequency',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Deploy Freq (7d)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'LeadTimeForChanges',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Avg Lead Time (s)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'ChangeFailureRate',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Change Fail Rate (%)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'MTTR',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Avg MTTR (s)',
-          }),
-        ],
-        width: 12,
-        height: 4,
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'AI Cost & Cycle Time',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AICostUSD',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Total AI Cost (7d, USD)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SpecToCodeHours',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Avg Spec-to-Code (hrs)',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-    );
+    if (props?.velocityWidgetArn) {
+      // Rows 1-2: observed PRISM level + business KPIs + delivery proxies
+      execDashboard.addWidgets(execPanel('Business Outcomes & Observed Maturity', 'exec', 9));
+    }
 
-    // --- AI Contribution Trend + Feature Cycle Time Trend ---
+    // Row 3: adoption and cost trends (native, attribution/OTEL-fed).
+    // Weekly periods — an exec view wants the trend, not daily noise.
+    const weeklySum = (metricName: string, label?: string): cloudwatch.Metric =>
+      new cloudwatch.Metric({
+        namespace: METRIC_NAMESPACE,
+        metricName,
+        statistic: 'Sum',
+        period: cdk.Duration.days(7),
+        ...(label ? { label } : {}),
+      });
+
     execDashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: 'AI Contribution Trend',
+        title: 'AI vs Human Commits (Weekly)',
         left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AIAcceptanceRate',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'AI Acceptance Rate (%)',
+          weeklySum('AICommits', 'AI commits'),
+          weeklySum('HumanCommits', 'Human commits'),
+        ],
+        view: cloudwatch.GraphWidgetView.BAR,
+        stacked: true,
+        width: 8,
+        height: 6,
+        leftYAxis: { min: 0, label: 'Commits' },
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'AI Spend Trend (Weekly)',
+        left: [weeklySum('AICostUSD', 'Spend ($)')],
+        width: 8,
+        height: 6,
+        leftYAxis: { min: 0, label: 'USD' },
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Cost per Shipped Commit (Weekly)',
+        left: [
+          // The ROI narrative: spend can rise while this falls, which means AI
+          // is getting more efficient per unit of shipped work.
+          new cloudwatch.MathExpression({
+            expression: 'FILL(IF(FILL(execMerged, 0) > 0, FILL(execCost, 0) / FILL(execMerged, 0)), REPEAT)',
+            usingMetrics: {
+              execCost: weeklySum('AICostUSD'),
+              execMerged: weeklySum('MergedAICommits'),
+            },
+            label: '$ / shipped AI commit',
+            period: cdk.Duration.days(7),
           }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AIToMergeRatio',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'AI-to-Merge Ratio (CI, %)',
+        ],
+        width: 8,
+        height: 6,
+        leftYAxis: { min: 0, label: 'USD' },
+      }),
+    );
+
+    // Row 4: quality — "is AI code as reliable as human code?"
+    execDashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Merge Rate: AI vs Human (Weekly)',
+        left: [
+          new cloudwatch.MathExpression({
+            expression: 'FILL(IF(FILL(xAi, 0) > 0, 100 * FILL(xMergedAi, 0) / FILL(xAi, 0)), REPEAT)',
+            usingMetrics: { xMergedAi: weeklySum('MergedAICommits'), xAi: weeklySum('AICommits') },
+            label: 'AI merge rate (%)',
+            period: cdk.Duration.days(7),
           }),
           new cloudwatch.MathExpression({
-            expression: 'IF(FILL(execAiCommits, 0) > 0, 100 * FILL(execMergedAi, 0) / FILL(execAiCommits, 0))',
-            usingMetrics: {
-              execMergedAi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'MergedAICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
-              }),
-              execAiCommits: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'AICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
-              }),
-            },
-            label: 'AI-to-Merge Ratio (Attribution, %)',
-            period: cdk.Duration.days(1),
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AITestCoverageDelta',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'AI Test Coverage Delta (%)',
+            expression: 'FILL(IF(FILL(xHuman, 0) > 0, 100 * FILL(xMergedHuman, 0) / FILL(xHuman, 0)), REPEAT)',
+            usingMetrics: { xMergedHuman: weeklySum('MergedHumanCommits'), xHuman: weeklySum('HumanCommits') },
+            label: 'Human merge rate (%)',
+            period: cdk.Duration.days(7),
           }),
         ],
         width: 12,
@@ -318,115 +295,37 @@ export class DashboardStack extends cdk.Stack {
         leftYAxis: { min: 0, max: 100, label: 'Percent' },
       }),
       new cloudwatch.GraphWidget({
-        title: 'Feature Cycle Time Trend',
+        title: 'AI Defect Trend (Weekly)',
         left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'SpecToCodeHours',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Spec-to-Code (hrs)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'LeadTimeForChanges',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'Lead Time (seconds)',
+          // RevertedAICommits may not exist at all until the first revert is
+          // published — a metric with zero datums is missing, not zero, so the
+          // inner FILL is required to avoid a NaN series.
+          new cloudwatch.MathExpression({
+            expression: 'FILL(IF(FILL(xMergedAi2, 0) > 0, 100 * FILL(xReverted, 0) / FILL(xMergedAi2, 0)), REPEAT)',
+            usingMetrics: { xReverted: weeklySum('RevertedAICommits'), xMergedAi2: weeklySum('MergedAICommits') },
+            label: 'AI defect rate (%)',
+            period: cdk.Duration.days(7),
           }),
         ],
         width: 12,
         height: 6,
+        leftYAxis: { min: 0, label: 'Percent' },
       }),
     );
 
-    // --- Eval gate, quality, and cost trend row ---
+    if (props?.velocityWidgetArn) {
+      // Row 5: condensed security posture (CISO dashboard has the breakdowns)
+      execDashboard.addWidgets(execPanel('Security & Governance Posture', 'exec-security', 5));
+    }
+
     execDashboard.addWidgets(
-      new cloudwatch.GaugeWidget({
-        title: 'Eval Gate Pass Rate',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'EvalGatePassRate',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Eval Pass Rate (%)',
-          }),
-        ],
-        width: 6,
-        height: 6,
-        leftYAxis: { min: 0, max: 100 },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Post-Merge Defect Rate',
-        left: [
-          // CI-fed (git trailers + revert scan in prism-ai-metrics.yml)
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'PostMergeDefectRate',
-            statistic: 'Average',
-            period: cdk.Duration.days(1),
-            label: 'CI (per-PR)',
-          }),
-          // Attribution-derived: reverted AI commits over merged AI commits.
-          // FILL guards both series: RevertedAICommits may not exist AT ALL
-          // until the first revert is published (a metric with zero datums is
-          // missing, not zero — unguarded math renders NaN). The IF guard
-          // gaps buckets with no merged commits instead of dividing by zero.
-          new cloudwatch.MathExpression({
-            expression: 'IF(FILL(mergedAi, 0) > 0, 100 * FILL(revertedAi, 0) / FILL(mergedAi, 0))',
-            usingMetrics: {
-              revertedAi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'RevertedAICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
-              }),
-              mergedAi: new cloudwatch.Metric({
-                namespace: METRIC_NAMESPACE,
-                metricName: 'MergedAICommits',
-                statistic: 'Sum',
-                period: cdk.Duration.days(1),
-              }),
-            },
-            label: 'Attribution (codeburn spans)',
-            period: cdk.Duration.days(1),
-          }),
-        ],
-        width: 6,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Percent' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'AI Cost Trend (Weekly)',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'AICostUSD',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Total Cost (USD)',
-          }),
-        ],
-        width: 6,
-        height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Deployment Frequency (Weekly)',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'DeploymentFrequency',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Deploys / Week',
-          }),
-        ],
-        width: 6,
-        height: 6,
-        view: cloudwatch.GraphWidgetView.BAR,
-        leftYAxis: { min: 0, label: 'Deployments' },
+      new cloudwatch.TextWidget({
+        markdown:
+          `Drill down: [Team Velocity](https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Team-Velocity) (delivery detail) · ` +
+          `[Developer Productivity](https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Developer-Productivity) (per-developer spend) · ` +
+          `[CISO Compliance](https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-CISO-Compliance) (full security posture)`,
+        width: 24,
+        height: 1,
       }),
     );
 
@@ -484,128 +383,6 @@ export class DashboardStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
-
-    // =======================================================
-    // Executive Dashboard: Security & Compliance section
-    // =======================================================
-    execDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Security & Compliance',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    execDashboard.addWidgets(
-      new cloudwatch.SingleValueWidget({
-        title: 'Guardrail Blocks (7d)',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'GuardrailBlockCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Blocks',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Guardrail Trigger Trend',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'GuardrailTriggerCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(1),
-            label: 'Daily Triggers',
-          }),
-        ],
-        width: 9,
-        height: 4,
-        leftYAxis: { min: 0, label: 'Count' },
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'MCP Auth Denied (7d)',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'MCPAuthDeniedCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Denied',
-          }),
-        ],
-        width: 3,
-        height: 4,
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'Exfiltration Alerts (7d)',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'ExfiltrationAlertCount',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Alerts',
-          }),
-        ],
-        width: 6,
-        height: 4,
-      }),
-    );
-
-    // =======================================================
-    // Executive Dashboard: Cost Intelligence
-    // =======================================================
-    execDashboard.addWidgets(
-      new cloudwatch.TextWidget({
-        markdown: '### Cost Intelligence',
-        width: 24,
-        height: 1,
-      }),
-    );
-
-    execDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Weekly Bedrock Cost',
-        left: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'BedrockCostUSD',
-            statistic: 'Sum',
-            period: cdk.Duration.days(7),
-            label: 'Weekly Cost ($)',
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
-        view: cloudwatch.GraphWidgetView.BAR,
-      }),
-      new cloudwatch.SingleValueWidget({
-        title: 'AI vs Human Defect Rate',
-        metrics: [
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'PostMergeDefectRateAI',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'AI Defect Rate (%)',
-          }),
-          new cloudwatch.Metric({
-            namespace: METRIC_NAMESPACE,
-            metricName: 'PostMergeDefectRateHuman',
-            statistic: 'Average',
-            period: cdk.Duration.days(7),
-            label: 'Human Defect Rate (%)',
-          }),
-        ],
-        width: 6,
-        height: 6,
-      }),
-    );
 
     // =======================================================
     // Dashboard 3: CISO Compliance
@@ -859,13 +636,17 @@ export class DashboardStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    // Alarm: Daily Bedrock cost exceeding budget
+    // Alarm: Daily AI cost exceeding budget.
+    // Watches AICostUSD (real — otel-metrics-publisher from codeburn usage
+    // spans) rather than BedrockCostUSD, which has no emitter outside
+    // `prism-cli workshop generate-demo-data` and left this alarm permanently
+    // in INSUFFICIENT_DATA.
     new cloudwatch.Alarm(this, 'BedrockDailyCostHighAlarm', {
-      alarmName: 'PRISM-D1-BedrockDailyCost-High',
-      alarmDescription: 'Daily Bedrock cost exceeds $100 threshold.',
+      alarmName: 'PRISM-D1-AIDailyCost-High',
+      alarmDescription: 'Daily AI tooling cost exceeds the $100 threshold.',
       metric: new cloudwatch.Metric({
         namespace: METRIC_NAMESPACE,
-        metricName: 'BedrockCostUSD',
+        metricName: 'AICostUSD',
         statistic: 'Sum',
         period: cdk.Duration.days(1),
       }),
@@ -875,22 +656,10 @@ export class DashboardStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    // Alarm: Token efficiency below threshold
-    new cloudwatch.Alarm(this, 'TokenEfficiencyLowAlarm', {
-      alarmName: 'PRISM-D1-TokenEfficiency-Low',
-      alarmDescription: 'Token efficiency is low — high token consumption relative to code output.',
-      metric: new cloudwatch.Metric({
-        namespace: METRIC_NAMESPACE,
-        metricName: 'TokenEfficiency',
-        statistic: 'Average',
-        period: cdk.Duration.hours(6),
-      }),
-      threshold: 500,
-      evaluationPeriods: 3,
-      datapointsToAlarm: 2,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    // NOTE: a TokenEfficiency alarm was removed here. The metric (tokens per
+    // line changed) has no emitter — the only source is `prism-cli workshop
+    // generate-demo-data` — so the alarm sat in INSUFFICIENT_DATA permanently.
+    // Reinstate it if/when a real emitter computes tokens-per-line.
 
     // Alarm: Exfiltration detection
     new cloudwatch.Alarm(this, 'ExfiltrationAlertAlarm', {

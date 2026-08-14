@@ -30,14 +30,18 @@ interface WidgetEvent {
   widgetContext?: { timeRange?: { start: number; end: number }; theme?: string };
 }
 
-const DOCS = `## Team Velocity Panels
+const DOCS = `## Team Velocity / Executive Panels
 DDB-backed panels reading the PRISM events table (by-detail-type GSI) and
 the attribution store. Full history, real event timestamps.
 
 ### Parameters
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| view | string | dora | dora, aidora, repos, eval, governance, agents, security |
+| view | string | dora | dora, aidora, repos, eval, governance, agents, security, exec, exec-security |
+
+The \`exec\` view additionally computes an **observed** PRISM level from
+outcome metrics (capped at L4 — L5 requires an autonomy signal that no
+emitter produces). This is not the scanner's capability score.
 `;
 
 type Palette = { fg: string; mut: string; bord: string; accent: string; ok: string; warn: string; danger: string };
@@ -279,6 +283,231 @@ async function renderAidora(fromIso: string, toIso: string, p: Palette): Promise
   ];
   const warn = report === null ? footnote('Attribution store unreachable — commit KPIs unavailable.', p) : '';
   return kpiRow(cells, p) + warn;
+}
+
+// ---- Observed PRISM level (computed from live metrics, not the scanner) ----
+
+/**
+ * The scanner (`prism-cli assessment`) scores **capability** from static repo
+ * signals — does CLAUDE.md exist, is there a specs/ dir, are AI trailers in
+ * commit conventions. This computes **observed** maturity from outcomes that
+ * are actually flowing, using the level definitions in the README maturity
+ * table. The two can legitimately disagree: a team can score L4 on capability
+ * (all the config exists) while observing L2 (nobody is shipping AI code), and
+ * that gap is the interesting signal.
+ *
+ * Capped at L4. L5 ("agents contributing to architecture, >20% autonomous
+ * deployments") requires an autonomy signal that no emitter produces — we do
+ * not have a way to distinguish an autonomous deployment from an assisted one,
+ * so claiming L5 from these inputs would be fabrication.
+ *
+ * Returns null when there is not enough data to assess. That is deliberately
+ * distinct from L1: "no data" means the pipeline isn't reporting, whereas L1
+ * is a real finding ("ad hoc AI use, no metrics").
+ */
+type ObservedLevel = {
+  level: string;
+  label: string;
+  gates: Array<{ name: string; pass: boolean; detail: string }>;
+  blockedBy: string | null;
+};
+
+function computeObservedLevel(input: {
+  aiSharePct: number | null;
+  mergeRatePct: number | null;
+  defectRatePct: number | null;
+  evalRuns: number;
+  evalPassPct: number | null;
+  costByToolCount: number;
+  mcpCalls: number;
+  guardrailTriggers: number;
+}): ObservedLevel | null {
+  const { aiSharePct, mergeRatePct, defectRatePct, evalRuns, evalPassPct,
+    costByToolCount, mcpCalls, guardrailTriggers } = input;
+
+  // Not assessable: no commit attribution at all.
+  if (aiSharePct === null) return null;
+
+  const gates = [
+    {
+      name: 'L2 — AI adoption',
+      pass: aiSharePct >= 30,
+      detail: `AI share ${pct(aiSharePct)} (need >= 30%)`,
+    },
+    {
+      name: 'L3 — eval gates in pipeline',
+      pass: evalRuns > 0 && (evalPassPct ?? 0) >= 80 && (mergeRatePct ?? 0) >= 20,
+      detail: evalRuns === 0
+        ? 'no eval gate runs in range'
+        : `eval pass ${pct(evalPassPct)} (need >= 80%), AI merge ${pct(mergeRatePct)} (need >= 20%)`,
+    },
+    {
+      name: 'L4 — FinOps + governed agents',
+      pass: costByToolCount > 0 && (mcpCalls > 0 || guardrailTriggers > 0)
+        && defectRatePct !== null && defectRatePct <= 20,
+      detail: `cost attribution ${costByToolCount > 0 ? 'present' : 'missing'}, `
+        + `governance events ${mcpCalls + guardrailTriggers}, AI defect ${pct(defectRatePct)} (need <= 20%)`,
+    },
+  ];
+
+  // Levels are cumulative — the first failed gate caps the level.
+  let level = 'L1';
+  let label = 'Experimental';
+  let blockedBy: string | null = gates[0].name;
+  if (gates[0].pass) {
+    level = 'L2'; label = 'Structured'; blockedBy = gates[1].name;
+    if (gates[1].pass) {
+      level = 'L3'; label = 'Integrated'; blockedBy = gates[2].name;
+      if (gates[2].pass) {
+        level = 'L4'; label = 'Orchestrated';
+        // L5 is intentionally unreachable from these inputs.
+        blockedBy = 'L5 — requires an autonomy signal (not emitted)';
+      }
+    }
+  }
+  return { level, label, gates, blockedBy };
+}
+
+// ---- View: exec (business KPIs + delivery proxies + observed level) ----
+
+async function renderExec(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
+  const [report, evals, mcp, guardrails, deploys, prs, assessments] = await Promise.all([
+    fetchProductivity(fromIso, toIso).catch(() => null),
+    queryEvents('prism.d1.eval', fromIso, toIso),
+    queryEvents('prism.d1.mcp.tool_call', fromIso, toIso),
+    queryEvents('prism.d1.guardrail', fromIso, toIso),
+    queryEvents('prism.d1.deploy', fromIso, toIso),
+    queryEvents('prism.d1.pr', fromIso, toIso),
+    queryEvents('prism.d1.assessment', fromIso, toIso),
+  ]);
+
+  const t = report?.totals;
+  const r = t?.ratios ?? {};
+  const evalPassPct = evals.length > 0
+    ? (evals.filter(e => e.data.eval?.result === 'PASS').length / evals.length) * 100
+    : null;
+
+  const observed = computeObservedLevel({
+    aiSharePct: r.aiSharePct ?? null,
+    mergeRatePct: r.mergeRatePct ?? null,
+    defectRatePct: r.defectRatePct ?? null,
+    evalRuns: evals.length,
+    evalPassPct,
+    costByToolCount: Object.keys(t?.usage?.byTool ?? {}).length,
+    mcpCalls: mcp.length,
+    guardrailTriggers: guardrails.length,
+  });
+
+  // --- Observed level card ---
+  const levelCard = observed === null
+    ? `<div style="border:1px dashed ${p.bord};border-radius:6px;padding:10px 14px;color:${p.mut};min-width:230px">
+         <div style="font-size:11px">Observed PRISM Level</div>
+         <div style="font-size:20px;font-weight:600;margin:2px 0">Insufficient data</div>
+         <div style="font-size:10px">No commit attribution in range — run <code>codeburn sync push --attribution</code></div>
+       </div>`
+    : `<div style="border:1px solid ${p.accent};border-radius:6px;padding:10px 14px;min-width:230px">
+         <div style="color:${p.mut};font-size:11px">Observed PRISM Level <span style="opacity:.8">(outcomes)</span></div>
+         <div style="font-size:26px;font-weight:600;color:${p.accent};margin:2px 0">${esc(observed.level)} <span style="font-size:14px;color:${p.fg}">${esc(observed.label)}</span></div>
+         <div style="color:${p.mut};font-size:10px">Next: ${esc(observed.blockedBy ?? '—')}</div>
+       </div>`;
+
+  const gateTable = observed === null ? '' : table(
+    ['Level gate', 'Status', 'Evidence'],
+    observed.gates.map(g => [
+      esc(g.name),
+      `<span style="color:${g.pass ? p.ok : p.mut}">${g.pass ? 'met' : 'not met'}</span>`,
+      `<span style="color:${p.mut}">${esc(g.detail)}</span>`,
+    ]), p, 1);
+
+  // --- Business KPIs (attribution store) ---
+  const businessKpis = kpiRow([
+    { label: 'AI Share of Commits', value: pct(r.aiSharePct ?? null), note: 'L2 >= 30%', color: (r.aiSharePct ?? 0) >= 30 ? p.ok : undefined },
+    { label: 'AI Merge Rate', value: pct(r.mergeRatePct ?? null), note: 'L2 >= 20% · L4 >= 45%', color: (r.mergeRatePct ?? 0) >= 45 ? p.ok : (r.mergeRatePct ?? 0) >= 20 ? p.warn : undefined },
+    { label: '$ / Shipped Commit', value: r.costPerShippedCommit != null ? `$${r.costPerShippedCommit.toFixed(2)}` : '—', note: 'unit economics' },
+    { label: `AI Spend (${Math.round(days)}d)`, value: t?.usage?.costUsd != null ? `$${Math.round(t.usage.costUsd).toLocaleString('en-US')}` : '—', note: 'attribution store' },
+    { label: 'Eval Gate Pass', value: pct(evalPassPct), note: evals.length ? `${num(evals.length)} runs` : 'no runs in range', color: evalPassPct === null ? undefined : evalPassPct >= 95 ? p.ok : evalPassPct >= 80 ? p.warn : p.danger },
+  ], p);
+
+  // --- Delivery proxies, humanized units ---
+  const mergeFreq = days > 0 ? deploys.length / days : deploys.length;
+  const leadTimes = prs.map(e => e.data.dora?.lead_time_seconds).filter((v: any) => typeof v === 'number' && v > 0);
+  const avgLeadHrs = leadTimes.length ? leadTimes.reduce((a: number, b: number) => a + b, 0) / leadTimes.length / 3600 : null;
+  const latest = assessments.filter(e => e.data.dora).sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
+  const cfrRaw = latest?.data.dora?.change_failure_rate;
+  const cfr = typeof cfrRaw === 'number' ? (cfrRaw <= 1 ? cfrRaw * 100 : cfrRaw) : null;
+  const mttrH = latest?.data.dora?.mttr_hours ?? null;
+
+  const deliveryKpis = (deploys.length === 0 && prs.length === 0 && assessments.length === 0)
+    ? footnote('No delivery events in range — install prism-ai-metrics.yml and prism-dora-weekly.yml to populate the delivery proxies.', p)
+    : kpiRow([
+      { label: 'Merge Frequency', value: `${Math.round(mergeFreq * 10) / 10}/day`, note: 'deploy proxy' },
+      { label: 'PR Cycle Time', value: avgLeadHrs === null ? '—' : `${Math.round(avgLeadHrs * 10) / 10}h`, note: 'lead-time proxy', color: avgLeadHrs !== null && avgLeadHrs < 24 ? p.ok : undefined },
+      { label: 'Revert Rate', value: pct(cfr), note: 'change-failure proxy', color: cfr !== null && cfr < 15 ? p.ok : cfr !== null ? p.warn : undefined },
+      { label: 'Revert Turnaround', value: mttrH === null ? '—' : `${Math.round(mttrH * 10) / 10}h`, note: 'MTTR proxy' },
+    ], p);
+
+  const warn = report === null
+    ? footnote('Attribution store unreachable — business KPIs and observed level unavailable.', p)
+    : '';
+
+  return `<div style="display:flex;gap:12px;align-items:stretch;flex-wrap:wrap;margin-bottom:12px">${levelCard}<div style="flex:1;min-width:420px">${businessKpis}</div></div>`
+    + gateTable
+    + `<div style="color:${p.mut};font-size:11px;margin:14px 0 6px">Delivery (proxies — merge-based, not true deploy/incident data)</div>`
+    + deliveryKpis
+    + warn
+    + footnote('Observed level is computed from outcomes and capped at L4; L5 needs an autonomy signal no emitter produces. It is not the scanner\'s capability score — divergence between the two is expected and informative.', p);
+}
+
+// ---- View: exec-security (condensed posture strip; CISO dashboard has depth) ----
+
+async function renderExecSecurity(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  const types = ['prism.d1.security.code_review', 'prism.d1.security.design_review', 'prism.d1.security.pen_test'];
+  const [findingEvents, remediationEvents, guardrails, mcp, exfil] = await Promise.all([
+    Promise.all(types.map(t => queryEvents(t, fromIso, toIso))).then(r => r.flat()),
+    queryEvents('prism.d1.security.remediation', fromIso, toIso),
+    queryEvents('prism.d1.guardrail', fromIso, toIso),
+    queryEvents('prism.d1.mcp.tool_call', fromIso, toIso),
+    queryEvents('prism.d1.security', fromIso, toIso),
+  ]);
+  const findings = findingEvents.filter(e => e.data.security_agent_finding);
+  const remediations = remediationEvents.filter(e => e.data.security_remediation);
+
+  if (findings.length === 0 && remediations.length === 0 && guardrails.length === 0 && mcp.length === 0) {
+    return emptyState('security / governance', 'Populated by the Continuum scan step and the sample-app runtime.', p);
+  }
+
+  const bySev = new Map<string, number>();
+  let exploitValidated = 0;
+  for (const f of findings) {
+    const d = f.data.security_agent_finding;
+    bySev.set(d.severity ?? 'UNKNOWN', (bySev.get(d.severity ?? 'UNKNOWN') ?? 0) + 1);
+    if (d.exploit_validated) exploitValidated += 1;
+  }
+  const critHigh = (bySev.get('CRITICAL') ?? 0) + (bySev.get('HIGH') ?? 0);
+
+  // SLA per the AI-DLC steering baseline (SECURITY-09).
+  const SLA_HOURS: Record<string, number> = { CRITICAL: 24, HIGH: 72, MEDIUM: 720, LOW: 720 };
+  let withinSla = 0, slaEligible = 0;
+  for (const r of remediations) {
+    const sev = String(r.data.security_remediation.severity ?? '').toUpperCase();
+    const budget = SLA_HOURS[sev];
+    if (budget === undefined) continue;
+    slaEligible += 1;
+    if (Number(r.data.security_remediation.remediation_time_hours ?? 0) <= budget) withinSla += 1;
+  }
+  const slaPct = slaEligible > 0 ? (withinSla / slaEligible) * 100 : null;
+
+  const blocked = guardrails.filter(g => g.data.guardrail?.action_taken === 'BLOCK').length;
+  const denied = mcp.filter(m => m.data.mcp_tool_call?.authorized === false || m.data.mcp_tool_call?.result_status === 'denied').length;
+
+  return kpiRow([
+    { label: 'Open Critical + High', value: num(critHigh), note: [...bySev.entries()].map(([s, n]) => `${s}:${n}`).join(' · ') || undefined, color: critHigh > 0 ? p.danger : p.ok },
+    { label: 'Exploit Validated', value: num(exploitValidated), note: 'immediate blockers', color: exploitValidated > 0 ? p.danger : p.ok },
+    { label: 'Within Remediation SLA', value: pct(slaPct), note: '24h crit · 72h high', color: slaPct === null ? undefined : slaPct >= 90 ? p.ok : p.warn },
+    { label: 'Guardrail Blocks', value: num(blocked), color: blocked > 0 ? p.warn : p.ok },
+    { label: 'MCP Denials', value: num(denied), note: 'out-of-scope attempts', color: denied > 0 ? p.warn : p.ok },
+    { label: 'Exfiltration Alerts', value: num(exfil.length), color: exfil.length > 0 ? p.danger : p.ok },
+  ], p) + footnote('Condensed posture. Full severity/phase/origin breakdowns are on the CISO Compliance dashboard.', p);
 }
 
 // ---- View: eval ----
@@ -559,6 +788,8 @@ export async function handler(event: WidgetEvent): Promise<string> {
     let body: string;
     switch (view) {
       case 'dora': body = await renderDora(fromIso, toIso, days, p); break;
+      case 'exec': body = await renderExec(fromIso, toIso, days, p); break;
+      case 'exec-security': body = await renderExecSecurity(fromIso, toIso, p); break;
       case 'aidora': body = await renderAidora(fromIso, toIso, p); break;
       case 'repos': body = await renderRepos(fromIso, toIso, p); break;
       case 'eval': body = await renderEval(fromIso, toIso, p); break;
