@@ -18,7 +18,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 - **[Executive Readout Dashboard](docs/dashboard-executive.html)** ([spec](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)) — PRISM level, DORA summary, AI contribution trends, security & compliance posture, cost intelligence
 - **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security posture, AI code risk profile, shift-left effectiveness, remediation SLA tracking
-- **Enhanced DORA metrics** with 6 AI-specific dimensions (acceptance rate, AI-to-merge ratio, eval gate pass rate, spec-to-code hours, post-merge defect rate, AI test coverage delta)
+- **[Enhanced DORA metrics](#enhanced-ai-dora-metrics)** with 6 AI-specific dimensions — acceptance rate, AI-to-merge ratio, eval gate pass rate, and post-merge defect rate work today; spec-to-code turnaround and AI test coverage delta have no emitter yet
 - **[Executive readout templates](docs/leader-guide/executive-readout-template.md)** connecting engineering metrics to business outcomes
 
 ### For Engineering Teams (Bottom-Up Activation)
@@ -304,18 +304,22 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 
 ## Enhanced AI-DORA Metrics
 
-| Metric | Source | L2 Target | L4 Target |
-|--------|--------|-----------|-----------|
-| Deployment Frequency | GitHub/CodePipeline | Weekly | Daily+ |
-| Lead Time for Changes | PR created → deployed | < 1 week | < 1 day |
-| Change Failure Rate | Rollback/hotfix ratio | < 15% | < 5% |
-| MTTR | Incident → resolution | < 24h | < 1h |
-| **AI Acceptance Rate** | Git hooks + Claude Code | >= 30% | >= 55% |
-| **AI-to-Merge Ratio** | CI metadata | >= 20% | >= 45% |
-| **Spec-to-Code Turnaround** | Spec commit → PR ready | Baseline set | < 2 days |
-| **Post-Merge Defect Rate** | Defect correlator + AI origin tag | <= 1.2x human | <= 0.9x |
-| **Eval Gate Pass Rate** | kiro-cli headless review in CI | >= 80% | >= 95% |
-| **AI Test Coverage Delta** | Coverage tool + AI origin tag | > 15% | > 40% |
+The four classic DORA metrics plus six AI-specific dimensions. **Source** is what actually computes each metric today, and **Status** flags where the pipeline is incomplete — several DORA metrics are proxies, and two AI dimensions have no emitter yet.
+
+| Metric | Source | Status | L2 Target | L4 Target |
+|--------|--------|--------|-----------|-----------|
+| Deployment Frequency | Merged PRs/day (`prism-ai-metrics.yml` fires on PR merge) | ⚠️ Proxy — no deploy integration | Weekly | Daily+ |
+| Lead Time for Changes | PR created → **merged** | ⚠️ Proxy — deploy latency not measured | < 1 week | < 1 day |
+| Change Failure Rate | % of merged PRs titled `revert\|hotfix\|rollback` | ⚠️ Proxy — heuristic, misses untitled failures | < 15% | < 5% |
+| MTTR | Revert/hotfix PR open → merge | ⚠️ Proxy — no incident events emitted | < 24h | < 1h |
+| **AI Acceptance Rate** | Git trailers + GitHub PR review API (CI) | ✅ Works; stays CI-fed after hook removal | >= 30% | >= 55% |
+| **AI-to-Merge Ratio** | codeburn attribution spans (+ CI line from trailers) | ✅ Works, hook-free | >= 20% | >= 45% |
+| **Post-Merge Defect Rate** | Reverted / merged AI commits (attribution) | ✅ Works, hook-free | <= 1.2x human | <= 0.9x |
+| **Eval Gate Pass Rate** | kiro-cli headless review in CI | ✅ Works | >= 80% | >= 95% |
+| **Spec-to-Code Turnaround** | Requires `Spec-Ref` on commits | ❌ No emitter — the hook doesn't inject the trailer, and attribution spans carry no spec reference | Baseline set | < 2 days |
+| **AI Test Coverage Delta** | Requires a coverage tool wired to AI origin | ❌ No emitter — not implemented in any workflow | > 15% | > 40% |
+
+The ✅ rows all survive the [git-hook removal](#3-install-git-hooks-optional) — they come from codeburn attribution or the GitHub API rather than commit trailers.
 
 ## Workshop Modules
 
