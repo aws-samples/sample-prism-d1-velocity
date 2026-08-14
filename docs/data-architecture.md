@@ -242,12 +242,12 @@ Published to namespace `PRISM/D1/Velocity` with dimensions:
 
 | Metric Name | Unit | Source |
 |------------|------|--------|
-| `AIAcceptanceRate` | Percent | PR review approval rate for AI-assisted PRs |
-| `AIToMergeRatio` | Percent | AI commits / total commits per merge |
-| `EvalGatePassRate` | Percent | Bedrock eval check_run results |
-| `SpecToCodeHours` | Hours | Spec commit to code PR timestamp |
-| `PostMergeDefectRate` | Percent | Bug tracker + AI origin tag correlation |
-| `AITestCoverageDelta` | Percent | Coverage tool + AI origin tag |
+| `AIAcceptanceRate` | Percent | Git trailers + GitHub PR review API (`prism-ai-metrics.yml`). Stays CI-fed permanently — the review verdict has no attribution-span equivalent. |
+| `AIToMergeRatio` | Percent | CI line from git trailers, plus an attribution-derived line via metric math (`100*MergedAICommits/AICommits`) that needs no CI instrumentation |
+| `EvalGatePassRate` | Percent | `prism-agent-eval.yml`. Note the eval-gate workflows emit `EvalGatePassRateByRubric` and `EvalScore` instead. |
+| `PostMergeDefectRate` | Percent | ⚠️ **Not emitted** — the defect-correlator requires `prism.d1.commit` events that nothing produces. The working defect signal is `RevertedAICommits / MergedAICommits` from attribution. |
+| `SpecToCodeHours` | Hours | ⚠️ **Not emitted** — needs `Spec-Ref` on commits; the `prepare-commit-msg` hook does not inject it, and attribution spans carry no spec reference. |
+| `AITestCoverageDelta` | Percent | ⚠️ **Not emitted** — no workflow computes coverage delta by AI origin. Demo-generator only. |
 
 ### Agent Metrics
 
