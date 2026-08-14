@@ -101,7 +101,7 @@ Contributors: pick any item, open an issue referencing the roadmap ID (e.g., `R-
 | **R-501** | **Org hierarchy model** — DynamoDB schema for org > division > team > repo hierarchy with rollup aggregation in Lambda | P1 | L | `pipeline`, `infra` | Jellyfish, Faros |
 | **R-502** | **Executive drill-down dashboards** — Org-level summary that drills into division, team, and repo views | P1 | L | `dashboard` | Jellyfish, Faros |
 | **R-503** | **Multi-repo aggregation** — Team-level metrics that aggregate across all repos owned by a team | P1 | M | `pipeline` | All 3P tools |
-| **R-504** | **QuickSight row-level security** — Role-based access so executives see org-wide, managers see their teams, devs see their repos | P2 | M | `infra`, `dashboard` | Jellyfish, Faros |
+| **R-504** | **Dashboard row-level security** — Role-based access so executives see org-wide, managers see their teams, devs see their repos | P2 | M | `infra`, `dashboard` | Jellyfish, Faros |
 
 ---
 
@@ -190,7 +190,7 @@ We welcome contributions from the community! Here's how to get involved:
 - **Start with a spec** — For M/L/XL items, write a spec in `specs/` before coding (see CLAUDE.md).
 - **Tag AI origin** — Use `ai-origin: claude-code` or `ai-origin: kiro` in commit trailers.
 - **Emit metrics** — Any new component must emit structured events per the [metrics schema](../CLAUDE.md#metrics-schema).
-- **AWS-native only** — No third-party observability dependencies. CloudWatch, QuickSight, DynamoDB, EventBridge, Bedrock.
+- **AWS-native only** — No third-party observability dependencies. CloudWatch, DynamoDB, EventBridge, Bedrock.
 - **Test with sample data** — Use `scripts/` generators to validate dashboard changes.
 - **Update this roadmap** — Mark items as `In Progress` or `Done` when you pick them up or complete them.
 

@@ -18,8 +18,6 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 - **[Executive Readout Dashboard](docs/dashboard-executive.html)** ([spec](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)) — PRISM level, DORA summary, AI contribution trends, security & compliance posture, cost intelligence
 - **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security posture, AI code risk profile, shift-left effectiveness, remediation SLA tracking
-- **[PRISM Level Tracker](docs/data-architecture.md#quicksight-prism-level-tracker)** (QuickSight) — Maturity progression by team, radar chart of sub-dimensions, benchmarks by funding stage
-- **[AI-DORA Analysis](docs/data-architecture.md#quicksight-ai-dora-analysis)** (QuickSight) — Deep-dive exploratory analysis across teams, repos, and AI tools
 - **Enhanced DORA metrics** with 6 AI-specific dimensions (acceptance rate, AI-to-merge ratio, eval gate pass rate, spec-to-code hours, post-merge defect rate, AI test coverage delta)
 - **[Executive readout templates](docs/leader-guide/executive-readout-template.md)** connecting engineering metrics to business outcomes
 
@@ -207,7 +205,7 @@ Monthly cost depends on team size and configuration. All resources are serverles
 - Production (with VPC, <50 devs): **~$50–80/month**
 - Large team (100+ devs, heavy CI): **~$80–150/month**
 
-> 💡 The largest cost driver is VPC endpoints. For workshops and demos, use `-c skipVpc=true` to stay under $25/month. QuickSight dashboards (optional) add $12–24/reader/month separately.
+> 💡 The largest cost driver is VPC endpoints. For workshops and demos, use `-c skipVpc=true` to stay under $25/month.
 
 ### Assess a Customer
 
@@ -329,7 +327,7 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 | 03 | Spec-Driven Development | 45 min | Spec-driven development with Kiro, Claude Code IDE, or Claude Code CLI |
 | 04 | Instrumenting AI Metrics | 45 min | Git hooks + CI emitting 18 event types to EventBridge |
 | 05 | Eval Gates in CI/CD | 45 min | Agentic kiro-cli code review (or legacy Bedrock rubrics) + Security Agent finding gate blocking bad merges |
-| 06 | Dashboards & Visibility | 30 min | 4 CloudWatch + 2 QuickSight dashboards live |
+| 06 | Dashboards & Visibility | 30 min | 4 CloudWatch dashboards live |
 
 Extension exercises: Security Agent design review (+10 min in Module 03), code review (+10 min in Module 05), CISO dashboard walkthrough (+5 min in Module 06).
 
@@ -358,7 +356,7 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 
 | Resource | Description |
 |----------|-------------|
-| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch + 2 QuickSight dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 11 alarms |
+| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 11 alarms |
 | **[Community Roadmap](docs/ROADMAP.md)** | Prioritized backlog across 9 phases |
 | **[Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md)** | 8-step guide: deploy, domain verification, GitHub connection, pen test config, webhook, GitHub variables, verification |
 | **[AI-DLC Steering Files](bootstrapper/aidlc-steering/)** | Development workflow rules adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows) |

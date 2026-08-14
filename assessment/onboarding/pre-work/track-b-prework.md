@@ -77,7 +77,6 @@ The metrics pipeline requires the following AWS services. Confirm your account h
 | Amazon EventBridge | `events:PutEvents`, `events:CreateRule`, `events:PutTargets` | Ingest metrics events |
 | Amazon Timestream | `timestream:WriteRecords`, `timestream:CreateTable`, `timestream:DescribeEndpoints` | Store time-series metrics |
 | Amazon CloudWatch | `cloudwatch:PutMetricData`, `cloudwatch:GetMetricData`, `logs:CreateLogGroup` | Monitoring and alerting |
-| Amazon QuickSight | `quicksight:CreateDashboard`, `quicksight:CreateDataSet` | Dashboard visualization |
 
 **How to verify**:
 
@@ -136,6 +135,5 @@ Share the sponsor's name and email with your SA so they can be included in reado
 | Verify EventBridge access | Platform/DevOps lead | 1 week before | [ ] |
 | Verify Timestream access | Platform/DevOps lead | 1 week before | [ ] |
 | Verify CloudWatch access | Platform/DevOps lead | 1 week before | [ ] |
-| Verify QuickSight access | Platform/DevOps lead | 1 week before | [ ] |
 | Approve GitHub webhook integration | Engineering manager | 1 week before | [ ] |
 | Designate executive sponsor | Engineering manager | 1 week before | [ ] |

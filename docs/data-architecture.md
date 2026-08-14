@@ -360,7 +360,7 @@ Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#`/`
 
 ## Dashboard Guide
 
-PRISM ships **6 dashboards** across two AWS services, each targeting a specific audience and decision level.
+PRISM ships **4 CloudWatch dashboards**, each targeting a specific audience and decision level.
 
 ### CloudWatch: Team Velocity (`PRISM-D1-Team-Velocity`)
 
@@ -535,39 +535,6 @@ Reads `prism.d1.security.{code_review,design_review,pen_test}` for findings and 
 | Weekly Bedrock Cost | Bar chart | Week-over-week Bedrock spend. Budget planning signal for CFOs. |
 | Cost per Deploy | Single value | Average cost per AI-assisted commit. Efficiency benchmark. |
 | AI vs Human Defect Rate | Dual single value | Side-by-side 7-day defect rate comparison. The "is AI code reliable?" answer for the board. |
-
----
-
-### QuickSight: AI-DORA Analysis
-
-**Audience:** Engineering managers, platform teams, data analysts
-**Update frequency:** Near real-time (DynamoDB → QuickSight dataset)
-**Purpose:** Deep-dive exploratory analysis across teams, repos, AI tools, and time periods.
-
-| Sheet | Visuals | What It Shows |
-|-------|---------|---------------|
-| **DORA Overview** | 4 KPI widgets + trend chart | KPI cards for each DORA metric with week-over-week change arrows. Daily trend overlay shows correlation between deploy frequency and failure rate. |
-| **AI Contribution** | Acceptance rate by team (bar), merge ratio trend (line), tool breakdown (pie) | Compare AI adoption across teams. See which AI tools (Claude Code, Kiro, Q Developer) produce the most merged code. |
-| **Quality & Evals** | Eval pass rate KPI, defect rate comparison (AI vs human), test coverage delta trend | Track whether AI eval gates are catching issues and whether AI code quality is improving relative to human code. |
-| **Spec Efficiency** | Spec-to-code by team (bar), turnaround trend by team (line) | Identify which teams are fastest at turning specs into code and whether AI is accelerating the spec-to-code pipeline. |
-
-**Filters:** Date range (90d), Team, Repository, AI Tool, PRISM Level
-
----
-
-### QuickSight: PRISM Level Tracker
-
-**Audience:** SAs, engineering leaders, program managers
-**Update frequency:** Near real-time
-**Purpose:** Track maturity progression across teams and compare against benchmarks.
-
-| Sheet | Visuals | What It Shows |
-|-------|---------|---------------|
-| **Level Overview** | Current level gauge, level-by-team table, level history line chart | Where each team stands on L1-L5 and how they've progressed over time. |
-| **Domain Breakdown** | Radar chart (6 sub-dimensions), normalized scores table | Granular view of which dimensions (acceptance rate, cycle time, eval coverage, deploy freq, defect delta, spec speed) are strong vs weak per team. |
-| **Benchmarks** | Team vs cohort comparison bar, benchmarks by funding stage table | Compare team metrics against community averages segmented by company stage (Series A-D). |
-
-**Filters:** Date range (180d), Team selection
 
 ---
 

@@ -102,6 +102,6 @@
   <text x="500" y="424" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">security leaders | monthly</text>
 
   <rect x="600" y="390" width="180" height="40" rx="6" fill="#6a1b9a" filter="url(#ds)"/>
-  <text x="690" y="412" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">QuickSight</text>
-  <text x="690" y="424" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">AI-DORA + Level Tracker</text>
+  <text x="690" y="412" text-anchor="middle" font-size="9" font-weight="600" fill="#fff">Developer Productivity</text>
+  <text x="690" y="424" text-anchor="middle" font-size="7" fill="rgba(255,255,255,0.8)">managers | per-developer</text>
 </svg>

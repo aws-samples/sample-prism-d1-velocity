@@ -6,14 +6,14 @@ Materials for AWS Solutions Architects preparing executive readouts and ROI conv
 
 | Document | Purpose | When to Use |
 |----------|---------|-------------|
-| [Executive Readout Template](executive-readout-template.md) | Structured template for weekly/biweekly CTO briefings | Every readout cycle. Fill in from CloudWatch + QuickSight dashboards. |
+| [Executive Readout Template](executive-readout-template.md) | Structured template for weekly/biweekly CTO briefings | Every readout cycle. Fill in from the CloudWatch dashboards. |
 | [ROI Model](roi-model.md) | Quantitative framework for AI engineering investment returns | QBRs, budget conversations, board prep, CFO presentations. |
 
 ## How SAs Should Use These Materials
 
 ### Executive Readout Flow
 
-1. **Before the meeting:** Pull current metrics from the CloudWatch Executive Readout dashboard and QuickSight AI-DORA Analysis. Fill in all bracketed placeholders in the template.
+1. **Before the meeting:** Pull current metrics from the CloudWatch Executive Readout and Team Velocity dashboards. Fill in all bracketed placeholders in the template.
 2. **During the meeting:** Walk through sections 1-4 (Level Summary, Scorecard, Highlights, Investment). Spend the most time on section 3 (what is working / what needs attention). Sections 5-6 (Recommendations, Risks) drive the action items.
 3. **After the meeting:** Log action items, update risk register, share the completed readout with stakeholders.
 
@@ -43,5 +43,4 @@ Materials for AWS Solutions Architects preparing executive readouts and ROI conv
 ## Related Resources
 
 - **CloudWatch Dashboards:** `dashboards/cloudwatch/` -- Deploy these first so the customer has real-time visibility.
-- **QuickSight Analyses:** `dashboards/quicksight/` -- For deep-dive analytics and historical trend analysis.
 - **PRISM Level Definitions:** Reference the main PRISM framework documentation for detailed level criteria.

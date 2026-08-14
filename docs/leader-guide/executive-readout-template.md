@@ -138,8 +138,6 @@
 
 - **Team Velocity (CloudWatch):** `https://REGION.console.aws.amazon.com/cloudwatch/home?region=REGION#dashboards:name=PRISM-D1-TeamVelocity`
 - **Executive Readout (CloudWatch):** `https://REGION.console.aws.amazon.com/cloudwatch/home?region=REGION#dashboards:name=PRISM-D1-ExecutiveReadout`
-- **AI-DORA Analysis (QuickSight):** `https://REGION.quicksight.aws.amazon.com/sn/analyses/prism-d1-ai-dora-analysis`
-- **Level Tracker (QuickSight):** `https://REGION.quicksight.aws.amazon.com/sn/analyses/prism-d1-level-tracker`
 
 ---
 

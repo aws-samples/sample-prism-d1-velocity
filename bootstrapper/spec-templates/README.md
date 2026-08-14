@@ -69,6 +69,6 @@ Each spec template includes a "Metrics to Emit" section. When implemented, these
 
 1. **Git hooks** (`metric-hooks/`) emit `prism.d1.commit` events on every commit.
 2. **GitHub workflows** (`github-workflows/`) emit `prism.d1.pr`, `prism.d1.deploy`, and `prism.d1.eval` events.
-3. **EventBridge** routes events to CloudWatch and QuickSight for dashboard visualization.
+3. **EventBridge** routes events to the metrics processor, which writes to DynamoDB and CloudWatch for dashboard visualization.
 
 The spec is the source of truth for what metrics a feature should produce. During code review, verify that the implementation emits the metrics listed in the spec.

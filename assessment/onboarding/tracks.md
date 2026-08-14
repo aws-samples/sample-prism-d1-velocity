@@ -80,13 +80,13 @@ Re-assess after 4 weeks. If the team reaches L2.0+, upgrade to Track B for the f
 | 01 -- CLAUDE.md & Standards | Yes | Align existing config to PRISM standards |
 | 02 -- Spec-Driven Development | Yes | Formalize and standardize spec workflows |
 | 03 -- CI/CD & Eval Gates | Yes | Instrument pipeline with eval gates |
-| 04 -- Metrics & Dashboards | Yes | Deploy Timestream + QuickSight dashboards |
+| 04 -- Metrics & Dashboards | Yes | Deploy the metrics pipeline + CloudWatch dashboards |
 | 05 -- Governance & Scaling | Yes | Establish governance model for scaling |
 
 ### Deliverables
 
 - Full bootstrapper deployed (CLAUDE.md, hooks, metrics pipeline)
-- Metrics pipeline live (EventBridge -> Timestream -> QuickSight)
+- Metrics pipeline live (EventBridge -> Lambda -> DynamoDB + CloudWatch)
 - Dashboards active with real-time data
 - Eval gate integrated into at least one CI/CD pipeline
 - Executive readout template configured
