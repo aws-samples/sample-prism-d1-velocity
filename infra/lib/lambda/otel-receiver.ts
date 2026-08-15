@@ -444,13 +444,33 @@ async function writeSessionAttribution(user: string, s: ParsedAttributionSpan): 
  * This prevents redundant DDB stream MODIFY events that would double-count
  * CloudWatch metrics in the attribution-metrics-publisher.
  *
- * AI-Origin inference: done at query time by joining with usage spans via traceId.
- * If no usage spans share this traceId → origin=human, tool=none.
- * If usage spans exist → origin=ai-generated, tool=provider from usage span.
+ * AI-Origin is resolved HERE, at write time, and persisted on the item.
+ *
+ * It used to be inferred at query time by joining against usage spans. That was
+ * a latent data-corruption bug: commit facts live COMMIT_TTL_DAYS (365) but
+ * usage spans live SPAN_TTL_DAYS (90), so on day 91 the join found nothing and
+ * every aging AI commit silently reclassified as `human` — making AI adoption
+ * appear to decline over time, depressing the observed PRISM level's L2 gate,
+ * and skewing the CISO per-100-commits comparison on both sides.
+ *
+ * "Derive at read time" is only sound when the inputs outlive the output. They
+ * don't here, so the derivation is frozen at ingest while the spans are fresh.
+ * Usage spans for this batch are written before attribution spans (see
+ * handleTraces), so the trace map passed in already includes them.
  */
-async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): Promise<boolean> {
+async function writeCommitAttribution(
+  user: string,
+  s: ParsedAttributionSpan,
+  traceMap: Map<string, { tool: string; model: string }>,
+): Promise<boolean> {
   if (!s.repo || !s.sha) return false;
   const ttl = Math.floor(Date.now() / 1000) + COMMIT_TTL_DAYS * 24 * 60 * 60;
+
+  // Resolve origin now, against spans that are guaranteed to still exist.
+  const usage = s.traceId ? traceMap.get(s.traceId) : undefined;
+  const aiOrigin = usage ? 'ai-generated' : 'human';
+  const aiTool = usage ? usage.tool : 'none';
+  const aiModel = usage ? usage.model : '';
 
   try {
     await dynamoClient.send(new UpdateItemCommand({
@@ -464,13 +484,19 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
         '#proj = :proj, #usr = :usr, device_id = :did, ' +
         'in_main = :im, was_reverted = :wr, ' +
         '#ts = :ts, updated_at = :now, #ttl = :ttl, ' +
+        // Frozen origin verdict — see the note above.
+        'ai_origin = :ao, ai_tool = :at, ai_model = :am, origin_source = :os, ' +
         // Sparse by-user GSI keys: per-developer commit queries (GET
         // /v1/productivity) without scanning the table.
         'gsi_user = :gu, gsi_user_sk = :gusk',
-      // Only write if: item doesn't exist, OR inMain/wasReverted actually changed.
-      // Suppresses no-op MODIFY stream events that would double-count metrics.
+      // Write if: item is new, OR inMain/wasReverted changed, OR we can now
+      // resolve an origin we previously could not. The last clause lets a
+      // commit whose usage spans arrived in a LATER push get upgraded from
+      // human to ai-generated, instead of being frozen wrong forever.
       ConditionExpression:
-        'attribute_not_exists(pk) OR in_main <> :im OR was_reverted <> :wr',
+        'attribute_not_exists(pk) OR in_main <> :im OR was_reverted <> :wr ' +
+        'OR attribute_not_exists(ai_origin) ' +
+        'OR (ai_origin = :human AND :ao = :ai)',
       ExpressionAttributeNames: {
         // 'project', 'ttl', 'user', and 'timestamp' are all DynamoDB
         // reserved keywords — bare use in an expression throws
@@ -492,6 +518,12 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
         ':ts': { S: s.timestamp },
         ':now': { S: new Date().toISOString() },
         ':ttl': { N: String(ttl) },
+        ':ao': { S: aiOrigin },
+        ':at': { S: aiTool },
+        ':am': { S: aiModel },
+        ':os': { S: 'write-time-join' },
+        ':human': { S: 'human' },
+        ':ai': { S: 'ai-generated' },
         ':gu': { S: `USER#${user}` },
         ':gusk': { S: `COMMIT#${s.timestamp}` },
       },
@@ -507,11 +539,22 @@ async function writeCommitAttribution(user: string, s: ParsedAttributionSpan): P
 async function processAttributionSpans(user: string, spans: ParsedAttributionSpan[]): Promise<number> {
   const CONCURRENCY = 20;
   let written = 0;
+
+  // Build the user's traceId → usage map ONCE for the whole batch. Commit
+  // origin is resolved at write time against this map (see
+  // writeCommitAttribution), so it must be built AFTER processSpans has
+  // persisted this batch's usage spans. Building it per commit would rescan
+  // every span for every commit in the push.
+  const needsTraceMap = spans.some(s => s.kind !== 'session');
+  const traceMap = needsTraceMap
+    ? await buildUserTraceMap(user)
+    : new Map<string, { tool: string; model: string }>();
+
   for (let i = 0; i < spans.length; i += CONCURRENCY) {
     const chunk = spans.slice(i, i + CONCURRENCY);
     const results = await Promise.all(chunk.map(async (s) => {
       if (s.kind === 'session') return writeSessionAttribution(user, s);
-      return writeCommitAttribution(user, s);
+      return writeCommitAttribution(user, s, traceMap);
     }));
     written += results.filter(Boolean).length;
   }
@@ -600,6 +643,12 @@ export interface CommitAttribution {
   aiTool: string;
   /** Model from correlated usage spans, or empty if human. */
   aiModel: string;
+  /**
+   * 'stored' = verdict frozen at ingest (authoritative).
+   * 'joined' = re-derived from usage spans for a legacy item; unreliable once
+   * the spans have aged past SPAN_TTL_DAYS.
+   */
+  originSource?: 'stored' | 'joined';
 }
 
 /**
@@ -629,19 +678,12 @@ export async function queryCommitAttribution(repo: string, sha: string): Promise
 
   if (!traceId || !user) return null;
 
-  // Step 2: Find correlated usage spans for this session's traceId.
-  const usage = await lookupTraceUsage(user, traceId);
-
-  // Step 3: Infer AI origin
-  let aiOrigin: 'ai-generated' | 'human' = 'human';
-  let aiTool = 'none';
-  let aiModel = '';
-
-  if (usage) {
-    aiOrigin = 'ai-generated';
-    aiTool = usage.tool;
-    aiModel = usage.model;
-  }
+  // Prefer the origin frozen at ingest. Only fall back to a live span join for
+  // legacy items written before write-time resolution existed.
+  const stored = item.ai_origin?.S;
+  const { aiOrigin, aiTool, aiModel, originSource } = (stored === 'ai-generated' || stored === 'human')
+    ? resolveStoredOrigin(item, null)
+    : resolveStoredOrigin(item, await buildUserTraceMap(user));
 
   return {
     sha,
@@ -656,6 +698,7 @@ export async function queryCommitAttribution(repo: string, sha: string): Promise
     aiOrigin,
     aiTool,
     aiModel,
+    originSource,
   };
 }
 
@@ -689,19 +732,20 @@ export async function queryRepoCommits(repo: string, limit = 50): Promise<Commit
     let aiOrigin: 'ai-generated' | 'human' = 'human';
     let aiTool = 'none';
     let aiModel = '';
+    let originSource: 'stored' | 'joined' = 'stored';
 
-    if (traceId && user) {
+    const storedOrigin = item.ai_origin?.S;
+    if (storedOrigin === 'ai-generated' || storedOrigin === 'human') {
+      // Frozen at ingest — authoritative regardless of span age.
+      ({ aiOrigin, aiTool, aiModel, originSource } = resolveStoredOrigin(item, null));
+    } else if (traceId && user) {
+      // Legacy item: re-derive. Reliable only inside SPAN_TTL_DAYS.
       let traceMap = traceMaps.get(user);
       if (!traceMap) {
         traceMap = await buildUserTraceMap(user);
         traceMaps.set(user, traceMap);
       }
-      const usage = traceMap.get(traceId);
-      if (usage) {
-        aiOrigin = 'ai-generated';
-        aiTool = usage.tool;
-        aiModel = usage.model;
-      }
+      ({ aiOrigin, aiTool, aiModel, originSource } = resolveStoredOrigin(item, traceMap));
     }
 
     commits.push({
@@ -790,6 +834,36 @@ async function buildUserTraceMap(user: string): Promise<Map<string, { tool: stri
 async function lookupTraceUsage(user: string, traceId: string): Promise<{ tool: string; model: string } | null> {
   const map = await buildUserTraceMap(user);
   return map.get(traceId) ?? null;
+}
+
+/**
+ * Resolve a commit item's AI origin, preferring the verdict frozen at ingest.
+ *
+ * New items carry ai_origin/ai_tool/ai_model written by writeCommitAttribution
+ * while the usage spans were still alive. Items written before that change have
+ * no stored verdict, so they fall back to the live traceId join — which stays
+ * correct for commits under SPAN_TTL_DAYS old and degrades to `human` beyond
+ * that. `originSource` makes the distinction visible to callers rather than
+ * silently mixing frozen and re-derived values.
+ */
+function resolveStoredOrigin(
+  item: Record<string, import('@aws-sdk/client-dynamodb').AttributeValue>,
+  traceMap: Map<string, { tool: string; model: string }> | null,
+): { aiOrigin: 'ai-generated' | 'human'; aiTool: string; aiModel: string; originSource: 'stored' | 'joined' } {
+  const stored = item.ai_origin?.S;
+  if (stored === 'ai-generated' || stored === 'human') {
+    return {
+      aiOrigin: stored,
+      aiTool: item.ai_tool?.S ?? (stored === 'human' ? 'none' : ''),
+      aiModel: item.ai_model?.S ?? '',
+      originSource: 'stored',
+    };
+  }
+  const traceId = item.trace_id?.S ?? '';
+  const usage = traceId && traceMap ? traceMap.get(traceId) : undefined;
+  return usage
+    ? { aiOrigin: 'ai-generated', aiTool: usage.tool, aiModel: usage.model, originSource: 'joined' }
+    : { aiOrigin: 'human', aiTool: 'none', aiModel: '', originSource: 'joined' };
 }
 
 // ---- Route: productivity query ----
@@ -914,7 +988,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
   }
 
   // --- Commits ---
-  type RawCommit = { user: string; traceId: string; inMain: boolean; wasReverted: boolean };
+  type RawCommit = { user: string; traceId: string; inMain: boolean; wasReverted: boolean; storedOrigin?: string };
   const rawCommits: RawCommit[] = [];
   const commitFrom = `COMMIT#${from}`;
   const commitTo = `COMMIT#${to}\uffff`;
@@ -938,6 +1012,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
           traceId: item.trace_id?.S ?? '',
           inMain: item.in_main?.BOOL ?? false,
           wasReverted: item.was_reverted?.BOOL ?? false,
+          storedOrigin: item.ai_origin?.S,
         });
       }
       lastKey = result.LastEvaluatedKey;
@@ -962,6 +1037,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
           traceId: item.trace_id?.S ?? '',
           inMain: item.in_main?.BOOL ?? false,
           wasReverted: item.was_reverted?.BOOL ?? false,
+          storedOrigin: item.ai_origin?.S,
         });
       }
       lastKey = result.LastEvaluatedKey;
@@ -975,12 +1051,19 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
     if (!c.user) continue;
     const u = getUser(c.user);
     u.commits.total++;
-    let traceMap = traceMaps.get(c.user);
-    if (!traceMap) {
-      traceMap = await buildUserTraceMap(c.user);
-      traceMaps.set(c.user, traceMap);
+    // Prefer the verdict frozen at ingest. Legacy items (no ai_origin) fall
+    // back to a live span join, which is only reliable inside SPAN_TTL_DAYS.
+    let isAi: boolean;
+    if (c.storedOrigin === 'ai-generated' || c.storedOrigin === 'human') {
+      isAi = c.storedOrigin === 'ai-generated';
+    } else {
+      let traceMap = traceMaps.get(c.user);
+      if (!traceMap) {
+        traceMap = await buildUserTraceMap(c.user);
+        traceMaps.set(c.user, traceMap);
+      }
+      isAi = c.traceId !== '' && traceMap.has(c.traceId);
     }
-    const isAi = c.traceId !== '' && traceMap.has(c.traceId);
     if (isAi) {
       u.commits.ai++;
       if (c.inMain) u.commits.mergedAi++;
@@ -1064,7 +1147,7 @@ async function handleReposQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
     return jsonResponse(400, { message: 'from/to must be YYYY-MM-DD' });
   }
 
-  type RawCommit = { repo: string; user: string; traceId: string; inMain: boolean; wasReverted: boolean; ts: string };
+  type RawCommit = { repo: string; user: string; traceId: string; inMain: boolean; wasReverted: boolean; ts: string; storedOrigin?: string };
   const rawCommits: RawCommit[] = [];
   let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
   do {
@@ -1088,6 +1171,7 @@ async function handleReposQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
         inMain: item.in_main?.BOOL ?? false,
         wasReverted: item.was_reverted?.BOOL ?? false,
         ts: item.timestamp?.S ?? '',
+        storedOrigin: item.ai_origin?.S,
       });
     }
     lastKey = result.LastEvaluatedKey;
@@ -1117,12 +1201,17 @@ async function handleReposQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
     if (c.user) contributors.get(c.repo)!.add(c.user);
     if (!r.lastActivity || c.ts > r.lastActivity) r.lastActivity = c.ts;
 
-    let traceMap = c.user ? traceMaps.get(c.user) : undefined;
-    if (c.user && !traceMap) {
-      traceMap = await buildUserTraceMap(c.user);
-      traceMaps.set(c.user, traceMap);
+    let isAi: boolean;
+    if (c.storedOrigin === 'ai-generated' || c.storedOrigin === 'human') {
+      isAi = c.storedOrigin === 'ai-generated';
+    } else {
+      let traceMap = c.user ? traceMaps.get(c.user) : undefined;
+      if (c.user && !traceMap) {
+        traceMap = await buildUserTraceMap(c.user);
+        traceMaps.set(c.user, traceMap);
+      }
+      isAi = c.traceId !== '' && !!traceMap?.has(c.traceId);
     }
-    const isAi = c.traceId !== '' && !!traceMap?.has(c.traceId);
     if (isAi) {
       r.commits.ai++;
       if (c.inMain) r.commits.mergedAi++;

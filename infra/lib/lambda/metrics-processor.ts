@@ -1,3 +1,4 @@
+import { PERSISTED_SECTIONS, validateEventShape } from './event-schema';
 import {
   DynamoDBClient,
   PutItemCommand,
@@ -263,16 +264,13 @@ async function writeEventToDynamo(
   // for DDB-backed dashboard panels and replay. (Previously only the first
   // four were stored, silently dropping eval/guardrail/mcp/agent/security
   // payloads from the durable record.)
-  const sections = [
-    'metric', 'ai_context', 'dora', 'ai_dora', 'eval', 'guardrail',
-    'mcp_tool_call', 'agent', 'quality', 'security',
-    'security_agent_finding', 'security_remediation',
-    // `pr` carries the per-PR facts the dashboard aggregates at query time
-    // (review verdicts, is_failure_fix's companion fields) and the commit_shas
-    // the deferred origin join needs. It was previously omitted, so every one
-    // of those fields was silently dropped at write time.
-    'pr',
-  ] as const;
+  // Shape validation: logs field drift instead of letting it vanish. See
+  // event-schema.ts for the failures that motivated this.
+  for (const w of validateEventShape(detail as unknown as Record<string, unknown>)) {
+    console.warn(`[schema] ${w.message}`);
+  }
+
+  const sections = PERSISTED_SECTIONS;
   for (const key of sections) {
     if ((detail as Record<string, unknown>)[key]) {
       data[key] = (detail as Record<string, unknown>)[key];
@@ -523,10 +521,12 @@ async function publishCloudWatchMetrics(
     // gated on a trailer-derived ai_ratio, and defaulting to 100% whenever a PR
     // had no reviews, which rewarded skipping review.
     const aiDoraMap: Array<[string, number | null, StandardUnit, boolean]> = [
-      ['SpecToCodeHours', detail.ai_dora.spec_to_code_hours, StandardUnit.Count, false],
-      ['PostMergeDefectRate', detail.ai_dora.post_merge_defect_rate, StandardUnit.Percent, true],
+      // EvalGatePassRate is the only survivor: it has a live producer
+      // (prism-agent-eval.yml) and a live consumer (the eval-gate alarm).
+      // SpecToCodeHours and PostMergeDefectRate were emitted by the
+      // spec-to-code-calculator and defect-correlator Lambdas, both now deleted
+      // as permanent no-ops. AITestCoverageDelta never had a producer at all.
       ['EvalGatePassRate', detail.ai_dora.eval_gate_pass_rate, StandardUnit.Percent, true],
-      ['AITestCoverageDelta', detail.ai_dora.ai_test_coverage_delta, StandardUnit.Percent, true],
     ];
 
     // Token & cost metrics come from git-trailer PR sums by default. When the

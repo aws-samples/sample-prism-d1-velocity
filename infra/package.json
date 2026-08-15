@@ -8,7 +8,8 @@
     "cdk": "cdk",
     "synth": "cdk synth",
     "deploy": "cdk deploy --all",
-    "diff": "cdk diff"
+    "diff": "cdk diff",
+    "check:metrics": "tsx scripts/check-metric-coverage.ts"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.170.0",

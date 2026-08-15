@@ -2,7 +2,9 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
-    "lib": ["es2022"],
+    "lib": [
+      "es2022"
+    ],
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,
@@ -20,5 +22,10 @@
     "outDir": "./dist",
     "rootDir": "."
   },
-  "exclude": ["node_modules", "dist", "lib/lambda"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "lib/lambda",
+    "scripts"
+  ]
 }

@@ -232,6 +232,58 @@ function median(values: number[]): number | null {
   return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
 }
 
+// ---- Attribution coverage (the denominator every AI metric needs) ----
+
+/**
+ * Every AI metric on these dashboards — AI share, merge rate, defect rate,
+ * $/shipped, the observed PRISM level, the CISO per-100-commits comparison — is
+ * computed from the attribution store, which only sees developers who installed
+ * codeburn AND its sync schedule. It is a SAMPLE of unknown coverage, and
+ * without a denominator a 40%-onboarded team and a genuinely 40%-AI team render
+ * identically.
+ *
+ * CI gives us the census: prism-ai-metrics.yml fires on every merge regardless
+ * of who authored it and reports pr.total_commits. Attribution gives us the
+ * sample. The ratio is the coverage.
+ *
+ * Returns null when CI events are absent, since coverage is unknowable then —
+ * deliberately not 0%, which would imply "measured and found nothing".
+ */
+function attributionCoverage(prs: PrismEvent[], attributedCommits: number | null): {
+  pct: number | null;
+  ciCommits: number;
+  attributed: number | null;
+} {
+  const ciCommits = prs.reduce((sum, e) => {
+    const n = e.data.pr?.total_commits;
+    return sum + (typeof n === 'number' && n > 0 ? n : 0);
+  }, 0);
+  if (ciCommits === 0 || attributedCommits === null) {
+    return { pct: null, ciCommits, attributed: attributedCommits };
+  }
+  // Cap at 100%: attribution can legitimately exceed CI-observed commits when a
+  // developer syncs work that has not merged yet, which is not over-coverage.
+  return {
+    pct: Math.min((attributedCommits / ciCommits) * 100, 100),
+    ciCommits,
+    attributed: attributedCommits,
+  };
+}
+
+/** Coverage KPI cell, with an honest note about what low coverage means. */
+function coverageCell(cov: { pct: number | null; ciCommits: number; attributed: number | null }, p: Palette) {
+  const note = cov.pct === null
+    ? (cov.ciCommits === 0 ? 'no CI commit census in range' : 'attribution store unreachable')
+    : `${num(cov.attributed ?? 0)} attributed / ${num(cov.ciCommits)} seen by CI`;
+  return {
+    label: 'Attribution Coverage',
+    value: pct(cov.pct),
+    note,
+    // Below ~80% every AI metric on this dashboard is a low-confidence sample.
+    color: cov.pct === null ? undefined : cov.pct >= 80 ? p.ok : cov.pct >= 50 ? p.warn : p.danger,
+  };
+}
+
 // ---- View: aidora (attribution store + eval events) ----
 
 /** Invoke an otel-receiver GET route directly (single aggregation impl, no drift). */
@@ -293,15 +345,17 @@ async function renderRepos(fromIso: string, toIso: string, p: Palette): Promise<
 }
 
 async function renderAidora(fromIso: string, toIso: string, p: Palette): Promise<string> {
-  const [report, evals] = await Promise.all([
+  const [report, evals, prs] = await Promise.all([
     fetchProductivity(fromIso, toIso).catch(() => null),
     queryEvents('prism.d1.eval', fromIso, toIso),
+    queryEvents('prism.d1.pr', fromIso, toIso),
   ]);
 
   const t = report?.totals;
   const passRate = evals.length > 0
     ? (evals.filter(e => e.data.eval?.result === 'PASS').length / evals.length) * 100
     : null;
+  const cov = attributionCoverage(prs, t?.commits?.total ?? null);
 
   const cells = [
     { label: 'AI Share of Commits', value: pct(t?.ratios?.aiSharePct ?? null), note: 'attribution store', color: (t?.ratios?.aiSharePct ?? 0) >= 30 ? p.ok : undefined },
@@ -309,9 +363,13 @@ async function renderAidora(fromIso: string, toIso: string, p: Palette): Promise
     { label: 'AI Defect Proxy', value: pct(t?.ratios?.defectRatePct ?? null), note: 'reverted / merged AI commits', color: (t?.ratios?.defectRatePct ?? 100) <= 10 ? p.ok : p.warn },
     { label: '$ / Shipped Commit', value: t?.ratios?.costPerShippedCommit != null ? `$${t.ratios.costPerShippedCommit.toFixed(2)}` : '—', note: 'attribution store' },
     { label: 'Eval Gate Pass', value: pct(passRate), note: evals.length ? `${num(evals.length)} gate runs · L2 ≥80% · L4 ≥95%` : 'no eval events in range', color: passRate === null ? undefined : passRate >= 95 ? p.ok : passRate >= 80 ? p.warn : p.danger },
+    coverageCell(cov, p),
   ];
   const warn = report === null ? footnote('Attribution store unreachable — commit KPIs unavailable.', p) : '';
-  return kpiRow(cells, p) + warn;
+  const covNote = cov.pct !== null && cov.pct < 80
+    ? footnote(`Attribution coverage is ${pct(cov.pct)} — the four AI KPIs above are a sample, not a census. Developers without codeburn sync installed contribute commits that CI counts and attribution does not, which understates AI share. Coverage rises as more developers run \`prism-cli bootstrapper setup-otel-sync\`.`, p)
+    : '';
+  return kpiRow(cells, p) + warn + covNote;
 }
 
 // ---- Observed PRISM level (computed from live metrics, not the scanner) ----
@@ -448,12 +506,14 @@ async function renderExec(fromIso: string, toIso: string, days: number, p: Palet
     ]), p, 1);
 
   // --- Business KPIs (attribution store) ---
+  const cov = attributionCoverage(prs, t?.commits?.total ?? null);
   const businessKpis = kpiRow([
     { label: 'AI Share of Commits', value: pct(r.aiSharePct ?? null), note: 'L2 >= 30%', color: (r.aiSharePct ?? 0) >= 30 ? p.ok : undefined },
     { label: 'AI Merge Rate', value: pct(r.mergeRatePct ?? null), note: 'L2 >= 20% · L4 >= 45%', color: (r.mergeRatePct ?? 0) >= 45 ? p.ok : (r.mergeRatePct ?? 0) >= 20 ? p.warn : undefined },
     { label: '$ / Shipped Commit', value: r.costPerShippedCommit != null ? `$${r.costPerShippedCommit.toFixed(2)}` : '—', note: 'unit economics' },
     { label: `AI Spend (${Math.round(days)}d)`, value: t?.usage?.costUsd != null ? `$${Math.round(t.usage.costUsd).toLocaleString('en-US')}` : '—', note: 'attribution store' },
     { label: 'Eval Gate Pass', value: pct(evalPassPct), note: evals.length ? `${num(evals.length)} runs` : 'no runs in range', color: evalPassPct === null ? undefined : evalPassPct >= 95 ? p.ok : evalPassPct >= 80 ? p.warn : p.danger },
+    coverageCell(cov, p),
   ], p);
 
   // --- Delivery proxies, humanized units ---
@@ -489,6 +549,9 @@ async function renderExec(fromIso: string, toIso: string, days: number, p: Palet
     + `<div style="color:${p.mut};font-size:11px;margin:14px 0 6px">Delivery (proxies — merge-based, not true deploy/incident data)</div>`
     + deliveryKpis
     + warn
+    + (cov.pct !== null && cov.pct < 80
+      ? footnote(`Attribution coverage is ${pct(cov.pct)}. The observed level's L2/L4 gates read AI share and merge rate from the attribution store, so at this coverage they are computed on a sample and will understate maturity. Treat the level as a floor, not a measurement, until coverage exceeds 80%.`, p)
+      : '')
     + footnote('Observed level is computed from outcomes and capped at L4; L5 needs an autonomy signal no emitter produces. It is not the scanner\'s capability score — divergence between the two is expected and informative.', p);
 }
 

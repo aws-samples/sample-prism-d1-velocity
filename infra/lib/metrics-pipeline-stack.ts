@@ -780,125 +780,22 @@ export class MetricsPipelineStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------
-    // Defect Correlator (Pillar 7)
+    // REMOVED: Defect Correlator + Spec-to-Code Calculator
+    //
+    // Both were permanent no-ops. Each keyed off `prism.d1.commit`, which no
+    // DEPLOYED producer emits — the only emitters are the demo-data generator
+    // and docs/reference/github-webhook-handler/, which CDK never deploys.
+    // defect-correlator skipped every event via `detailType !==
+    // 'prism.d1.commit'` and returned early; spec-to-code-calculator queried
+    // for the same type (with a Limit:1 + FilterExpression bug on top, so the
+    // filter never ran) and found nothing. They consumed IAM, VPC attachments,
+    // and log groups while implying capability the pipeline did not have.
+    //
+    // Their metrics (PostMergeDefectRate, SpecToCodeHours) and the
+    // prism.d1.quality event type went with them. The working equivalent of
+    // post-merge defect rate is RevertedAICommits / MergedAICommits from the
+    // attribution store, already on the dashboards.
     // -------------------------------------------------------
-    const defectCorrelator = new lambda.Function(this, 'DefectCorrelator', {
-      functionName: 'prism-d1-defect-correlator',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: 'defect-correlator.handler',
-      ...lambdaVpcProps,
-      code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
-        bundling: {
-          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-          command: [
-            'bash', '-c',
-            [
-              'npm init -y > /dev/null 2>&1',
-              'npm install --save @aws-sdk/client-dynamodb @aws-sdk/client-eventbridge esbuild > /dev/null 2>&1',
-              'npx esbuild defect-correlator.ts --bundle --platform=node --target=node22 --outfile=/asset-output/defect-correlator.js --external:@aws-sdk/*',
-            ].join(' && '),
-          ],
-          local: {
-            tryBundle(outputDir: string): boolean {
-              try {
-                const { execSync } = require('child_process');
-                execSync(
-                  `npx esbuild ${path.join(__dirname, 'lambda', 'defect-correlator.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'defect-correlator.js')} --external:@aws-sdk/*`,
-                  { stdio: 'pipe' },
-                );
-                return true;
-              } catch {
-                return false;
-              }
-            },
-          },
-        },
-      }),
-      timeout: cdk.Duration.seconds(30),
-      memorySize: 256,
-      environment: {
-        EVENTS_TABLE: this.eventsTable.tableName,
-        EVENT_BUS_NAME: this.eventBus.eventBusName,
-        LOOKBACK_HOURS: '24',
-      },
-      logRetention: logs.RetentionDays.ONE_MONTH,
-      description: 'Correlates deployment failures with AI vs human commit origins',
-    });
-
-    this.eventsTable.grantReadData(defectCorrelator);
-    this.eventBus.grantPutEventsTo(defectCorrelator);
-
-    // Trigger defect correlator on failed deploy events
-    new events.Rule(this, 'DeployToDefectCorrelatorRule', {
-      ruleName: 'prism-d1-deploy-to-defect-correlator',
-      eventBus: this.eventBus,
-      eventPattern: {
-        source: ['prism.d1.velocity'],
-        detailType: ['prism.d1.deploy'],
-      },
-      targets: [new targets.LambdaFunction(defectCorrelator)],
-      description: 'Triggers defect correlation on deployment events',
-    });
-
-    // -------------------------------------------------------
-    // Spec-to-Code Calculator (Pillar 7)
-    // -------------------------------------------------------
-    const specToCodeCalc = new lambda.Function(this, 'SpecToCodeCalculator', {
-      functionName: 'prism-d1-spec-to-code-calculator',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      handler: 'spec-to-code-calculator.handler',
-      ...lambdaVpcProps,
-      code: lambda.Code.fromAsset(path.join(__dirname, 'lambda'), {
-        bundling: {
-          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
-          command: [
-            'bash', '-c',
-            [
-              'npm init -y > /dev/null 2>&1',
-              'npm install --save @aws-sdk/client-dynamodb @aws-sdk/client-eventbridge esbuild > /dev/null 2>&1',
-              'npx esbuild spec-to-code-calculator.ts --bundle --platform=node --target=node22 --outfile=/asset-output/spec-to-code-calculator.js --external:@aws-sdk/*',
-            ].join(' && '),
-          ],
-          local: {
-            tryBundle(outputDir: string): boolean {
-              try {
-                const { execSync } = require('child_process');
-                execSync(
-                  `npx esbuild ${path.join(__dirname, 'lambda', 'spec-to-code-calculator.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'spec-to-code-calculator.js')} --external:@aws-sdk/*`,
-                  { stdio: 'pipe' },
-                );
-                return true;
-              } catch {
-                return false;
-              }
-            },
-          },
-        },
-      }),
-      timeout: cdk.Duration.seconds(30),
-      memorySize: 256,
-      environment: {
-        EVENTS_TABLE: this.eventsTable.tableName,
-        EVENT_BUS_NAME: this.eventBus.eventBusName,
-      },
-      logRetention: logs.RetentionDays.ONE_MONTH,
-      description: 'Calculates spec-to-code hours for merged PRs with spec references',
-    });
-
-    this.eventsTable.grantReadData(specToCodeCalc);
-    this.eventBus.grantPutEventsTo(specToCodeCalc);
-
-    // Trigger spec-to-code calculator on merged PR events
-    new events.Rule(this, 'PrToSpecCalcRule', {
-      ruleName: 'prism-d1-pr-to-spec-calc',
-      eventBus: this.eventBus,
-      eventPattern: {
-        source: ['prism.d1.velocity'],
-        detailType: ['prism.d1.pr'],
-      },
-      targets: [new targets.LambdaFunction(specToCodeCalc)],
-      description: 'Triggers spec-to-code calculation on merged PR events',
-    });
 
     // -------------------------------------------------------
     // AWS Security Agent Integration
