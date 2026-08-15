@@ -6,10 +6,9 @@ Reusable GitHub Actions workflows for PRISM D1 Velocity metric collection.
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `prism-ai-metrics.yml` | PR merge to main | Calculates AI-to-merge ratio, token usage, lead time. Emits `prism.d1.pr` + `prism.d1.deploy` events |
+| `prism-ai-metrics.yml` | PR merge to main/master | Emits per-PR **facts** — lead time, failure-fix label, review verdicts, commit SHAs. Computes no rates; the dashboard aggregates at query time. Emits `prism.d1.pr` + `prism.d1.deploy` |
 | `prism-eval-gate.yml` | PR open/update | Evaluates AI-generated code per-file with auto-selected rubrics, waits for Security Agent, blocks merge on failure |
 | `prism-agent-eval.yml` | PR modifying agent code | Runs agent in mock mode, evaluates output with agent-quality rubric |
-| `prism-dora-weekly.yml` | Weekly (Monday 09:00 UTC) | Calculates DORA + AI-DORA metrics, emits to EventBridge + CloudWatch |
 
 ## Setup
 
@@ -23,8 +22,6 @@ This interactively creates:
 - OIDC identity provider for `token.actions.githubusercontent.com`
 - IAM role `GitHubActions-<repo>` with trust policy scoped to your repo
 - Inline policy with `events:PutEvents` and `bedrock:InvokeModel`
-
-For the weekly workflow, manually add `cloudwatch:PutMetricData` to the role policy.
 
 ### 2. Set Repository Secret
 
@@ -59,7 +56,6 @@ This copies `.prism/eval-harness/`, `eval-config.json`, rubrics, and the `prism-
 ```bash
 mkdir -p .github/workflows
 cp bootstrapper/github-workflows/prism-ai-metrics.yml .github/workflows/
-cp bootstrapper/github-workflows/prism-dora-weekly.yml .github/workflows/
 # Optional — only if you have agents with --mock support:
 cp bootstrapper/github-workflows/prism-agent-eval.yml .github/workflows/
 ```
@@ -72,7 +68,6 @@ The OIDC role needs:
 |---|---|
 | `events:PutEvents` | All workflows |
 | `bedrock:InvokeModel` | eval-gate, agent-eval |
-| `cloudwatch:PutMetricData` | dora-weekly |
 
 ## Customization
 
@@ -82,7 +77,6 @@ The OIDC role needs:
 | AWS region | Edit `aws-region` field + EventBridge commands |
 | Eval threshold | Edit `.prism/.prism/eval-harness/eval-config.json` → `pass_threshold` |
 | Eval model | Edit `.prism/.prism/eval-harness/eval-config.json` → `eval_model_id` |
-| Weekly schedule | Edit cron in `prism-dora-weekly.yml` (default: `0 9 * * 1`) |
 
 ## Events Emitted
 
@@ -92,9 +86,7 @@ The OIDC role needs:
 | `prism.d1.deploy` | ai-metrics | EventBridge |
 | `prism.d1.eval` | eval-gate | EventBridge |
 | `prism.d1.agent.eval` | agent-eval | EventBridge |
-| `prism.d1.assessment` | dora-weekly | EventBridge |
 | `prism.d1.security.code_review` | eval-gate (Security Agent) | EventBridge |
-| `AIAdoptionRate`, `SpecCoverage`, tool counts | dora-weekly | CloudWatch |
 
 All EventBridge events use source `prism.d1.velocity` and bus `prism-d1-metrics`.
 

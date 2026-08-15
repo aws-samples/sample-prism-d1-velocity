@@ -23,7 +23,7 @@
 
 Installed via `bootstrapper/metric-hooks/install.sh`. Fire automatically on every commit and merge.
 
-> ⚠️ **Deprecated — being removed.** Git hooks are superseded by codeburn attribution spans (`codeburn sync push --attribution`), which classify AI origin from actual LLM API calls rather than "you were inside an AI tool's terminal". Migration phases: **1)** run both in parallel and compare, **2)** stop deriving origin in CI — emit commit SHAs and join against attribution at render time (see [AI Origin Resolution](#ai-origin-resolution-deferred-attribution-join)), **3)** remove the hooks. `AIAcceptanceRate` is the one metric that stays CI-fed permanently — it needs the GitHub PR review API (APPROVED / CHANGES_REQUESTED verdicts), which has no equivalent in attribution spans.
+> ⚠️ **Deprecated — being removed.** Git hooks are superseded by codeburn attribution spans (`codeburn sync push --attribution`), which classify AI origin from actual LLM API calls rather than "you were inside an AI tool's terminal". Migration phases: **1)** run both in parallel and compare, **2)** stop deriving origin in CI — emit commit SHAs and join against attribution at render time (see [AI Origin Resolution](#ai-origin-resolution-deferred-attribution-join)), **3)** remove the hooks. Review verdicts (APPROVED / CHANGES_REQUESTED) stay CI-fed permanently — they have no attribution-span equivalent — but are now emitted as raw counts on `prism.d1.pr` rather than as a pre-computed `AIAcceptanceRate`.
 >
 > Two consequences that are easy to miss:
 > - Anything derived from a trailer goes dark at Phase 3 unless rewired. That includes `Spec-Ref` (spec-to-code hours, spec coverage) — attribution spans carry no spec reference, so that needs a new source, not just a rewrite.
@@ -63,8 +63,7 @@ The webhook handler at `docs/reference/github-webhook-handler/index.ts` processe
 
 | Workflow | Trigger | Calculates | Emits |
 |----------|---------|-----------|-------|
-| **prism-ai-metrics.yml** | PR merged to main | AI-to-merge ratio, lead time, acceptance rate (approved / total reviews) | `prism.d1.pr` + `prism.d1.deploy` |
-| **prism-dora-weekly.yml** | Monday 09:00 UTC | 7-day DORA snapshot, AI adoption rate, spec coverage, tool breakdown | `prism.d1.assessment` |
+| **prism-ai-metrics.yml** | PR merged to main/master | Per-PR **facts** only: lead time, `is_failure_fix` label, review verdict counts, commit SHAs. No rates — the dashboard aggregates at query time | `prism.d1.pr` + `prism.d1.deploy` |
 | **prism-agent-eval.yml** | PR touching agent paths | Agent quality scores via Bedrock rubric | `prism.d1.agent.eval` |
 
 ### 4. Direct API Ingestion
@@ -288,7 +287,8 @@ Published to namespace `PRISM/D1/Velocity` with dimensions:
 
 | Metric Name | Unit | Source |
 |------------|------|--------|
-| `AIAcceptanceRate` | Percent | Git trailers + GitHub PR review API (`prism-ai-metrics.yml`). Stays CI-fed permanently — the review verdict has no attribution-span equivalent. |
+| `AIAcceptanceRate` | Percent | ⚠️ **Removed.** Its AI gate was trailer-derived, and a review-less PR defaulted to 100% acceptance — rewarding skipped reviews. Raw verdict counts now live on `prism.d1.pr` (`pr.reviews_approved` / `pr.reviews_changes_requested`) for query-time AI-vs-human comparison. |
+| `ChangeFailureCount` | Count | Per-merge failure-fix numerator from `prism-ai-metrics.yml`; the CFR alarm divides it by `DeploymentFrequency` via metric math. |
 | `AIToMergeRatio` | Percent | CI line from git trailers, plus an attribution-derived line via metric math (`100*MergedAICommits/AICommits`) that needs no CI instrumentation |
 | `EvalGatePassRate` | Percent | `prism-agent-eval.yml`. Note the eval-gate workflows emit `EvalGatePassRateByRubric` and `EvalScore` instead. |
 | `PostMergeDefectRate` | Percent | ⚠️ **Not emitted** — the defect-correlator requires `prism.d1.commit` events that nothing produces. The working defect signal is `RevertedAICommits / MergedAICommits` from attribution. |
@@ -390,9 +390,8 @@ Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#`/`
 
 | Alarm | Metric | Threshold | Period | Can fire today? |
 |-------|--------|-----------|--------|---|
-| AI Acceptance Rate Low | AIAcceptanceRate | < 20% | 6 hours | Only with git hooks + `prism-ai-metrics.yml` installed |
 | Eval Gate Pass Rate Low | EvalGatePassRate | < 70% | 6 hours | Requires `prism-agent-eval.yml` (the eval-gate workflows emit per-rubric metrics, not this one) |
-| Change Failure Rate High | ChangeFailureRate | > 20% | 6 hours | Yes — `prism-dora-weekly.yml` |
+| Change Failure Rate High | metric math: `100 * ChangeFailureCount / DeploymentFrequency` | > 20% | 1 day | Yes — per-merge counters from `prism-ai-metrics.yml` |
 | Agent Success Rate Low | AgentSuccessRate | < 80% | 1 hour | Yes — while the sample-app agent runs |
 | Guardrail Block Rate High | GuardrailBlockCount | > 50 | 1 hour | Yes — while the sample-app agent runs |
 | Bedrock Daily Cost High | AICostUSD | > $100 | 1 day | Yes — repointed from the demo-only `BedrockCostUSD` |
@@ -401,7 +400,7 @@ Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#`/`
 | Security Remediation SLA | SecurityRemediationTimeHours | avg > 72h | 1 day | Yes — security-remediation-tracker |
 | Security Finding Rate High | SecurityFindingCount | > 50 | 6 hours | Yes — Continuum findings |
 
-**10 alarms total.** None have SNS actions wired by default — operators attach notification topics post-deployment (cdk-nag suppressions `AwsSolutions-SNS2/SNS3` document this).
+**9 alarms total.** None have SNS actions wired by default — operators attach notification topics post-deployment (cdk-nag suppressions `AwsSolutions-SNS2/SNS3` document this).
 
 A `TokenEfficiency` alarm was removed: the metric has no emitter, so it sat in `INSUFFICIENT_DATA` permanently. The daily cost alarm was repointed from `BedrockCostUSD` (demo-generator-only) to `AICostUSD` for the same reason.
 
@@ -879,8 +878,7 @@ Alarms: BedrockDailyCostHigh (>$100/day), TokenEfficiencyLow (>500 tokens/line)
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| AI metrics workflow | `bootstrapper/github-workflows/prism-ai-metrics.yml` | PR merge → AI-DORA event emission |
-| DORA weekly workflow | `bootstrapper/github-workflows/prism-dora-weekly.yml` | Weekly DORA + AI adoption assessment |
+| AI metrics workflow | `bootstrapper/github-workflows/prism-ai-metrics.yml` | PR merge → per-PR delivery facts (GitLab twin under `gitlab-workflows/`) |
 | Agent eval workflow | `bootstrapper/github-workflows/prism-agent-eval.yml` | Agent quality gate on PRs |
 | Eval gate workflow | `bootstrapper/github-workflows/prism-eval-gate.yml` | AI code quality gate on PRs |
 | Workshop module | `workshop/04-instrumenting-ai-metrics/` | Hands-on exercises for metric instrumentation |

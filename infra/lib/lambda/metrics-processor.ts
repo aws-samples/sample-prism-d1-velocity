@@ -22,6 +22,28 @@ interface DoraMetrics {
   lead_time_seconds: number | null;
   change_failure_rate: number | null;
   mttr_seconds: number | null;
+  /**
+   * Per-PR failure-fix label (title matched revert|hotfix|rollback). This is the
+   * change-failure-rate NUMERATOR as a fact; the rate and MTTR are computed at
+   * query time by the dashboard widgets over the selected window. Emitting a
+   * pre-computed rate per PR was meaningless (0% or 100%) and a pre-computed
+   * weekly rate hardcoded a 7-day window the dashboard could not override.
+   */
+  is_failure_fix?: boolean;
+}
+
+/**
+ * Per-PR facts from prism-ai-metrics.yml. Persisted so the dashboard can
+ * aggregate at query time and resolve AI origin by joining commit_shas against
+ * the attribution store.
+ */
+interface PrDetail {
+  number: number;
+  author: string;
+  reviews_approved: number;
+  reviews_changes_requested: number;
+  total_commits?: number;
+  commit_shas?: string[];
 }
 
 interface AiDoraMetrics {
@@ -156,6 +178,7 @@ interface MetricDetail {
   security?: SecurityDetail;
   security_agent_finding?: SecurityAgentFinding;
   security_remediation?: SecurityRemediationDetail;
+  pr?: PrDetail;
 }
 
 interface EventBridgeEvent {
@@ -244,6 +267,11 @@ async function writeEventToDynamo(
     'metric', 'ai_context', 'dora', 'ai_dora', 'eval', 'guardrail',
     'mcp_tool_call', 'agent', 'quality', 'security',
     'security_agent_finding', 'security_remediation',
+    // `pr` carries the per-PR facts the dashboard aggregates at query time
+    // (review verdicts, is_failure_fix's companion fields) and the commit_shas
+    // the deferred origin join needs. It was previously omitted, so every one
+    // of those fields was silently dropped at write time.
+    'pr',
   ] as const;
   for (const key of sections) {
     if ((detail as Record<string, unknown>)[key]) {
@@ -470,13 +498,31 @@ async function publishCloudWatchMetrics(
         Timestamp: metricTimestamp,
       });
     }
+    // Change-failure NUMERATOR as a counter. The CFR alarm divides this by
+    // DeploymentFrequency via metric math, so the ratio is evaluated over the
+    // alarm's own window instead of a window baked in at emit time. Emitted on
+    // every merged PR (0 or 1) so the alarm sees a real zero during healthy
+    // periods rather than sitting in INSUFFICIENT_DATA.
+    if (detail.dora.is_failure_fix != null) {
+      metricData.push({
+        MetricName: 'ChangeFailureCount',
+        Value: detail.dora.is_failure_fix ? 1 : 0,
+        Unit: StandardUnit.Count,
+        Dimensions: sharedDimensions,
+        Timestamp: metricTimestamp,
+      });
+    }
   }
 
   // AI-DORA metrics — scale 0–1 ratios to 0–100 for CloudWatch Percent unit
   if (detail.ai_dora) {
+    // AIAcceptanceRate and AIToMergeRatio were removed: neither had any
+    // consumer. No widget read them, and the dashboards' AI-vs-human graphs are
+    // driven by attribution metrics (AICommits / MergedAICommits / ...) via
+    // metric math instead. AIAcceptanceRate was additionally unsalvageable —
+    // gated on a trailer-derived ai_ratio, and defaulting to 100% whenever a PR
+    // had no reviews, which rewarded skipping review.
     const aiDoraMap: Array<[string, number | null, StandardUnit, boolean]> = [
-      ['AIAcceptanceRate', detail.ai_dora.ai_acceptance_rate, StandardUnit.Percent, true],
-      ['AIToMergeRatio', detail.ai_dora.ai_to_merge_ratio, StandardUnit.Percent, true],
       ['SpecToCodeHours', detail.ai_dora.spec_to_code_hours, StandardUnit.Count, false],
       ['PostMergeDefectRate', detail.ai_dora.post_merge_defect_rate, StandardUnit.Percent, true],
       ['EvalGatePassRate', detail.ai_dora.eval_gate_pass_rate, StandardUnit.Percent, true],

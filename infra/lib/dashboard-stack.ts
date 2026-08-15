@@ -333,22 +333,14 @@ export class DashboardStack extends cdk.Stack {
     // CloudWatch Alarms
     // =======================================================
 
-    // Alarm: AI acceptance rate dropping below 20%
-    new cloudwatch.Alarm(this, 'AiAcceptanceRateLowAlarm', {
-      alarmName: 'PRISM-D1-AIAcceptanceRate-Low',
-      alarmDescription: 'AI acceptance rate has dropped below 20%, indicating potential issues with AI-generated code quality or review friction.',
-      metric: new cloudwatch.Metric({
-        namespace: METRIC_NAMESPACE,
-        metricName: 'AIAcceptanceRate',
-        statistic: 'Average',
-        period: cdk.Duration.hours(6),
-      }),
-      threshold: 20,
-      evaluationPeriods: 3,
-      datapointsToAlarm: 2,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    // NOTE: the PRISM-D1-AIAcceptanceRate-Low alarm was removed along with the
+    // AIAcceptanceRate metric. It could not fire in either direction: the
+    // workflow defaulted a review-less PR to 100% acceptance (so healthy repos
+    // without mandatory review pinned the metric at 100), and the metric's AI
+    // gate was trailer-derived, so it stopped emitting entirely once git hooks
+    // were removed. "Does AI code pass review as well as human code?" is a
+    // comparative question and belongs on a dashboard panel, not an absolute
+    // threshold alarm.
 
     // Alarm: Eval gate pass rate dropping below 70%
     new cloudwatch.Alarm(this, 'EvalGatePassRateLowAlarm', {
@@ -367,15 +359,36 @@ export class DashboardStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    // Alarm: Change failure rate exceeding 20%
+    // Alarm: Change failure rate exceeding 20%.
+    //
+    // Computed as a ratio of two per-merge counters rather than reading a
+    // pre-computed ChangeFailureRate metric. The old source was the weekly
+    // assessment, which baked in a fixed 7-day window and stopped existing when
+    // prism-dora-weekly.yml was removed. Deriving it here means the ratio is
+    // evaluated over the alarm's own window, and both counters are emitted on
+    // every merged PR so a healthy period reads as a real 0% rather than
+    // INSUFFICIENT_DATA.
     new cloudwatch.Alarm(this, 'ChangeFailureRateHighAlarm', {
       alarmName: 'PRISM-D1-ChangeFailureRate-High',
-      alarmDescription: 'Change failure rate exceeds 20%, indicating deployment quality regression.',
-      metric: new cloudwatch.Metric({
-        namespace: METRIC_NAMESPACE,
-        metricName: 'ChangeFailureRate',
-        statistic: 'Average',
-        period: cdk.Duration.hours(6),
+      alarmDescription: 'Change failure rate exceeds 20% (revert/hotfix-titled PRs / merged PRs), indicating deployment quality regression.',
+      metric: new cloudwatch.MathExpression({
+        expression: 'IF(deploys > 0, 100 * fixes / deploys, 0)',
+        usingMetrics: {
+          fixes: new cloudwatch.Metric({
+            namespace: METRIC_NAMESPACE,
+            metricName: 'ChangeFailureCount',
+            statistic: 'Sum',
+            period: cdk.Duration.days(1),
+          }),
+          deploys: new cloudwatch.Metric({
+            namespace: METRIC_NAMESPACE,
+            metricName: 'DeploymentFrequency',
+            statistic: 'Sum',
+            period: cdk.Duration.days(1),
+          }),
+        },
+        label: 'Change Failure Rate %',
+        period: cdk.Duration.days(1),
       }),
       threshold: 20,
       evaluationPeriods: 3,

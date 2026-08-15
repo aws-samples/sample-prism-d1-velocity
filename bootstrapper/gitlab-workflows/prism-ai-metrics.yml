@@ -1,14 +1,25 @@
-# prism-ai-metrics.yml — Emit AI-assisted development metrics on MR merge.
+# prism-ai-metrics.yml — Per-merge delivery telemetry (GitLab).
 #
 # Include this file in your .gitlab-ci.yml:
 #   include:
 #     - local: '.prism/gitlab-workflows/prism-ai-metrics.yml'
 #
+# DESIGN: emits immutable per-MR FACTS and computes no rates. All aggregation
+# (frequency, lead-time percentiles, change-failure rate, MTTR) happens at query
+# time in the dashboard widgets. See the GitHub twin at
+# bootstrapper/github-workflows/prism-ai-metrics.yml for the full rationale.
+#
+# AI origin is NOT computed here — it is resolved at render time by joining
+# pr.commit_shas against the codeburn attribution store. See
+# docs/data-architecture.md → "AI Origin Resolution: Deferred Attribution Join".
+#
+# Replaces the former prism-dora-weekly.yml, which published a parallel 7-day
+# aggregate that no dashboard consumed.
+#
 # Required setup:
 #   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role ARN with events:PutEvents)
-#   - CI/CD variable AWS_REGION (default: us-west-2)
-#   - .prism/config.json committed to the repo
-#   - AWS credentials configured via OIDC or CI/CD variables
+#   - .prism/config.json committed to the repo (optional; defaults to no_team)
+#   - AWS credentials configured via OIDC
 
 prism-ai-metrics:
   stage: test
@@ -23,7 +34,7 @@ prism-ai-metrics:
   variables:
     AWS_DEFAULT_REGION: us-west-2
   before_script:
-    - yum install -y -q jq bc git
+    - yum install -y -q jq git
     - git fetch --unshallow || true
     - |
       # Assume AWS role via GitLab OIDC
@@ -47,87 +58,69 @@ prism-ai-metrics:
       fi
   script:
     - |
-      # Skip if no AWS credentials available
       if ! aws sts get-caller-identity &>/dev/null; then
         echo "⚠️ No AWS credentials. Set PRISM_METRICS_ROLE_ARN or configure AWS access."
         exit 0
       fi
 
-      # Read team ID
       TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
 
-      # Determine commit range
+      # Commit range for this merge
       if [[ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA}" ]]; then
         BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
-        HEAD_SHA="${CI_COMMIT_SHA}"
       else
         BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
-        HEAD_SHA="${CI_COMMIT_SHA}"
       fi
+      HEAD_SHA="${CI_COMMIT_SHA}"
 
+      # --- Commit SHAs: immutable facts for deferred origin resolution.
+      COMMIT_SHAS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
       TOTAL_COMMITS=$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo "1")
 
-      # Count AI origin per-commit
-      AI_GENERATED=0; AI_ASSISTED=0; HUMAN_ONLY=0
-      TOTAL_INPUT_TOKENS=0; TOTAL_OUTPUT_TOKENS=0; TOTAL_COST="0"
-
-      for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo "${HEAD_SHA}"); do
-        MSG=$(git log -1 --format='%B' "${SHA}")
-        echo "${MSG}" | grep -q '^AI-Origin: ai-generated' && AI_GENERATED=$((AI_GENERATED + 1))
-        echo "${MSG}" | grep -q '^AI-Origin: ai-assisted' && AI_ASSISTED=$((AI_ASSISTED + 1))
-        echo "${MSG}" | grep -q '^AI-Origin: human' && HUMAN_ONLY=$((HUMAN_ONLY + 1))
-
-        INPUT_T=$(echo "${MSG}" | grep -oP '(?<=^AI-Input-Tokens: )\d+' || echo "0")
-        OUTPUT_T=$(echo "${MSG}" | grep -oP '(?<=^AI-Output-Tokens: )\d+' || echo "0")
-        COST_T=$(echo "${MSG}" | grep -oP '(?<=^AI-Cost: )[0-9.]+' || echo "0")
-        [[ ${INPUT_T} -gt 1000000 ]] && INPUT_T=0
-        [[ ${OUTPUT_T} -gt 1000000 ]] && OUTPUT_T=0
-        TOTAL_INPUT_TOKENS=$((TOTAL_INPUT_TOKENS + INPUT_T))
-        TOTAL_OUTPUT_TOKENS=$((TOTAL_OUTPUT_TOKENS + OUTPUT_T))
-        TOTAL_COST=$(echo "${TOTAL_COST} + ${COST_T}" | bc -l)
-      done
-
-      AI_COMMITS=$((AI_GENERATED + AI_ASSISTED))
-      [[ "${TOTAL_COMMITS}" -gt 0 ]] && AI_RATIO=$(echo "scale=4; ${AI_COMMITS} / ${TOTAL_COMMITS}" | bc -l | sed 's/^\./0./') || AI_RATIO="0"
-
-      # Calculate lead time (MR created to merged)
+      # --- Lead time: MR open → now (this job runs on the post-merge push).
       LEAD_TIME_SECONDS=0
       if [[ -n "${CI_MERGE_REQUEST_CREATED_AT}" ]]; then
         CREATED_TS=$(date -d "${CI_MERGE_REQUEST_CREATED_AT}" +%s 2>/dev/null || echo "0")
-        MERGED_TS=$(date +%s)
-        LEAD_TIME_SECONDS=$((MERGED_TS - CREATED_TS))
+        if [[ "${CREATED_TS}" -gt 0 ]]; then
+          LEAD_TIME_SECONDS=$(( $(date +%s) - CREATED_TS ))
+          [[ "${LEAD_TIME_SECONDS}" -lt 0 ]] && LEAD_TIME_SECONDS=0
+        fi
+      fi
+
+      # --- Failure-fix label: change-failure-rate numerator as a per-MR fact.
+      # On the post-merge push pipeline CI_MERGE_REQUEST_TITLE is usually unset,
+      # so fall back to the merge commit title. Matched via printf against a
+      # variable rather than interpolated, since titles are user-controlled.
+      FIX_TITLE="${CI_MERGE_REQUEST_TITLE:-${CI_COMMIT_TITLE:-}}"
+      if printf '%s' "${FIX_TITLE}" | grep -qiE 'revert|hotfix|rollback'; then
+        IS_FAILURE_FIX=true
+      else
+        IS_FAILURE_FIX=false
       fi
 
       TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+      # NOTE: no review verdicts here. GitLab approvals would need an API call
+      # with a project token; the GitHub twin gets them from the reviews API.
+      # Emitted under `pr` (not `mr`) so both CI providers land in the same
+      # shape — the processor only persists a known section list.
       PR_EVENT=$(jq -n \
         --arg team_id "${TEAM_ID}" \
         --arg repo "${CI_PROJECT_PATH}" \
         --arg timestamp "${TIMESTAMP}" \
-        --argjson ai_ratio "${AI_RATIO}" \
-        --argjson total_commits "${TOTAL_COMMITS}" \
-        --argjson ai_commits "${AI_COMMITS}" \
-        --argjson ai_generated "${AI_GENERATED}" \
-        --argjson ai_assisted "${AI_ASSISTED}" \
         --argjson lead_time_seconds "${LEAD_TIME_SECONDS}" \
+        --argjson is_failure_fix "${IS_FAILURE_FIX}" \
+        --argjson total_commits "${TOTAL_COMMITS}" \
+        --argjson commit_shas "${COMMIT_SHAS}" \
         --arg mr_iid "${CI_MERGE_REQUEST_IID:-0}" \
         --arg mr_author "${GITLAB_USER_LOGIN}" \
-        --argjson total_input_tokens "${TOTAL_INPUT_TOKENS}" \
-        --argjson total_output_tokens "${TOTAL_OUTPUT_TOKENS}" \
-        --arg total_cost "${TOTAL_COST}" \
         '{
           team_id: $team_id, repo: $repo, timestamp: $timestamp, prism_level: 2,
-          metric: {name: "ai_to_merge_ratio", value: $ai_ratio, unit: "ratio"},
-          ai_context: {tool: "gitlab-ci", model: "n/a",
-            origin: (if $ai_ratio > 0 then "ai-assisted" else "human" end)},
-          dora: {deployment_frequency: 1, lead_time_seconds: $lead_time_seconds},
-          ai_dora: {ai_to_merge_ratio: $ai_ratio, total_commits: $total_commits,
-            ai_commits: $ai_commits, ai_generated_commits: $ai_generated,
-            ai_assisted_commits: $ai_assisted,
-            total_input_tokens: $total_input_tokens,
-            total_output_tokens: $total_output_tokens,
-            total_cost_usd: (if $total_cost != "0" and $total_cost != "" then ($total_cost | tonumber) else 0 end)},
-          mr: {iid: ($mr_iid | tonumber), author: $mr_author}
+          metric: {name: "pr_merged", value: 1, unit: "count"},
+          dora: {lead_time_seconds: $lead_time_seconds, is_failure_fix: $is_failure_fix},
+          pr: {number: ($mr_iid | tonumber), author: $mr_author,
+               reviews_approved: 0, reviews_changes_requested: 0,
+               total_commits: $total_commits, commit_shas: $commit_shas}
         }')
 
       aws events put-events --region "${AWS_DEFAULT_REGION}" \
@@ -138,7 +131,8 @@ prism-ai-metrics:
           \"Detail\": $(echo "${PR_EVENT}" | jq -c '.' | jq -Rs '.')
         }]"
 
-      # Also emit deploy event
+      # Sole deployment signal — deployment_frequency lives ONLY on this event.
+      # Carrying it on prism.d1.pr as well double-counted the metric.
       DEPLOY_EVENT=$(jq -n --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
         '{team_id: $team_id, repo: $repo, timestamp: $timestamp, prism_level: 2,
          metric: {name: "deployment", value: 1, unit: "count"},
@@ -151,3 +145,6 @@ prism-ai-metrics:
           \"EventBusName\": \"prism-d1-metrics\",
           \"Detail\": $(echo "${DEPLOY_EVENT}" | jq -c '.' | jq -Rs '.')
         }]"
+
+      echo "Emitted prism.d1.pr + prism.d1.deploy"
+      echo "  lead time: ${LEAD_TIME_SECONDS}s · failure fix: ${IS_FAILURE_FIX} · commits: ${TOTAL_COMMITS}"

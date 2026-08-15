@@ -138,14 +138,12 @@ bootstrapper/
     prism-ai-metrics.yml                 # PR merge metrics workflow
     prism-eval-gate.yml                  # Eval gate workflow
     prism-agent-eval.yml                 # Agent evaluation workflow
-    prism-dora-weekly.yml                # Weekly DORA assessment workflow
     README.md                            # Workflow setup guide
   gitlab-workflows/
     .gitlab-ci.yml                       # Root CI config template (copy to repo root)
     prism-ai-metrics.yml                 # Post-merge metrics job
     prism-eval-gate.yml                  # Eval gate job
     prism-agent-eval.yml                 # Agent evaluation job
-    prism-dora-weekly.yml                # Weekly DORA assessment job
   metric-hooks/
     prepare-commit-msg                   # AI-origin trailer hook
     config.json.template                 # Config template

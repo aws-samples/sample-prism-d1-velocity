@@ -187,30 +187,49 @@ function dailySeries<T>(items: T[], tsOf: (t: T) => string, valueOf: (bucket: T[
 // ---- View: dora (proxy KPIs, honestly labeled) ----
 
 async function renderDora(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
-  const [deploys, prs, assessments] = await Promise.all([
+  const [deploys, prs] = await Promise.all([
     queryEvents('prism.d1.deploy', fromIso, toIso),
     queryEvents('prism.d1.pr', fromIso, toIso),
-    queryEvents('prism.d1.assessment', fromIso, toIso),
   ]);
 
-  if (deploys.length === 0 && prs.length === 0 && assessments.length === 0) {
-    return emptyState('deploy / PR / assessment', 'Populated by prism-ai-metrics.yml (on PR merge) and prism-dora-weekly.yml. Install the workflows and set PRISM_METRICS_ROLE_ARN.', p);
+  if (deploys.length === 0 && prs.length === 0) {
+    return emptyState('deploy / PR', 'Populated by prism-ai-metrics.yml on PR merge. Install the workflow and set PRISM_METRICS_ROLE_ARN.', p);
   }
 
   const mergeFreq = days > 0 ? deploys.length / days : deploys.length;
   const leadTimes = prs.map(e => e.data.dora?.lead_time_seconds).filter((v: any) => typeof v === 'number' && v > 0);
   const avgLeadHrs = leadTimes.length ? leadTimes.reduce((a: number, b: number) => a + b, 0) / leadTimes.length / 3600 : null;
-  // Latest weekly assessment carries the title-heuristic CFR / MTTR
-  const latest = assessments.filter(e => e.data.dora).sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
-  const cfr = latest?.data.dora?.change_failure_rate ?? null;
-  const mttrH = latest?.data.dora?.mttr_hours ?? null;
+  // Median is the DORA convention for lead time. Available only because the
+  // workflow emits per-PR facts instead of a pre-averaged weekly figure.
+  const medLeadHrs = median(leadTimes) !== null ? (median(leadTimes) as number) / 3600 : null;
+
+  // CFR and MTTR are aggregated HERE, over the dashboard's selected range,
+  // from the per-PR is_failure_fix label. Previously both came from the single
+  // most recent weekly assessment, so they ignored the time-range picker while
+  // the other two KPIs in this row honoured it.
+  const failureFixes = prs.filter(e => e.data.dora?.is_failure_fix === true);
+  const cfr = prs.length > 0 ? (failureFixes.length / prs.length) * 100 : null;
+  const fixLeadTimes = failureFixes
+    .map(e => e.data.dora?.lead_time_seconds)
+    .filter((v: any) => typeof v === 'number' && v > 0);
+  const mttrH = fixLeadTimes.length
+    ? fixLeadTimes.reduce((a: number, b: number) => a + b, 0) / fixLeadTimes.length / 3600
+    : null;
 
   return kpiRow([
     { label: 'Merge Frequency', value: `${Math.round(mergeFreq * 10) / 10}/day`, note: `${num(deploys.length)} merges in range (deploy proxy)` },
-    { label: 'PR Cycle Time', value: avgLeadHrs === null ? '—' : `${Math.round(avgLeadHrs * 10) / 10}h`, note: 'PR open → merge (lead-time proxy)', color: avgLeadHrs !== null && avgLeadHrs < 24 ? p.ok : undefined },
-    { label: 'Revert Rate', value: pct(typeof cfr === 'number' ? (cfr <= 1 ? cfr * 100 : cfr) : null), note: 'revert/hotfix-titled PRs (CFR proxy)', color: typeof cfr === 'number' && (cfr <= 1 ? cfr * 100 : cfr) < 15 ? p.ok : p.warn },
+    { label: 'PR Cycle Time (p50)', value: medLeadHrs === null ? '—' : `${Math.round(medLeadHrs * 10) / 10}h`, note: avgLeadHrs === null ? 'PR open → merge (lead-time proxy)' : `mean ${Math.round(avgLeadHrs * 10) / 10}h · lead-time proxy`, color: medLeadHrs !== null && medLeadHrs < 24 ? p.ok : undefined },
+    { label: 'Revert Rate', value: pct(cfr), note: `${num(failureFixes.length)} of ${num(prs.length)} PRs (CFR proxy)`, color: cfr === null ? undefined : cfr < 15 ? p.ok : p.warn },
     { label: 'Revert Turnaround', value: mttrH === null ? '—' : `${Math.round(mttrH * 10) / 10}h`, note: 'revert PR open → merge (MTTR proxy)' },
-  ], p) + footnote('Proxies: merge≈deploy, PR cycle≈lead time, revert-titled PRs≈failures. True deploy/incident integration is on the roadmap.', p);
+  ], p) + footnote('Proxies: merge≈deploy, PR cycle≈lead time, revert/hotfix-titled PRs≈failures. All four aggregate over the selected time range. True deploy/incident integration is on the roadmap.', p);
+}
+
+/** Median of a numeric list, or null when empty. */
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
 }
 
 // ---- View: aidora (attribution store + eval events) ----
@@ -381,14 +400,13 @@ function computeObservedLevel(input: {
 // ---- View: exec (business KPIs + delivery proxies + observed level) ----
 
 async function renderExec(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
-  const [report, evals, mcp, guardrails, deploys, prs, assessments] = await Promise.all([
+  const [report, evals, mcp, guardrails, deploys, prs] = await Promise.all([
     fetchProductivity(fromIso, toIso).catch(() => null),
     queryEvents('prism.d1.eval', fromIso, toIso),
     queryEvents('prism.d1.mcp.tool_call', fromIso, toIso),
     queryEvents('prism.d1.guardrail', fromIso, toIso),
     queryEvents('prism.d1.deploy', fromIso, toIso),
     queryEvents('prism.d1.pr', fromIso, toIso),
-    queryEvents('prism.d1.assessment', fromIso, toIso),
   ]);
 
   const t = report?.totals;
@@ -441,17 +459,23 @@ async function renderExec(fromIso: string, toIso: string, days: number, p: Palet
   // --- Delivery proxies, humanized units ---
   const mergeFreq = days > 0 ? deploys.length / days : deploys.length;
   const leadTimes = prs.map(e => e.data.dora?.lead_time_seconds).filter((v: any) => typeof v === 'number' && v > 0);
-  const avgLeadHrs = leadTimes.length ? leadTimes.reduce((a: number, b: number) => a + b, 0) / leadTimes.length / 3600 : null;
-  const latest = assessments.filter(e => e.data.dora).sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
-  const cfrRaw = latest?.data.dora?.change_failure_rate;
-  const cfr = typeof cfrRaw === 'number' ? (cfrRaw <= 1 ? cfrRaw * 100 : cfrRaw) : null;
-  const mttrH = latest?.data.dora?.mttr_hours ?? null;
+  const medLead = median(leadTimes);
+  const medLeadHrs = medLead !== null ? medLead / 3600 : null;
+  // Aggregated over the selected range from per-PR facts — see renderDora.
+  const failureFixes = prs.filter(e => e.data.dora?.is_failure_fix === true);
+  const cfr = prs.length > 0 ? (failureFixes.length / prs.length) * 100 : null;
+  const fixLeadTimes = failureFixes
+    .map(e => e.data.dora?.lead_time_seconds)
+    .filter((v: any) => typeof v === 'number' && v > 0);
+  const mttrH = fixLeadTimes.length
+    ? fixLeadTimes.reduce((a: number, b: number) => a + b, 0) / fixLeadTimes.length / 3600
+    : null;
 
-  const deliveryKpis = (deploys.length === 0 && prs.length === 0 && assessments.length === 0)
-    ? footnote('No delivery events in range — install prism-ai-metrics.yml and prism-dora-weekly.yml to populate the delivery proxies.', p)
+  const deliveryKpis = (deploys.length === 0 && prs.length === 0)
+    ? footnote('No delivery events in range — install prism-ai-metrics.yml to populate the delivery proxies.', p)
     : kpiRow([
       { label: 'Merge Frequency', value: `${Math.round(mergeFreq * 10) / 10}/day`, note: 'deploy proxy' },
-      { label: 'PR Cycle Time', value: avgLeadHrs === null ? '—' : `${Math.round(avgLeadHrs * 10) / 10}h`, note: 'lead-time proxy', color: avgLeadHrs !== null && avgLeadHrs < 24 ? p.ok : undefined },
+      { label: 'PR Cycle Time', value: medLeadHrs === null ? '—' : `${Math.round(medLeadHrs * 10) / 10}h`, note: 'p50 · lead-time proxy', color: medLeadHrs !== null && medLeadHrs < 24 ? p.ok : undefined },
       { label: 'Revert Rate', value: pct(cfr), note: 'change-failure proxy', color: cfr !== null && cfr < 15 ? p.ok : cfr !== null ? p.warn : undefined },
       { label: 'Revert Turnaround', value: mttrH === null ? '—' : `${Math.round(mttrH * 10) / 10}h`, note: 'MTTR proxy' },
     ], p);

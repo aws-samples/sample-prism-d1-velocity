@@ -18,14 +18,14 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 - **[Executive Readout Dashboard](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)** — Business outcomes and an **observed PRISM level** computed live from outcome metrics (AI share, eval gates, cost attribution, governance) rather than static repo signals, with a gate table showing what blocks the next level. Plus unit economics (cost per shipped commit), AI-vs-human quality comparison, labeled delivery proxies, and a condensed security posture strip.
 - **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security depth in 6 rows: exposure and finding aging, per-severity remediation SLA compliance with breaches named, **AI code risk normalized per 100 commits** (findings joined to attribution commit volume — raw counts aren't comparable when AI writes more code), shift-left effectiveness with a computed finding survival rate, CWE and compliance-framework coverage, and runtime governance.
-- **[Enhanced DORA metrics](#enhanced-ai-dora-metrics)** with 4 AI-specific dimensions — acceptance rate, AI-to-merge ratio, post-merge defect rate, and eval gate pass rate
+- **[Enhanced DORA metrics](#enhanced-ai-dora-metrics)** with 3 AI-specific dimensions — AI-to-merge ratio, post-merge defect rate, and eval gate pass rate
 - **[Executive readout templates](docs/leader-guide/executive-readout-template.md)** connecting engineering metrics to business outcomes
 
 ### For Engineering Teams (Bottom-Up Activation)
 
 - **[Team Velocity Dashboard](docs/data-architecture.md#cloudwatch-team-velocity-prism-d1-team-velocity)** — Delivery health in 8 rows: delivery KPIs, AI-DORA KPIs, contribution/quality trends, per-repo breakdown, eval gates, governance, agents, and security with remediation SLA. Panels read the events table and attribution store directly (full 365-day history; empty panels name the missing emitter), with native graphs for attribution-fed trends. Delivery KPIs are labeled as proxies — merge frequency, PR cycle time, revert rate — until real deploy/incident integrations exist.
 - **[Developer Productivity Dashboard](docs/data-architecture.md#cloudwatch-developer-productivity-prism-d1-developer-productivity)** (`PRISM-D1-Developer-Productivity`) — Org and per-developer AI output and spend, fed entirely by codeburn attribution (no CI instrumentation or git hooks). Org KPIs and daily trends, plus a per-developer comparison table and a by-tool/by-model spend detail panel scoped by the **Developer** variable.
-- **4-hour workshop** (+ extensions) with hands-on exercises using Claude Code, Kiro, and Bedrock
+- **~5-hour workshop** (4h40m of modules 01–06, plus 30min prerequisites and optional extensions) with hands-on exercises using Claude Code, Kiro, and Bedrock
 - **Spec-driven development** templates with [AI-DLC steering files](bootstrapper/aidlc-steering/) (adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows))
 - **AI agent development** — Strands SDK, MCP with [scope-based auth](sample-app/src/mcp/auth/), Amazon Bedrock AgentCore
 - **[AWS Security Agent integration](bootstrapper/security-agent/)** — design review, code review, pen testing ([setup guide](bootstrapper/security-agent/SETUP-GUIDE.md))
@@ -37,7 +37,7 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 - **MCP Authorization** — scope-based tool access control with audit trail
 - **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), + Security Agent finding gate
 - **KMS encryption** on all data stores, VPC isolation, exfiltration detection
-- **11 CloudWatch alarms** including security critical finding and remediation SLA
+- **9 CloudWatch alarms** including security critical finding and remediation SLA
 
 ## Quick Start
 
@@ -63,7 +63,7 @@ npx cdk bootstrap   # First time only
 npx cdk deploy --all
 ```
 
-This deploys: EventBridge bus, 8 Lambda processors, DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, 10 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
+This deploys: EventBridge bus, 9 Lambda processors, 3 DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, 9 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
 
 > **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
 
@@ -166,7 +166,7 @@ The `--global` flag sets `init.templateDir` so all future `git clone` / `git ini
 
 #### VPC Configuration
 
-By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (DynamoDB, EventBridge, CloudWatch, KMS, Bedrock Runtime) for network isolation. This adds ~$35-50/month in endpoint costs.
+By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (gateway: S3, DynamoDB — free; interface: EventBridge, CloudWatch, CloudWatch Logs, KMS, Bedrock Runtime — billable) for network isolation. This adds ~$35-50/month in endpoint costs.
 
 | Option | Command | Use Case |
 |--------|---------|----------|
@@ -191,11 +191,11 @@ Monthly cost depends on team size and configuration. All resources are serverles
 
 | Component | ~Monthly Cost | Notes |
 |-----------|--------------|-------|
-| **VPC endpoints** (5×) | $35–50 | Skip with `-c skipVpc=true` |
-| **DynamoDB** (2 tables) | $1–5 | On-demand billing; scales with commit volume |
-| **Lambda** (8 processors) | $1–3 | Invoked per event; negligible at <50 devs |
+| **VPC endpoints** (5 interface) | $35–50 | Gateway endpoints (S3, DynamoDB) are free. Skip all with `-c skipVpc=true` |
+| **DynamoDB** (3 tables) | $1–5 | On-demand billing; scales with commit volume |
+| **Lambda** (9 processors) | $1–3 | Invoked per event; negligible at <50 devs |
 | **EventBridge** | < $1 | $1/million events |
-| **CloudWatch** (4 dashboards, 10 alarms) | $3–10 | Per-dashboard fee + metric costs |
+| **CloudWatch** (4 dashboards, 9 alarms) | $3–10 | Per-dashboard fee + metric costs |
 | **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
 | **Bedrock Guardrails** | $1–5 | Per-invocation; depends on eval gate frequency |
 | **KMS** (1 key) | $1 | Fixed monthly fee + $0.03/10K requests |
@@ -304,7 +304,7 @@ prism-cli bootstrapper install-git-hooks --team-id your-team --global
 
 ## Enhanced AI-DORA Metrics
 
-The four classic DORA metrics plus four AI-specific dimensions. **Source** is what actually computes each metric today, and **Status** flags where the pipeline is incomplete — the DORA metrics are currently proxies.
+The four classic DORA metrics plus three AI-specific dimensions. **Source** is what actually computes each metric today, and **Status** flags where the pipeline is incomplete — the DORA metrics are currently proxies.
 
 | Metric | Source | Status | L2 Target | L4 Target |
 |--------|--------|--------|-----------|-----------|
@@ -312,7 +312,6 @@ The four classic DORA metrics plus four AI-specific dimensions. **Source** is wh
 | Lead Time for Changes | PR created → **merged** | ⚠️ Proxy — deploy latency not measured | < 1 week | < 1 day |
 | Change Failure Rate | % of merged PRs titled `revert\|hotfix\|rollback` | ⚠️ Proxy — heuristic, misses untitled failures | < 15% | < 5% |
 | MTTR | Revert/hotfix PR open → merge | ⚠️ Proxy — no incident events emitted | < 24h | < 1h |
-| **AI Acceptance Rate** | Git trailers + GitHub PR review API (CI) | ✅ Works; stays CI-fed after hook removal | >= 30% | >= 55% |
 | **AI-to-Merge Ratio** | codeburn attribution spans (+ CI line from trailers) | ✅ Works, hook-free | >= 20% | >= 45% |
 | **Post-Merge Defect Rate** | Reverted / merged AI commits (attribution) | ✅ Works, hook-free | <= 1.2x human | <= 0.9x |
 | **Eval Gate Pass Rate** | kiro-cli headless review in CI | ✅ Works | >= 80% | >= 95% |
@@ -358,7 +357,7 @@ Extension exercises: Security Agent design review (+10 min in Module 03), code r
 
 | Resource | Description |
 |----------|-------------|
-| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 10 alarms |
+| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 9 alarms |
 | **[Community Roadmap](docs/ROADMAP.md)** | Prioritized backlog across 9 phases |
 | **[Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md)** | 8-step guide: deploy, domain verification, GitHub connection, pen test config, webhook, GitHub variables, verification |
 | **[AI-DLC Steering Files](bootstrapper/aidlc-steering/)** | Development workflow rules adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows) |
