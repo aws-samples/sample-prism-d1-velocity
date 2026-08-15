@@ -768,7 +768,7 @@ Token consumption and cost tracking is implemented via the CloudTrail → EventB
 | **Identity mapping table populated** | `aws dynamodb put-item` per developer (IAM ARN → email → team) | Cost attributed to "unknown" developer |
 | **Model pricing table seeded** | Auto-seeded on CDK deploy via Custom Resource | Cost calculations return $0 |
 
-See [Bootstrapper README Step 6](../bootstrapper/README.md#step-6-enable-cloudtrail-for-bedrock-required-for-cost-tracking) for the exact setup commands.
+CloudTrail for Bedrock must be enabled separately for cost tracking; the setup commands are not currently documented in this repo.
 
 ### What's tracked
 

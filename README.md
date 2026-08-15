@@ -8,299 +8,103 @@
 
 Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) — the D1 Velocity pillar focuses on AI-native software development lifecycle practices that are **measurable from Day 1**.
 
+PRISM D1 instruments how your teams actually use AI to write software — which commits AI wrote, whether that code passes review and survives in production, and what it costs — then renders it on dashboards aimed at engineers, engineering leaders, and CISOs.
+
 ## Architecture
 
 ![PRISM D1 Velocity Architecture](assets/images/prismarchitecture.drawio.png)
 
+## Quick Start
+
+> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) needs Node.js 22+ for AI usage telemetry. Install via [nodejs.org](https://nodejs.org/en/download) or [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
+
+Also requires [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) and CDK v2 (`npm install -g aws-cdk`).
+
+### 1. Deploy the infrastructure (once per org)
+
+```bash
+node --version                       # must be v22.x or later
+npm install -g @prism-d1/cli codeburn
+
+git clone https://github.com/aws-samples/sample-prism-d1-velocity.git
+cd sample-prism-d1-velocity/infra
+npm install
+npx cdk bootstrap                    # first time in this account/region only
+npx cdk deploy --all -c skipVpc=true # skipVpc saves ~$35-50/mo; drop it for prod
+```
+
+This creates the EventBridge bus, Lambda processors, DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, alarms, Bedrock Guardrails, and the OTEL collector. Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** stack outputs — you need both below.
+
+### 2. Give each developer a telemetry account
+
+```bash
+# username MUST be the developer's email
+aws cognito-idp admin-create-user \
+  --user-pool-id <OtelUserPoolId> \
+  --username dev@example.com
+```
+
+### 3. Each developer starts syncing (once per machine)
+
+```bash
+npm install -g @prism-d1/cli codeburn
+prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl>
+```
+
+One command: authenticates, backfills 30 days, and installs a platform-native schedule (crontab / LaunchAgent / Scheduled Task) that pushes usage **and** git commit attribution every 12 hours. Check it with `--status`, remove it with `--remove`.
+
+### 4. Confirm data is flowing
+
+Open the **PRISM-D1-Team-Velocity** dashboard in CloudWatch. Within one sync cycle you should see AI-vs-human commit counts and an **Attribution Coverage** percentage.
+
+> **Coverage is the number to watch first.** It compares commits your CI observed (a complete census) against commits attribution actually captured (a sample of onboarded machines). Below 80%, every AI metric is understating reality — the fix is getting more developers through step 3, not changing the dashboard.
+
+### Next steps
+
+Wire up CI so delivery metrics and eval gates start reporting:
+
+```bash
+prism-cli bootstrapper setup-github-oidc --global      # or setup-gitlab-oidc
+prism-cli bootstrapper install-github-workflows --region us-west-2
+```
+
+Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum security agent, VPC options, and cost tuning are in the **[User Guide](USER_GUIDE.md)**.
+
+## Documentation
+
+| Guide | For | Contents |
+|-------|-----|----------|
+| **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
+| **[Data Architecture](docs/data-architecture.md)** | Anyone extending it | Data sources, event schema, the pipeline, every dashboard widget, metrics catalog, alarms |
+| **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
+| **[Assessment Guide](assessment/ASSESSMENT_GUIDE.md)** | Solutions Architects | Scanner categories, interview questions and rubrics, scoring, qualification matrix |
+| **[Customer Onboarding](assessment/ONBOARDING.md)** | Solutions Architects | Onboarding tracks, email templates, per-track pre-work |
+| **[Roadmap](docs/ROADMAP.md)** | Contributors | Prioritized backlog |
+
 ## What This Repo Contains
 
-### For Engineering Leaders (Top-Down Visibility)
+### Dashboards
 
-- **[Executive Readout Dashboard](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)** — Business outcomes and an **observed PRISM level** computed live from outcome metrics (AI share, eval gates, cost attribution, governance) rather than static repo signals, with a gate table showing what blocks the next level. Plus unit economics (cost per shipped commit), AI-vs-human quality comparison, labeled delivery proxies, and a condensed security posture strip.
-- **[CISO Compliance Dashboard](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — Security depth in 6 rows: exposure and finding aging, per-severity remediation SLA compliance with breaches named, **AI code risk normalized per 100 commits** (findings joined to attribution commit volume — raw counts aren't comparable when AI writes more code), shift-left effectiveness with a computed finding survival rate, CWE and compliance-framework coverage, and runtime governance.
-- **[Enhanced DORA metrics](#enhanced-ai-dora-metrics)** with 3 AI-specific dimensions — AI-to-merge ratio, post-merge defect rate, and eval gate pass rate
-- **[Executive readout templates](docs/leader-guide/executive-readout-template.md)** connecting engineering metrics to business outcomes
+Four CloudWatch dashboards, all reading the events table and attribution store directly so full history is available and empty panels name the emitter that is missing.
 
-### For Engineering Teams (Bottom-Up Activation)
+- **[Team Velocity](docs/data-architecture.md#cloudwatch-team-velocity-prism-d1-team-velocity)** — delivery KPIs, AI-DORA KPIs, contribution and quality trends, per-repo breakdown, eval gates, governance, agents, and security with remediation SLA. Delivery figures are labeled as proxies (merge frequency, PR cycle time, revert rate) until real deploy and incident integrations exist.
+- **[Executive Readout](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)** — business outcomes and an **observed PRISM level** computed live from outcome metrics, with a gate table showing what blocks the next level. Plus unit economics, AI-vs-human quality, and a condensed security strip.
+- **[CISO Compliance](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — exposure and finding aging, per-severity remediation SLA with breaches named, **AI code risk normalized per 100 commits**, shift-left effectiveness with a computed finding survival rate, CWE and compliance-framework coverage, runtime governance.
+- **[Developer Productivity](docs/data-architecture.md#cloudwatch-developer-productivity-prism-d1-developer-productivity)** — org and per-developer AI output and spend, fed entirely by codeburn attribution with no CI instrumentation or git hooks.
 
-- **[Team Velocity Dashboard](docs/data-architecture.md#cloudwatch-team-velocity-prism-d1-team-velocity)** — Delivery health in 8 rows: delivery KPIs, AI-DORA KPIs, contribution/quality trends, per-repo breakdown, eval gates, governance, agents, and security with remediation SLA. Panels read the events table and attribution store directly (full 365-day history; empty panels name the missing emitter), with native graphs for attribution-fed trends. Delivery KPIs are labeled as proxies — merge frequency, PR cycle time, revert rate — until real deploy/incident integrations exist.
-- **[Developer Productivity Dashboard](docs/data-architecture.md#cloudwatch-developer-productivity-prism-d1-developer-productivity)** (`PRISM-D1-Developer-Productivity`) — Org and per-developer AI output and spend, fed entirely by codeburn attribution (no CI instrumentation or git hooks). Org KPIs and daily trends, plus a per-developer comparison table and a by-tool/by-model spend detail panel scoped by the **Developer** variable.
-- **~5-hour workshop** (4h40m of modules 01–06, plus 30min prerequisites and optional extensions) with hands-on exercises using Claude Code, Kiro, and Bedrock
+### For Teams
+
+- **~5-hour workshop** (4h40m of modules 01–06, plus 30min prerequisites and optional extensions) using Claude Code, Kiro, and Bedrock
 - **Spec-driven development** templates with [AI-DLC steering files](bootstrapper/aidlc-steering/) (adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows))
 - **AI agent development** — Strands SDK, MCP with [scope-based auth](sample-app/src/mcp/auth/), Amazon Bedrock AgentCore
-- **[AWS Security Agent integration](bootstrapper/security-agent/)** — design review, code review, pen testing ([setup guide](bootstrapper/security-agent/SETUP-GUIDE.md))
-- **Bootstrapper code** — git hooks, CI workflows, eval harnesses, agent configs teams inherit on day one
+- **Bootstrapper code** — CI workflows, eval harnesses, agent configs, spec templates teams inherit on day one
 
-### For Security Leaders (Governance & Compliance)
+### For Security Leaders
 
 - **Bedrock Guardrails** — content filters, PII protection, denied topics with per-trigger metrics
 - **MCP Authorization** — scope-based tool access control with audit trail
-- **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), + Security Agent finding gate
+- **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), plus an AWS Continuum finding gate
 - **KMS encryption** on all data stores, VPC isolation, exfiltration detection
-- **9 CloudWatch alarms** including security critical finding and remediation SLA
-
-## Quick Start
-
-### Administrator Setup (per org)
-
-These steps are performed once by an engineering leader or platform team to provision shared infrastructure.
-
-> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
-
-```bash
-node --version  # Verify: must be v22.x or later
-npm install -g @prism-d1/cli codeburn
-```
-
-Requires [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), CDK v2 (`npm install -g aws-cdk`).
-
-#### 1. Deploy AWS Infrastructure
-
-```bash
-cd infra
-npm install
-npx cdk bootstrap   # First time only
-npx cdk deploy --all
-```
-
-This deploys: EventBridge bus, 9 Lambda processors, 3 DynamoDB tables (KMS-encrypted), 4 CloudWatch dashboards, 9 alarms, Bedrock Guardrails, model pricing table, and the OTEL collector (Cognito user pool + API Gateway + S3 archive).
-
-> **Skip VPC for demos:** Add `-c skipVpc=true` to save ~$35-50/month. See [VPC Configuration](#vpc-configuration) below.
-
-> **Skip OTEL collector:** Add `-c skipOtelCollector=true` if you only want git-hook-based metrics without per-developer AI usage telemetry.
-
-> **For Security Agent:** Add `--context enableSecurityAgent=true` or use `prism-cli securityagent setup`. See the [Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md).
-
-#### 2. Set Up OIDC (CI/CD → AWS Authentication)
-
-**GitHub:**
-```bash
-prism-cli bootstrapper setup-github-oidc --global
-# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a GitHub repo secret.
-```
-
-**GitLab:**
-```bash
-prism-cli bootstrapper setup-gitlab-oidc --global
-# Creates OIDC provider + IAM role. Add PRISM_METRICS_ROLE_ARN as a CI/CD variable (unprotected).
-```
-
-#### 3. Install CI/CD Workflows (per repo)
-
-**GitHub:**
-```bash
-prism-cli bootstrapper install-github-workflows --region us-west-2
-# Copies workflow files to .github/workflows/
-```
-
-**GitLab:**
-```bash
-prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
-# Copies workflow files to .prism/gitlab-workflows/
-# Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
-```
-
-#### 4. Create Developer Accounts
-
-After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector:
-
-```bash
-# Create a user (username MUST be the developer's email)
-aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
-```
-
-Then share the **OtelCollectorUrl** stack output with your developers — they'll need it for setup below.
-
-**Bring your own IdP** (Okta, Entra ID) instead of Cognito:
-
-```bash
-npx cdk deploy --all \
-  -c otelIssuer=https://login.example.okta.com/oauth2/default \
-  -c otelClientId=0oa1b2c3d4 \
-  -c otelIdentityClaim=email
-```
-
-Your IdP app must be a **public client with PKCE**, register loopback redirect URIs `http://127.0.0.1:19876/callback` (also ports 19877, 19878), and issue **JWT access tokens** (Okta and Entra ID work; Auth0's opaque access tokens are not supported).
-
-### Developer Setup (per developer)
-
-These steps are run by each developer on their machine. You'll need the **OtelCollectorUrl** from your administrator.
-
-> **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) requires Node.js 22 or later for AI usage telemetry collection. Install or upgrade via [nodejs.org](https://nodejs.org/en/download), or use [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
-
-#### 1. Install Tools
-
-```bash
-node --version  # Verify: must be v22.x or later
-npm install -g @prism-d1/cli codeburn
-```
-
-#### 2. Set Up AI Usage Telemetry (Codeburn)
-
-```bash
-# One command: configures auth, backfills 30 days, installs OS schedule (every 12h)
-prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl from admin>
-
-# Check status anytime
-prism-cli bootstrapper setup-otel-sync --status
-
-# Remove the schedule
-prism-cli bootstrapper setup-otel-sync --remove
-```
-
-This installs a platform-native schedule (crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows) that runs `codeburn sync push --since 7d --attribution` every 12 hours. The `--attribution` flag sends git commit attribution data (repo, SHA, merge/revert status) alongside usage telemetry, powering the Developer Productivity dashboard without requiring git hooks or CI instrumentation. The 7-day overlap window means a developer's machine can be off for a week and nothing is missed — duplicate pushes are server-side no-ops. Use `--interval <hours>` to override the cadence.
-
-#### 3. Install Git Hooks (optional)
-
-> **Note:** Git hooks are optional and will be deprecated in a future release. The OTEL sync in step 2 above provides the same metrics (and more) via codeburn. Git hooks remain available for teams that want commit-level AI attribution trailers in their git history.
-
-```bash
-# For all future clones (global template):
-prism-cli bootstrapper install-git-hooks --global
-
-# For an existing repo (run inside the repo):
-prism-cli bootstrapper install-git-hooks
-```
-
-The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
-
-#### VPC Configuration
-
-By default, all Lambda functions deploy into a VPC with private isolated subnets and VPC endpoints (gateway: S3, DynamoDB — free; interface: EventBridge, CloudWatch, CloudWatch Logs, KMS, Bedrock Runtime — billable) for network isolation. This adds ~$35-50/month in endpoint costs.
-
-| Option | Command | Use Case |
-|--------|---------|----------|
-| **New VPC** (default) | `npx cdk deploy --all` | Production — full network isolation |
-| **Skip VPC** | `npx cdk deploy --all -c skipVpc=true` | Workshop/demo — saves cost, faster cold starts |
-| **Existing VPC** | `npx cdk deploy --all -c vpcId=vpc-0123456789abcdef0` | Enterprise — use shared VPC with existing endpoints or NAT |
-
-When using an existing VPC, ensure it has either VPC endpoints for the required services or a NAT gateway for outbound internet access.
-
-**Data layout:**
-
-| Destination | Content | Purpose |
-|-------------|---------|---------|
-| S3 (`prism-d1-otlp-archive-*`) | Raw OTLP JSON batches, partitioned by `dt=` | External contract — Athena, data lake, replay into any OTel backend |
-| DynamoDB (`prism-d1-ai-usage`) | Per-span rows (90-day TTL) + daily per-user/tool aggregates | PRISM dashboards |
-
-Duplicate pushes are safe: codeburn's deterministic span IDs act as an idempotency key server-side. Historical sessions are backfilled on first push (aggregates bucket by span date). Running a full ADOT collector for fan-out to X-Ray/Grafana/Datadog is on the [roadmap](docs/ROADMAP.md).
-
-#### Cost Estimate
-
-Monthly cost depends on team size and configuration. All resources are serverless (pay-per-use) except VPC endpoints.
-
-| Component | ~Monthly Cost | Notes |
-|-----------|--------------|-------|
-| **VPC endpoints** (5 interface) | $35–50 | Gateway endpoints (S3, DynamoDB) are free. Skip all with `-c skipVpc=true` |
-| **DynamoDB** (3 tables) | $1–5 | On-demand billing; scales with commit volume |
-| **Lambda** (9 processors) | $1–3 | Invoked per event; negligible at <50 devs |
-| **EventBridge** | < $1 | $1/million events |
-| **CloudWatch** (4 dashboards, 9 alarms) | $3–10 | Per-dashboard fee + metric costs |
-| **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
-| **Bedrock Guardrails** | $1–5 | Per-invocation; depends on eval gate frequency |
-| **KMS** (1 key) | $1 | Fixed monthly fee + $0.03/10K requests |
-
-**Typical total:**
-- Workshop/demo (no VPC): **~$10–25/month**
-- Production (with VPC, <50 devs): **~$50–80/month**
-- Large team (100+ devs, heavy CI): **~$80–150/month**
-
-> 💡 The largest cost driver is VPC endpoints. For workshops and demos, use `-c skipVpc=true` to stay under $25/month.
-
-### Assess a Customer
-
-#### Web Assessment Tool (Recommended)
-
-The prism-cli includes a local web interface for running the full assessment flow — scan, interview, and report generation — in a browser.
-
-```bash
-prism-cli assessment web
-# Opens http://localhost:3120
-```
-
-The web tool supports two workflows:
-
-**Self-service (customer runs it themselves):**
-1. Customer installs `npm install -g @prism-d1/cli` and runs `prism-cli assessment web`
-2. Scans their own repository from the web UI
-3. Exports the scan results as JSON and sends the file to you
-4. Optionally completes the interview themselves and sends the final HTML report
-
-**SA-led (you run it):**
-1. Import the customer's scan JSON into the web UI (skip re-scanning)
-2. Conduct the interview using the built-in guide with scoring rubrics
-3. Generate the HTML report directly in the browser
-
-**AI Agent interview:**
-1. After scanning (or importing a scan), choose "AI Agent Interview" from the next steps
-2. An AI agent conducts the 20-question interview conversationally, asks follow-up probes, and scores responses against the rubrics automatically
-3. The agent uses context from prior answers to ask smarter questions and avoid repetition
-4. When complete, generates the same assessment report as the manual flow
-
-The AI agent requires **Amazon Bedrock access** — specifically the `us.anthropic.claude-sonnet-4-6` model (Claude Sonnet 4.6 via cross-region inference). To set this up:
-- Enable model access in the [Bedrock console](https://console.aws.amazon.com/bedrock/home#/modelaccess) (Anthropic → Claude Sonnet 4.6)
-- Configure AWS credentials locally (`aws configure`, SSO, or environment variables)
-- The agent validates Bedrock access on startup and shows setup instructions if anything is missing
-
-The interview form includes the full question bank, scoring rubrics, and scanner-informed focus areas. Reports can be printed or saved as PDF from the browser.
-
-#### Manual Assessment
-
-For a CLI-only or fully manual workflow, run the [PRISM Assessment](assessment/README.md) to determine maturity level and onboarding track. See the [full methodology guide](assessment/ASSESSMENT-GUIDE.md) for scanner logic, interview rubrics, and scoring formulas.
-
-### Run the Workshop
-
-The workshop is hosted on AWS Workshop Studio: [PRISM D1: Velocity Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/d0a8b037-dfe0-4023-9ce2-f5de32ee4c67/en-US)
-
-### Run the Sample Agent (No AWS Required)
-
-```bash
-cd sample-app
-npm install && npm run dev          # Start the task API
-
-cd agent
-pip install -e ".[dev]"
-python scripts/run-demo.py --mock   # Run agent demo with mock model
-```
-
-## Commit Metadata (AI Attribution)
-
-![Workflow](assets/images/PrismDashboard.drawio.png)
-
-The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
-
-**Trailers injected:**
-
-| Trailer | Example | Description |
-|---------|---------|-------------|
-| `AI-Origin` | `ai-generated` or `human` | Whether an AI tool was detected |
-| `AI-Tool` | `claude-code`, `kiro`, `q-developer` | Which tool was active (omitted for human commits) |
-| `AI-Model` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Model used (Claude Code only) |
-| `AI-Input-Tokens` | `12450` | Input tokens since last commit (via codeburn) |
-| `AI-Output-Tokens` | `3200` | Output tokens since last commit |
-| `AI-Cost` | `$0.42` | Estimated cost since last commit |
-| `Spec-Ref` | `.kiro/specs/auth.md` | Spec file if staged or declared |
-
-**Tool support:**
-
-| Tool | Detection Method | Status |
-|------|-----------------|--------|
-| Claude Code | `CLAUDE_CODE_SESSION_ID` env var | ✅ Supported |
-| Kiro IDE | `TERM_PROGRAM=kiro` env var | ✅ Supported |
-| Kiro CLI | `KIRO_SESSION_ID` env var | ✅ Supported |
-| Amazon Q Developer | `Q_DEVELOPER_SESSION` env var | ✅ Supported |
-| Cursor | `VSCODE_SHELL_INTEGRATION=1` (agent mode) | 🔜 Planned |
-| GitHub Copilot | codeburn session correlation | 🔜 Planned |
-| Windsurf | Process tree or codeburn | 🔜 Planned |
-| Codex (OpenAI) | Process tree detection | 🔜 Planned |
-| Aider | Process tree or codeburn | 🔜 Planned |
-| Cline / Roo Code | codeburn session correlation | 🔜 Planned |
-
-Install the hooks globally so all future repos get attribution automatically:
-
-```bash
-prism-cli bootstrapper install-git-hooks --team-id your-team --global
-```
 
 ## Enhanced AI-DORA Metrics
 
@@ -308,60 +112,51 @@ The four classic DORA metrics plus three AI-specific dimensions. **Source** is w
 
 | Metric | Source | Status | L2 Target | L4 Target |
 |--------|--------|--------|-----------|-----------|
-| Deployment Frequency | Merged PRs/day (`prism-ai-metrics.yml` fires on PR merge) | ⚠️ Proxy — no deploy integration | Weekly | Daily+ |
-| Lead Time for Changes | PR created → **merged** | ⚠️ Proxy — deploy latency not measured | < 1 week | < 1 day |
+| Deployment Frequency | Merged PRs/day (`prism-ai-metrics.yml` on PR merge) | ⚠️ Proxy — no deploy integration | Weekly | Daily+ |
+| Lead Time for Changes | PR created → **merged**, p50 | ⚠️ Proxy — deploy latency not measured | < 1 week | < 1 day |
 | Change Failure Rate | % of merged PRs titled `revert\|hotfix\|rollback` | ⚠️ Proxy — heuristic, misses untitled failures | < 15% | < 5% |
 | MTTR | Revert/hotfix PR open → merge | ⚠️ Proxy — no incident events emitted | < 24h | < 1h |
-| **AI-to-Merge Ratio** | codeburn attribution spans (+ CI line from trailers) | ✅ Works, hook-free | >= 20% | >= 45% |
+| **AI-to-Merge Ratio** | codeburn attribution spans | ✅ Works, hook-free | >= 20% | >= 45% |
 | **Post-Merge Defect Rate** | Reverted / merged AI commits (attribution) | ✅ Works, hook-free | <= 1.2x human | <= 0.9x |
 | **Eval Gate Pass Rate** | kiro-cli headless review in CI | ✅ Works | >= 80% | >= 95% |
 
-The ✅ rows all survive the [git-hook removal](#3-install-git-hooks-optional) — they come from codeburn attribution or the GitHub API rather than commit trailers.
-
-## Workshop Modules
-
-| # | Module | Duration | Key Outcome |
-|---|--------|----------|-------------|
-| 00 | Prerequisites | 30 min | Environment ready, Bedrock access confirmed |
-| 01 | AI-SDLC Foundations | 45 min | Claude Code configured, first AI-assisted commit |
-| 02 | Agent Development | 70 min | Strands agent + MCP server (with auth) + multi-agent orchestration |
-| 03 | Spec-Driven Development | 45 min | Spec-driven development with Kiro, Claude Code IDE, or Claude Code CLI |
-| 04 | Instrumenting AI Metrics | 45 min | Git hooks + CI emitting 18 event types to EventBridge |
-| 05 | Eval Gates in CI/CD | 45 min | Agentic kiro-cli code review (or legacy Bedrock rubrics) + Security Agent finding gate blocking bad merges |
-| 06 | Dashboards & Visibility | 30 min | 4 CloudWatch dashboards live |
-
-Extension exercises: Security Agent design review (+10 min in Module 03), code review (+10 min in Module 05), CISO dashboard walkthrough (+5 min in Module 06).
+All four delivery proxies aggregate over the dashboard's selected time range. The ✅ rows come from codeburn attribution rather than git commit trailers, so they survive [git-hook removal](USER_GUIDE.md#git-hooks-deprecated).
 
 ## PRISM Maturity Levels (D1 Velocity)
 
 | Level | Name | What It Looks Like |
 |-------|------|--------------------|
 | L1 | Experimental | Ad hoc AI use, no metrics, no shared tooling |
-| L2 | Structured | Claude Code + Kiro adopted, acceptance rate tracked in CI |
+| L2 | Structured | Claude Code + Kiro adopted, acceptance tracked in CI |
 | L3 | Integrated | Eval gates in pipeline, AI-DORA dashboards live, spec-driven workflow |
-| L4 | Orchestrated | Multi-team platform, AI FinOps, governed agent scope, Security Agent |
+| L4 | Orchestrated | Multi-team platform, AI FinOps, governed agent scope, security agent |
 | L5 | Autonomous | Agents contributing to architecture, >20% autonomous deployments |
 
-## AI Agent Development
+The Executive Readout computes an **observed** level from live outcome metrics, capped at L4 — L5 requires an autonomy signal no emitter produces. That is deliberately distinct from the [assessment](assessment/ASSESSMENT_GUIDE.md) scanner's **capability** score, and divergence between the two is informative: capability without outcomes means tooling is installed but unused.
 
-| Component | Technology | Location |
-|-----------|-----------|----------|
-| **Agent Framework** | Strands Agents SDK (Python) | `sample-app/agent/` |
-| **Tool Integration** | Model Context Protocol (MCP) with scope-based auth | `sample-app/src/mcp/` |
-| **Production Hosting** | Amazon Bedrock AgentCore | `bootstrapper/agent-configs/` |
-| **Agent Eval** | kiro-cli headless review + Bedrock rubrics (legacy) | `bootstrapper/eval-harness/` |
-| **Security** | Bedrock Guardrails + MCP authorization + Security Agent | `infra/lib/constructs/` |
-| **Workshop** | Module 02: Agent Development | `workshop/02-agent-development/` |
+## Run the Workshop
 
-## Documentation & Resources
+Hosted on AWS Workshop Studio: **[PRISM D1: Velocity Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/d0a8b037-dfe0-4023-9ce2-f5de32ee4c67/en-US)**
 
-| Resource | Description |
-|----------|-------------|
-| **[Data Architecture & Dashboard Guide](docs/data-architecture.md)** | 9 data sources, 18 event types, 4 CloudWatch dashboards (widget-by-widget guide), 30+ CloudWatch metrics, 9 alarms |
-| **[Community Roadmap](docs/ROADMAP.md)** | Prioritized backlog across 9 phases |
-| **[Security Agent Setup Guide](bootstrapper/security-agent/SETUP-GUIDE.md)** | 8-step guide: deploy, domain verification, GitHub connection, pen test config, webhook, GitHub variables, verification |
-| **[AI-DLC Steering Files](bootstrapper/aidlc-steering/)** | Development workflow rules adapted from [awslabs/aidlc-workflows](https://github.com/awslabs/aidlc-workflows) |
-| **[ROI Model](docs/leader-guide/roi-model.md)** | Defensible ROI calculations for CFO conversations |
+| # | Module | Duration | Key Outcome |
+|---|--------|----------|-------------|
+| 00 | Prerequisites | 30 min | Environment ready, Bedrock access confirmed |
+| 01 | AI-SDLC Foundations | 45 min | Claude Code configured, first AI-assisted commit |
+| 02 | Agent Development | 70 min | Strands agent + MCP server with auth + multi-agent orchestration |
+| 03 | Spec-Driven Development | 45 min | Spec-driven development with Kiro or Claude Code |
+| 04 | Instrumenting AI Metrics | 45 min | CI emitting events to EventBridge |
+| 05 | Eval Gates in CI/CD | 45 min | Agentic kiro-cli code review + security finding gate blocking bad merges |
+| 06 | Dashboards & Visibility | 30 min | 4 CloudWatch dashboards live |
+
+Extensions: security design review (+10 min, Module 03), code review (+10 min, Module 05), CISO dashboard walkthrough (+5 min, Module 06).
+
+## Assess a Customer
+
+```bash
+prism-cli assessment web    # opens http://localhost:3120
+```
+
+Scan a repository, run the 20-question interview (manually or with an AI agent via Bedrock), and generate an HTML report. See the **[Assessment Guide](assessment/ASSESSMENT_GUIDE.md)** for methodology and **[Customer Onboarding](assessment/ONBOARDING.md)** for what happens next.
 
 ## License
 
