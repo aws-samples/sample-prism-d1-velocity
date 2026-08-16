@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAssetPath } from '../../utils/root.js';
+import { applyRegion, findDefaultRegionRefs } from '../../utils/region.js';
 
 export default {
   description: 'Install GitHub Actions workflow templates into the current repo',
@@ -23,8 +24,12 @@ export default {
 
     for (const file of files) {
       let content = readFileSync(join(assetDir, file), 'utf-8');
-      content = content.replace(/aws-region: us-west-2/g, `aws-region: ${region}`);
-      content = content.replace(/--region us-west-2/g, `--region ${region}`);
+      content = applyRegion(content, region);
+      const stragglers = findDefaultRegionRefs(content, file);
+      if (stragglers.length > 0) {
+        console.warn(`  ⚠ ${file}: ${stragglers.length} unconverted region reference(s):`);
+        stragglers.forEach(s => console.warn(`      ${s}`));
+      }
       writeFileSync(join(outputDir, file), content);
       console.log(`  ✓ ${file}`);
     }

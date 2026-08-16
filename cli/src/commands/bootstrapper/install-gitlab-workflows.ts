@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
+import { applyRegion, findDefaultRegionRefs } from '../../utils/region.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -40,7 +41,12 @@ export default {
       let content = readFileSync(join(assetDir, file), 'utf-8');
       // Template the audience and region
       content = content.replace(/aud: https:\/\/gitlab\.com/g, `aud: ${gitlabUrl}`);
-      content = content.replace(/AWS_DEFAULT_REGION: us-west-2/g, `AWS_DEFAULT_REGION: ${region}`);
+      content = applyRegion(content, region);
+      const stragglers = findDefaultRegionRefs(content, file);
+      if (stragglers.length > 0) {
+        console.warn(`  ⚠ ${file}: ${stragglers.length} unconverted region reference(s):`);
+        stragglers.forEach(s => console.warn(`      ${s}`));
+      }
       writeFileSync(join(outputDir, file), content);
       console.log(`  ✓ ${file}`);
     }

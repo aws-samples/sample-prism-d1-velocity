@@ -4,6 +4,39 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
+import { applyRegion, findDefaultRegionRefs, DEFAULT_REGION } from '../../utils/region.js';
+
+/**
+ * Copies a workflow asset into the repo with the region templated.
+ *
+ * Must not be a bare copyFileSync: these assets are authored against
+ * DEFAULT_REGION, and an unsubstituted copy sends the Continuum scan and
+ * event-emission calls to a region where the agent space and scan bucket do
+ * not exist -- which fails the gate closed and blocks merges.
+ */
+async function writeWorkflow(
+  src: string,
+  dest: string,
+  region: string,
+  label: string,
+  ask: (q: string, d?: string) => Promise<string>,
+): Promise<void> {
+  if (existsSync(dest)) {
+    const overwrite = await ask('Workflow already exists. Overwrite? [y/N]', 'n');
+    if (overwrite.toLowerCase() !== 'y') {
+      console.log('  Skipped workflow.');
+      return;
+    }
+  }
+  const content = applyRegion(readFileSync(src, 'utf-8'), region);
+  const stragglers = findDefaultRegionRefs(content, label);
+  if (stragglers.length > 0) {
+    console.warn(`  ⚠ ${stragglers.length} unconverted region reference(s):`);
+    stragglers.forEach(s => console.warn(`      ${s}`));
+  }
+  writeFileSync(dest, content);
+  console.log(`✓ Installed ${label} (region: ${region})`);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EVAL_SOURCE = getAssetPath(import.meta.url, 'bootstrapper/eval-harness');
@@ -21,9 +54,10 @@ export default {
     { flags: '--with-rubrics', description: 'Include production rubrics (bedrock mode only)' },
     { flags: '--model <id>', description: 'Bedrock model ID for evaluation (bedrock mode only)' },
     { flags: '--threshold <n>', description: 'Pass threshold (0-1)' },
+    { flags: '--region <region>', description: 'AWS region for EventBridge/CloudWatch/Continuum', default: DEFAULT_REGION },
     { flags: '--uninstall', description: 'Remove eval-harness directory and steering files' },
   ],
-  async action(opts: { mode?: string; withRubrics?: boolean; model?: string; threshold?: string; uninstall?: boolean }) {
+  async action(opts: { mode?: string; withRubrics?: boolean; model?: string; threshold?: string; region?: string; uninstall?: boolean }) {
     const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
     const targetDir = resolve(gitRoot, '.prism/eval-harness');
 
@@ -51,7 +85,8 @@ export default {
   },
 };
 
-async function installKiroMode(gitRoot: string, opts: { threshold?: string }) {
+async function installKiroMode(gitRoot: string, opts: { threshold?: string; region?: string }) {
+  const region = opts.region || DEFAULT_REGION;
   // --- Install steering file ---
   const steeringDir = resolve(gitRoot, '.kiro/steering');
   mkdirSync(steeringDir, { recursive: true });
@@ -77,19 +112,13 @@ async function installKiroMode(gitRoot: string, opts: { threshold?: string }) {
   const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate-kiro.yml');
   if (existsSync(workflowSrc)) {
     mkdirSync(workflowsDir, { recursive: true });
-    const dest = resolve(workflowsDir, 'prism-eval-gate.yml');
-    if (existsSync(dest)) {
-      const overwrite = await prompt('Workflow already exists. Overwrite? [y/N]', 'n');
-      if (overwrite.toLowerCase() !== 'y') {
-        console.log('  Skipped workflow.');
-      } else {
-        copyFileSync(workflowSrc, dest);
-        console.log('✓ Updated .github/workflows/prism-eval-gate.yml');
-      }
-    } else {
-      copyFileSync(workflowSrc, dest);
-      console.log('✓ Installed .github/workflows/prism-eval-gate.yml');
-    }
+    await writeWorkflow(
+      workflowSrc,
+      resolve(workflowsDir, 'prism-eval-gate.yml'),
+      region,
+      '.github/workflows/prism-eval-gate.yml',
+      prompt,
+    );
   }
 
   console.log('\n════════════════════════════════════════════════');
@@ -104,11 +133,11 @@ async function installKiroMode(gitRoot: string, opts: { threshold?: string }) {
   console.log('');
 }
 
-async function installBedrockMode(gitRoot: string, targetDir: string, opts: { withRubrics?: boolean; model?: string; threshold?: string }) {
+async function installBedrockMode(gitRoot: string, targetDir: string, opts: { withRubrics?: boolean; model?: string; threshold?: string; region?: string }) {
   // --- Config ---
   const model = opts.model || await prompt('Eval model ID', 'us.anthropic.claude-haiku-4-5-20251001-v1:0');
   const threshold = opts.threshold || await prompt('Pass threshold', '0.82');
-  const region = await prompt('AWS region', 'us-west-2');
+  const region = opts.region || await prompt('AWS region', DEFAULT_REGION);
 
   // --- Install script + config ---
   mkdirSync(resolve(targetDir, 'rubrics'), { recursive: true });
@@ -145,19 +174,13 @@ async function installBedrockMode(gitRoot: string, targetDir: string, opts: { wi
   const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate.yml');
   if (existsSync(workflowSrc)) {
     mkdirSync(workflowsDir, { recursive: true });
-    const dest = resolve(workflowsDir, 'prism-eval-gate.yml');
-    if (existsSync(dest)) {
-      const overwrite = await prompt('Workflow already exists. Overwrite? [y/N]', 'n');
-      if (overwrite.toLowerCase() !== 'y') {
-        console.log('  Skipped workflow.');
-      } else {
-        copyFileSync(workflowSrc, dest);
-        console.log('✓ Updated .github/workflows/prism-eval-gate.yml');
-      }
-    } else {
-      copyFileSync(workflowSrc, dest);
-      console.log('✓ Installed .github/workflows/prism-eval-gate.yml');
-    }
+    await writeWorkflow(
+      workflowSrc,
+      resolve(workflowsDir, 'prism-eval-gate.yml'),
+      region,
+      '.github/workflows/prism-eval-gate.yml',
+      prompt,
+    );
   }
 
   console.log('\n════════════════════════════════════════════════');
