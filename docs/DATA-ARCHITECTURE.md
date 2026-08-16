@@ -85,9 +85,11 @@ The `bootstrapper/github-workflows/prism-ai-metrics.yml` workflow runs inside Gi
 
 ---
 
-### 6. Bedrock CloudTrail Events
+### 6. Bedrock CloudTrail Events — ⚠️ not implemented
 
-CloudTrail captures every Bedrock API call (InvokeModel, Converse, etc.) with token counts. An EventBridge rule on the **default** event bus routes these to the `token-processor` Lambda, which enriches with pricing and identity data.
+> **This data source was designed but never built.** The intent was a CloudTrail → `token-processor` Lambda path enriching Bedrock API calls with pricing and identity, emitting `prism.d1.token` and `prism.d1.cost`. No such Lambda, pricing table, or identity-mapping table exists in the CDK tree, and neither event type is emitted, validated, or routed by any EventBridge rule.
+>
+> **Token and cost data comes from codeburn attribution instead**, which is a better fit: `otel-metrics-publisher.ts` derives `AIInputTokens`, `AIOutputTokens`, and `AICostUSD` from usage spans that already carry per-model token counts and the developer identity, with no CloudTrail dependency and no IAM-ARN-to-email mapping to maintain.
 
 ### 7. MCP Tool Call Audit
 
@@ -165,8 +167,6 @@ Events may include additional top-level fields depending on their type:
 | `eval` | `prism.d1.eval` | Eval ID, rubric name, result, score, criterion scores |
 | `guardrail` | `prism.d1.guardrail` | Guardrail ID, trigger category/type, action taken, agent name |
 | `mcp_tool_call` | `prism.d1.mcp.tool_call` | Session ID, client ID, tool name, scopes, authorized flag, risk level |
-| `token` | `prism.d1.token` | Model ID, input/output tokens, cost USD, IAM principal, developer email |
-| `cost` | `prism.d1.cost` | Commit SHA, total tokens, total cost, models used, correlation window |
 | `quality` | `prism.d1.quality` | AI defect rate, human defect rate, AI/human commit counts |
 | `security` | `prism.d1.security` | Alert type, table name, principal ARN, read count |
 | `security_agent_finding` | `prism.d1.security.{design_review,code_review,pen_test}` | Finding ID, phase, severity, CVSS, category, CWE, exploit validated, compliance mappings, **commit SHAs**, spec ref |
@@ -251,12 +251,10 @@ Attribution only covers commits from developers running codeburn sync. A commit 
 
 ## Specialized Lambda Processors
 
-In addition to the core metrics-processor, six specialized Lambdas handle derived metric calculations:
+In addition to the core metrics-processor, these specialized Lambdas handle derived metric calculations:
 
 | Lambda | Trigger | Input | Output |
 |--------|---------|-------|--------|
-| `prism-d1-token-processor` | CloudTrail Bedrock API calls (default bus) | CloudTrail event with token counts | `prism.d1.token` event with pricing + identity |
-| `prism-d1-token-correlator` | `prism.d1.commit` events | Commit timestamp | `prism.d1.cost` event with cost-per-commit |
 | `prism-d1-exfiltration-detector` | CloudTrail DynamoDB read events (default bus) | DynamoDB Query/Scan/GetItem | `prism.d1.security` event when threshold exceeded |
 | `prism-d1-security-agent-processor` | `POST /security-findings` webhook or scheduled poll | Security Agent findings | `prism.d1.security.*` events enriched with team_id + AI origin |
 | `prism-d1-security-remediation-tracker` | `prism.d1.pr` events (merged PRs) | PR merge + open findings | `prism.d1.security.remediation` event with fix timing |
@@ -371,10 +369,10 @@ Published to namespace `PRISM/D1/Velocity` with dimensions:
 | `AIInputTokens` | Count | otel-metrics-publisher (codeburn usage spans) when the OTEL collector is enabled; git-trailer PR sums otherwise |
 | `AIOutputTokens` | Count | Same as above |
 | `AICostUSD` | None (USD) | Same as above. Also published with `Tool` and `Model` dimensions for breakdowns. |
-| `BedrockTokensInput` | Count | ⚠️ **Demo-only** — designed for a CloudTrail → token-processor Lambda that is not implemented |
-| `BedrockTokensOutput` | Count | ⚠️ **Demo-only** — same |
-| `BedrockCostUSD` | None (USD) | ⚠️ **Demo-only** — only emitted by `prism-cli workshop generate-demo-data` |
-| `CostPerCommit` | None (USD) | ⚠️ **Demo-only** — token-commit-correlator Lambda is not implemented |
+| `BedrockTokensInput` | Count | ⚠️ **Demo-only** — belonged to the unbuilt CloudTrail token pipeline. Use `AIInputTokens`. |
+| `BedrockTokensOutput` | Count | ⚠️ **Demo-only** — same. Use `AIOutputTokens`. |
+| `BedrockCostUSD` | None (USD) | ⚠️ **Demo-only** — only emitted by `prism-cli workshop generate-demo-data`. Use `AICostUSD`. |
+| `CostPerCommit` | None (USD) | ⚠️ **Demo-only** — required the unbuilt token-commit correlator |
 | `TokenEfficiency` | None | ⚠️ **Demo-only** — no real emitter computes tokens per line changed |
 
 > **On the demo-only metrics.** These are emitted exclusively by `prism-cli workshop generate-demo-data`, so they populate during workshops and stay empty on real deployments (their alarms sit in `INSUFFICIENT_DATA`). They are documented here so the gap is explicit — they are not wired into any dashboard panel. Real AI spend comes from `AICostUSD` via the OTEL path.
@@ -775,50 +773,52 @@ CloudTrail for Bedrock must be enabled separately for cost tracking; the setup c
 
 | Dimension | Status | Detail |
 |-----------|--------|--------|
-| Tool identity | **Tracked** | Via env var detection |
-| Model used | **Tracked** | Via AI-Model trailer |
+| Tool identity | **Tracked** | From codeburn usage spans (`ai_tool` frozen on the commit item at ingest) |
+| Model used | **Tracked** | From codeburn usage spans (`ai_model`); the `AI-Model` trailer is deprecated |
 | Code output | **Tracked** | Lines/files per commit |
-| Token consumption | **Tracked** | Via CloudTrail → `token-processor` Lambda |
-| Cost per session | **Partial** | Cost calculated per API call, session grouping planned |
-| Cost per commit | **Tracked** | Via `token-commit-correlator` Lambda (5-min window) |
-| Developer-level cost | **Tracked** | Via IAM principal → identity mapping table |
+| Token consumption | **Tracked** | `AIInputTokens` / `AIOutputTokens` from `otel-metrics-publisher.ts` (codeburn spans) |
+| Cost per session | **Tracked** | `AICostUSD`, also published with `Tool` and `Model` dimensions |
+| Cost per commit | **Not tracked** | Requires the unbuilt token-commit correlator. `CostPerShippedCommit` on the Executive Readout is a range-level aggregate, not per-commit. |
+| Developer-level cost | **Tracked** | Per-developer spend on the Developer Productivity dashboard, keyed on the codeburn user, not an IAM-ARN mapping |
 
 ### Architecture
 
 ```
-Bedrock InvokeModel/Converse API calls
+AI coding tool (Claude Code / Kiro / Cursor / Q Developer)
          |
          v
-CloudTrail (logs every call with input_tokens, output_tokens, model_id)
+codeburn (local, records usage spans per LLM API call:
+          model, input/output tokens, est. cost, traceId)
+         |
+         | codeburn sync push --attribution   (every 12h, per developer)
+         v
+OTEL collector (Cognito-authenticated OTLP endpoint)
          |
          v
-EventBridge Rule (prism-d1-bedrock-api-calls)
+Lambda: otel-receiver
+  - Writes SPAN# items (usage) and COMMIT# items (attribution)
+  - Joins commit -> usage by traceId AT INGEST and freezes
+    ai_origin / ai_tool / ai_model / origin_source onto the commit item
          |
          v
-Lambda: prism-d1-token-processor
-  - Extract: model_id, input_tokens, output_tokens, timestamp, IAM principal
-  - Look up cost: prism-model-pricing table (DynamoDB, seeded on deploy)
-  - Look up identity: prism-identity-mapping table (IAM ARN → email → team)
-  - Emit: prism.d1.token event
+DynamoDB ai-usage table (stream)
          |
          v
-prism.d1.commit event triggers:
-Lambda: prism-d1-token-correlator
-  - Query: prism.d1.token events within 5-min window before commit
-  - Aggregate: total tokens, cost, models used
-  - Emit: prism.d1.cost event
+Lambda: otel-metrics-publisher
          |
          v
 CloudWatch: PRISM/D1/Velocity namespace
-  - BedrockTokensInput / BedrockTokensOutput (by TeamId, Developer, Model)
-  - BedrockCostUSD (by TeamId, Developer, Model)
-  - CostPerCommit (by TeamId, Repository)
-  - TokenEfficiency (by TeamId)
+  - AIInputTokens / AIOutputTokens (by TeamId, Tool, Model)
+  - AICostUSD (by TeamId, Tool, Model)
+  - AICommits / MergedAICommits / RevertedAICommits
          |
          v
-Dashboards: Daily token trends, cost by model, cost-per-commit, budget burn rate
-Alarms: BedrockDailyCostHigh (>$100/day), TokenEfficiencyLow (>500 tokens/line)
+Dashboards: Developer Productivity (per-developer output and spend),
+            Executive Readout (cost per shipped commit, AI spend by range)
+Alarms: BedrockDailyCostHigh (> $100/day on AICostUSD)
 ```
+
+> **What this replaced.** An earlier design routed Bedrock CloudTrail events through a `token-processor` Lambda, a DynamoDB pricing table with a deploy-time seeder, and an IAM-ARN-to-email identity mapping table, then correlated tokens to commits in a 5-minute window. None of it was built. The attribution path above supersedes it and is strictly simpler: codeburn already knows the model, the token counts, and which developer ran the call, so neither the pricing table nor the identity mapping is needed. The 5-minute correlation window is also replaced by an exact `traceId` join.
 
 ### Remaining Gaps
 
@@ -874,11 +874,12 @@ Alarms: BedrockDailyCostHigh (>$100/day), TokenEfficiencyLow (>500 tokens/line)
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| Model pricing construct | `infra/lib/constructs/model-pricing-construct.ts` | DynamoDB pricing table + seeder |
-| Identity mapping construct | `infra/lib/constructs/identity-mapping-construct.ts` | IAM → developer identity table |
-| Pricing seeder | `infra/lib/lambda/seed-pricing.ts` | Seeds model pricing on deploy |
-| Token processor | `infra/lib/lambda/token-processor.ts` | CloudTrail → token events |
-| Token-commit correlator | `infra/lib/lambda/token-commit-correlator.ts` | Token → commit cost correlation |
+| OTEL collector construct | `infra/lib/constructs/otel-collector-construct.ts` | Cognito-authed OTLP endpoint, receiver + productivity widget Lambdas |
+| OTEL receiver | `infra/lib/lambda/otel-receiver.ts` | Ingests codeburn usage and attribution spans; freezes origin at write time |
+| OTEL metrics publisher | `infra/lib/lambda/otel-metrics-publisher.ts` | DDB stream → `AIInputTokens` / `AIOutputTokens` / `AICostUSD` |
+| Productivity widget | `infra/lib/lambda/productivity-widget.ts` | Per-developer output and spend panels |
+
+> The earlier CloudTrail-based cost design (pricing table, identity mapping, token processor, token-commit correlator) was never built — see [Architecture](#architecture) above.
 
 ### IP & Data Protection
 
