@@ -13,7 +13,7 @@
 # joining `pr.commit_shas` against the codeburn attribution store. Origin
 # verdicts computed at merge time are frequently wrong, because attribution
 # syncs on a ~12h schedule and may not yet cover these commits. See
-# docs/data-architecture.md → "AI Origin Resolution: Deferred Attribution Join".
+# docs/DATA-ARCHITECTURE.md → "AI Origin Resolution: Deferred Attribution Join".
 #
 # Replaces the former prism-dora-weekly.yml, which computed a parallel 7-day
 # aggregate from the GitHub API. That duplicated deployment-frequency

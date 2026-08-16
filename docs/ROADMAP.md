@@ -47,7 +47,7 @@ Contributors: pick any item, open an issue referencing the roadmap ID (e.g., `R-
 
 ## Phase 2B — Token Usage & Cost Intelligence (Bedrock)
 
-*Goal: Capture Bedrock token consumption from Claude Code, Kiro, and Q Developer. Correlate to developers, commits, PRs, and features. Overlay cost. See [Data Architecture](./data-architecture.md) for the full gap analysis.*
+*Goal: Capture Bedrock token consumption from Claude Code, Kiro, and Q Developer. Correlate to developers, commits, PRs, and features. Overlay cost. See [Data Architecture](./DATA-ARCHITECTURE.md) for the full gap analysis.*
 
 | ID | Item | Priority | Complexity | Labels | Details |
 |----|------|----------|------------|--------|---------|

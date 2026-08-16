@@ -13,21 +13,17 @@ It provides a workshop-style GitHub repo with bootstrapper code for AI-native so
 
 - **Claude Code is the primary driver** — all AI-assisted development flows through Claude Code pointing to Bedrock
 - **Metadata-first** — every AI-assisted action emits structured events to the metrics pipeline
-- **AWS-native only** — no third-party observability dependencies (CloudWatch, QuickSight, DynamoDB, EventBridge)
+- **AWS-native only** — no third-party observability dependencies (CloudWatch, DynamoDB, EventBridge)
 - **Spec-driven development** — all features start with a Kiro-compatible spec before implementation
-- **Enhanced DORA metrics** — traditional DORA + AI-native dimensions (acceptance rate, AI-to-merge ratio, eval gate pass rate)
+- **Enhanced DORA metrics** — traditional DORA + AI-native dimensions (AI-to-merge ratio, post-merge defect rate, eval gate pass rate), each reported against an attribution coverage denominator
 
 ## Repository Structure
 
 ```
-workshop/           — 7 instructor-led modules (00-06)
-  02-agent-development/ — Agent dev with Strands SDK, MCP, AgentCore
 infra/              — AWS CDK stacks (metrics pipeline, dashboards, API)
-docs/reference/                     — Reference implementations (not deployed)
-dashboards/         — Dashboard-as-code (CloudWatch JSON, QuickSight templates)
+dashboards/         — Dashboard-as-code (CloudWatch JSON)
 bootstrapper/       — What teams inherit post-workshop (templates, hooks, workflows)
   agent-configs/    — AgentCore Runtime, Memory, Gateway templates
-  mcp-servers/      — Reference MCP server implementations
 sample-app/         — Hands-on workshop target application
   agent/            — Strands-based task assistant agent (Python)
   src/mcp/          — MCP server exposing task API as tools (TypeScript)
@@ -105,8 +101,7 @@ All events follow this structure:
 | Lambda | Event processing, enrichment, normalization |
 | DynamoDB | Raw event storage (`prism-d1-events` table), team metadata, PRISM assessment scores |
 | API Gateway | Metric ingestion endpoint |
-| CloudWatch | Team-level dashboards, alarms |
-| QuickSight | Executive readout dashboards (Jellyfish/Swarmia-like) |
+| CloudWatch | All four dashboards (Team Velocity, Executive Readout, CISO Compliance, Developer Productivity) + alarms |
 | CodePipeline | CI/CD with eval gates |
 | CloudTrail | Audit trail for AI actions |
 | S3 | Spec storage, eval artifacts |

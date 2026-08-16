@@ -75,7 +75,7 @@ Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum se
 | Guide | For | Contents |
 |-------|-----|----------|
 | **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
-| **[Data Architecture](docs/data-architecture.md)** | Anyone extending it | Data sources, event schema, the pipeline, every dashboard widget, metrics catalog, alarms |
+| **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the pipeline, every dashboard widget, metrics catalog, alarms |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
 | **[Assessment Guide](assessment/ASSESSMENT_GUIDE.md)** | Solutions Architects | Scanner categories, interview questions and rubrics, scoring, qualification matrix |
 | **[Customer Onboarding](assessment/ONBOARDING.md)** | Solutions Architects | Onboarding tracks, email templates, per-track pre-work |
@@ -87,10 +87,10 @@ Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum se
 
 Four CloudWatch dashboards, all reading the events table and attribution store directly so full history is available and empty panels name the emitter that is missing.
 
-- **[Team Velocity](docs/data-architecture.md#cloudwatch-team-velocity-prism-d1-team-velocity)** — delivery KPIs, AI-DORA KPIs, contribution and quality trends, per-repo breakdown, eval gates, governance, agents, and security with remediation SLA. Delivery figures are labeled as proxies (merge frequency, PR cycle time, revert rate) until real deploy and incident integrations exist.
-- **[Executive Readout](docs/data-architecture.md#cloudwatch-executive-readout-prism-d1-executive-readout)** — business outcomes and an **observed PRISM level** computed live from outcome metrics, with a gate table showing what blocks the next level. Plus unit economics, AI-vs-human quality, and a condensed security strip.
-- **[CISO Compliance](docs/data-architecture.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — exposure and finding aging, per-severity remediation SLA with breaches named, **AI code risk normalized per 100 commits**, shift-left effectiveness with a computed finding survival rate, CWE and compliance-framework coverage, runtime governance.
-- **[Developer Productivity](docs/data-architecture.md#cloudwatch-developer-productivity-prism-d1-developer-productivity)** — org and per-developer AI output and spend, fed entirely by codeburn attribution with no CI instrumentation or git hooks.
+- **[Team Velocity](docs/DATA-ARCHITECTURE.md#cloudwatch-team-velocity-prism-d1-team-velocity)** — delivery KPIs, AI-DORA KPIs, contribution and quality trends, per-repo breakdown, eval gates, governance, agents, and security with remediation SLA. Delivery figures are labeled as proxies (merge frequency, PR cycle time, revert rate) until real deploy and incident integrations exist.
+- **[Executive Readout](docs/DATA-ARCHITECTURE.md#cloudwatch-executive-readout-prism-d1-executive-readout)** — business outcomes and an **observed PRISM level** computed live from outcome metrics, with a gate table showing what blocks the next level. Plus unit economics, AI-vs-human quality, and a condensed security strip.
+- **[CISO Compliance](docs/DATA-ARCHITECTURE.md#cloudwatch-ciso-compliance-prism-d1-ciso-compliance)** — exposure and finding aging, per-severity remediation SLA with breaches named, **AI code risk normalized per 100 commits**, shift-left effectiveness with a computed finding survival rate, CWE and compliance-framework coverage, runtime governance.
+- **[Developer Productivity](docs/DATA-ARCHITECTURE.md#cloudwatch-developer-productivity-prism-d1-developer-productivity)** — org and per-developer AI output and spend, fed entirely by codeburn attribution with no CI instrumentation or git hooks.
 
 ### For Teams
 

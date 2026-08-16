@@ -11,7 +11,7 @@
 #
 # AI origin is NOT computed here — it is resolved at render time by joining
 # pr.commit_shas against the codeburn attribution store. See
-# docs/data-architecture.md → "AI Origin Resolution: Deferred Attribution Join".
+# docs/DATA-ARCHITECTURE.md → "AI Origin Resolution: Deferred Attribution Join".
 #
 # Replaces the former prism-dora-weekly.yml, which published a parallel 7-day
 # aggregate that no dashboard consumed.

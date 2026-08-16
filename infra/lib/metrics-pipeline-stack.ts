@@ -783,8 +783,9 @@ export class MetricsPipelineStack extends cdk.Stack {
     // REMOVED: Defect Correlator + Spec-to-Code Calculator
     //
     // Both were permanent no-ops. Each keyed off `prism.d1.commit`, which no
-    // DEPLOYED producer emits — the only emitters are the demo-data generator
-    // and docs/reference/github-webhook-handler/, which CDK never deploys.
+    // producer emits — the only emitter is the demo-data generator. A reference
+    // webhook handler once lived at docs/reference/github-webhook-handler/, was
+    // never deployed by CDK, and has since been removed from the repo.
     // defect-correlator skipped every event via `detailType !==
     // 'prism.d1.commit'` and returned early; spec-to-code-calculator queried
     // for the same type (with a Limit:1 + FilterExpression bug on top, so the
