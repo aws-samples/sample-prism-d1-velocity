@@ -75,7 +75,7 @@ Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum se
 | Guide | For | Contents |
 |-------|-----|----------|
 | **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
-| **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the pipeline, every dashboard widget, metrics catalog, alarms |
+| **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the attribution pipeline, metrics catalog with known gaps, alarms, dashboard design decisions |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
 | **[Assessment Guide](assessment/ASSESSMENT_GUIDE.md)** | Solutions Architects | Scanner categories, interview questions and rubrics, scoring, qualification matrix |
 | **[Customer Onboarding](assessment/ONBOARDING.md)** | Solutions Architects | Onboarding tracks, email templates, per-track pre-work |
