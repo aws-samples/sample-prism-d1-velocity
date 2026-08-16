@@ -1400,15 +1400,23 @@ All events flow to the `prism-d1-metrics` EventBridge bus with source `prism.d1.
 
 ## Bootstrapper Component Reference
 
+Usage instructions for the copy-me artifacts live in [`bootstrapper/README.md`](bootstrapper/README.md).
+
+**Bundled in the `@prism-d1/cli` npm package** — installed by a `prism-cli bootstrapper install-*` command, no clone needed:
+
+| Directory | What It Contains |
+|---|---|
+| `bootstrapper/github-workflows/` | Reusable GitHub Actions for metric collection and eval gating |
+| `bootstrapper/gitlab-workflows/` | GitLab CI templates for metric collection and eval gating |
+| `bootstrapper/eval-harness/` | Bedrock Evaluation rubrics, runner script with `--spec` flag, and the `code-review.md` Kiro steering file |
+| `bootstrapper/metric-hooks/` | Git hooks for automatic AI-origin tagging (deprecated — use `setup-otel-sync`) |
+
+**Copy-me artifacts** — present only in a clone of this repo; copy them into your own project by hand:
+
 | Directory | What It Contains |
 |---|---|
 | `bootstrapper/claude-code/` | CLAUDE.md templates for backend, frontend, platform, and agent teams |
-| `bootstrapper/spec-templates/` | Kiro-compatible specification templates (API, data model, integration, agent workflow) |
-| `bootstrapper/eval-harness/` | Amazon Bedrock Evaluation rubrics and runner script with `--spec` flag |
-| `bootstrapper/github-workflows/` | Reusable GitHub Actions for metric collection and eval gating |
-| `bootstrapper/gitlab-workflows/` | GitLab CI templates for metric collection and eval gating |
-| `bootstrapper/metric-hooks/` | Git hooks for automatic AI-origin tagging (deprecated — use `setup-otel-sync`) |
+| `bootstrapper/spec-templates/` | Kiro-compatible specification templates (API endpoint, data model, integration, agent workflow, MCP server) |
 | `bootstrapper/aidlc-steering/` | AI-DLC development workflow rules for Claude Code, Kiro, and Q Developer |
 | `bootstrapper/agent-configs/` | AgentCore Runtime, Memory, Gateway, and Guardrail templates |
-| `bootstrapper/mcp-servers/` | Reference MCP server implementations |
 | `bootstrapper/security-agent/` | AWS Continuum setup script and configuration |
