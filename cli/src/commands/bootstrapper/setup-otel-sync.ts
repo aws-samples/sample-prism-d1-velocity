@@ -1,8 +1,8 @@
-import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { platform, homedir } from 'node:os';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { platform, homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { run, runInteractive } from '../../utils/exec.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -15,15 +15,6 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
   });
 }
 
-function run(cmd: string): { ok: boolean; stdout: string; stderr: string } {
-  try {
-    const stdout = execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    return { ok: true, stdout, stderr: '' };
-  } catch (err: any) {
-    return { ok: false, stdout: '', stderr: (err.stderr || err.message || '').trim() };
-  }
-}
-
 // ---- Constants ----
 
 const CRON_MARKER = '# prism-otel-sync';
@@ -31,28 +22,72 @@ const PLIST_LABEL = 'com.prism.otel-sync';
 const SCHTASK_NAME = 'PrismOtelSync';
 const LOG_DIR = join(homedir(), '.prism', 'logs');
 
+/** Window the recurring sync pushes on every run. */
+const SYNC_SINCE = '7d';
+
 // ---- Scheduler helpers per OS ----
 
 function getCodeburnPath(): string | null {
-  const which = platform() === 'win32' ? 'where codeburn' : 'which codeburn';
-  const result = run(which);
-  return result.ok ? result.stdout.split('\n')[0] : null;
+  const result = platform() === 'win32'
+    ? run('where', ['codeburn'])
+    : run('which', ['codeburn']);
+  return result.ok ? result.stdout.split('\n')[0].trim() : null;
 }
 
-function buildSyncCommand(codeburnPath: string, since: string): string {
-  return `${codeburnPath} sync push --since ${since} --attribution`;
+/**
+ * The argv of the recurring sync, shared by every platform.
+ *
+ * This is the single source of truth on purpose. It previously existed only as
+ * a Linux helper, and the Windows branch open-coded its own command string
+ * that omitted --attribution. That silently reduced Windows machines to usage
+ * telemetry with no commit attribution, so those developers counted toward the
+ * Attribution Coverage denominator (CI sees their commits) while contributing
+ * nothing to the numerator -- indistinguishable on the dashboard from someone
+ * who never onboarded. Any new platform branch must call this.
+ */
+function syncArgs(since: string): string[] {
+  return ['sync', 'push', '--since', since, '--attribution'];
 }
 
 // ---- Linux: user crontab ----
 
 function linuxScheduleExists(): boolean {
   if (!linuxCrontabAvailable()) return false;
-  const result = run('crontab -l');
+  const result = run('crontab', ['-l']);
   return result.ok && result.stdout.includes(CRON_MARKER);
 }
 
 function linuxCrontabAvailable(): boolean {
-  return run('which crontab').ok;
+  return run('which', ['crontab']).ok;
+}
+
+/**
+ * Single-quotes a value for the crontab line.
+ *
+ * A crontab entry is interpreted by /bin/sh, so unlike our argv call sites
+ * this one genuinely does need quoting -- the shell is the scheduler's, not
+ * ours, and we cannot pass it argv. Wrapping in single quotes and encoding any
+ * embedded single quote as '\'' is the only form with no escape sequences to
+ * get wrong. Paths under a home directory containing a space would otherwise
+ * split into two arguments.
+ */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Writes `content` to a private temp file and returns its path.
+ *
+ * mkdtemp gives a 0700 directory with an unpredictable name. The previous
+ * fixed '/tmp/prism-crontab.tmp' let any local user pre-create or race that
+ * path between our write and crontab's read, which would install arbitrary
+ * entries into this user's crontab.
+ */
+function writePrivateTemp(name: string, content: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'prism-'));
+  const file = join(dir, name);
+  writeFileSync(file, content, { mode: 0o600 });
+  return file;
 }
 
 function linuxInstallSchedule(codeburnPath: string, intervalHours: number): boolean {
@@ -62,27 +97,28 @@ function linuxInstallSchedule(codeburnPath: string, intervalHours: number): bool
     console.warn('   sudo yum install cronie -y  # then re-run this command\n');
     return false;
   }
-  const existing = run('crontab -l');
+  const existing = run('crontab', ['-l']);
   const lines = existing.ok ? existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER)) : [];
   const logFile = join(LOG_DIR, 'otel-sync.log');
   const cronExpr = `0 */${intervalHours} * * *`;
+  const command = [shQuote(codeburnPath), ...syncArgs(SYNC_SINCE)].join(' ');
   lines.push(`${CRON_MARKER}`);
-  lines.push(`${cronExpr} ${buildSyncCommand(codeburnPath, '7d')} >> ${logFile} 2>&1`);
-  const tmpFile = '/tmp/prism-crontab.tmp';
-  writeFileSync(tmpFile, lines.join('\n') + '\n');
-  const result = run(`crontab ${tmpFile}`);
+  lines.push(`${cronExpr} ${command} >> ${shQuote(logFile)} 2>&1`);
+  const tmpFile = writePrivateTemp('crontab', lines.join('\n') + '\n');
+  const result = run('crontab', [tmpFile]);
+  unlinkSync(tmpFile);
   if (!result.ok) throw new Error(`Failed to install crontab: ${result.stderr}`);
   return true;
 }
 
 function linuxRemoveSchedule(): void {
   if (!linuxCrontabAvailable()) return;
-  const existing = run('crontab -l');
+  const existing = run('crontab', ['-l']);
   if (!existing.ok) return;
   const lines = existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER) && !l.includes('codeburn sync push'));
-  const tmpFile = '/tmp/prism-crontab.tmp';
-  writeFileSync(tmpFile, lines.join('\n') + '\n');
-  run(`crontab ${tmpFile}`);
+  const tmpFile = writePrivateTemp('crontab', lines.join('\n') + '\n');
+  run('crontab', [tmpFile]);
+  unlinkSync(tmpFile);
 }
 
 // ---- macOS: LaunchAgent ----
@@ -95,8 +131,25 @@ function darwinScheduleExists(): boolean {
   return existsSync(darwinPlistPath());
 }
 
+/**
+ * Escapes a value for use inside a plist <string> element.
+ *
+ * The plist is generated XML, so a path containing `&` or `<` -- both legal in
+ * macOS filenames -- would otherwise produce a malformed document that
+ * launchctl refuses to load, reported only as a generic load failure.
+ */
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function darwinInstallSchedule(codeburnPath: string, intervalHours: number): void {
   const logFile = join(LOG_DIR, 'otel-sync.log');
+  const argElements = [codeburnPath, ...syncArgs(SYNC_SINCE)]
+    .map(a => `    <string>${xmlEscape(a)}</string>`)
+    .join('\n');
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -105,19 +158,14 @@ function darwinInstallSchedule(codeburnPath: string, intervalHours: number): voi
   <string>${PLIST_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${codeburnPath}</string>
-    <string>sync</string>
-    <string>push</string>
-    <string>--since</string>
-    <string>7d</string>
-    <string>--attribution</string>
+${argElements}
   </array>
   <key>StartInterval</key>
   <integer>${intervalHours * 3600}</integer>
   <key>StandardOutPath</key>
-  <string>${logFile}</string>
+  <string>${xmlEscape(logFile)}</string>
   <key>StandardErrorPath</key>
-  <string>${logFile}</string>
+  <string>${xmlEscape(logFile)}</string>
   <key>RunAtLoad</key>
   <true/>
 </dict>
@@ -125,38 +173,84 @@ function darwinInstallSchedule(codeburnPath: string, intervalHours: number): voi
   const plistPath = darwinPlistPath();
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
   writeFileSync(plistPath, plist);
-  run(`launchctl unload ${plistPath} 2>/dev/null`);
-  const result = run(`launchctl load ${plistPath}`);
+  // Unload first so a reinstall replaces rather than conflicts. A missing
+  // agent makes this fail, which is expected and ignored -- run() captures
+  // stderr rather than leaking it, so no shell redirect is needed.
+  run('launchctl', ['unload', plistPath]);
+  const result = run('launchctl', ['load', plistPath]);
   if (!result.ok) throw new Error(`Failed to load LaunchAgent: ${result.stderr}`);
 }
 
 function darwinRemoveSchedule(): void {
   const plistPath = darwinPlistPath();
   if (existsSync(plistPath)) {
-    run(`launchctl unload ${plistPath}`);
-    run(`rm ${plistPath}`);
+    run('launchctl', ['unload', plistPath]);
+    unlinkSync(plistPath);
   }
 }
 
 // ---- Windows: schtasks ----
 
 function windowsScheduleExists(): boolean {
-  const result = run(`schtasks /query /tn ${SCHTASK_NAME} /fo CSV`);
+  const result = run('schtasks', ['/query', '/tn', SCHTASK_NAME, '/fo', 'CSV']);
   return result.ok;
 }
 
+/** Path of the generated batch wrapper the scheduled task invokes. */
+function windowsWrapperPath(): string {
+  return join(homedir(), '.prism', 'otel-sync.cmd');
+}
+
+/**
+ * Installs the Windows scheduled task via a generated .cmd wrapper.
+ *
+ * The previous version nested the whole command inside schtasks' /tr argument:
+ *
+ *   /tr "cmd /c <codeburnPath> sync push ... >> "<logFile>" 2>&1"
+ *
+ * and tried to make that legal with cmd.replace(/"/g, '\\"'). That is three
+ * quoting layers deep -- our shell, schtasks' own /tr parser, then cmd.exe --
+ * and the replacement handled exactly one metacharacter of one of them. It did
+ * not escape backslashes, which is not a corner case on Windows: every path
+ * here is backslash-separated, so a trailing separator turns the closing \"
+ * into an escaped quote and unbalances the argument. cmd.exe also does not
+ * treat \" the way that replacement assumes, so the escaping was aimed at the
+ * wrong grammar to begin with.
+ *
+ * Writing the command to a file removes every one of those layers. The task
+ * runs one fixed argument -- the wrapper path -- and the redirection lives in
+ * a batch file where it needs no escaping at all. This also sidesteps the
+ * documented 261-character limit on /tr, which the inlined form could exceed
+ * with a long install path.
+ */
 function windowsInstallSchedule(codeburnPath: string, intervalHours: number): void {
   const logFile = join(LOG_DIR, 'otel-sync.log');
-  const cmd = `${codeburnPath} sync push --since 7d >> "${logFile}" 2>&1`;
-  const result = run(
-    `schtasks /create /tn ${SCHTASK_NAME} /sc hourly /mo ${intervalHours} ` +
-    `/tr "cmd /c ${cmd.replace(/"/g, '\\"')}" /f`
-  );
+  const args = syncArgs(SYNC_SINCE).join(' ');
+  const wrapper = [
+    '@echo off',
+    'REM Generated by prism-cli bootstrapper setup-otel-sync. Do not edit.',
+    `"${codeburnPath}" ${args} >> "${logFile}" 2>&1`,
+    '',
+  ].join('\r\n');
+
+  mkdirSync(join(homedir(), '.prism'), { recursive: true });
+  writeFileSync(windowsWrapperPath(), wrapper);
+
+  const result = run('schtasks', [
+    '/create',
+    '/tn', SCHTASK_NAME,
+    '/sc', 'hourly',
+    '/mo', String(intervalHours),
+    '/tr', windowsWrapperPath(),
+    '/f',
+  ]);
   if (!result.ok) throw new Error(`Failed to create scheduled task: ${result.stderr}`);
 }
 
 function windowsRemoveSchedule(): void {
-  run(`schtasks /delete /tn ${SCHTASK_NAME} /f`);
+  run('schtasks', ['/delete', '/tn', SCHTASK_NAME, '/f']);
+  const wrapper = windowsWrapperPath();
+  if (existsSync(wrapper)) unlinkSync(wrapper);
 }
 
 // ---- Unified scheduler interface ----
@@ -202,7 +296,7 @@ function showStatus(codeburnPath: string | null): void {
   // Codeburn installed?
   if (codeburnPath) {
     console.log(`  ✓ codeburn found: ${codeburnPath}`);
-    const ver = run(`${codeburnPath} --version`);
+    const ver = run(codeburnPath, ['--version']);
     if (ver.ok) console.log(`    version: ${ver.stdout}`);
   } else {
     console.log('  ✗ codeburn not found in PATH');
@@ -231,10 +325,14 @@ function showStatus(codeburnPath: string | null): void {
   // Last log?
   const logFile = join(LOG_DIR, 'otel-sync.log');
   if (existsSync(logFile)) {
-    const lastLines = run(`tail -5 "${logFile}"`);
-    if (lastLines.ok && lastLines.stdout) {
+    // Read in process rather than shelling out to tail, which does not exist
+    // on Windows -- the platform this command explicitly supports. The old
+    // `tail -5` silently produced no output there, making a working schedule
+    // look like it had never run.
+    const tail = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).slice(-5);
+    if (tail.length) {
       console.log(`  Last sync output (${logFile}):`);
-      for (const line of lastLines.stdout.split('\n')) {
+      for (const line of tail) {
         console.log(`    ${line}`);
       }
     }
@@ -282,7 +380,7 @@ export default {
       console.error('Error: codeburn not found. Install with: npm install -g codeburn');
       process.exit(1);
     }
-    const verResult = run(`${codeburnPath} --version`);
+    const verResult = run(codeburnPath, ['--version']);
     if (verResult.ok) {
       const ver = verResult.stdout.replace(/[^0-9.]/g, '');
       const parts = ver.split('.').map(Number);
@@ -297,6 +395,19 @@ export default {
     const otelUrl = opts.url || await prompt('OTEL collector URL (from CDK deploy output OtelCollectorUrl)');
     if (!otelUrl) {
       console.error('Error: OTEL collector URL is required.');
+      process.exit(1);
+    }
+    // Reject anything that is not a real http(s) URL before it is persisted
+    // into codeburn's sync config, where a malformed value surfaces later as an
+    // opaque push failure from the scheduled job rather than here.
+    try {
+      const parsed = new URL(otelUrl);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        throw new Error('unsupported protocol');
+      }
+    } catch {
+      console.error(`Error: "${otelUrl}" is not a valid http(s) URL.`);
+      console.error('  Expected the OtelCollectorUrl value from the CDK stack outputs.');
       process.exit(1);
     }
 
@@ -327,10 +438,11 @@ export default {
     if (needsSetup) {
       console.log('\n  Running: codeburn sync setup ' + otelUrl);
       console.log('  (This will open a browser for OIDC authentication)\n');
-      try {
-        execSync(`${codeburnPath} sync setup ${otelUrl}`, { stdio: 'inherit' });
+      // argv, not a command string: otelUrl comes straight from prompt() and
+      // previously reached execSync as shell source.
+      if (runInteractive(codeburnPath, ['sync', 'setup', otelUrl])) {
         console.log('\n  ✓ codeburn sync configured.');
-      } catch (err: any) {
+      } else {
         console.error(`\n  ✗ codeburn sync setup failed. Ensure Cognito user exists and try again.`);
         process.exit(1);
       }
@@ -338,7 +450,7 @@ export default {
 
     // 5. Initial backfill push (30d — server drops >14d from CloudWatch, keeps in DDB/S3)
     console.log('\n  Pushing initial backfill (last 30 days of telemetry)...');
-    const backfill = run(`${codeburnPath} sync push --since 30d --attribution`);
+    const backfill = run(codeburnPath, syncArgs('30d'));
     if (backfill.ok) {
       console.log('  ✓ Backfill push complete.');
       if (backfill.stdout) console.log(`    ${backfill.stdout.split('\n').slice(-1)[0]}`);

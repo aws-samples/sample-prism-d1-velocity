@@ -63,6 +63,21 @@ export function run(file: string, args: string[]): RunResult {
 }
 
 /**
+ * Like run(), but inherits stdio so the child can drive the terminal.
+ *
+ * Needed for `codeburn sync setup`, which opens a browser and prints an OIDC
+ * prompt the user has to see and answer. Returns whether the child exited 0.
+ */
+export function runInteractive(file: string, args: string[]): boolean {
+  try {
+    execFileSync(file, args, { stdio: 'inherit', env: process.env });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * GitHub owner (user or org) names: alphanumerics and hyphens, no leading or
  * trailing hyphen, 39 characters max.
  *
