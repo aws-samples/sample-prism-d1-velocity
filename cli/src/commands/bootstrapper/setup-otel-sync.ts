@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 import { platform, homedir, tmpdir } from 'node:os';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runInteractive } from '../../utils/exec.js';
 
@@ -76,18 +76,28 @@ function shQuote(value: string): string {
 }
 
 /**
- * Writes `content` to a private temp file and returns its path.
+ * Writes `content` to a private temp file, passes its path to `use`, and always
+ * removes the containing directory afterwards.
  *
  * mkdtemp gives a 0700 directory with an unpredictable name. The previous
  * fixed '/tmp/prism-crontab.tmp' let any local user pre-create or race that
  * path between our write and crontab's read, which would install arbitrary
  * entries into this user's crontab.
+ *
+ * The callback shape exists so the directory is reclaimed on every path. The
+ * first version of this helper returned the path and left callers to unlink
+ * only the file, which leaked one empty directory per install or remove, and
+ * unlinked before throwing on failure so error paths leaked the file as well.
  */
-function writePrivateTemp(name: string, content: string): string {
+function withPrivateTemp<T>(name: string, content: string, use: (file: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), 'prism-'));
-  const file = join(dir, name);
-  writeFileSync(file, content, { mode: 0o600 });
-  return file;
+  try {
+    const file = join(dir, name);
+    writeFileSync(file, content, { mode: 0o600 });
+    return use(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function linuxInstallSchedule(codeburnPath: string, intervalHours: number): boolean {
@@ -104,9 +114,7 @@ function linuxInstallSchedule(codeburnPath: string, intervalHours: number): bool
   const command = [shQuote(codeburnPath), ...syncArgs(SYNC_SINCE)].join(' ');
   lines.push(`${CRON_MARKER}`);
   lines.push(`${cronExpr} ${command} >> ${shQuote(logFile)} 2>&1`);
-  const tmpFile = writePrivateTemp('crontab', lines.join('\n') + '\n');
-  const result = run('crontab', [tmpFile]);
-  unlinkSync(tmpFile);
+  const result = withPrivateTemp('crontab', lines.join('\n') + '\n', f => run('crontab', [f]));
   if (!result.ok) throw new Error(`Failed to install crontab: ${result.stderr}`);
   return true;
 }
@@ -116,9 +124,7 @@ function linuxRemoveSchedule(): void {
   const existing = run('crontab', ['-l']);
   if (!existing.ok) return;
   const lines = existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER) && !l.includes('codeburn sync push'));
-  const tmpFile = writePrivateTemp('crontab', lines.join('\n') + '\n');
-  run('crontab', [tmpFile]);
-  unlinkSync(tmpFile);
+  withPrivateTemp('crontab', lines.join('\n') + '\n', f => run('crontab', [f]));
 }
 
 // ---- macOS: LaunchAgent ----
