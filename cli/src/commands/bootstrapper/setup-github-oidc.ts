@@ -1,5 +1,5 @@
-import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { run, validateOrExit } from '../../utils/exec.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -12,15 +12,6 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
   });
 }
 
-function run(cmd: string): { ok: boolean; stdout: string; stderr: string } {
-  try {
-    const stdout = execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/bash', env: process.env }).trim();
-    return { ok: true, stdout, stderr: '' };
-  } catch (err: any) {
-    return { ok: false, stdout: '', stderr: (err.stderr || err.message || '').trim() };
-  }
-}
-
 /**
  * Fetch a GitHub API path, trying progressively more authenticated clients:
  * unauthenticated (public repos/users) → GITHUB_TOKEN env → gh CLI token.
@@ -29,7 +20,7 @@ function run(cmd: string): { ok: boolean; stdout: string; stderr: string } {
 async function githubApi(apiPath: string): Promise<any | null> {
   const tokens: Array<string | undefined> = [undefined];
   if (process.env.GITHUB_TOKEN) tokens.push(process.env.GITHUB_TOKEN);
-  const ghToken = run('gh auth token');
+  const ghToken = run('gh', ['auth', 'token']);
   if (ghToken.ok && ghToken.stdout) tokens.push(ghToken.stdout);
 
   for (const token of tokens) {
@@ -61,6 +52,7 @@ export default {
       console.error('Error: GitHub username/org is required.');
       process.exit(1);
     }
+    validateOrExit(githubUsername, 'GitHub username/org', 'owner');
 
     let repoPath: string;
     let repoName: string | undefined;
@@ -71,6 +63,7 @@ export default {
       console.log(`\nConfiguring OIDC for ALL repos: ${githubUsername}/*`);
     } else {
       repoName = await prompt('Repository name', 'prism-d1-velocity');
+      validateOrExit(repoName, 'Repository name', 'repo');
       repoPath = `${githubUsername}/${repoName}`;
       roleName = `GitHubActions-${repoName}`;
       console.log(`\nConfiguring OIDC for: ${repoPath}`);
@@ -108,6 +101,14 @@ export default {
           ? 'GitHub owner ID (blank = fall back to wildcard IDs)'
           : 'GitHub "<ownerId> <repoId>" (blank = fall back to wildcard IDs)');
         const parts = pasted.split(/\s+/).filter(Boolean);
+        // These land in the trust policy sub claim. GitHub IDs are numeric;
+        // anything else would silently widen or break the StringLike match.
+        for (const p of parts) {
+          if (!/^\d+$/.test(p)) {
+            console.error(`Error: "${p}" is not a numeric GitHub ID.`);
+            process.exit(1);
+          }
+        }
         if (parts[0]) ownerId = parts[0];
         if (parts[1]) repoId = parts[1];
       }
@@ -129,7 +130,7 @@ export default {
         ];
 
     // Check AWS credentials
-    const sts = run('aws sts get-caller-identity --query Account --output text');
+    const sts = run('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text']);
     if (!sts.ok) {
       console.error('Error: AWS credentials not configured. Run "aws configure" first.');
       process.exit(1);
@@ -141,17 +142,20 @@ export default {
     console.log('Step 1: Creating GitHub OIDC identity provider...');
     const providerArn = `arn:aws:iam::${accountId}:oidc-provider/token.actions.githubusercontent.com`;
 
-    const existingProvider = run(`aws iam get-open-id-connect-provider --open-id-connect-provider-arn ${providerArn}`);
+    const existingProvider = run('aws', [
+      'iam', 'get-open-id-connect-provider',
+      '--open-id-connect-provider-arn', providerArn,
+    ]);
     if (existingProvider.ok) {
       console.log('  ✓ OIDC provider already exists.');
     } else {
       const thumbprint = '6938fd4d98bab03faadb97b34396831e3780aea1';
-      const createProvider = run(
-        `aws iam create-open-id-connect-provider ` +
-        `--url https://token.actions.githubusercontent.com ` +
-        `--client-id-list sts.amazonaws.com ` +
-        `--thumbprint-list ${thumbprint}`
-      );
+      const createProvider = run('aws', [
+        'iam', 'create-open-id-connect-provider',
+        '--url', 'https://token.actions.githubusercontent.com',
+        '--client-id-list', 'sts.amazonaws.com',
+        '--thumbprint-list', thumbprint,
+      ]);
       if (createProvider.ok) {
         console.log('  ✓ OIDC provider created.');
       } else {
@@ -184,12 +188,14 @@ export default {
       ],
     });
 
-    const existingRole = run(`aws iam get-role --role-name ${roleName}`);
+    const existingRole = run('aws', ['iam', 'get-role', '--role-name', roleName]);
     if (existingRole.ok) {
       console.log(`  ✓ Role "${roleName}" already exists. Updating trust policy...`);
-      const update = run(
-        `aws iam update-assume-role-policy --role-name ${roleName} --policy-document '${trustPolicy}'`
-      );
+      const update = run('aws', [
+        'iam', 'update-assume-role-policy',
+        '--role-name', roleName,
+        '--policy-document', trustPolicy,
+      ]);
       if (update.ok) {
         console.log('  ✓ Trust policy updated.');
       } else {
@@ -197,11 +203,12 @@ export default {
         process.exit(1);
       }
     } else {
-      const createRole = run(
-        `aws iam create-role --role-name ${roleName} ` +
-        `--assume-role-policy-document '${trustPolicy}' ` +
-        `--description "GitHub Actions OIDC role for ${repoPath}"`
-      );
+      const createRole = run('aws', [
+        'iam', 'create-role',
+        '--role-name', roleName,
+        '--assume-role-policy-document', trustPolicy,
+        '--description', `GitHub Actions OIDC role for ${repoPath}`,
+      ]);
       if (createRole.ok) {
         console.log(`  ✓ Role "${roleName}" created.`);
       } else {
@@ -229,11 +236,12 @@ export default {
     });
 
     const policyName = 'PrismD1WorkshopPolicy';
-    const putPolicy = run(
-      `aws iam put-role-policy --role-name ${roleName} ` +
-      `--policy-name ${policyName} ` +
-      `--policy-document '${policyDocument}'`
-    );
+    const putPolicy = run('aws', [
+      'iam', 'put-role-policy',
+      '--role-name', roleName,
+      '--policy-name', policyName,
+      '--policy-document', policyDocument,
+    ]);
     if (putPolicy.ok) {
       console.log(`  ✓ Inline policy "${policyName}" attached.`);
     } else {
@@ -243,13 +251,19 @@ export default {
 
     // Step 4: Attach Continuum CI managed policy (if deployed)
     console.log('\nStep 4: Attaching Continuum CI scan policy (if available)...');
-    const continuumPolicy = run(
-      `aws iam list-policies --scope Local --query "Policies[?PolicyName=='prism-d1-continuum-ci-scan'].Arn" --output text`
-    );
+    const continuumPolicy = run('aws', [
+      'iam', 'list-policies',
+      '--scope', 'Local',
+      // No shell, so the JMESPath expression needs no outer quoting.
+      '--query', "Policies[?PolicyName=='prism-d1-continuum-ci-scan'].Arn",
+      '--output', 'text',
+    ]);
     if (continuumPolicy.ok && continuumPolicy.stdout) {
-      const attachResult = run(
-        `aws iam attach-role-policy --role-name ${roleName} --policy-arn ${continuumPolicy.stdout}`
-      );
+      const attachResult = run('aws', [
+        'iam', 'attach-role-policy',
+        '--role-name', roleName,
+        '--policy-arn', continuumPolicy.stdout,
+      ]);
       if (attachResult.ok) {
         console.log(`  ✓ Continuum CI policy attached (SSM + S3 + SecurityAgent access).`);
       } else if (attachResult.stderr.includes('already')) {
