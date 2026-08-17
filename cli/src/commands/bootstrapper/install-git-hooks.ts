@@ -1,10 +1,10 @@
-import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync, rmSync } from 'node:fs';
 import { resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
 import { getAssetPath } from '../../utils/root.js';
+import { run } from '../../utils/exec.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_SOURCE = getAssetPath(import.meta.url, 'bootstrapper/metric-hooks');
@@ -24,14 +24,11 @@ export default {
     { flags: '--uninstall', description: 'Remove PRISM hooks' },
   ],
   async action(opts: { teamId?: string; maxTokens?: string; maxCost?: string; global?: boolean; uninstall?: boolean }) {
-    let gitRoot = '';
-    try {
-      gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    } catch {
-      if (!opts.global) {
-        console.error('Error: not inside a git repository. Use --global to install the template without a repo.');
-        process.exit(1);
-      }
+    const gitRootResult = run('git', ['rev-parse', '--show-toplevel']);
+    const gitRoot = gitRootResult.ok ? gitRootResult.stdout : '';
+    if (!gitRoot && !opts.global) {
+      console.error('Error: not inside a git repository. Use --global to install the template without a repo.');
+      process.exit(1);
     }
 
     // --global without a repo: just install the template and exit
@@ -43,7 +40,7 @@ export default {
       mkdirSync(templateHooksDir, { recursive: true });
       copyFileSync(source, resolve(templateHooksDir, 'prepare-commit-msg'));
       chmodSync(resolve(templateHooksDir, 'prepare-commit-msg'), 0o755);
-      execSync(`git config --global init.templateDir "${resolve(home, '.git-templates')}"`, { encoding: 'utf8' });
+      run('git', ['config', '--global', 'init.templateDir', resolve(home, '.git-templates')]);
       console.log('Global template dir set — all future clones will get the hook automatically.');
       console.log('Run again inside a repo to install locally + configure .prism/config.json.');
       return;
@@ -57,7 +54,7 @@ export default {
     if (opts.uninstall) {
       const target = resolve(hooksDir, 'prepare-commit-msg');
       if (existsSync(target) && readFileSync(target, 'utf8').includes('AI-Origin')) {
-        execSync(`rm "${target}"`);
+        rmSync(target, { force: true });
         console.log('Removed prepare-commit-msg hook.');
       } else {
         console.log('No PRISM hook found.');
@@ -124,7 +121,7 @@ export default {
       mkdirSync(templateHooksDir, { recursive: true });
       copyFileSync(source, resolve(templateHooksDir, 'prepare-commit-msg'));
       chmodSync(resolve(templateHooksDir, 'prepare-commit-msg'), 0o755);
-      execSync(`git config --global init.templateDir "${resolve(home, '.git-templates')}"`, { encoding: 'utf8' });
+      run('git', ['config', '--global', 'init.templateDir', resolve(home, '.git-templates')]);
       console.log('Global template dir set — all future clones will get the hook automatically.');
     }
 

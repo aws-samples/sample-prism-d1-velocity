@@ -1,9 +1,9 @@
 import { execSync } from 'node:child_process';
-import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
-import { platform } from 'node:os';
+import { platform, tmpdir, homedir } from 'node:os';
 import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +41,25 @@ function heading(text: string) {
   console.log(`\n${BOLD}${text}${NC}`);
 }
 
+/**
+ * Runs a shell command and captures its output.
+ *
+ * This file keeps a shell on purpose, unlike the bootstrapper setup commands
+ * which were converted to argv. Nothing user-supplied reaches it: every
+ * interpolation below is a compile-time literal (a binary name from a fixed
+ * list, a model id from a const array, a path built here), and the only
+ * prompt() in this file returns a y/n answer that is compared, never
+ * interpolated. There is therefore no injection sink to close.
+ *
+ * The commands also genuinely need a shell. `command -v` is a shell builtin
+ * with no binary to exec, the AWS CLI version check relies on `2>&1`, the
+ * upstream-version probe pipes curl into head, and the package-manager install
+ * strings chain with `&&`. Converting these to execFileSync would break every
+ * one of them while closing no vulnerability.
+ *
+ * If a future change makes any argument user-controlled, that call must move to
+ * run() from utils/exec.js instead of being quoted into this one.
+ */
 function run(cmd: string) {
   try {
     const stdout = execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -104,6 +123,27 @@ function commandExists(cmd: string) {
   return run(`command -v ${cmd}`).ok;
 }
 
+/**
+ * Whether nvm is installed.
+ *
+ * nvm is a shell function sourced from ~/.nvm/nvm.sh, never a binary on PATH,
+ * so `command -v nvm` cannot find it from the non-interactive /bin/sh that
+ * execSync spawns -- verified: sourcing nvm.sh makes it resolvable, `sh -c
+ * 'command -v nvm'` does not. commandExists('nvm') was therefore always false
+ * and both nvm install branches below were unreachable: a user with nvm
+ * installed was told to install it.
+ */
+function nvmAvailable(): boolean {
+  const dir = process.env.NVM_DIR || resolve(homedir(), '.nvm');
+  return existsSync(resolve(dir, 'nvm.sh'));
+}
+
+/** An install command that sources nvm first, since it is not on PATH. */
+function nvmInstallCmd(version: string): string {
+  const dir = process.env.NVM_DIR || resolve(homedir(), '.nvm');
+  return `. "${resolve(dir, 'nvm.sh')}" && nvm install ${version}`;
+}
+
 function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -155,11 +195,25 @@ async function checkAwsCli(verifyOnly = false) {
   } else {
     fail('AWS CLI not found', 'Install from https://aws.amazon.com/cli/');
     if (!verifyOnly) {
+      // Download and unpack inside a private 0700 dir rather than /tmp.
+      //
+      // The Linux form previously did `unzip -d /tmp && sudo /tmp/aws/install`,
+      // which hands sudo a path under a world-writable directory. Even with the
+      // sticky bit limiting overwrites, staging an installer that runs as root
+      // from a predictable shared location is the wrong shape. mkdtemp gives an
+      // unguessable directory only this user can write.
+      const stage = mkdtempSync(join(tmpdir(), 'prism-awscli-'));
       if (IS_MAC) {
-        await offerInstall('AWS CLI', 'curl "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o /tmp/AWSCLIV2.pkg && sudo installer -pkg /tmp/AWSCLIV2.pkg -target /');
+        await offerInstall('AWS CLI',
+          `curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "${stage}/AWSCLIV2.pkg" ` +
+          `&& sudo installer -pkg "${stage}/AWSCLIV2.pkg" -target /`);
       } else {
-        await offerInstall('AWS CLI', 'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && unzip -qo /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install --update');
+        await offerInstall('AWS CLI',
+          `curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "${stage}/awscliv2.zip" ` +
+          `&& unzip -qo "${stage}/awscliv2.zip" -d "${stage}" ` +
+          `&& sudo "${stage}/aws/install" --update`);
       }
+      try { rmSync(stage, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }
 
@@ -179,13 +233,22 @@ async function checkBedrock() {
     { id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', name: 'Claude Haiku 4.5 (eval gates)' },
   ];
 
-  const bodyFile = '/tmp/prism-bedrock-request.json';
+  // Private 0700 temp dir, not fixed /tmp paths.
+  //
+  // writeFileSync follows symlinks, so a fixed '/tmp/prism-bedrock-request.json'
+  // lets any local user pre-create that name as a symlink and redirect this
+  // write to a file we own -- ~/.bashrc, ~/.ssh/authorized_keys. The sticky bit
+  // on /tmp does not help: the attacker owns the symlink, and we follow it. The
+  // response path has the same problem, with the AWS CLI doing the writing.
+  const scratch = mkdtempSync(join(tmpdir(), 'prism-verify-'));
+  const bodyFile = join(scratch, 'bedrock-request.json');
+  const outFile = join(scratch, 'bedrock-response.json');
   const body = JSON.stringify({
     anthropic_version: 'bedrock-2023-05-31',
     max_tokens: 10,
     messages: [{ role: 'user', content: 'Say OK' }],
   });
-  writeFileSync(bodyFile, body);
+  writeFileSync(bodyFile, body, { mode: 0o600 });
 
   for (const model of requiredModels) {
     const invoke = run(
@@ -194,18 +257,17 @@ async function checkBedrock() {
       `--content-type "application/json" ` +
       `--accept "application/json" ` +
       `--body "fileb://${bodyFile}" ` +
-      `/tmp/prism-bedrock-test.json`
+      `"${outFile}"`
     );
     if (invoke.ok) {
       pass(`${model.name} — invocation works`);
-      run('rm -f /tmp/prism-bedrock-test.json');
     } else {
       const shortError = invoke.stderr.split('\n')[0] || 'unknown error';
       fail(`${model.name} — cannot invoke (${model.id})`, `Enable model access in AWS Console > Bedrock > Model access. Error: ${shortError}`);
     }
   }
 
-  try { unlinkSync(bodyFile); } catch { /* ignore */ }
+  try { rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 async function checkClaudeCode(verifyOnly = false) {
@@ -282,15 +344,15 @@ async function checkNode(verifyOnly = false) {
       pass(`Node.js ${stdout} (>= 20 required)`);
     } else {
       fail(`Node.js too old (${stdout})`, 'Need Node.js >= 20. Use nvm: nvm install 20');
-      if (!verifyOnly && commandExists('nvm')) {
-        await offerInstall('Node.js 20 via nvm', 'nvm install 20');
+      if (!verifyOnly && nvmAvailable()) {
+        await offerInstall('Node.js 20 via nvm', nvmInstallCmd('20'));
       }
     }
   } else {
     fail('Node.js not found', 'Install from https://nodejs.org/ or use nvm');
     if (!verifyOnly) {
-      if (commandExists('nvm')) {
-        await offerInstall('Node.js 20 via nvm', 'nvm install 20');
+      if (nvmAvailable()) {
+        await offerInstall('Node.js 20 via nvm', nvmInstallCmd('20'));
       } else {
         const nvmInstall = 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash';
         console.log(`        Tip: Install nvm first, then Node.js:`);

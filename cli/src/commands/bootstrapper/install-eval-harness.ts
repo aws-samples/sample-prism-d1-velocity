@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync, readdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
+import { run } from '../../utils/exec.js';
 import { applyRegion, findDefaultRegionRefs, DEFAULT_REGION } from '../../utils/region.js';
 
 /**
@@ -58,17 +58,27 @@ export default {
     { flags: '--uninstall', description: 'Remove eval-harness directory and steering files' },
   ],
   async action(opts: { mode?: string; withRubrics?: boolean; model?: string; threshold?: string; region?: string; uninstall?: boolean }) {
-    const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
+    const gitRootResult = run('git', ['rev-parse', '--show-toplevel']);
+    if (!gitRootResult.ok) {
+      console.error('Error: not inside a git repository.');
+      process.exit(1);
+    }
+    const gitRoot = gitRootResult.stdout;
     const targetDir = resolve(gitRoot, '.prism/eval-harness');
 
     if (opts.uninstall) {
       if (existsSync(targetDir)) {
-        execSync(`rm -rf "${targetDir}"`);
+        // rmSync, not `rm -rf "${targetDir}"` through a shell. targetDir is
+        // derived from `git rev-parse --show-toplevel`, and a repository path
+        // containing a double quote or $(...) -- legal on Linux and macOS --
+        // would break out of the quoting and hand arbitrary text to `rm -rf`.
+        // Worth being categorical about given the command being built.
+        rmSync(targetDir, { recursive: true, force: true });
         console.log('✓ Removed .prism/eval-harness/');
       }
       const steeringFile = resolve(gitRoot, '.kiro/steering/code-review.md');
       if (existsSync(steeringFile)) {
-        execSync(`rm -f "${steeringFile}"`);
+        rmSync(steeringFile, { force: true });
         console.log('✓ Removed .kiro/steering/code-review.md');
       }
       return;
