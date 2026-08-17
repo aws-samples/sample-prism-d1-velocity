@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
-import { run, validateOrExit } from '../../utils/exec.js';
+import { run } from '../../utils/exec.js';
+import { validateGithubOwner, validateGithubRepo, validateNumericId } from '../../utils/validate.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -52,7 +53,7 @@ export default {
       console.error('Error: GitHub username/org is required.');
       process.exit(1);
     }
-    validateOrExit(githubUsername, 'GitHub username/org', 'owner');
+    validateGithubOwner(githubUsername);
 
     let repoPath: string;
     let repoName: string | undefined;
@@ -63,7 +64,7 @@ export default {
       console.log(`\nConfiguring OIDC for ALL repos: ${githubUsername}/*`);
     } else {
       repoName = await prompt('Repository name', 'prism-d1-velocity');
-      validateOrExit(repoName, 'Repository name', 'repo');
+      validateGithubRepo(repoName);
       repoPath = `${githubUsername}/${repoName}`;
       roleName = `GitHubActions-${repoName}`;
       console.log(`\nConfiguring OIDC for: ${repoPath}`);
@@ -103,12 +104,7 @@ export default {
         const parts = pasted.split(/\s+/).filter(Boolean);
         // These land in the trust policy sub claim. GitHub IDs are numeric;
         // anything else would silently widen or break the StringLike match.
-        for (const p of parts) {
-          if (!/^\d+$/.test(p)) {
-            console.error(`Error: "${p}" is not a numeric GitHub ID.`);
-            process.exit(1);
-          }
-        }
+        for (const p of parts) validateNumericId(p, 'GitHub ID');
         if (parts[0]) ownerId = parts[0];
         if (parts[1]) repoId = parts[1];
       }
