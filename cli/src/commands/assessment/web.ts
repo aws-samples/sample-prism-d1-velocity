@@ -1,5 +1,6 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { execSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { runScan } from '../../scanner/index.js';
 import type { ScanResult } from '../../scanner/types.js';
@@ -845,12 +846,35 @@ ${scan.recommendations.length > 0 ? `<div class="card"><h2>Recommendations</h2><
 // Agent interview — chat UI and session management
 // ---------------------------------------------------------------------------
 
-// In-memory session store (single-user local tool, so this is fine)
+// In-memory interview state, keyed by session id.
+//
+// NOT safe to assume single-user: startServer() binds 0.0.0.0 when isEcsMode is
+// set, and the request path has no authentication. See SECURITY.md item 7.
 const agentSessions = new Map<string, AgentSessionState>();
+
+/**
+ * Generates an interview session id.
+ *
+ * 32 bytes (256 bits) base64url, replacing
+ * `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` -- which
+ * carried roughly 31 bits from a non-cryptographic generator, prefixed with a
+ * public timestamp that narrowed it further. ARCC requires a CSPRNG for any
+ * unpredictable token value, with a 128-bit floor for server-side session
+ * tokens.
+ *
+ * This id is the only thing separating one visitor's interview state from
+ * another's, which matters because the state holds a customer's candid answers
+ * about their own security and delivery maturity. In ECS mode the server binds
+ * 0.0.0.0 rather than localhost, so "local tool" is not a safe assumption --
+ * see the note on startServer().
+ */
+function newInterviewSessionId(): string {
+  return `session_${randomBytes(32).toString('base64url')}`;
+}
 
 function agentInterviewPage(scan: ScanResultJSON): string {
   const scanB64 = Buffer.from(JSON.stringify(scan)).toString('base64');
-  const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = newInterviewSessionId();
 
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>AI Interview — ${scan.repoName}</title><style>${PAGE_STYLE}

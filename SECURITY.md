@@ -42,6 +42,25 @@ The trust policy `sub` field is `repo:org/repo:*`, meaning any branch or workflo
 
 ---
 
+## Assessment Web UI Security
+
+### Open — High
+
+**7. Assessment web UI binds `0.0.0.0` in ECS mode with no authentication**
+
+`prism-cli assessment web` binds `localhost` normally, but `startServer()` switches to `0.0.0.0` when `isEcsMode` is set — which triggers on `PRISM_ECS_MODE` **or** on `ECS_CONTAINER_METADATA_URI`, a variable ECS injects automatically. Running the container therefore exposes it on all interfaces without anyone opting in.
+
+There is no authentication of any kind on the request path: no session cookie, no bearer token, no CSRF token. Two consequences:
+
+- `POST /api/agent/chat` accepts a caller-supplied `sessionId`, `modelId` and `region`, then invokes Bedrock with the server's credentials. Because `POST /api/agent/init` also accepts a caller-supplied `sessionId`, an attacker does not need to guess anything — they can register their own session and drive inference on the host's AWS credentials.
+- Interview state holds a customer's candid answers about their own security and delivery maturity. Guessing another visitor's `sessionId` discloses it.
+
+Session IDs are now generated with a CSPRNG (32 bytes, base64url), which closes the disclosure path. **It does not address the unauthenticated Bedrock invocation**, which needs no session guess at all.
+
+**Mitigation:** Do not run this container on a reachable network. If ECS hosting is required, put an authenticating proxy in front of it, bind to the container's loopback and reach it through a sidecar, or gate the `/api/agent/*` routes behind a shared secret supplied at deploy time. Consider constraining `modelId` and `region` to an allowlist regardless.
+
+---
+
 ## Design Decisions (Accepted)
 
 - **Git trailers are developer-asserted metadata, not cryptographically verified.** The system is designed for internal teams measuring productivity, not adversarial environments.
