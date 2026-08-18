@@ -415,6 +415,8 @@ Three consequences worth knowing:
 **Audience:** Engineering teams, tech leads, ICs
 **Purpose:** Day-to-day delivery health — DORA proxies, AI-DORA quality, eval gates, governance, security. Spend and per-developer output live on Developer Productivity.
 
+![PRISM D1 Team Velocity dashboard](../assets/images/team-velocity-dashboard.png)
+
 | Row | View | Source |
 |---|---|---|
 | 1 Delivery KPIs | `view=dora` | `prism.d1.deploy`, `.pr`, `.assessment` |
@@ -438,6 +440,8 @@ Three consequences worth knowing:
 
 **Audience:** CTOs, VPEs, engineering directors, board members
 **Purpose:** Leadership view connecting AI adoption to business outcomes, unit economics, delivery health, and security posture.
+
+![PRISM D1 Executive Readout dashboard](../assets/images/executive-dashboard.png)
 
 Same hybrid architecture, held to a stricter bar because of the audience: **every widget must be backed by a real emitter, units are humanized, and proxies say so in their own label.** An engineer seeing an empty panel shrugs; an exec either concludes the program isn't working or quotes a number that came from demo data.
 
@@ -476,6 +480,8 @@ Row 5 replaced a 7-widget security section that duplicated CISO Compliance and c
 **Audience:** CISOs, security leaders, compliance officers
 **Purpose:** Security **depth** — exposure, remediation SLA, AI code risk normalized by commit volume, shift-left effectiveness, vulnerability classes.
 
+![PRISM D1 CISO Compliance dashboard](../assets/images/ciso-dashboard.png)
+
 Rows 1–5 are DDB panels rather than metric graphs, because the previous layout used seven metric graphs and **three could never render** — and those three carried the CISO-specific value. Each queried a *partial* dimension set (`{AIOrigin}` alone, or `{Phase}` alone) against an all-or-nothing publisher, so they matched neither the full-set nor the dimensionless variant. Reading the events table sidesteps dimension matching entirely and unlocks two things CloudWatch cannot represent at all (rows 3 and 5).
 
 | Row | View | Contents |
@@ -501,6 +507,8 @@ Four design notes:
 
 **Audience:** Engineering managers, tech leads
 **Purpose:** Org and per-developer AI output and spend. **Fed entirely by codeburn attribution — no CI instrumentation or git hooks.**
+
+![PRISM D1 Developer Productivity dashboard](../assets/images/developer-productivity-dashboard.png)
 
 Created only when the OTEL collector is deployed (default on; skip with `-c skipOtelCollector=true`).
 

@@ -10,6 +10,10 @@ Part of the PRISM Framework (Progressive Readiness Index for Scalable Maturity) 
 
 PRISM D1 instruments how your teams actually use AI to write software — which commits AI wrote, whether that code passes review and survives in production, and what it costs — then renders it on dashboards aimed at engineers, engineering leaders, and CISOs.
 
+![PRISM D1 Executive Readout dashboard](assets/images/executive-dashboard.png)
+
+*The Executive Readout, running on real data. The **observed PRISM level** is computed from live outcome metrics rather than self-assessed, with a gate table naming what blocks the next level. AI share, merge rate and cost per shipped commit come from commit attribution — and **Attribution Coverage** reports what fraction of the fleet those numbers actually cover, so a partially-onboarded team is never mistaken for a partially-AI one.*
+
 ## Architecture
 
 ![PRISM D1 Velocity Architecture](assets/images/prismarchitecture.drawio.png)
