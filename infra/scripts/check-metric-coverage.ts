@@ -87,11 +87,17 @@ const stackSrc = readAll(STACK_DIR, f => f.endsWith('.ts'));
 const emitted = new Set<string>();
 for (const m of lambdaSrc.matchAll(/MetricName:\s*['"]([A-Za-z0-9_]+)['"]/g)) emitted.add(m[1]);
 // Tuple form used by the aiDoraMap / agent metric maps:
-//   ['MetricName', detail.x, Unit] or ['MetricName', agent.status === ..., Unit]
-// The trailing property-access requirement keeps this from matching arbitrary
-// string arrays. An earlier version required `detail.` specifically and produced
-// a false positive on AgentSuccessRate, which uses `agent.status`.
-for (const m of lambdaSrc.matchAll(/\[\s*['"]([A-Z][A-Za-z0-9_]+)['"]\s*,\s*[a-zA-Z_][A-Za-z0-9_]*[.[]/g)) emitted.add(m[1]);
+//   ['MetricName', detail.x, Unit]           property access
+//   ['MetricName', agent.status === ..., Unit]
+//   ['MetricName', pctFromRatio(detail.x), Unit]   helper call
+// The trailing requirement keeps this from matching arbitrary string arrays. An
+// earlier version required `detail.` specifically and produced a false positive
+// on AgentSuccessRate, which uses `agent.status`. A later version allowed only
+// `.` or `[` after the identifier, so wrapping a value in a scaling helper made
+// the emission invisible and the metric was reported as consumed-but-not-
+// emitted — the guard could not express "emitted with a transform" at all.
+// `(` is therefore accepted alongside property access.
+for (const m of lambdaSrc.matchAll(/\[\s*['"]([A-Z][A-Za-z0-9_]+)['"]\s*,\s*[a-zA-Z_][A-Za-z0-9_]*[.[(]/g)) emitted.add(m[1]);
 
 // --- Consumers: metricName in dashboards/alarms, plus SEARCH expressions
 const consumed = new Set<string>();

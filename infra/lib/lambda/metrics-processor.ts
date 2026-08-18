@@ -197,6 +197,16 @@ const EVENTS_TABLE = process.env.EVENTS_TABLE!;
 const METADATA_TABLE = process.env.METADATA_TABLE!;
 const METRIC_NAMESPACE = process.env.METRIC_NAMESPACE ?? 'PRISM/D1/Velocity';
 
+/**
+ * Convert a 0-1 ratio to a 0-100 percentage, preserving null/undefined.
+ *
+ * Used where a producer reports a ratio but the metric is published with
+ * StandardUnit.Percent and compared against a 0-100 alarm threshold.
+ */
+function pctFromRatio(value: number | null | undefined): number | null {
+  return typeof value === 'number' ? value * 100 : null;
+}
+
 
 // ---- Handler ----
 
@@ -526,7 +536,20 @@ async function publishCloudWatchMetrics(
       // SpecToCodeHours and PostMergeDefectRate were emitted by the
       // spec-to-code-calculator and defect-correlator Lambdas, both now deleted
       // as permanent no-ops. AITestCoverageDelta never had a producer at all.
-      ['EvalGatePassRate', detail.ai_dora.eval_gate_pass_rate, StandardUnit.Percent, true],
+      // Scaled to 0-100 by pctFromRatio. Both prism-agent-eval.yml workflows
+      // emit 1.0/0.0, but the value is published with StandardUnit.Percent and
+      // the PRISM-D1-EvalGatePassRate-Low alarm compares the 6h average
+      // against 70 — an average of 1.0s and 0.0s can never exceed 70, so the
+      // alarm sat permanently in ALARM and could never signal anything.
+      // Scaling at the publisher keeps the workflow contract unchanged, makes
+      // the declared unit honest, and matches EvalGatePassRateByRubric, which
+      // already publishes 100/0. The alarm is this metric's only consumer —
+      // the eval dashboard views read the underlying events, not the metric.
+      //
+      // Kept on one line: scripts/check-metric-coverage.ts matches the tuple
+      // form with a single-line regex, so wrapping this hides the emission and
+      // the guard reports EvalGatePassRate as consumed-but-not-emitted.
+      ['EvalGatePassRate', pctFromRatio(detail.ai_dora.eval_gate_pass_rate), StandardUnit.Percent, true],
     ];
 
     // Token & cost metrics come from git-trailer PR sums by default. When the
