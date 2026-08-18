@@ -52,41 +52,99 @@ function putEvents(region: string, entries: object[]): boolean {
 
 type DdbRequest = { PutRequest: { Item: Record<string, unknown> } } | { DeleteRequest: { Key: Record<string, unknown> } };
 
+/** Write one request with the single-item APIs (PutItem / DeleteItem). */
+function ddbWriteOne(region: string, table: string, req: DdbRequest): { ok: boolean; stderr: string } {
+  if ('PutRequest' in req) {
+    const r = withPrivateTemp('item.json', JSON.stringify(req.PutRequest.Item), (file) =>
+      run('aws', ['dynamodb', 'put-item', '--region', region, '--table-name', table, '--item', `file://${file}`]),
+    );
+    return { ok: r.ok, stderr: r.stderr };
+  }
+  const r = withPrivateTemp('key.json', JSON.stringify(req.DeleteRequest.Key), (file) =>
+    run('aws', ['dynamodb', 'delete-item', '--region', region, '--table-name', table, '--key', `file://${file}`]),
+  );
+  return { ok: r.ok, stderr: r.stderr };
+}
+
 /**
- * BatchWriteItem in DynamoDB's 25-request chunks.
+ * Whether this caller may use BatchWriteItem. null until the first attempt.
  *
- * Aborts on the first failed chunk and reports the AWS error verbatim. An
- * earlier version printed a generic warning per chunk and discarded stderr,
- * so a run that wrote nothing at all produced six identical warnings and no
- * indication of why — an access-denied and a malformed item were
- * indistinguishable.
+ * Module-scoped so the discovery is made once. When it lives inside
+ * ddbBatchWrite it resets per call, and a role without the action pays for a
+ * doomed batch request on every invocation — the preflight probe alone
+ * re-discovered it three times.
+ */
+let batchWriteSupported: boolean | null = null;
+
+/**
+ * Write requests to DynamoDB, preferring BatchWriteItem and falling back to the
+ * single-item APIs.
+ *
+ * The fallback exists because IAM policies routinely enumerate DynamoDB actions
+ * individually. A live workshop role held dynamodb:PutItem — a single put-item
+ * succeeded against the real table, KMS included — while every BatchWriteItem
+ * call failed. Rather than require an IAM change to a role this repo does not
+ * define, fall back to the API that is demonstrably permitted.
+ *
+ * Per-item writes are slower but bounded: a full seed is roughly 150 items.
  */
 function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): { written: number; error: string | null } {
   let written = 0;
+  let batchError = '';
+
   for (let i = 0; i < requests.length; i += 25) {
     const chunk = requests.slice(i, i + 25);
-    const payload = JSON.stringify({ [table]: chunk });
-    const result = withPrivateTemp('batch.json', payload, (file) =>
-      run('aws', ['dynamodb', 'batch-write-item', '--region', region, '--request-items', `file://${file}`]),
-    );
-    if (!result.ok) {
-      return { written, error: result.stderr || 'aws dynamodb batch-write-item failed with no stderr' };
+
+    if (batchWriteSupported !== false) {
+      const payload = JSON.stringify({ [table]: chunk });
+      const result = withPrivateTemp('batch.json', payload, (file) =>
+        run('aws', ['dynamodb', 'batch-write-item', '--region', region, '--request-items', `file://${file}`]),
+      );
+      if (result.ok) {
+        batchWriteSupported = true;
+        written += chunk.length;
+        process.stdout.write('.');
+        continue;
+      }
+      // Remember why, then write everything item by item from here on.
+      batchError = result.stderr || 'batch-write-item failed with no stderr';
+      batchWriteSupported = false;
+      process.stdout.write('!');
     }
-    written += chunk.length;
-    process.stdout.write('.');
+
+    for (const req of chunk) {
+      const one = ddbWriteOne(region, table, req);
+      if (!one.ok) {
+        return {
+          written,
+          error:
+            `batch-write-item failed and the single-item fallback also failed.\n` +
+            `  batch-write-item: ${batchError || '(not attempted this call)'}\n` +
+            `  put-item/delete-item: ${one.stderr}`,
+        };
+      }
+      written++;
+      if (written % 25 === 0) process.stdout.write('.');
+    }
   }
+
   return { written, error: null };
 }
 
 /**
- * Confirm the attribution table exists and is writable before generating
- * anything. Runs regardless of --force, because --force is about overwriting
- * real data, not about skipping reachability.
+ * Confirm the attribution table is writable *by the API seeding actually uses*
+ * before generating anything. Runs regardless of --force, because --force is
+ * about overwriting real data, not about reachability.
  *
- * describe-table alone is not sufficient: read access does not imply write
- * access, and the table is KMS-encrypted, so a role can hold
- * dynamodb:PutItem and still fail on kms:GenerateDataKey. The probe therefore
- * writes and removes a single throwaway item.
+ * The probe deliberately uses BatchWriteItem rather than PutItem. IAM policies
+ * routinely enumerate DynamoDB actions individually, so a role can hold
+ * dynamodb:PutItem and not dynamodb:BatchWriteItem — which is exactly the
+ * failure this function was added for. Probing PutItem would have passed and
+ * left the real failure to surface 150 items later.
+ *
+ * describe-table alone is also insufficient: read access does not imply write
+ * access, and the table is KMS-encrypted, so a role can hold the DynamoDB
+ * actions and still fail on kms:GenerateDataKey.
  */
 function preflightAttributionTable(region: string, table: string): string | null {
   const describe = run('aws', ['dynamodb', 'describe-table', '--region', region, '--table-name', table, '--output', 'json']);
@@ -94,16 +152,13 @@ function preflightAttributionTable(region: string, table: string): string | null
     return `cannot describe ${table}: ${describe.stderr}`;
   }
   const probeKey = { pk: { S: 'REPO#__prism_preflight__' }, sk: { S: 'COMMIT#__prism_preflight__' } };
-  const item = JSON.stringify({ ...probeKey, record_type: { S: 'PREFLIGHT' }, demo_seed: { BOOL: true } });
-  const put = withPrivateTemp('probe.json', item, (file) =>
-    run('aws', ['dynamodb', 'put-item', '--region', region, '--table-name', table, '--item', `file://${file}`]),
-  );
-  if (!put.ok) {
-    return `cannot write to ${table}: ${put.stderr}`;
+  const probeItem = { ...probeKey, record_type: { S: 'PREFLIGHT' }, demo_seed: { BOOL: true } };
+
+  const put = ddbBatchWrite(region, table, [{ PutRequest: { Item: probeItem } }]);
+  if (put.error) {
+    return `cannot batch-write to ${table}: ${put.error}`;
   }
-  withPrivateTemp('probekey.json', JSON.stringify(probeKey), (file) =>
-    run('aws', ['dynamodb', 'delete-item', '--region', region, '--table-name', table, '--key', `file://${file}`]),
-  );
+  ddbBatchWrite(region, table, [{ DeleteRequest: { Key: probeKey } }]);
   return null;
 }
 
