@@ -1,8 +1,9 @@
 import { createInterface } from 'node:readline';
-import { platform, homedir, tmpdir } from 'node:os';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
+import { platform, homedir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runInteractive } from '../../utils/exec.js';
+import { withPrivateTemp } from '../../utils/tempfile.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -73,31 +74,6 @@ function linuxCrontabAvailable(): boolean {
  */
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
- * Writes `content` to a private temp file, passes its path to `use`, and always
- * removes the containing directory afterwards.
- *
- * mkdtemp gives a 0700 directory with an unpredictable name. The previous
- * fixed '/tmp/prism-crontab.tmp' let any local user pre-create or race that
- * path between our write and crontab's read, which would install arbitrary
- * entries into this user's crontab.
- *
- * The callback shape exists so the directory is reclaimed on every path. The
- * first version of this helper returned the path and left callers to unlink
- * only the file, which leaked one empty directory per install or remove, and
- * unlinked before throwing on failure so error paths leaked the file as well.
- */
-function withPrivateTemp<T>(name: string, content: string, use: (file: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), 'prism-'));
-  try {
-    const file = join(dir, name);
-    writeFileSync(file, content, { mode: 0o600 });
-    return use(file);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }
 
 function linuxInstallSchedule(codeburnPath: string, intervalHours: number): boolean {
