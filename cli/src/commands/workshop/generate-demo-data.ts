@@ -52,23 +52,59 @@ function putEvents(region: string, entries: object[]): boolean {
 
 type DdbRequest = { PutRequest: { Item: Record<string, unknown> } } | { DeleteRequest: { Key: Record<string, unknown> } };
 
-/** BatchWriteItem in DynamoDB's 25-request chunks. Returns items written. */
-function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): number {
+/**
+ * BatchWriteItem in DynamoDB's 25-request chunks.
+ *
+ * Aborts on the first failed chunk and reports the AWS error verbatim. An
+ * earlier version printed a generic warning per chunk and discarded stderr,
+ * so a run that wrote nothing at all produced six identical warnings and no
+ * indication of why — an access-denied and a malformed item were
+ * indistinguishable.
+ */
+function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): { written: number; error: string | null } {
   let written = 0;
   for (let i = 0; i < requests.length; i += 25) {
     const chunk = requests.slice(i, i + 25);
     const payload = JSON.stringify({ [table]: chunk });
-    const ok = withPrivateTemp('batch.json', payload, (file) =>
-      run('aws', ['dynamodb', 'batch-write-item', '--region', region, '--request-items', `file://${file}`]).ok,
+    const result = withPrivateTemp('batch.json', payload, (file) =>
+      run('aws', ['dynamodb', 'batch-write-item', '--region', region, '--request-items', `file://${file}`]),
     );
-    if (ok) {
-      written += chunk.length;
-      process.stdout.write('.');
-    } else {
-      console.error(`\nWarning: failed to write a batch of ${chunk.length} attribution items`);
+    if (!result.ok) {
+      return { written, error: result.stderr || 'aws dynamodb batch-write-item failed with no stderr' };
     }
+    written += chunk.length;
+    process.stdout.write('.');
   }
-  return written;
+  return { written, error: null };
+}
+
+/**
+ * Confirm the attribution table exists and is writable before generating
+ * anything. Runs regardless of --force, because --force is about overwriting
+ * real data, not about skipping reachability.
+ *
+ * describe-table alone is not sufficient: read access does not imply write
+ * access, and the table is KMS-encrypted, so a role can hold
+ * dynamodb:PutItem and still fail on kms:GenerateDataKey. The probe therefore
+ * writes and removes a single throwaway item.
+ */
+function preflightAttributionTable(region: string, table: string): string | null {
+  const describe = run('aws', ['dynamodb', 'describe-table', '--region', region, '--table-name', table, '--output', 'json']);
+  if (!describe.ok) {
+    return `cannot describe ${table}: ${describe.stderr}`;
+  }
+  const probeKey = { pk: { S: 'REPO#__prism_preflight__' }, sk: { S: 'COMMIT#__prism_preflight__' } };
+  const item = JSON.stringify({ ...probeKey, record_type: { S: 'PREFLIGHT' }, demo_seed: { BOOL: true } });
+  const put = withPrivateTemp('probe.json', item, (file) =>
+    run('aws', ['dynamodb', 'put-item', '--region', region, '--table-name', table, '--item', `file://${file}`]),
+  );
+  if (!put.ok) {
+    return `cannot write to ${table}: ${put.stderr}`;
+  }
+  withPrivateTemp('probekey.json', JSON.stringify(probeKey), (file) =>
+    run('aws', ['dynamodb', 'delete-item', '--region', region, '--table-name', table, '--key', `file://${file}`]),
+  );
+  return null;
 }
 
 /** True when the table holds attribution commits that this generator did not create. */
@@ -118,7 +154,7 @@ function purgeDemoAttribution(region: string, table: string): number {
     return 0;
   }
   if (items.length === 0) return 0;
-  return ddbBatchWrite(region, table, items.map(key => ({ DeleteRequest: { Key: key } })));
+  return ddbBatchWrite(region, table, items.map(key => ({ DeleteRequest: { Key: key } }))).written;
 }
 
 // ---- Synthetic fleet ----
@@ -202,6 +238,27 @@ export default {
     console.log(`Region: ${region} | Bus: ${bus} | Team: ${team}`);
     console.log(`Attribution: ${seedAttribution ? `${table}` : 'skipped (--no-attribution)'}`);
     console.log('');
+
+    if (seedAttribution) {
+      const problem = preflightAttributionTable(region, table);
+      if (problem) {
+        console.error(`Error: ${problem}`);
+        console.error('');
+        console.error('Attribution seeding writes directly to DynamoDB, which needs permissions the');
+        console.error('rest of this command does not: dynamodb:PutItem, BatchWriteItem and DeleteItem');
+        console.error(`on ${table}, plus kms:GenerateDataKey and kms:Decrypt on the table's key.`);
+        console.error('Only the otel-receiver and attribution-metrics-publisher Lambdas are granted');
+        console.error('these by the CDK stack, so a workshop or devbox role will not have them by');
+        console.error('default.');
+        console.error('');
+        console.error('  --no-attribution   emit events only; the event-driven widgets still populate');
+        console.error('');
+        console.error('Attribution-sourced widgets (AI share, coverage, Repository Breakdown, the');
+        console.error('observed PRISM level, Developer Productivity) need either those permissions or');
+        console.error('a real codeburn sync from Module 04.');
+        process.exit(1);
+      }
+    }
 
     if (seedAttribution && !options.force && hasRealAttribution(region, table)) {
       console.error(`Error: ${table} already contains real attribution data.`);
@@ -627,9 +684,23 @@ export default {
       if (totalItems > 0) {
         console.log(`Seeding ${totalItems} attribution items into ${table}...`);
         // Spans and rollups first — see the note on the accumulators above.
-        attrWritten += ddbBatchWrite(region, table, spanRequests);
-        attrWritten += ddbBatchWrite(region, table, commitRequests);
+        const spans = ddbBatchWrite(region, table, spanRequests);
+        attrWritten += spans.written;
+        let failure = spans.error;
+        if (!failure) {
+          const commits = ddbBatchWrite(region, table, commitRequests);
+          attrWritten += commits.written;
+          failure = commits.error;
+        }
         console.log('');
+        if (failure) {
+          console.error(`Error: attribution seeding stopped after ${attrWritten} of ${totalItems} items.`);
+          console.error(failure);
+          console.error('');
+          console.error('Events were emitted successfully, so the event-driven widgets will populate.');
+          console.error(`Clean up the partial seed with: prism-cli workshop generate-demo-data --purge-demo --region ${region}`);
+          process.exit(1);
+        }
       }
     }
 
