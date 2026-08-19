@@ -4,10 +4,8 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { platform, tmpdir, homedir } from 'node:os';
-import { getRepoRoot } from '../../utils/root.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = getRepoRoot(import.meta.url);
 const IS_MAC = platform() === 'darwin';
 
 // --- Colors ---
