@@ -240,14 +240,6 @@ jobs:
         env:
           AWS_REGION: us-west-2
         run: |
-          # Pre-flight: verify AWS CLI has securityagent subcommand
-          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
-            echo "::warning::AWS CLI does not support 'securityagent code review' commands after upgrade. Skipping scan."
-            echo "findings=0" >> "$GITHUB_OUTPUT"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           echo "::group::Retrieve Continuum config from SSM"
           AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
           SCAN_BUCKET=$(aws ssm get-parameter --name /prism/continuum/scan-bucket --query Parameter.Value --output text 2>/dev/null || echo "")
@@ -259,6 +251,19 @@ jobs:
             echo "⚠️ AWS Continuum not configured (agent-space-id or scan-bucket missing). Skipping security scan."
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Continuum IS configured from here on, so every failure below fails
+          # closed. The CLI probe runs after the config lookup on purpose: before
+          # it, "never deployed" and "deployed but cannot scan" are
+          # indistinguishable, and the old order silently passed the gate on a repo
+          # that had opted into scanning.
+          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
+            echo "::error::Continuum is configured but this AWS CLI lacks the securityagent code review commands (need v2.36+)."
+            echo "  The security scan cannot run, so this PR is not verified."
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -296,10 +301,9 @@ jobs:
             if [[ -z "$CODE_REVIEW_ID" ]]; then
               echo "  ⚠️ Bootstrap failed:"
               echo "  $CR_OUTPUT"
-              echo "  Run 'sudo prism-cli securityagent setup' from your DevBox to create manually."
-              echo "  Skipping security scan (non-blocking)."
-              echo "findings=0" >> "$GITHUB_OUTPUT"
-              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              echo "  Run 'prism-cli securityagent setup' to create it manually."
+              echo "scan_error=true" >> "$GITHUB_OUTPUT"
+              echo "findings=-1" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -377,10 +381,18 @@ jobs:
           fi
 
           echo "::group::Retrieve findings"
-          FINDINGS_JSON=$(aws securityagent list-findings \
+          # No empty-array fallback: an API error there is indistinguishable from a
+          # clean scan, so it would pass the gate.
+          if ! FINDINGS_JSON=$(aws securityagent list-findings \
             --agent-space-id "${AGENT_SPACE_ID}" \
             --code-review-job-id "${JOB_ID}" \
-            --output json 2>/dev/null || echo '{"findingsSummaries":[]}')
+            --output json 2>&1); then
+            echo "::error::Continuum scan completed but its findings could not be retrieved: ${FINDINGS_JSON}"
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+            exit 0
+          fi
 
           TOTAL=$(echo "$FINDINGS_JSON" | jq '.findingsSummaries | length')
           CRITICAL=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "CRITICAL")] | length')
@@ -441,7 +453,7 @@ jobs:
           fi
 
       - name: Fail on eval or security issues
-        if: steps.eval.outputs.overall_result == 'FAIL' || (steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.skipped != 'true')
+        if: steps.eval.outputs.overall_result == 'FAIL' || steps.security-gate.outputs.scan_error == 'true' || (steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.skipped != 'true')
         run: |
           [[ "${{ steps.eval.outputs.overall_result }}" == "FAIL" ]] && echo "❌ Eval gate failed"
           if [[ "${{ steps.security-gate.outputs.scan_error }}" == "true" ]]; then

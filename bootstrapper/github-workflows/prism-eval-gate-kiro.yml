@@ -262,14 +262,12 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # Pre-flight: verify the specific subcommand exists (AWS CLI v2.36+)
-          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
-            echo "::warning::AWS CLI lacks securityagent code review commands (need v2.36+). Skipping scan."
-            echo "findings=0" >> "$GITHUB_OUTPUT"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
+          # Config is read FIRST, on purpose. "Continuum was never deployed" is a
+          # deployment choice and may legitimately skip the scan; "Continuum is
+          # deployed but the scan could not run" is a failure and must block the
+          # merge. Probing the CLI before knowing which case we are in cannot tell
+          # them apart, so a missing subcommand used to silently pass the gate on a
+          # repo that had opted into scanning.
           AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
           SCAN_BUCKET=$(aws ssm get-parameter --name /prism/continuum/scan-bucket --query Parameter.Value --output text 2>/dev/null || echo "")
 
@@ -277,6 +275,16 @@ jobs:
             echo "AWS Continuum not configured (SSM params missing). Skipping security scan."
             echo "findings=0" >> "$GITHUB_OUTPUT"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Continuum IS configured from here on, so every failure below fails
+          # closed: scan_error=true and findings=-1, never findings=0.
+          if ! aws securityagent start-code-review-job help > /dev/null 2>&1; then
+            echo "::error::Continuum is configured but this AWS CLI lacks the securityagent code review commands (need v2.36+)."
+            echo "  The security scan cannot run, so this PR is not verified. Upgrade the CLI in the workflow."
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -307,10 +315,10 @@ jobs:
             CODE_REVIEW_ID=$(echo "$CR_OUTPUT" | jq -r '.codeReviewId // empty' 2>/dev/null)
 
             if [ -z "$CODE_REVIEW_ID" ]; then
-              echo "::warning::Bootstrap failed: ${CR_OUTPUT}"
-              echo "  Run 'sudo prism-cli securityagent setup' from your DevBox to create manually."
-              echo "findings=0" >> "$GITHUB_OUTPUT"
-              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              echo "::error::Could not create the Continuum Code Review resource: ${CR_OUTPUT}"
+              echo "  Run 'prism-cli securityagent setup' to create it manually."
+              echo "scan_error=true" >> "$GITHUB_OUTPUT"
+              echo "findings=-1" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -325,7 +333,13 @@ jobs:
           # Diff must be uploaded with .patch extension (API requirement)
           git diff "${BASE_SHA}..${HEAD_SHA}" > /tmp/changes.patch
           if [ ! -s /tmp/changes.patch ]; then
+            echo "No changes to scan."
+            # critical/high must be set explicitly. The gate tests
+            # `critical != '0'`, and an unset output is '', which is != '0' in a
+            # GitHub expression -- leaving them unset failed the gate on a no-op PR.
             echo "findings=0" >> "$GITHUB_OUTPUT"
+            echo "critical=0" >> "$GITHUB_OUTPUT"
+            echo "high=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           DIFF_KEY="diffs/${REPO_SLUG}/${PR_NUMBER}/${HEAD_SHA}.patch"
@@ -350,18 +364,26 @@ jobs:
           done
 
           if [ "$STATUS" != "COMPLETED" ]; then
-            echo "::warning::Continuum scan did not complete (status: ${STATUS}) -- treating as skipped"
-            echo "findings=0" >> "$GITHUB_OUTPUT"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Continuum scan did not complete (status: ${STATUS})."
+            echo "  An incomplete scan is not a clean scan -- failing closed. Re-run, or check the Continuum job logs."
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # NOTE: list-findings takes agent-space-id + code-review-job-id only.
           # Response field is 'findingsSummaries', risk field is 'riskLevel'.
-          FINDINGS_JSON=$(aws securityagent list-findings \
+          # No `|| echo '{"findingsSummaries":[]}'` fallback: an API error there is
+          # indistinguishable from a clean scan, so it would pass the gate.
+          if ! FINDINGS_JSON=$(aws securityagent list-findings \
             --agent-space-id "${AGENT_SPACE_ID}" \
             --code-review-job-id "${JOB_ID}" \
-            --output json 2>/dev/null || echo '{"findingsSummaries":[]}')
+            --output json 2>&1); then
+            echo "::error::Continuum scan completed but its findings could not be retrieved: ${FINDINGS_JSON}"
+            echo "scan_error=true" >> "$GITHUB_OUTPUT"
+            echo "findings=-1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           TOTAL=$(echo "$FINDINGS_JSON" | jq '.findingsSummaries | length')
           CRITICAL=$(echo "$FINDINGS_JSON" | jq '[.findingsSummaries[] | select(.riskLevel == "CRITICAL")] | length')
@@ -443,7 +465,7 @@ jobs:
           fi
 
       - name: Fail on eval gate failure
-        if: ${{ steps.review.outputs.result == 'FAIL' || steps.review.outputs.result == 'ERROR' || (steps.security-gate.outputs.skipped != 'true' && (steps.security-gate.outputs.critical != '0' || steps.security-gate.outputs.high != '0')) }}
+        if: ${{ steps.review.outputs.result == 'FAIL' || steps.review.outputs.result == 'ERROR' || steps.security-gate.outputs.scan_error == 'true' || (steps.security-gate.outputs.skipped != 'true' && (steps.security-gate.outputs.critical != '0' || steps.security-gate.outputs.high != '0')) }}
         env:
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
           REVIEW_HIGH: ${{ steps.review.outputs.high }}
@@ -451,6 +473,7 @@ jobs:
           REVIEW_SUMMARY: ${{ steps.review.outputs.summary }}
           SEC_CRITICAL: ${{ steps.security-gate.outputs.critical }}
           SEC_HIGH: ${{ steps.security-gate.outputs.high }}
+          SEC_SCAN_ERROR: ${{ steps.security-gate.outputs.scan_error }}
         run: |
           if [ "${REVIEW_RESULT}" = "ERROR" ]; then
             echo "❌ Eval gate failed closed: review output could not be parsed"
@@ -458,7 +481,10 @@ jobs:
             echo "❌ Kiro found ${REVIEW_HIGH:-?} high-severity issues (score: ${REVIEW_SCORE:-?})"
             echo "Summary: ${REVIEW_SUMMARY}"
           fi
-          if [ "${SEC_CRITICAL:-0}" -gt 0 ] || [ "${SEC_HIGH:-0}" -gt 0 ]; then
+          if [ "${SEC_SCAN_ERROR}" = "true" ]; then
+            echo "❌ Security gate failed closed: the Continuum scan produced no verdict."
+            echo "  This PR has NOT been security scanned. Re-run the workflow, or check the Continuum job logs."
+          elif [ "${SEC_CRITICAL:-0}" -gt 0 ] || [ "${SEC_HIGH:-0}" -gt 0 ]; then
             echo "❌ Continuum found ${SEC_CRITICAL:-0} critical, ${SEC_HIGH:-0} high security findings"
           fi
           exit 1
