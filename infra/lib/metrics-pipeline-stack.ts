@@ -839,6 +839,10 @@ export class MetricsPipelineStack extends cdk.Stack {
         EVENTS_TABLE: this.eventsTable.tableName,
         METADATA_TABLE: this.metadataTable.tableName,
         EVENT_BUS_NAME: this.eventBus.eventBusName,
+        // Findings are tagged AI vs human by looking the commit up in the
+        // attribution store. Left unset when the OTEL collector is skipped,
+        // in which case there is no attribution and origin stays 'unknown'.
+        AI_USAGE_TABLE: this.aiUsageTable.tableName,
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
       description: 'Normalizes AWS Security Agent findings and emits to PRISM pipeline',
@@ -846,6 +850,10 @@ export class MetricsPipelineStack extends cdk.Stack {
 
     this.eventsTable.grantReadData(securityAgentProcessor);
     this.metadataTable.grantReadData(securityAgentProcessor);
+    // Read-only: the processor resolves a finding's AI origin from the frozen
+    // ai_origin on the COMMIT# item. grantReadData also grants kms:Decrypt on
+    // the table's customer-managed key, which a bare IAM action would not.
+    this.aiUsageTable.grantReadData(securityAgentProcessor);
     this.eventBus.grantPutEventsTo(securityAgentProcessor);
 
     // Security Remediation Tracker

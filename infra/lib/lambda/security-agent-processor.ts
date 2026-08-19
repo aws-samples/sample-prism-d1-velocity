@@ -1,6 +1,6 @@
 import {
   DynamoDBClient,
-  QueryCommand,
+  GetItemCommand,
   ScanCommand,
 } from '@aws-sdk/client-dynamodb';
 import {
@@ -14,6 +14,9 @@ const eventBridgeClient = new EventBridgeClient({});
 const EVENTS_TABLE = process.env.EVENTS_TABLE!;
 const METADATA_TABLE = process.env.METADATA_TABLE!;
 const EVENT_BUS_NAME = process.env.EVENT_BUS_NAME!;
+// Optional: unset when the OTEL collector is skipped, in which case no
+// attribution exists to join against and AI origin stays 'unknown'.
+const AI_USAGE_TABLE = process.env.AI_USAGE_TABLE;
 
 interface SecurityAgentPayload {
   findings: Array<{
@@ -177,55 +180,85 @@ async function lookupTeamId(repo: string): Promise<string> {
   }
 }
 
+/**
+ * Candidate `REPO#` partition keys for one repository name.
+ *
+ * The two sides of this join spell the repo differently and nothing normalizes
+ * either. codeburn sets the `git.repo` span attribute from the git remote, so
+ * the attribution store holds a host-qualified path (`github.com/owner/name`).
+ * CI sends `GITHUB_REPOSITORY`, which is bare (`owner/name`). A single GetItem
+ * on whichever form the caller happened to pass would miss roughly half the
+ * time — and miss silently, since a missing item is indistinguishable from an
+ * unattributed commit.
+ *
+ * Rather than guess, try the value as given and then the plausible
+ * translations: add a host if it looks bare, strip one if it looks qualified.
+ */
+function repoKeyCandidates(repo: string): string[] {
+  const bare = repo.replace(/^https?:\/\//, '').replace(/\.git$/, '').replace(/\/+$/, '');
+  const candidates = [bare];
+  const segments = bare.split('/');
+  if (segments.length === 2) {
+    // owner/name → try the hosts codeburn would have recorded.
+    candidates.push(`github.com/${bare}`, `gitlab.com/${bare}`);
+  } else if (segments.length > 2) {
+    // host/owner/name → try dropping the host.
+    candidates.push(segments.slice(1).join('/'));
+  }
+  return [...new Set(candidates)];
+}
+
+/**
+ * Resolves whether the code a finding lands on was AI-written.
+ *
+ * Reads the attribution store, which is the only place that answer now lives.
+ * This previously queried the events table for `prism.d1.commit` and counted
+ * ai vs human across the last 7 days — but nothing emits `prism.d1.commit`.
+ * The git hooks that were once expected to only ever wrote commit-message
+ * trailers, so the query never matched and every finding was tagged 'unknown',
+ * silently, with the CISO dashboard's AI-code-risk panel downstream of it.
+ *
+ * The per-commit verdict is frozen onto the COMMIT# item at ingest by
+ * otel-receiver (`ai_origin`), so a point lookup is enough — no span join, and
+ * no dependence on a span TTL that is shorter than the commit TTL.
+ */
 async function lookupAiOrigin(
   teamId: string,
   repo: string,
   commitSha: string | null,
   prNumber: number | null,
 ): Promise<'ai-generated' | 'ai-assisted' | 'human' | 'unknown'> {
-  if (!commitSha && !prNumber) return 'unknown';
+  // A PR number alone cannot identify a commit in the attribution store, whose
+  // key is REPO#<repo>/COMMIT#<sha>. Returning 'unknown' is correct here rather
+  // than guessing from the repo's recent history.
+  if (!commitSha) return 'unknown';
+  if (!AI_USAGE_TABLE) return 'unknown';
 
-  try {
-    // Query recent commit events for this repo to find AI origin
-    const pk = `${teamId}#${repo}`;
-    const now = new Date();
-    const lookback = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); // 7 days
-
-    const result = await dynamoClient.send(
-      new QueryCommand({
-        TableName: EVENTS_TABLE,
-        KeyConditionExpression: 'pk = :pk AND sk >= :start',
-        FilterExpression: 'detail_type = :dt',
-        ExpressionAttributeValues: {
-          ':pk': { S: pk },
-          ':start': { S: lookback.toISOString() },
-          ':dt': { S: 'prism.d1.commit' },
-        },
-        ScanIndexForward: false, // Most recent first
-        Limit: 20,
-      }),
-    );
-
-    if (result.Items && result.Items.length > 0) {
-      // Count AI vs human commits to determine predominant origin
-      let aiCount = 0;
-      let humanCount = 0;
-      for (const item of result.Items) {
-        const data = JSON.parse(item.data?.S ?? '{}');
-        const origin = data.ai_context?.origin ?? 'human';
-        if (origin === 'ai-generated' || origin === 'ai-assisted') {
-          aiCount++;
-        } else {
-          humanCount++;
-        }
-      }
-      if (aiCount > humanCount) return 'ai-assisted';
-      if (humanCount > aiCount) return 'human';
+  for (const candidate of repoKeyCandidates(repo)) {
+    try {
+      const result = await dynamoClient.send(
+        new GetItemCommand({
+          TableName: AI_USAGE_TABLE,
+          Key: {
+            pk: { S: `REPO#${candidate}` },
+            sk: { S: `COMMIT#${commitSha}` },
+          },
+          ProjectionExpression: 'ai_origin',
+        }),
+      );
+      const origin = result.Item?.ai_origin?.S;
+      if (origin === 'ai-generated' || origin === 'human') return origin;
+      // Item exists but carries no frozen verdict (written before write-time
+      // resolution). Treat as unresolved rather than trying another key.
+      if (result.Item) return 'unknown';
+    } catch (err) {
+      console.error(`AI origin lookup failed for REPO#${candidate}:`, err);
+      return 'unknown';
     }
-
-    return 'unknown';
-  } catch (err) {
-    console.error('Failed to look up AI origin:', err);
-    return 'unknown';
   }
+
+  // No attribution for this commit — the author's machine is not onboarded to
+  // codeburn sync. Distinct from 'human', which is a positive verdict.
+  console.log(`No attribution found for ${repo}@${commitSha} (team ${teamId}, PR ${prNumber ?? 'n/a'})`);
+  return 'unknown';
 }
