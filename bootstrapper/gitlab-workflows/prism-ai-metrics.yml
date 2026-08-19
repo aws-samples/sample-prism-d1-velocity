@@ -74,8 +74,15 @@ prism-ai-metrics:
       HEAD_SHA="${CI_COMMIT_SHA}"
 
       # --- Commit SHAs: immutable facts for deferred origin resolution.
-      COMMIT_SHAS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
-      TOTAL_COMMITS=$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo "1")
+      #
+      # --no-merges for the same reason as the GitHub workflow: under a
+      # merge-commit strategy CI_COMMIT_SHA is the merge commit GitLab created,
+      # which no developer machine authored and codeburn can therefore never
+      # attribute. Counting it caps Attribution Coverage below 100% for a fully
+      # onboarded team. Harmless under squash or fast-forward, where the range
+      # holds no merge commits to exclude.
+      COMMIT_SHAS=$(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
+      TOTAL_COMMITS=$(git rev-list --no-merges --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo "1")
 
       # --- Lead time: MR open → now (this job runs on the post-merge push).
       LEAD_TIME_SECONDS=0
