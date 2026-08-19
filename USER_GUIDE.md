@@ -48,7 +48,7 @@ npx cdk deploy --all --context enableSecurityAgent=true
 
 `enableSecurityAgent=true` additionally creates the AWS Continuum scan bucket and the `prism-d1-continuum-ci-scan` managed policy that Step 2 attaches to the OIDC role. Leave the flag off for a metrics-only deployment. On a non-production deployment, add `--context skipVpc=true` to save roughly $35–50/month.
 
-Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 4, and developers need the URL for `setup-otel-sync`.
+Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 5, and developers need the URL for `setup-otel-sync`.
 
 **Or use the security-agent wrapper.** `prism-cli securityagent setup` runs the same deploy and then performs the Continuum onboarding that would otherwise follow it:
 
@@ -85,22 +85,76 @@ prism-cli bootstrapper setup-gitlab-oidc
 
 Creates OIDC provider + IAM role. Add `PRISM_METRICS_ROLE_ARN` as a CI/CD variable (unprotected).
 
-### Step 3: Configure GitHub Repository Variables
+Both commands take `--region <region>` (default `us-west-2`), which sets the event bus ARN in the
+inline policy. Pass the same region to the workflow installer below, or `events:PutEvents` will be
+denied at merge time. See [IAM Permissions Required](#iam-permissions-required).
 
-In GitHub → your repo → Settings → Secrets and Variables → Actions:
+### Step 3: Install CI/CD Workflows and Eval Harness
 
-| Type | Name | Value | Where to Find It |
+Run these from the root of the repository you want instrumented. They only write files — nothing
+reaches AWS until you commit them and a PR merges.
+
+**CI/CD workflows.**
+
+```bash
+# GitHub — writes four workflows to .github/workflows/
+prism-cli bootstrapper install-github-workflows --region us-west-2
+
+# GitLab — writes to .prism/gitlab-workflows/
+prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
+```
+
+For GitLab, merge `.prism/gitlab-workflows/.gitlab-ci.yml` into your repo root `.gitlab-ci.yml`
+afterwards; the installer deliberately does not overwrite an existing pipeline definition.
+
+Pass the **same `--region` you gave `setup-github-oidc` in Step 2**. The OIDC policy scopes
+`events:PutEvents` to one region's event bus, and the installer rewrites every region reference in
+the workflows it copies — a mismatch is denied at merge time with nothing failing at setup.
+
+**Eval harness — kiro mode.**
+
+```bash
+prism-cli bootstrapper install-eval-harness --mode kiro
+```
+
+This installs the agentic reviewer and the `prism-eval-gate.yml` workflow, along with the
+`code-review.md` Kiro steering file. It needs `KIRO_API_KEY` from the next step and a paid Kiro
+subscription. For the legacy Bedrock rubric mode instead, see [Eval Gates](#eval-gates) —
+`--mode kiro` is the recommended path and the only one that does not call Bedrock.
+
+**Team attribution (optional).** `prism-ai-metrics.yml` reads the team id from `.prism/config.json`
+in the repo. Create it by hand — it is a single field, and the git-hook installer that used to
+generate it is deprecated:
+
+```json
+{ "team_id": "team-alpha" }
+```
+
+Without the file, events are emitted under `no_team` rather than failing the run.
+
+Committing the workflows before the next step is safe: without `PRISM_METRICS_ROLE_ARN` the AWS
+credential step fails and the job stops before emitting anything.
+
+### Step 4: Configure GitHub Secrets
+
+In GitHub → your repo → Settings → Secrets and Variables → Actions, add two secrets:
+
+| Name | Value | Where to Find It | Used By |
 |---|---|---|---|
-| **Secret** | `PRISM_METRICS_ROLE_ARN` | ARN printed by `setup-github-oidc` | Step 2 output |
-| **Secret** | `PRISM_API_KEY` | Your PRISM API key | CDK stack output |
-| **Secret** | `KIRO_API_KEY` | Kiro API key (for eval gate) | https://app.kiro.dev → Settings → API Keys |
-| Variable | `PRISM_API_URL` | `https://xxx.execute-api.us-west-2.amazonaws.com/v1` | CDK output `ApiUrl` |
-| Variable | `PRISM_TEAM_ID` | `team-alpha` (your team name) | Your choice |
-| Variable | `PRISM_AWS_ROLE_ARN` | `arn:aws:iam::123456789012:role/GitHubActionsRole` | Your OIDC role |
-| Variable | `PRISM_AGENT_SPACE_ID` | `as-xxxxxxxxxxxx` | Security Agent setup output |
-| Variable | `PRISM_PENTEST_ID` | `pt-xxxxxxxxxxxx` | Pen test creation output |
+| `PRISM_METRICS_ROLE_ARN` | ARN printed by `setup-github-oidc` | Step 2 output | All four workflows |
+| `KIRO_API_KEY` | Kiro API key | https://app.kiro.dev → Settings → API Keys | `prism-eval-gate.yml` only, in kiro mode |
 
-### Step 4: Create Developer Accounts
+No repository **variables** are required — the workflows read none. Team identity comes from a file in the repo instead, `.prism/config.json`:
+
+```json
+{ "team_id": "team-alpha" }
+```
+
+`prism-ai-metrics.yml` reads that file with `jq` and falls back to `no_team` when it is absent, so a missing config downgrades attribution grouping rather than failing the run and losing that PR's facts.
+
+If you are not using the kiro-cli eval gate, `PRISM_METRICS_ROLE_ARN` alone is enough. `KIRO_API_KEY` requires a paid Kiro subscription and gates only the kiro-mode `prism-eval-gate.yml`.
+
+### Step 5: Create Developer Accounts
 
 After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector:
 
@@ -124,13 +178,54 @@ Your IdP app must be a **public client with PKCE**, register loopback redirect U
 
 ### IAM Permissions Required
 
-The OIDC role needs:
+You do not need to write these policies — Step 2 attaches both. This is a reference for
+review, or for building the role by hand.
 
-| Permission | Used by |
-|---|---|
-| `events:PutEvents` | All workflows |
-| `bedrock:InvokeModel` | eval-gate, agent-eval |
-| `cloudwatch:PutDashboard` | Dashboard deployment |
+**Inline policy `PrismD1WorkshopPolicy`**, created by `setup-github-oidc` / `setup-gitlab-oidc`:
+
+| Permission | Resource | Used by |
+|---|---|---|
+| `events:PutEvents` | `event-bus/prism-d1-metrics` | All workflows |
+| `bedrock:InvokeModel` | `*` | `prism-eval-gate.yml` (Bedrock mode) and `prism-agent-eval.yml`, via `.prism/eval-harness/run-eval.sh` |
+
+`bedrock:InvokeModel` is **not** needed for the recommended kiro-cli gate — in kiro mode
+`prism-eval-gate.yml` calls the Kiro API with `KIRO_API_KEY` and never touches Bedrock. If you only
+run that gate, `events:PutEvents` is the only permission the metrics path requires.
+
+Both eval modes install to the same path, `.github/workflows/prism-eval-gate.yml`, so which
+permissions that file needs depends on the `--mode` you chose in Step 3.
+
+**Managed policy `prism-d1-continuum-ci-scan`**, created by the CDK when you deploy with
+`--context enableSecurityAgent=true`, and attached to the same role by Step 2. Required by the
+Continuum security-finding gate in both eval-gate workflows:
+
+| Sid | Actions | Resource |
+|---|---|---|
+| `ContinuumScanAPIs` | `securityagent:CreateCodeReview`, `ListCodeReviews`, `StartCodeReviewJob`, `BatchGetCodeReviewJobs`, `BatchGetCodeReviewJobTasks`, `ListFindings`, `BatchGetFindings` | `agent-space/*` |
+| `PassRoleForCodeReview` | `iam:PassRole` (conditioned on `iam:PassedToService = securityagent.amazonaws.com`) | The Continuum service role |
+| `ScanBucketWrite` | `s3:PutObject`, `s3:GetObject`, `s3:ListBucket` | The Continuum scan bucket |
+| `KMSForScanBucket` | `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` | The PRISM KMS key |
+| `SSMReadConfig` | `ssm:GetParameter`, `ssm:GetParameters`, `ssm:PutParameter` | `parameter/prism/continuum/*` |
+
+`PutParameter` is needed because the eval gate writes the Code Review id it creates back to
+`/prism/continuum/code-review-id/<repo-slug>`. KMS appears because the scan bucket is
+encrypted with a customer-managed key — bucket access alone is not enough.
+
+If this policy is absent, `setup-github-oidc` says so and the eval gate skips security scanning
+rather than failing.
+
+> **Keep the region consistent.** The inline policy scopes `events:PutEvents` to one region's
+> event bus, so the OIDC setup and the workflow installer must be given the same region or
+> `put-events` fails with AccessDenied at merge time — nothing errors at setup:
+>
+> ```bash
+> prism-cli bootstrapper setup-github-oidc      --region eu-west-1
+> prism-cli bootstrapper install-github-workflows --region eu-west-1
+> ```
+>
+> Both default to `us-west-2`, so you can omit the flag entirely if that is where you deployed.
+> GovCloud and China regions are rejected — every ARN the bootstrapper builds is hard-coded to
+> the `aws` commercial partition.
 
 ---
 
@@ -181,144 +276,46 @@ Monthly cost depends on team size and configuration. All resources are serverles
 
 ## Developer Setup
 
-### Install Git Hooks and Config
+One command per machine. There is nothing else for a developer to install — no git hooks, no
+per-repo configuration, no CI changes.
 
 ```bash
-# For all future clones (global template):
-prism-cli bootstrapper install-git-hooks --global
-
-# For an existing repo (run inside the repo):
-prism-cli bootstrapper install-git-hooks
+npm install -g @prism-d1/cli codeburn
+prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl>
 ```
 
-The `--global` flag sets `init.templateDir` so all future `git clone` / `git init` automatically get the hooks. Existing repos need a one-time in-repo install.
+`<OtelCollectorUrl>` is the CDK stack output from Step 1. Your administrator creates your telemetry
+account in Step 5, using your email address as the username.
 
-Set custom bounds at install time:
+The command authenticates against the Cognito user pool, backfills 30 days of history, then installs
+a platform-native schedule — crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows —
+that pushes AI usage **and** per-commit attribution every 12 hours.
 
-```bash
-prism-cli bootstrapper install-git-hooks --team-id my-team --max-tokens 500000 --max-cost 50
-```
+| Flag | Purpose |
+|---|---|
+| `--url <url>` | OTEL collector URL (the `OtelCollectorUrl` stack output) |
+| `--interval <hours>` | Sync interval, default `12` |
+| `--status` | Show the current schedule |
+| `--remove` | Remove the schedule |
 
-To remove:
+**This is required, not optional.** `codeburn sync push` is the only writer to the attribution store,
+so every AI metric depends on it: AI share, AI-to-merge ratio, AI defect rate, cost per shipped
+commit, Attribution Coverage, the observed PRISM level, and the entire Developer Productivity
+dashboard. codeburn is also what parses Kiro, Claude Code, Cursor and other tool sessions —
+`prism-cli` does not parse them itself.
 
-```bash
-prism-cli bootstrapper install-git-hooks --uninstall
-```
+**Attribution Coverage is the number to watch first.** The dashboards compare commits CI observed
+(a complete census of the repo) against commits attribution captured (only onboarded machines).
+Below 80%, every AI metric understates reality, and the fix is getting more developers through this
+one command — not changing the dashboard.
 
-The installer creates `.prism/config.json`:
+Verify with `prism-cli bootstrapper setup-otel-sync --status`. Within one sync cycle the
+**PRISM-D1-Team-Velocity** dashboard should show AI-vs-human commit counts and a coverage
+percentage.
 
-```json
-{
-  "team_id": "your-team",
-  "max_tokens": 1000000,
-  "max_cost": 100
-}
-```
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `team_id` | Team identifier for metric attribution | *(required)* |
-| `max_tokens` | Max input/output tokens per commit (capped at this value) | `1000000` |
-| `max_cost` | Max cost in USD per commit (capped at this value) | `100` |
-
-The installer also registers a Claude Code `SessionStart` hook in `~/.claude/settings.json` (served by `prism-cli git claude-session-context`). It captures the Claude session id into the environment so commits made during a Claude Code session are attributed correctly.
-
-### Commit Metadata Reference (deprecated)
-
-> These trailers are produced by the git hooks, which are being removed. Retained
-> as reference for teams still running hooks during the migration. Post-removal,
-> AI origin comes from codeburn attribution — see the Data Architecture guide.
-
-![Workflow](assets/images/PrismDashboard.drawio.png)
-
-The `prepare-commit-msg` git hook automatically injects trailers into every commit message to track AI tool involvement and token usage.
-
-**Trailers injected:**
-
-| Trailer | Example | Description |
-|---------|---------|-------------|
-| `AI-Origin` | `ai-generated` or `human` | Whether an AI tool was detected |
-| `AI-Tool` | `claude-code`, `kiro`, `q-developer` | Which tool was active (omitted for human commits) |
-| `AI-Model` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Model used (Claude Code only) |
-| `AI-Input-Tokens` | `12450` | Input tokens since last commit (via codeburn) |
-| `AI-Output-Tokens` | `3200` | Output tokens since last commit |
-| `AI-Cost` | `$0.42` | Estimated cost since last commit |
-| `Spec-Ref` | `.kiro/specs/auth.md` | Spec file if staged or declared |
-
-**Tool support:**
-
-| Tool | Detection Method | Status |
-|------|-----------------|--------|
-| Claude Code | `CLAUDE_CODE_SESSION_ID` env var | ✅ Supported |
-| Kiro IDE | `TERM_PROGRAM=kiro` env var | ✅ Supported |
-| Kiro CLI | `KIRO_SESSION_ID` env var | ✅ Supported |
-| Amazon Q Developer | `Q_DEVELOPER_SESSION` env var | ✅ Supported |
-| Cursor | `VSCODE_SHELL_INTEGRATION=1` (agent mode) | 🔜 Planned |
-| GitHub Copilot | codeburn session correlation | 🔜 Planned |
-| Windsurf | Process tree or codeburn | 🔜 Planned |
-| Codex (OpenAI) | Process tree detection | 🔜 Planned |
-| Aider | Process tree or codeburn | 🔜 Planned |
-| Cline / Roo Code | codeburn session correlation | 🔜 Planned |
-
-Install the hooks globally so all future repos get attribution automatically:
-
-```bash
-prism-cli bootstrapper install-git-hooks --team-id your-team --global
-```
-
-### Install CI/CD Workflows
-
-**GitHub:**
-```bash
-prism-cli bootstrapper install-github-workflows --region us-west-2
-# Copies workflow files to .github/workflows/
-```
-
-**GitLab:**
-```bash
-prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
-# Copies workflow files to .prism/gitlab-workflows/
-# Then copy or merge .prism/gitlab-workflows/.gitlab-ci.yml into your repo root .gitlab-ci.yml
-```
-
-### Install Eval Harness
-
-```bash
-# Kiro mode (recommended)
-prism-cli bootstrapper install-eval-harness --mode kiro
-
-# Bedrock mode — workshop (empty rubrics, create your own)
-prism-cli bootstrapper install-eval-harness
-
-# Bedrock mode — production (includes all 5 rubrics)
-prism-cli bootstrapper install-eval-harness --with-rubrics
-```
-
-### Choose a CLAUDE.md Template (Optional)
-
-Pick the template that matches your team:
-
-```bash
-cp bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
-# Or: CLAUDE-frontend.md, CLAUDE-platform.md, CLAUDE-agent.md
-```
-
-### Set Up OTEL Attribution (Recommended)
-
-`setup-otel-sync` provides attribution telemetry that supersedes the git hooks for AI-origin tracking:
-
-```bash
-prism-cli setup-otel-sync
-```
-
-### Adoption Path
-
-| Phase | Actions | Metrics You Get |
-|---|---|---|
-| **Day 1** | Install hooks + CLAUDE.md | AI-origin tagging on every commit |
-| **Week 1** | Add GitHub workflows | AI-to-merge ratio, lead time, eval scores |
-| **Week 2** | Configure eval harness + gate | Automated quality checks on AI code |
-| **Ongoing** | Weekly DORA assessment | Full DORA + AI-DORA dashboard |
+> Git hooks and commit trailers are deprecated and are not part of developer setup. AI origin now
+> comes from codeburn attribution, which is why these metrics survive hook removal. If you are
+> migrating off hooks, see [Git Hooks (deprecated)](#git-hooks-deprecated) in Troubleshooting.
 
 ---
 
