@@ -1,8 +1,10 @@
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { run } from '../../utils/exec.js';
+import { DEFAULT_REGION } from '../../utils/region.js';
 import {
   normalizeGitlabUrl,
+  validateAwsRegion,
   validateGitlabNamespace,
   validateGitlabProjectPath,
   validateNumericId,
@@ -46,11 +48,20 @@ export default {
   options: [
     { flags: '--project-id <id>', description: 'Use numeric project ID instead of path in trust policy (for recycled project paths)' },
     { flags: '--global', description: 'Create a single role for all projects in a group/user (wildcard sub claim)' },
+    { flags: '--region <region>', description: 'AWS region holding the PRISM event bus; must match install-gitlab-workflows', default: DEFAULT_REGION },
   ],
-  async action(opts: { projectId?: string; global?: boolean }) {
+  async action(opts: { projectId?: string; global?: boolean; region?: string }) {
+    // Must agree with the region baked into the installed workflows by
+    // install-gitlab-workflows. The permissions policy below scopes
+    // events:PutEvents to one region's bus, so a mismatch leaves the workflows
+    // publishing to a bus this role cannot write to -- an AccessDenied at merge
+    // time rather than an error here.
+    const region = validateAwsRegion(opts.region || DEFAULT_REGION);
+
     console.log('\n🔐 GitLab OIDC Setup for AWS\n');
     console.log('This will create an IAM OIDC identity provider and a role');
     console.log('that GitLab CI/CD can assume to deploy to your AWS account.\n');
+    console.log(`Region: ${region}\n`);
 
     const gitlabUrlInput = await prompt('GitLab instance URL', 'https://gitlab.com');
     // Normalizing here rather than stripping the scheme later: `host` becomes
@@ -171,7 +182,7 @@ export default {
         {
           Effect: 'Allow',
           Action: 'events:PutEvents',
-          Resource: `arn:aws:events:us-west-2:${accountId}:event-bus/prism-d1-metrics`,
+          Resource: `arn:aws:events:${region}:${accountId}:event-bus/prism-d1-metrics`,
         },
         {
           Effect: 'Allow',
@@ -200,6 +211,12 @@ export default {
     console.log(`  Project:  ${projectPath}`);
     console.log(`  Provider: ${gitlabUrl}`);
     console.log(`  Sub claim: ${opts.projectId ? `project_id:${opts.projectId}:*` : `project_path:${projectPath}:*`}`);
+    console.log(`  Event bus region: ${region}`);
+    if (region !== DEFAULT_REGION) {
+      console.log(`\n  Reminder: install the workflows for the same region, or events:PutEvents`);
+      console.log(`  will be denied at merge time:`);
+      console.log(`    prism-cli bootstrapper install-gitlab-workflows --region ${region}`);
+    }
     console.log('\n  Next step: Add a CI/CD variable in GitLab');
     console.log('');
     console.log('  In your GitLab project, go to:');

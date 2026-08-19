@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { run } from '../../utils/exec.js';
-import { validateGithubOwner, validateGithubRepo, validateNumericId } from '../../utils/validate.js';
+import { DEFAULT_REGION } from '../../utils/region.js';
+import { validateAwsRegion, validateGithubOwner, validateGithubRepo, validateNumericId } from '../../utils/validate.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -42,11 +43,20 @@ export default {
   options: [
     { flags: '--global', description: 'Create a single role for all repos in the org/user (wildcard sub claim)' },
     { flags: '--pin-ids', description: 'Pin the trust policy to immutable GitHub owner/repo IDs (protects against namespace resurrection; may require gh CLI or GITHUB_TOKEN for private repos)' },
+    { flags: '--region <region>', description: 'AWS region holding the PRISM event bus; must match install-github-workflows', default: DEFAULT_REGION },
   ],
-  async action(opts: { global?: boolean; pinIds?: boolean }) {
+  async action(opts: { global?: boolean; pinIds?: boolean; region?: string }) {
+    // Must agree with the region baked into the installed workflows by
+    // install-github-workflows. The permissions policy below scopes
+    // events:PutEvents to one region's bus, so a mismatch leaves the workflows
+    // publishing to a bus this role cannot write to -- an AccessDenied at merge
+    // time rather than an error here.
+    const region = validateAwsRegion(opts.region || DEFAULT_REGION);
+
     console.log('\n🔐 GitHub OIDC Setup for AWS\n');
     console.log('This will create an IAM OIDC identity provider and a role');
     console.log('that GitHub Actions can assume to deploy to your AWS account.\n');
+    console.log(`Region: ${region}\n`);
 
     const githubUsername = await prompt('GitHub username or org');
     if (!githubUsername) {
@@ -221,7 +231,7 @@ export default {
         {
           Effect: 'Allow',
           Action: 'events:PutEvents',
-          Resource: `arn:aws:events:us-west-2:${accountId}:event-bus/prism-d1-metrics`,
+          Resource: `arn:aws:events:${region}:${accountId}:event-bus/prism-d1-metrics`,
         },
         {
           Effect: 'Allow',
@@ -280,10 +290,16 @@ export default {
     console.log('════════════════════════════════════════════════');
     console.log(`\n  Role ARN: ${roleArn}`);
     console.log(`  Repository: ${repoPath}`);
+    console.log(`  Event bus region: ${region}`);
     console.log('  Trusted sub patterns:');
     for (const p of subPatterns) console.log(`    - ${p}`);
     if (!opts.pinIds) {
       console.log('  Tip: rerun with --pin-ids to lock the trust policy to immutable GitHub IDs.');
+    }
+    if (region !== DEFAULT_REGION) {
+      console.log(`\n  Reminder: install the workflows for the same region, or events:PutEvents`);
+      console.log(`  will be denied at merge time:`);
+      console.log(`    prism-cli bootstrapper install-github-workflows --region ${region}`);
     }
     console.log('\n  Next step: Add a repository secret in GitHub');
     console.log('');

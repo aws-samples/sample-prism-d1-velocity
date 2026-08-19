@@ -152,3 +152,47 @@ export function validateNumericId(value: string, label = 'ID'): string {
   }
   return value;
 }
+
+/**
+ * An AWS region name, as it appears in the middle field of an ARN.
+ *
+ * This one is load-bearing in a way the others are not: the value is
+ * interpolated into the `Resource` of an IAM permissions policy
+ * (`arn:aws:events:<region>:<account>:event-bus/prism-d1-metrics`). Two failure
+ * modes follow from an unvalidated value, and neither surfaces at setup time:
+ *
+ *  - A `*` or `?` widens the resource to every region's event bus, quietly
+ *    granting more than intended.
+ *  - A `:` or `/` shifts the remaining ARN fields, producing a resource that
+ *    matches nothing. IAM stores such a policy without complaint, so the first
+ *    symptom is an AccessDenied from `events:PutEvents` in CI.
+ *
+ * The pattern accepts the AWS region shape (`us-west-2`, `ap-southeast-4`,
+ * `il-central-1`, `us-iso-east-1`) and nothing containing a wildcard or an ARN
+ * separator.
+ *
+ * GovCloud and China regions match that shape but are rejected on purpose.
+ * They live in the `aws-us-gov` and `aws-cn` partitions, and PRISM hard-codes
+ * `arn:aws:` in every ARN it builds -- the OIDC provider, the role, and this
+ * policy. Accepting one would place a correct region inside a wrong partition,
+ * which is the same silent non-match as a malformed region. Rejecting here
+ * fails loudly at setup instead.
+ */
+const AWS_REGION = /^[a-z]{2}(?:-[a-z0-9]+)+-\d{1,2}$/;
+
+export function validateAwsRegion(value: string, label = 'AWS region'): string {
+  if (!AWS_REGION.test(value)) {
+    fail([
+      `Error: ${label} "${value}" is not a valid AWS region name.`,
+      '  Expected something like us-west-2, eu-west-1, or ap-southeast-2.',
+    ]);
+  }
+  if (value.startsWith('us-gov-') || value.startsWith('cn-')) {
+    fail([
+      `Error: ${label} "${value}" is in the ${value.startsWith('cn-') ? 'aws-cn' : 'aws-us-gov'} partition, which PRISM does not support.`,
+      '  Every ARN the bootstrapper builds is hard-coded to the aws (commercial) partition,',
+      '  so the generated policy would reference a resource that does not exist.',
+    ]);
+  }
+  return value;
+}
