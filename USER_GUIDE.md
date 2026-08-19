@@ -122,6 +122,16 @@ This installs the agentic reviewer and the `prism-eval-gate.yml` workflow, along
 subscription. For the legacy Bedrock rubric mode instead, see [Eval Gates](#eval-gates) —
 `--mode kiro` is the recommended path and the only one that does not call Bedrock.
 
+**Then delete the eval gate you are not using.** The workflow installer copies both, and they
+declare the same check name with the same trigger, so leaving both runs two gates on every PR:
+
+```bash
+rm .github/workflows/prism-eval-gate-kiro.yml   # after install-eval-harness --mode kiro
+```
+
+`install-eval-harness` writes its chosen mode to `prism-eval-gate.yml` either way, so that is the
+file to keep. See [GitHub Actions Workflows](#github-actions-workflows) for the full explanation.
+
 **Team attribution (optional).** `prism-ai-metrics.yml` reads the team id from `.prism/config.json`
 in the repo. Create it by hand — it is a single field, and the git-hook installer that used to
 generate it is deprecated:
@@ -326,8 +336,21 @@ percentage.
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `prism-ai-metrics.yml` | PR merge to main/master | Emits per-PR **facts** — lead time, failure-fix label, review verdicts, commit SHAs. Computes no rates; the dashboard aggregates at query time. Emits `prism.d1.pr` + `prism.d1.deploy` |
-| `prism-eval-gate.yml` | PR open/update | Evaluates AI-generated code per-file with auto-selected rubrics, waits for Security Agent, blocks merge on failure |
+| `prism-eval-gate-kiro.yml` | PR open/update | **Kiro mode — recommended.** Agentic review via kiro-cli headless against `.kiro/steering/code-review.md`. Needs `KIRO_API_KEY`; never calls Bedrock |
+| `prism-eval-gate.yml` | PR open/update | **Bedrock mode — legacy.** Evaluates changed files against auto-selected rubrics via `bedrock:InvokeModel` |
 | `prism-agent-eval.yml` | PR modifying agent code | Runs agent in mock mode, evaluates output with agent-quality rubric |
+
+Both eval gates wait for the AWS Continuum review when it is configured and block the merge on
+failure. See [Eval Gates](#eval-gates) for the difference in detail.
+
+> **Run only one of them.** `install-github-workflows` copies every shipped workflow, so both eval
+> gates land in `.github/workflows/`, and they declare the same `name: PRISM Eval Gate` with
+> identical `pull_request` triggers — you get two same-named check runs on every PR, one billing
+> Bedrock and one billing Kiro. Delete the file for the mode you are not using.
+>
+> `install-eval-harness --mode <mode>` writes its chosen mode to `prism-eval-gate.yml` regardless of
+> mode, so after `--mode kiro` that file holds kiro content too. If you took the eval-harness route,
+> delete `prism-eval-gate-kiro.yml` and keep `prism-eval-gate.yml`.
 
 ### GitLab CI Workflows
 
@@ -336,8 +359,11 @@ GitLab workflow files are installed to `.prism/gitlab-workflows/`. Copy or merge
 | Job | Trigger | Purpose |
 |---|---|---|
 | `prism-ai-metrics` | Post-merge | Same as GitHub equivalent |
-| `prism-eval-gate` | MR open/update | Same as GitHub equivalent |
+| `prism-eval-gate` | MR open/update | Same as the GitHub **Bedrock mode** gate |
 | `prism-agent-eval` | MR modifying agent code | Same as GitHub equivalent |
+
+There is no GitLab equivalent of the kiro gate — `install-eval-harness` only writes GitHub
+workflows, so on GitLab the eval gate is Bedrock mode and `bedrock:InvokeModel` is required.
 
 ### Events Emitted
 
@@ -358,9 +384,7 @@ All EventBridge events use source `prism.d1.velocity` and bus `prism-d1-metrics`
 | Setting | How |
 |---|---|
 | Branch | Edit `branches` in each workflow |
-| AWS region | Edit `aws-region` field + EventBridge commands |
-| Eval threshold | Edit `.prism/.prism/eval-harness/eval-config.json` → `pass_threshold` |
-| Eval model | Edit `.prism/.prism/eval-harness/eval-config.json` → `eval_model_id` |
+| AWS region | Reinstall with `install-github-workflows --region <region>`, which rewrites every region reference in one pass. Hand-editing is error-prone — the workflows spell the region three ways (`aws-region:`, `--region`, `AWS_REGION:`) and missing one leaves calls pointed at the old region |
 
 ---
 
