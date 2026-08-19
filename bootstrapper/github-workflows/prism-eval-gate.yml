@@ -222,7 +222,7 @@ jobs:
             \"EventBusName\":\"prism-d1-metrics\",
             \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
 
-      - name: Upgrade AWS CLI v2 (securityagent code review requires v2.35+)
+      - name: Upgrade AWS CLI v2 (securityagent code review requires v2.36+)
         run: |
           curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
           curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sha256" -o /tmp/awscliv2.zip.sha256
