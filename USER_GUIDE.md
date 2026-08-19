@@ -25,7 +25,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - **Node.js 22+** — Required for prism-cli and the sample app
 - **jq** — For JSON processing in CI/CD workflows and eval harness
 - **prism-cli** — Install: `npm install -g @prism-d1/cli`
-- **codeburn** *(optional)* — Token usage tracking for non-Kiro tools. Install: `npm install -g codeburn` (or `brew install codeburn` on macOS). Kiro sessions are parsed directly by prism-cli, no codeburn needed.
+- **codeburn** — **Required.** `codeburn sync push` is the only writer to the attribution store, so every AI metric depends on it: AI share, AI-to-merge ratio, AI defect rate, cost per shipped commit, Attribution Coverage, the observed PRISM level, and the entire Developer Productivity dashboard. Install: `npm install -g codeburn` (or `brew install codeburn` on macOS), then run `prism-cli bootstrapper setup-otel-sync` to authenticate and install the sync schedule. codeburn is what parses Kiro, Claude Code, Cursor and other tool sessions — prism-cli does not parse them itself.
 - **GitHub Actions or GitLab CI** — For CI/CD workflows
 - **AWS OIDC** — For secure CI/CD to AWS authentication (set up via `setup-github-oidc` or `setup-gitlab-oidc`)
 - **Amazon Bedrock** — Model access must be enabled for code evaluation
