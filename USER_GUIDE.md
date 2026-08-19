@@ -150,7 +150,7 @@ In GitHub → your repo → Settings → Secrets and Variables → Actions, add 
 
 | Name | Value | Where to Find It | Used By |
 |---|---|---|---|
-| `PRISM_METRICS_ROLE_ARN` | ARN printed by `setup-github-oidc` | Step 2 output | All four workflows |
+| `PRISM_METRICS_ROLE_ARN` | ARN printed by `setup-github-oidc` | Step 2 output | All three installed workflows |
 | `KIRO_API_KEY` | Kiro API key | https://app.kiro.dev → Settings → API Keys | `prism-eval-gate.yml` only, in kiro mode |
 
 No repository **variables** are required — the workflows read none. Team identity comes from a file in the repo instead, `.prism/config.json`:
@@ -269,7 +269,7 @@ Monthly cost depends on team size and configuration. All resources are serverles
 |-----------|--------------|-------|
 | **VPC endpoints** (5 interface) | $35–50 | Gateway endpoints (S3, DynamoDB) are free. Skip all with `-c skipVpc=true` |
 | **DynamoDB** (3 tables) | $1–5 | On-demand billing; scales with commit volume |
-| **Lambda** (9 processors) | $1–3 | Invoked per event; negligible at <50 devs |
+| **Lambda** (11 functions) | $1–3 | Invoked per event; negligible at <50 devs |
 | **EventBridge** | < $1 | $1/million events |
 | **CloudWatch** (4 dashboards, 9 alarms) | $3–10 | Per-dashboard fee + metric costs |
 | **OTEL Collector** (API Gateway + Cognito + S3) | $2–5 | Per-request + S3 storage |
@@ -369,13 +369,17 @@ All EventBridge events use source `prism.d1.velocity` and bus `prism-d1-metrics`
 
 | Detail Type | Source Workflow | Destination |
 |---|---|---|
-| `prism.d1.commit` | Git hooks | EventBridge |
 | `prism.d1.pr` | ai-metrics | EventBridge |
 | `prism.d1.deploy` | ai-metrics | EventBridge |
-| `prism.d1.eval` | eval-gate | EventBridge |
+| `prism.d1.eval` | eval-gate (either mode) | EventBridge |
 | `prism.d1.agent.eval` | agent-eval | EventBridge |
-| `prism.d1.security.code_review` | eval-gate (Security Agent) | EventBridge |
-| `prism.d1.assessment` | GitHub Actions (weekly cron) | EventBridge |
+| `prism.d1.security.code_review` | eval-gate (AWS Continuum scan) | EventBridge |
+| `prism.d1.assessment` | `api-handler` Lambda, on `POST /assessment` | EventBridge |
+
+`prism.d1.commit` is routed and consumed by the pipeline but **no shipped workflow or hook emits
+it** — the git hooks only append trailers to commit messages. The only producer is
+`generate-demo-data`, for seeding. Per-commit facts now reach PRISM through codeburn attribution
+instead, which is why AI metrics survive hook removal.
 
 ### Customization
 
@@ -417,19 +421,19 @@ prism-cli bootstrapper install-eval-harness --model us.anthropic.claude-haiku-4-
 ```
 
 Installs into your repo:
-- `.prism/.prism/eval-harness/run-eval.sh` — evaluation script
-- `.prism/.prism/eval-harness/eval-config.json` — model, threshold, region
-- `.prism/.prism/eval-harness/rubrics/` — rubric JSON files
+- `.prism/eval-harness/run-eval.sh` — evaluation script
+- `.prism/eval-harness/eval-config.json` — model, threshold, region
+- `.prism/eval-harness/rubrics/` — rubric JSON files
 - `.github/workflows/prism-eval-gate.yml` — CI workflow
 
 ### Running Evaluations Locally
 
 ```bash
 # Evaluate a single file
-./.prism/.prism/eval-harness/run-eval.sh .prism/.prism/eval-harness/rubrics/code-quality.json src/handler.ts
+./.prism/eval-harness/run-eval.sh .prism/eval-harness/rubrics/code-quality.json src/handler.ts
 
 # With a spec file (for spec-compliance rubric)
-./.prism/.prism/eval-harness/run-eval.sh .prism/.prism/eval-harness/rubrics/spec-compliance.json src/api.ts --spec specs/api.md
+./.prism/eval-harness/run-eval.sh .prism/eval-harness/rubrics/spec-compliance.json src/api.ts --spec specs/api.md
 ```
 
 **Output:**
@@ -490,16 +494,23 @@ Weights must sum to 1.0. The script calculates the weighted average client-side 
 
 ### CI Workflow Behavior
 
-The `prism-eval-gate.yml` workflow:
+`prism-eval-gate.yml` behaves differently depending on which mode you installed. The shared steps:
 
-1. Detects commits with `AI-Origin:` trailers
-2. Identifies changed source files from those commits
-3. Auto-selects a rubric per file based on path
-4. Runs `run-eval.sh` per file (Bedrock mode) or kiro-cli (Kiro mode)
-5. Posts a PR comment with per-file scores
-6. Waits for AWS Continuum review (if installed)
-7. Emits `prism.d1.eval` event to EventBridge
-8. Fails the check if any file scores below threshold or Security Agent finds issues
+1. Emits `prism.d1.eval` to EventBridge
+2. Posts a PR comment with the results
+3. Waits for the AWS Continuum review when it is configured
+4. Fails the check on a failing review or a blocking Continuum finding
+
+Where they diverge:
+
+| | Kiro mode (default) | Bedrock mode (legacy) |
+|---|---|---|
+| **File selection** | The full PR diff — every changed source file is reviewed | Only files touched by commits carrying an `AI-Origin:` trailer |
+| **Review rules** | `.kiro/steering/code-review.md`, applied by kiro-cli headless | A rubric auto-selected per file by path match |
+| **Per-file scoring** | One review over the diff, with findings by file and line | `run-eval.sh` invoked per file |
+| **Fails on** | score below threshold, any high-severity finding, an unparseable review, or a **critical/high** Continuum finding | `overall_result == FAIL`, or **any** Continuum finding regardless of severity |
+
+Two consequences worth knowing. Kiro mode does not read commit trailers at all, so it reviews human-written code in the PR as well — deliberate, since AI attribution now comes from codeburn rather than trailers. And Bedrock mode blocks on a MEDIUM Continuum finding where kiro mode would not.
 
 ### Uninstall
 
@@ -522,10 +533,10 @@ AWS Continuum (formerly AWS Security Agent) provides proactive security scanning
 | Pen Testing | Manual or on deploy | Running application (OWASP Top 10, business logic) | CLI-automatable via `create-pentest` + `start-pentest-job` |
 
 Findings flow into the PRISM pipeline where they're:
-- Correlated with AI vs human code origin (via git trailer analysis)
-- Mapped to severity by CWE ID for dashboard reporting
+- Tagged with Continuum's own `riskLevel` and, where the finding carries one, a CWE id
+- Correlated with AI vs human code origin from codeburn attribution
 - Surfaced in Team, Executive, and CISO dashboards
-- Used to block the eval gate when **CRITICAL or HIGH** findings are present
+- Used to block the eval gate — on **critical or high** findings in kiro mode, on **any** finding in Bedrock mode
 
 ### Setup (CLI — Recommended)
 
@@ -699,9 +710,9 @@ The eval gate (`prism-eval-gate.yml`) integrates Continuum as a deterministic se
 
 1. Uploads the PR diff to S3 as a `.patch` file
 2. Calls `StartCodeReviewJob` with the diff S3 URI
-3. Polls `BatchGetCodeReviewJobs` until COMPLETED (5-15 min)
+3. Polls `BatchGetCodeReviewJobs` every 30s, up to 60 attempts (30-minute ceiling; scans typically finish in 5-15 min)
 4. Calls `ListFindings` to get structured results with risk levels
-5. Fails the gate if any CRITICAL or HIGH findings exist
+5. Fails the gate — on **critical or high** findings in kiro mode, on **any** finding in Bedrock mode
 6. Forwards findings to EventBridge for dashboard reporting
 
 No GitHub App polling or comment parsing needed — fully API-driven and deterministic.
@@ -722,8 +733,8 @@ git push -u origin test-security-review
 What happens:
 1. Security Agent GitHub App automatically reviews the PR
 2. Posts inline review comments on specific lines (as `aws-security-agent[bot]`)
-3. Eval gate workflow collects findings and blocks if count > 0
-4. Findings forwarded to EventBridge with CWE-based severity mapping
+3. Eval gate workflow collects findings and blocks — on critical/high in kiro mode, on any finding in Bedrock mode
+4. Findings forwarded to EventBridge carrying Continuum's `riskLevel` as severity, plus the CWE id as metadata
 
 **Test Pen Test:**
 
@@ -754,10 +765,10 @@ aws securityagent list-pentest-jobs-for-pentest \
 ### Important Limitations
 
 - **Code reviews require the `securityagent` CLI subcommands** — AWS CLI v2.36+ needed
-- **Code Review resources are per-repo** — must run `prism-cli securityagent setup` or create via API before first scan
+- **Code Review resources are per-repo** — the eval gate creates one on its first run and stores the id in SSM, so pre-provisioning via `prism-cli securityagent setup` is a convenience rather than a prerequisite
 - **Design reviews are web-console-only** — not automatable via CLI or GitHub Actions
 - **Pen tests take hours** — not suitable for blocking CI pipelines
-- **Scans take 5-15 minutes** — the workflow polls with 30s intervals (up to 30 attempts)
+- **Scans typically take 5-15 minutes** — the workflow polls every 30s for up to 60 attempts, a 30-minute ceiling before it gives up
 
 ### Quick Reference: All Continuum Commands
 
@@ -1012,7 +1023,7 @@ with mcp_client:
 | Resource | Location |
 |---|---|
 | MCP server spec template | `bootstrapper/spec-templates/mcp-server.md` |
-| Agent eval rubric | `.prism/.prism/eval-harness/rubrics/agent-quality.json` |
+| Agent eval rubric | `.prism/eval-harness/rubrics/agent-quality.json` |
 | AgentCore gateway config | `bootstrapper/agent-configs/agentcore-gateway.json` |
 | Agent CLAUDE.md template | `bootstrapper/claude-code/CLAUDE-agent.md` |
 | MCP specification | https://modelcontextprotocol.io/ |
@@ -1041,7 +1052,7 @@ python scripts/run-demo.py --mock   # Run agent demo with mock model
 | **Production Hosting** | Amazon Bedrock AgentCore | `bootstrapper/agent-configs/` |
 | **Agent Eval** | kiro-cli headless review + Bedrock rubrics (legacy) | `bootstrapper/eval-harness/` |
 | **Security** | Bedrock Guardrails + MCP authorization + Security Agent | `infra/lib/constructs/` |
-| **Workshop** | Module 02: Agent Development | `workshop/02-agent-development/` |
+| **Workshop** | Module 02: Agent Development | [Workshop Studio catalog](https://catalog.us-east-1.prod.workshops.aws/workshops/d0a8b037-dfe0-4023-9ce2-f5de32ee4c67/en-US) |
 
 
 
@@ -1062,7 +1073,6 @@ npm test        # Run test suite
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /health | Health check |
 | GET | /tasks | List all tasks |
 | POST | /tasks | Create a task |
 | GET | /tasks/:id | Get task by ID |
@@ -1071,16 +1081,15 @@ npm test        # Run test suite
 
 #### Workshop Exercises
 
-The `sample-app/specs/` directory contains feature specs in Kiro-compatible format:
+`sample-app/specs/` ships one spec in Kiro-compatible format, `task-api.md`, covering the CRUD
+endpoints above — a worked reference for what a spec looks like when the feature is already built.
 
-- **specs/task-api.md** — Already implemented (reference example)
-- **specs/task-search.md** — Exercise 2: Add search and filtering
-- **specs/task-priority.md** — Exercise 3: Add priority levels
-
-Use Claude Code to implement each spec:
+The exercise is to author the next spec yourself rather than implement a supplied one. Start from a
+template in `bootstrapper/spec-templates/` — `api-endpoint.md` fits a search-and-filter or priority
+feature — write it into `sample-app/specs/`, then hand it to your agent:
 
 ```
-> Read specs/task-search.md and implement all requirements. Write tests first.
+> Read specs/<your-spec>.md and implement all requirements. Write tests first.
 ```
 
 #### Project Structure
@@ -1091,14 +1100,22 @@ sample-app/
     index.ts            — Express app entry point
     types.ts            — TypeScript interfaces
     routes/
-      health.ts         — Health check route
       tasks.ts          — Task CRUD routes
+    mcp/
+      server.ts         — MCP server entry point
+      tools.ts          — MCP tool definitions
+      resources.ts      — MCP resource definitions
+      auth/
+        authorizer.ts   — Scope-based tool authorization
+        tool-registry.ts — Tool-to-scope mapping
+        session-store.ts — Session state
+        audit-logger.ts — Authorization audit trail
   tests/
-    tasks.test.ts       — Jest test suite
+    tasks.test.ts       — Task CRUD tests
+    mcp-server.test.ts  — MCP server + auth tests
+    session-store.test.ts
   specs/
     task-api.md         — Implemented spec (reference)
-    task-search.md      — Unimplemented (workshop exercise)
-    task-priority.md    — Unimplemented (workshop exercise)
 ```
 
 ### Task Assistant Agent
@@ -1213,7 +1230,8 @@ The hook (via `prism-cli git commit-trailers`) checks, in order:
 1. **Claude Code**: `CLAUDE_CODE` or `CLAUDE_CODE_SESSION_ID` environment variable
 2. **Kiro**: `KIRO_SESSION_ID` / `KIRO_SESSION` env var, `TERM_PROGRAM=kiro` (IDE terminal), or a `kiro` path in `VSCODE_GIT_ASKPASS_NODE` / `GIT_ASKPASS`
 3. **Q Developer**: `Q_DEVELOPER_SESSION` environment variable
-4. **Default**: No indicators → `AI-Origin: human`
+4. **Cursor**: `CURSOR_AGENT=1` or `CURSOR_TRACE_ID`, or a `cursor` path in `VSCODE_GIT_ASKPASS_NODE` / `VSCODE_GIT_ASKPASS_MAIN` / `GIT_ASKPASS`. `TERM_PROGRAM` is not usable here — Cursor inherits VS Code's value
+5. **Default**: No indicators → `AI-Origin: human`
 
 #### Token Tracking
 
@@ -1240,11 +1258,10 @@ If no usage data is available or no AI tool is detected, token trailers are omit
 | Issue | Solution |
 |---|---|
 | OIDC auth fails | Verify trust policy `sub` matches `repo:org/repo:*` |
-| EventBridge put fails | Check `events:PutEvents` on bus ARN |
-| Eval gate always skips | Ensure commits have `AI-Origin:` trailers (install git hooks) |
-| Weekly not running | Workflow must exist on default branch; test with `workflow_dispatch` |
-| Agent eval skips | No `agent/main.py` found — add `--mock` support to your agent |
-| Security Agent timeout | Agent takes 2+ min to start; workflow waits up to 12 min total |
+| EventBridge put fails | Check `events:PutEvents` on the bus ARN, and that the region matches the one you passed to `setup-github-oidc` |
+| Eval gate skips every file (Bedrock mode) | Bedrock mode only reviews files from commits carrying an `AI-Origin:` trailer. Switch to kiro mode, which reviews the whole PR diff and needs no trailers |
+| Agent eval skips | No agent entry point found — the workflow tries `agent/main.py`, `agents/main.py`, then `agent.py`, and each must accept `--mock` |
+| Continuum scan never completes | The workflow polls every 30s for up to 60 attempts, then gives up. Check the job status with `aws securityagent batch-get-code-review-jobs` |
 
 ### Security Agent Issues
 
@@ -1274,13 +1291,18 @@ All events flow to the `prism-d1-metrics` EventBridge bus with source `prism.d1.
 
 | Detail Type | Emitted By | Trigger |
 |---|---|---|
-| `prism.d1.commit` | Git hooks | Every commit |
-| `prism.d1.pr` | GitHub Actions / Git hooks | PR merge |
-| `prism.d1.deploy` | GitHub Actions | Merge to main |
-| `prism.d1.eval` | Eval harness / GitHub Actions | Bedrock Evaluation run |
-| `prism.d1.assessment` | GitHub Actions | Weekly cron |
-| `prism.d1.agent.eval` | Agent eval workflow | Agent evaluation run |
-| `prism.d1.security.code_review` | Eval gate (Security Agent) | PR security scan |
+| `prism.d1.pr` | `prism-ai-metrics.yml` | PR merge |
+| `prism.d1.deploy` | `prism-ai-metrics.yml` | Merge to main |
+| `prism.d1.eval` | `prism-eval-gate.yml`, either mode | PR opened or updated |
+| `prism.d1.agent.eval` | `prism-agent-eval.yml` | PR touching agent code |
+| `prism.d1.security.code_review` | `prism-eval-gate.yml` (Continuum scan) | PR security scan |
+| `prism.d1.assessment` | `api-handler` Lambda | `POST /assessment` |
+| `prism.d1.commit` | *no active producer* | — see note below |
+
+`prism.d1.commit` has no shipped emitter. It is still routed by the pipeline and read by
+`security-agent-processor` and `api-handler`, so the plumbing exists, but the git hooks that were
+once expected to emit it only ever wrote commit-message trailers. Commit-level facts now arrive via
+codeburn attribution into the attribution store instead of over EventBridge.
 
 ---
 
