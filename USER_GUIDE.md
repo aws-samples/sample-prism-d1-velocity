@@ -97,12 +97,16 @@ reaches AWS until you commit them and a PR merges.
 **CI/CD workflows.**
 
 ```bash
-# GitHub — writes four workflows to .github/workflows/
-prism-cli bootstrapper install-github-workflows --region us-west-2
+# GitHub — writes three workflows to .github/workflows/
+prism-cli bootstrapper install-github-workflows --mode kiro --region us-west-2
 
 # GitLab — writes to .prism/gitlab-workflows/
 prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
 ```
+
+`--mode` picks which eval gate to install — `kiro` (the default) or `bedrock`. Only one is written,
+as `prism-eval-gate.yml`, because the two modes declare the same check name and trigger. GitLab has
+no kiro variant and always gets the Bedrock gate.
 
 For GitLab, merge `.prism/gitlab-workflows/.gitlab-ci.yml` into your repo root `.gitlab-ci.yml`
 afterwards; the installer deliberately does not overwrite an existing pipeline definition.
@@ -111,26 +115,21 @@ Pass the **same `--region` you gave `setup-github-oidc` in Step 2**. The OIDC po
 `events:PutEvents` to one region's event bus, and the installer rewrites every region reference in
 the workflows it copies — a mismatch is denied at merge time with nothing failing at setup.
 
-**Eval harness — kiro mode.**
+**Eval harness — same mode.**
 
 ```bash
 prism-cli bootstrapper install-eval-harness --mode kiro
 ```
 
-This installs the agentic reviewer and the `prism-eval-gate.yml` workflow, along with the
-`code-review.md` Kiro steering file. It needs `KIRO_API_KEY` from the next step and a paid Kiro
-subscription. For the legacy Bedrock rubric mode instead, see [Eval Gates](#eval-gates) —
-`--mode kiro` is the recommended path and the only one that does not call Bedrock.
+The workflow installed above is the gate; this installs what the gate reads — for kiro mode the
+`code-review.md` Kiro steering file, for bedrock mode `.prism/eval-harness/` with its rubrics. Pass
+the same `--mode` to both, or the gate runs against rules that were never installed. kiro mode needs
+`KIRO_API_KEY` from the next step and a paid Kiro subscription; it is the recommended path and the
+only one that does not call Bedrock. See [Eval Gates](#eval-gates) for the difference.
 
-**Then delete the eval gate you are not using.** The workflow installer copies both, and they
-declare the same check name with the same trigger, so leaving both runs two gates on every PR:
-
-```bash
-rm .github/workflows/prism-eval-gate-kiro.yml   # after install-eval-harness --mode kiro
-```
-
-`install-eval-harness` writes its chosen mode to `prism-eval-gate.yml` either way, so that is the
-file to keep. See [GitHub Actions Workflows](#github-actions-workflows) for the full explanation.
+> Upgrading a repo instrumented before `--mode` existed? That installer copied both gates. The new
+> one warns if it finds a leftover `prism-eval-gate-kiro.yml` and prints the `rm` to run — it will
+> not delete a tracked file in your repo for you.
 
 **Team attribution (optional).** `prism-ai-metrics.yml` reads the team id from `.prism/config.json`
 in the repo. Create it by hand — it is a single field, and the git-hook installer that used to
@@ -336,21 +335,20 @@ percentage.
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `prism-ai-metrics.yml` | PR merge to main/master | Emits per-PR **facts** — lead time, failure-fix label, review verdicts, commit SHAs. Computes no rates; the dashboard aggregates at query time. Emits `prism.d1.pr` + `prism.d1.deploy` |
-| `prism-eval-gate-kiro.yml` | PR open/update | **Kiro mode — recommended.** Agentic review via kiro-cli headless against `.kiro/steering/code-review.md`. Needs `KIRO_API_KEY`; never calls Bedrock |
-| `prism-eval-gate.yml` | PR open/update | **Bedrock mode — legacy.** Evaluates changed files against auto-selected rubrics via `bedrock:InvokeModel` |
+| `prism-eval-gate.yml` | PR open/update | The eval gate, in whichever mode you installed. **Kiro mode (default)** does an agentic review via kiro-cli headless against `.kiro/steering/code-review.md` and needs `KIRO_API_KEY`. **Bedrock mode (legacy)** scores changed files against auto-selected rubrics via `bedrock:InvokeModel` |
 | `prism-agent-eval.yml` | PR modifying agent code | Runs agent in mock mode, evaluates output with agent-quality rubric |
 
-Both eval gates wait for the AWS Continuum review when it is configured and block the merge on
+Either eval mode waits for the AWS Continuum review when it is configured and blocks the merge on
 failure. See [Eval Gates](#eval-gates) for the difference in detail.
 
-> **Run only one of them.** `install-github-workflows` copies every shipped workflow, so both eval
-> gates land in `.github/workflows/`, and they declare the same `name: PRISM Eval Gate` with
-> identical `pull_request` triggers — you get two same-named check runs on every PR, one billing
-> Bedrock and one billing Kiro. Delete the file for the mode you are not using.
->
-> `install-eval-harness --mode <mode>` writes its chosen mode to `prism-eval-gate.yml` regardless of
-> mode, so after `--mode kiro` that file holds kiro content too. If you took the eval-harness route,
-> delete `prism-eval-gate-kiro.yml` and keep `prism-eval-gate.yml`.
+**Only one eval gate is ever installed.** It ships as two assets —
+`prism-eval-gate-kiro.yml` and `prism-eval-gate.yml` — and both
+`install-github-workflows --mode <mode>` and `install-eval-harness --mode <mode>` write the selected
+one to `prism-eval-gate.yml`. That is deliberate: the two assets declare the same
+`name: PRISM Eval Gate` with identical `pull_request` triggers, so having both in
+`.github/workflows/` would produce two same-named check runs on every PR, one billing Bedrock and one
+billing Kiro. Repos instrumented before `--mode` existed received both; the installer now flags the
+leftover file.
 
 ### GitLab CI Workflows
 

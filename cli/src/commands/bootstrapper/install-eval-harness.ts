@@ -87,6 +87,16 @@ export default {
     // Determine mode
     const mode = opts.mode || await prompt('Eval mode (kiro = recommended, bedrock = legacy)', 'kiro');
 
+    // Validated rather than falling through to bedrock. Both modes write the same
+    // workflow file, so a typo'd mode used to install the other gate silently --
+    // surfacing only as an unexpected Bedrock bill, or as a kiro gate with no
+    // KIRO_API_KEY. install-github-workflows rejects the same set.
+    if (mode !== 'kiro' && mode !== 'bedrock') {
+      console.error(`Error: unknown --mode "${mode}".`);
+      console.error('  Expected one of: kiro, bedrock');
+      process.exit(1);
+    }
+
     if (mode === 'kiro') {
       await installKiroMode(gitRoot, opts);
     } else {
