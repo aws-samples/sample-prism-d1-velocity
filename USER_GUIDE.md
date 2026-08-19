@@ -38,16 +38,31 @@ This guide is for engineering teams adopting AI-native software development prac
 
 ### Step 1: Deploy PRISM Infrastructure
 
-Deploy the CDK stacks that create the EventBridge bus, DynamoDB tables, Lambda processors, and CloudWatch dashboards:
+Deploy the CDK stacks — EventBridge bus, DynamoDB tables, Lambda processors, the OTEL collector, four CloudWatch dashboards, alarms, and Bedrock Guardrails:
+
+```bash
+cd infra
+npm install
+npx cdk deploy --all --context enableSecurityAgent=true
+```
+
+`enableSecurityAgent=true` additionally creates the AWS Continuum scan bucket and the `prism-d1-continuum-ci-scan` managed policy that Step 2 attaches to the OIDC role. Leave the flag off for a metrics-only deployment. On a non-production deployment, add `--context skipVpc=true` to save roughly $35–50/month.
+
+Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 4, and developers need the URL for `setup-otel-sync`.
+
+**Or use the security-agent wrapper.** `prism-cli securityagent setup` runs the same deploy and then performs the Continuum onboarding that would otherwise follow it:
 
 ```bash
 prism-cli securityagent setup --profile your-profile --region us-west-2
 ```
 
-This handles:
-1. `cdk deploy --all --context enableSecurityAgent=true`
-2. Creates a Continuum Code Review resource (or finds existing)
-3. Attaches the `prism-d1-continuum-ci-scan` managed policy to the OIDC role
+Beyond `cdk deploy --all --context enableSecurityAgent=true`, it:
+
+1. Looks up your Continuum agent space
+2. Creates the Continuum application if it does not exist, and attaches its execution role
+3. Archives the repository to the scan bucket, creates a Code Review resource, and stores its id at `/prism/continuum/code-review-id/<repo-slug>` in SSM
+
+Item 3 is a convenience rather than a requirement — the eval-gate workflow reads that SSM parameter and creates the Code Review itself on its first run if the parameter is missing.
 
 ### Step 2: Set Up OIDC (CI/CD → AWS Authentication)
 
