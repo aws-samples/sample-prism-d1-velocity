@@ -16,6 +16,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Agent Development (MCP + Agent Configs)](#agent-development-mcp--agent-configs)
 - [Sample App](#sample-app)
 - [Troubleshooting](#troubleshooting)
+- [Event Schema](#event-schema)
 
 ---
 
@@ -365,21 +366,9 @@ workflows, so on GitLab the eval gate is Bedrock mode and `bedrock:InvokeModel` 
 
 ### Events Emitted
 
-All EventBridge events use source `prism.d1.velocity` and bus `prism-d1-metrics`:
-
-| Detail Type | Source Workflow | Destination |
-|---|---|---|
-| `prism.d1.pr` | ai-metrics | EventBridge |
-| `prism.d1.deploy` | ai-metrics | EventBridge |
-| `prism.d1.eval` | eval-gate (either mode) | EventBridge |
-| `prism.d1.agent.eval` | agent-eval | EventBridge |
-| `prism.d1.security.code_review` | eval-gate (AWS Continuum scan) | EventBridge |
-| `prism.d1.assessment` | `api-handler` Lambda, on `POST /assessment` | EventBridge |
-
-`prism.d1.commit` is routed and consumed by the pipeline but **no shipped workflow or hook emits
-it** — the git hooks only append trailers to commit messages. The only producer is
-`generate-demo-data`, for seeding. Per-commit facts now reach PRISM through codeburn attribution
-instead, which is why AI metrics survive hook removal.
+All three workflows publish to the `prism-d1-metrics` EventBridge bus with source
+`prism.d1.velocity`. For the detail types, their emitters and triggers, see
+[Event Schema](#event-schema).
 
 ### Customization
 
