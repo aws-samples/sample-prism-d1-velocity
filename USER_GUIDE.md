@@ -693,21 +693,6 @@ PENTEST_ID=$(echo "${PENTEST_RESULT}" | jq -r '.pentestId')
 echo "Pen Test ID: ${PENTEST_ID}"
 ```
 
-### Configure the PRISM Webhook
-
-In the Security Agent console → **Settings** → **Notifications** (or **Webhooks**):
-
-| Field | Value |
-|---|---|
-| **URL** | `${PRISM_API_URL}/security-findings` |
-| **Method** | POST |
-| **Header name** | `x-api-key` |
-| **Header value** | Your PRISM API key |
-| **Events** | All finding types |
-| **Format** | JSON |
-
-> **Note:** This webhook is for pen test findings only. Code review findings are collected by the eval gate workflow directly from GitHub PR comments.
-
 ### How Eval Gate Integrates Continuum
 
 The eval gate (`prism-eval-gate.yml`) integrates Continuum as a deterministic security scan:
@@ -1275,7 +1260,7 @@ If no usage data is available or no AI tool is detected, token trailers are omit
 | Pen test start times out | Domain re-verification + Lambda cold start | Warm the verification Lambda first; add retry logic |
 | Code review not triggering | Repo is public or not connected | Must be private; re-authorize via web console OAuth |
 | GitHub integration CLI fails | OAuth not completed | Initial setup requires web console; CLI only works after OAuth |
-| No findings in PRISM dashboards | Webhook misconfigured or eval gate not collecting | Check Lambda logs; verify GitHub variables are set |
+| No findings in PRISM dashboards | Eval gate not emitting, or the OIDC role lacks the Continuum policy | Check the eval gate job log and `security-agent-processor` Lambda logs; confirm `PRISM_METRICS_ROLE_ARN` is set and `prism-d1-continuum-ci-scan` is attached |
 | Eval gate not blocking | Security Agent hasn't posted yet | Gate polls for up to 10 min; check if bot posted comments |
 | Pen test log group missing | IAM path wrong | Logs go to `/aws/securityagent/<space-name>/pt-<id>`, not `/prism/security-agent/*` |
 | `UnrecognizedClientException` | Security Agent not enabled for your account | Request access via your AWS account team |
