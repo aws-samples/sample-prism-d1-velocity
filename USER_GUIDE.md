@@ -85,29 +85,7 @@ In GitHub → your repo → Settings → Secrets and Variables → Actions:
 | Variable | `PRISM_AGENT_SPACE_ID` | `as-xxxxxxxxxxxx` | Security Agent setup output |
 | Variable | `PRISM_PENTEST_ID` | `pt-xxxxxxxxxxxx` | Pen test creation output |
 
-### Step 4: Deploy CloudWatch Dashboards
-
-```bash
-# Replace placeholders
-sed -e 's/REPLACE_TEAM_ID/your-team-id/g' \
-    -e 's/REPLACE_REPO/your-repo-name/g' \
-    dashboards/cloudwatch/team-velocity.json > /tmp/team-velocity-configured.json
-
-aws cloudwatch put-dashboard \
-  --dashboard-name "PRISM-D1-TeamVelocity-YourTeam" \
-  --dashboard-body file:///tmp/team-velocity-configured.json
-
-# Executive dashboard
-sed -e 's/REPLACE_TEAM_ID/your-team-id/g' \
-    -e 's/REPLACE_REPO/your-repo-name/g' \
-    dashboards/cloudwatch/executive-readout.json > /tmp/executive-readout-configured.json
-
-aws cloudwatch put-dashboard \
-  --dashboard-name "PRISM-D1-ExecutiveReadout" \
-  --dashboard-body file:///tmp/executive-readout-configured.json
-```
-
-### 4. Create Developer Accounts
+### Step 4: Create Developer Accounts
 
 After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector:
 
@@ -818,131 +796,20 @@ aws securityagent update-integrated-resources \
 
 ## Dashboards
 
-### Available Dashboards
+The four CloudWatch dashboards are created by the CDK stack. There is no dashboard JSON to deploy and no `put-dashboard` step — `npx cdk deploy --all` builds them from `infra/lib/dashboard-stack.ts`, so changing a dashboard is a code change rather than a console or CLI operation.
 
-| Dashboard | File | Audience |
-|-----------|------|----------|
-| Team Velocity | `dashboards/cloudwatch/team-velocity.json` | Engineering teams, tech leads |
-| Executive Readout | `dashboards/cloudwatch/executive-readout.json` | CTOs, VPEs, engineering directors |
+| Dashboard | Audience | Deployed |
+|---|---|---|
+| `PRISM-D1-Team-Velocity` | Engineering teams, tech leads | Always |
+| `PRISM-D1-Executive-Readout` | CTOs, VPEs, engineering directors | Always |
+| `PRISM-D1-CISO-Compliance` | CISOs, security leaders, compliance officers | Always |
+| `PRISM-D1-Developer-Productivity` | Engineering managers, FinOps | Only when the OTEL collector is enabled |
 
-### Prerequisites
+Metrics are published to the `PRISM/D1/Velocity` namespace. Each metric is emitted twice: once carrying `TeamId` and `Repository` dimensions for per-team views, and once dimensionless for aggregate queries and alarms.
 
-- CloudWatch `PutDashboard` permission (`cloudwatch:PutDashboard`)
-- Metrics flowing into the `PRISM/D1` namespace (via the PRISM collector pipeline)
+For what each dashboard contains, which store each panel reads from, and screenshots of all four, see the **[Dashboard Guide](docs/DATA-ARCHITECTURE.md#dashboard-guide)**. That is the single source of truth and is kept in step with `dashboard-stack.ts`. The nine alarms that ship by default are listed under [Active Alarms](docs/DATA-ARCHITECTURE.md#active-alarms).
 
-### Deploying Dashboards
-
-```bash
-aws cloudwatch put-dashboard \
-  --dashboard-name "PRISM-D1-TeamVelocity" \
-  --dashboard-body file://dashboards/cloudwatch/team-velocity.json
-
-aws cloudwatch put-dashboard \
-  --dashboard-name "PRISM-D1-ExecutiveReadout" \
-  --dashboard-body file://dashboards/cloudwatch/executive-readout.json
-```
-
-### Deploy via CloudFormation
-
-```yaml
-Resources:
-  TeamVelocityDashboard:
-    Type: AWS::CloudWatch::Dashboard
-    Properties:
-      DashboardName: !Sub "PRISM-D1-TeamVelocity-${TeamId}"
-      DashboardBody: !Sub |
-        # Inline the JSON with ${TeamId} substitutions
-```
-
-### Dimensions
-
-All metrics use the following dimensions:
-
-| Dimension | Description | Example |
-|-----------|-------------|---------|
-| `TeamId` | Unique team identifier | `platform-team`, `payments-squad` |
-| `Repo` | Repository name | `backend-api`, `web-frontend` |
-| `Environment` | Deployment target | `production`, `staging` |
-
-### Adding Custom Widgets
-
-Append to the `widgets` array in either dashboard JSON. CloudWatch uses a 24-column grid:
-
-```json
-{
-  "type": "metric",
-  "x": 0,
-  "y": 25,
-  "width": 12,
-  "height": 6,
-  "properties": {
-    "title": "My Custom Metric",
-    "view": "timeSeries",
-    "metrics": [
-      ["PRISM/D1", "YourMetricName", "TeamId", "your-team", {"stat": "Average", "period": 86400}]
-    ],
-    "region": "${AWS::Region}"
-  }
-}
-```
-
-Widget types:
-
-| Type | `view` value | Use case |
-|------|-------------|----------|
-| Line graph | `timeSeries` | Trend data over time |
-| Bar chart | `bar` | Counts, frequencies |
-| Stacked area | `timeSeries` + `"stacked": true` | Comparative breakdowns |
-| Single number | `singleValue` | Current/latest metric value |
-| Text | (type: `text`) | Section headers, notes |
-
-### Threshold Recommendations by PRISM Level
-
-#### DORA Metrics
-
-| Metric | L1 (Ad Hoc) | L2 (Emerging) | L3 (Scaling) | L4 (Optimized) | L5 (Transformative) |
-|--------|-------------|---------------|--------------|-----------------|---------------------|
-| Deployment Frequency | < 1/week | 1-2/week | Daily | Multiple/day | On-demand |
-| Lead Time | > 30 days | 7-30 days | 1-7 days | < 1 day | < 1 hour |
-| Change Failure Rate | > 45% | 30-45% | 15-30% | 5-15% | < 5% |
-| MTTR | > 7 days | 1-7 days | < 1 day | < 1 hour | < 15 min |
-
-#### AI-DORA Metrics
-
-| Metric | L1 | L2 | L3 | L4 | L5 |
-|--------|----|----|----|----|-----|
-| AI Acceptance Rate | 0% | 10-30% | 30-50% | 50-70% | > 70% |
-| AI-to-Merge Ratio | 0 | 0.1-0.3 | 0.3-0.5 | 0.5-0.7 | > 0.7 |
-| Eval Gate Pass Rate | N/A | > 60% | > 80% | > 90% | > 95% |
-| Spec-to-Code Hours | N/A | > 48h | 24-48h | 8-24h | < 8h |
-
-### Metric Namespace Reference
-
-All metrics live under `PRISM/D1`:
-
-- `PRISM/D1/AIAcceptanceRate` — Percentage of AI suggestions accepted
-- `PRISM/D1/DeploymentCount` — Number of deployments
-- `PRISM/D1/LeadTimeSeconds` — Time from commit to production (seconds)
-- `PRISM/D1/ChangeFailureRate` — Percentage of deployments causing failure
-- `PRISM/D1/MTTRSeconds` — Mean time to recovery (seconds)
-- `PRISM/D1/AIToMergeRatio` — Ratio of AI-generated code to total merged code
-- `PRISM/D1/EvalGatePassRate` — Percentage of AI outputs passing eval gates
-- `PRISM/D1/SpecToCodeHours` — Hours from spec approval to code completion
-- `PRISM/D1/DefectRateAI` — Post-merge defect rate for AI-generated code
-- `PRISM/D1/DefectRateHuman` — Post-merge defect rate for human-written code
-- `PRISM/D1/AITestCoverageDelta` — Change in test coverage from AI-generated tests
-- `PRISM/D1/PRISMLevel` — Current assessed PRISM maturity level (1-5)
-- `PRISM/D1/AIROIMultiplier` — Return on AI investment multiplier
-
-### Updating Dashboards
-
-CloudWatch `put-dashboard` is idempotent. Re-run the deploy command to update:
-
-```bash
-aws cloudwatch put-dashboard \
-  --dashboard-name "PRISM-D1-TeamVelocity" \
-  --dashboard-body file://dashboards/cloudwatch/team-velocity.json
-```
+To change a dashboard or an alarm, edit `infra/lib/dashboard-stack.ts` and redeploy.
 
 ---
 
