@@ -6,7 +6,7 @@
 #
 # Required setup:
 #   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role with bedrock:InvokeModel + events:PutEvents)
-#   - CI/CD variable AWS_REGION (default: us-west-2)
+#   - PRISM_AWS_REGION variable in the variables: block below controls the region
 #   - .prism/config.json committed to the repo
 #   - .prism/eval-harness/ installed (run: prism-cli bootstrapper install-eval-harness)
 #   - (Optional) Agent entry point supports --mock flag for dry-run execution
@@ -26,7 +26,8 @@ prism-agent-eval:
         - "**/*agent*.py"
         - "**/*agent*.ts"
   variables:
-    AWS_DEFAULT_REGION: us-west-2
+    PRISM_AWS_REGION: us-west-2
+    AWS_DEFAULT_REGION: $PRISM_AWS_REGION
   before_script:
     - apt-get update -qq && apt-get install -y -qq jq bc git curl unzip
     - curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip

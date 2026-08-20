@@ -68,11 +68,17 @@ export default {
 
       const outName = gateAssets.has(file) ? EVAL_GATE_OUTPUT : file;
       let content = readFileSync(join(assetDir, file), 'utf-8');
-      content = applyRegion(content, region);
-      const stragglers = region !== DEFAULT_REGION ? findDefaultRegionRefs(content, file) : [];
-      if (stragglers.length > 0) {
-        console.warn(`  ⚠ ${file}: ${stragglers.length} unconverted region reference(s):`);
-        stragglers.forEach(s => console.warn(`      ${s}`));
+      // All workflows define PRISM_AWS_REGION in a top-level env: block and
+      // reference it everywhere else. The installer only needs to swap that one
+      // value rather than doing a broad text replacement across the whole file.
+      if (region !== DEFAULT_REGION) {
+        const envPattern = `PRISM_AWS_REGION: ${DEFAULT_REGION}`;
+        if (content.includes(envPattern)) {
+          content = content.replace(envPattern, `PRISM_AWS_REGION: ${region}`);
+        } else {
+          // Fallback: the asset doesn't have the env block (shouldn't happen)
+          content = applyRegion(content, region);
+        }
       }
       writeFileSync(join(outputDir, outName), content);
       console.log(`  ✓ ${outName}${file === outName ? '' : `   (${mode} mode, from ${file})`}`);

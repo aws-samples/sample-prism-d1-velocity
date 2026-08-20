@@ -15,6 +15,10 @@ on:
     types: [opened, synchronize, reopened]
     branches: [main, master]
 
+
+env:
+  PRISM_AWS_REGION: us-west-2
+
 permissions:
   id-token: write
   contents: read
@@ -213,13 +217,13 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ env.METRICS_ROLE_ARN }}
-          aws-region: us-west-2
+          aws-region: ${{ env.PRISM_AWS_REGION }}
         continue-on-error: true
 
       - name: Emit prism.d1.eval event
         if: steps.aws-creds.outcome == 'success'
         env:
-          AWS_REGION: us-west-2
+          AWS_REGION: ${{ env.PRISM_AWS_REGION }}
           TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
           REPO: ${{ github.repository }}
           REVIEW_SCORE: ${{ steps.review.outputs.score }}
@@ -249,14 +253,14 @@ jobs:
               eval:{score:($score|tonumber),result:$result,rubric:"kiro-headless",
                     findings:($findings|tonumber),high_findings:($high|tonumber),
                     pr_number:($pr_number|tonumber),method:"kiro-headless"}}')
-          aws events put-events --region us-west-2 --entries \
+          aws events put-events --region $PRISM_AWS_REGION --entries \
             "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",\"EventBusName\":\"prism-d1-metrics\",\"Detail\":$(echo "${DETAIL}" | jq -Rs '.')}]" || true
 
       - name: AWS Continuum security scan (Tier 2 -- deterministic)
         id: security-gate
         if: steps.aws-creds.outcome == 'success'
         env:
-          AWS_REGION: us-west-2
+          AWS_REGION: ${{ env.PRISM_AWS_REGION }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
@@ -407,7 +411,7 @@ jobs:
         if: steps.security-gate.outputs.skipped != 'true' && steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.findings != ''
         continue-on-error: true
         env:
-          AWS_REGION: us-west-2
+          AWS_REGION: ${{ env.PRISM_AWS_REGION }}
           TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -458,7 +462,7 @@ jobs:
           if [ "$TOTAL" -gt 0 ]; then
             # EventBridge accepts max 10 entries per call
             for i in $(seq 0 10 $((TOTAL - 1))); do
-              aws events put-events --region us-west-2 \
+              aws events put-events --region $PRISM_AWS_REGION \
                 --entries "$(echo "${ENTRIES}" | jq -c ".[$i:$((i+10))]")" || true
             done
             echo "Emitted ${TOTAL} Continuum finding events to EventBridge"

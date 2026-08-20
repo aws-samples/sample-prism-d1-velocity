@@ -41,11 +41,13 @@ export default {
       let content = readFileSync(join(assetDir, file), 'utf-8');
       // Template the audience and region
       content = content.replace(/aud: https:\/\/gitlab\.com/g, `aud: ${gitlabUrl}`);
-      content = applyRegion(content, region);
-      const stragglers = region !== DEFAULT_REGION ? findDefaultRegionRefs(content, file) : [];
-      if (stragglers.length > 0) {
-        console.warn(`  ⚠ ${file}: ${stragglers.length} unconverted region reference(s):`);
-        stragglers.forEach(s => console.warn(`      ${s}`));
+      if (region !== DEFAULT_REGION) {
+        const envPattern = `PRISM_AWS_REGION: ${DEFAULT_REGION}`;
+        if (content.includes(envPattern)) {
+          content = content.replace(envPattern, `PRISM_AWS_REGION: ${region}`);
+        } else {
+          content = applyRegion(content, region);
+        }
       }
       writeFileSync(join(outputDir, file), content);
       console.log(`  ✓ ${file}`);

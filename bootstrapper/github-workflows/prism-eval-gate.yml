@@ -16,6 +16,10 @@ on:
     types: [opened, synchronize, reopened]
     branches: [main, master]
 
+
+env:
+  PRISM_AWS_REGION: us-west-2
+
 permissions:
   id-token: write
   contents: read
@@ -34,7 +38,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
-          aws-region: us-west-2
+          aws-region: ${{ env.PRISM_AWS_REGION }}
 
       - name: Read team ID
         id: prism-config
@@ -217,7 +221,7 @@ jobs:
               eval: {total_files: $total_files, pass_count: $pass_count, fail_count: $fail_count,
                      result: $result, pr_number: ($pr_number | tonumber), hallucinations_caught: $hallucinations}
             }')
-          aws events put-events --region us-west-2 --entries "[{
+          aws events put-events --region $PRISM_AWS_REGION --entries "[{
             \"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",
             \"EventBusName\":\"prism-d1-metrics\",
             \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
@@ -238,7 +242,7 @@ jobs:
       - name: AWS Continuum diff scan
         id: security-gate
         env:
-          AWS_REGION: us-west-2
+          AWS_REGION: ${{ env.PRISM_AWS_REGION }}
         run: |
           echo "::group::Retrieve Continuum config from SSM"
           AGENT_SPACE_ID=$(aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text 2>/dev/null || echo "")
@@ -414,7 +418,7 @@ jobs:
       - name: Emit Continuum findings to EventBridge
         if: steps.security-gate.outputs.findings != '0' && steps.security-gate.outputs.skipped != 'true'
         env:
-          AWS_REGION: us-west-2
+          AWS_REGION: ${{ env.PRISM_AWS_REGION }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"

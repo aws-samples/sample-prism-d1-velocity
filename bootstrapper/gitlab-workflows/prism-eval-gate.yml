@@ -6,7 +6,7 @@
 #
 # Required setup:
 #   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role with bedrock:InvokeModel + events:PutEvents)
-#   - CI/CD variable AWS_REGION (default: us-west-2)
+#   - PRISM_AWS_REGION variable in the variables: block below controls the region
 #   - .prism/eval-harness/ directory in your repo (run: prism-cli bootstrapper install-eval-harness)
 #   - At least one rubric JSON in .prism/eval-harness/rubrics/
 
@@ -21,7 +21,8 @@ prism-eval-gate:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
   variables:
-    AWS_DEFAULT_REGION: us-west-2
+    PRISM_AWS_REGION: us-west-2
+    AWS_DEFAULT_REGION: $PRISM_AWS_REGION
   before_script:
     - yum install -y -q jq bc git
     - git fetch --unshallow || true

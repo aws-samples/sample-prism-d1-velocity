@@ -23,6 +23,10 @@ on:
       - '**/agent*.py'
       - '**/agent*.ts'
 
+
+env:
+  PRISM_AWS_REGION: us-west-2
+
 permissions:
   id-token: write
   contents: read
@@ -41,7 +45,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
-          aws-region: us-west-2
+          aws-region: ${{ env.PRISM_AWS_REGION }}
 
       - name: Read team ID from .prism/config.json
         id: prism-config
@@ -298,7 +302,7 @@ jobs:
             }')
 
           aws events put-events \
-            --region us-west-2 \
+            --region $PRISM_AWS_REGION \
             --entries "[{
               \"Source\": \"prism.d1.velocity\",
               \"DetailType\": \"prism.d1.agent.eval\",

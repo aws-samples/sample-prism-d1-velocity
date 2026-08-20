@@ -28,11 +28,19 @@ async function writeWorkflow(
       return;
     }
   }
-  const content = applyRegion(readFileSync(src, 'utf-8'), region);
-  const stragglers = region !== DEFAULT_REGION ? findDefaultRegionRefs(content, label) : [];
-  if (stragglers.length > 0) {
-    console.warn(`  ⚠ ${stragglers.length} unconverted region reference(s):`);
-    stragglers.forEach(s => console.warn(`      ${s}`));
+  const raw = readFileSync(src, 'utf-8');
+  // All workflows define PRISM_AWS_REGION in a top-level env/variables block.
+  // Replace that one value rather than doing a broad text substitution.
+  let content: string;
+  if (region !== DEFAULT_REGION) {
+    const envPattern = `PRISM_AWS_REGION: ${DEFAULT_REGION}`;
+    if (raw.includes(envPattern)) {
+      content = raw.replace(envPattern, `PRISM_AWS_REGION: ${region}`);
+    } else {
+      content = applyRegion(raw, region);
+    }
+  } else {
+    content = raw;
   }
   writeFileSync(dest, content);
   console.log(`✓ Installed ${label} (region: ${region})`);
