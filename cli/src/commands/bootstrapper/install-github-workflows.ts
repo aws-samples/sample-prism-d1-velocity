@@ -69,7 +69,7 @@ export default {
       const outName = gateAssets.has(file) ? EVAL_GATE_OUTPUT : file;
       let content = readFileSync(join(assetDir, file), 'utf-8');
       content = applyRegion(content, region);
-      const stragglers = findDefaultRegionRefs(content, file);
+      const stragglers = region !== DEFAULT_REGION ? findDefaultRegionRefs(content, file) : [];
       if (stragglers.length > 0) {
         console.warn(`  ⚠ ${file}: ${stragglers.length} unconverted region reference(s):`);
         stragglers.forEach(s => console.warn(`      ${s}`));

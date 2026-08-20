@@ -29,7 +29,7 @@ async function writeWorkflow(
     }
   }
   const content = applyRegion(readFileSync(src, 'utf-8'), region);
-  const stragglers = findDefaultRegionRefs(content, label);
+  const stragglers = region !== DEFAULT_REGION ? findDefaultRegionRefs(content, label) : [];
   if (stragglers.length > 0) {
     console.warn(`  ⚠ ${stragglers.length} unconverted region reference(s):`);
     stragglers.forEach(s => console.warn(`      ${s}`));

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
-import { applyRegion, findDefaultRegionRefs } from '../../utils/region.js';
+import { applyRegion, findDefaultRegionRefs, DEFAULT_REGION } from '../../utils/region.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -42,7 +42,7 @@ export default {
       // Template the audience and region
       content = content.replace(/aud: https:\/\/gitlab\.com/g, `aud: ${gitlabUrl}`);
       content = applyRegion(content, region);
-      const stragglers = findDefaultRegionRefs(content, file);
+      const stragglers = region !== DEFAULT_REGION ? findDefaultRegionRefs(content, file) : [];
       if (stragglers.length > 0) {
         console.warn(`  ⚠ ${file}: ${stragglers.length} unconverted region reference(s):`);
         stragglers.forEach(s => console.warn(`      ${s}`));
