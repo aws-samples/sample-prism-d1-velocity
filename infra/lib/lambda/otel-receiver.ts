@@ -473,6 +473,9 @@ async function writeCommitAttribution(
   const aiModel = usage ? usage.model : '';
 
   try {
+    // Write 1: Upsert metadata + origin. Does NOT touch in_main or was_reverted
+    // to prevent codeburn (which doesn't know about merges) from downgrading
+    // CI-seeded in_main=true back to false.
     await dynamoClient.send(new UpdateItemCommand({
       TableName: AI_USAGE_TABLE,
       Key: {
@@ -482,25 +485,18 @@ async function writeCommitAttribution(
       UpdateExpression:
         'SET record_type = :rt, session_id = :sid, trace_id = :tid, ' +
         '#proj = :proj, #usr = :usr, device_id = :did, ' +
-        'in_main = :im, was_reverted = :wr, ' +
         '#ts = :ts, updated_at = :now, #ttl = :ttl, ' +
-        // Frozen origin verdict — see the note above.
         'ai_origin = :ao, ai_tool = :at, ai_model = :am, origin_source = :os, ' +
-        // Sparse by-user GSI keys: per-developer commit queries (GET
-        // /v1/productivity) without scanning the table.
-        'gsi_user = :gu, gsi_user_sk = :gusk',
-      // Write if: item is new, OR inMain/wasReverted changed, OR we can now
-      // resolve an origin we previously could not. The last clause lets a
-      // commit whose usage spans arrived in a LATER push get upgraded from
-      // human to ai-generated, instead of being frozen wrong forever.
+        'gsi_user = :gu, gsi_user_sk = :gusk, ' +
+        // Set in_main and was_reverted ONLY on new items. Existing values are
+        // preserved — upgrades (false→true) happen in Write 2 below.
+        'in_main = if_not_exists(in_main, :im), ' +
+        'was_reverted = if_not_exists(was_reverted, :wr)',
       ConditionExpression:
-        'attribute_not_exists(pk) OR in_main <> :im OR was_reverted <> :wr ' +
+        'attribute_not_exists(pk) ' +
         'OR attribute_not_exists(ai_origin) ' +
         'OR (ai_origin = :human AND :ao = :ai)',
       ExpressionAttributeNames: {
-        // 'project', 'ttl', 'user', and 'timestamp' are all DynamoDB
-        // reserved keywords — bare use in an expression throws
-        // ValidationException at runtime.
         '#proj': 'project',
         '#ttl': 'ttl',
         '#usr': 'user',
@@ -528,11 +524,58 @@ async function writeCommitAttribution(
         ':gusk': { S: `COMMIT#${s.timestamp}` },
       },
     }));
-    return true;
   } catch (e) {
-    if (e instanceof ConditionalCheckFailedException) return false; // no-op, state unchanged
-    throw e;
+    if (!(e instanceof ConditionalCheckFailedException)) throw e;
+    // Item exists and origin is already ai-generated (or same) — no-op for Write 1.
   }
+
+  // Write 2: Upgrade boolean state fields (false→true only). These are
+  // separate so they never downgrade: codeburn may push in_main=false before
+  // the commit merges, while CI already seeded in_main=true.
+  if (s.inMain) {
+    try {
+      await dynamoClient.send(new UpdateItemCommand({
+        TableName: AI_USAGE_TABLE,
+        Key: {
+          pk: { S: `REPO#${s.repo}` },
+          sk: { S: `COMMIT#${s.sha}` },
+        },
+        UpdateExpression: 'SET in_main = :true, updated_at = :now',
+        ConditionExpression: 'attribute_exists(pk) AND in_main = :false',
+        ExpressionAttributeValues: {
+          ':true': { BOOL: true },
+          ':false': { BOOL: false },
+          ':now': { S: new Date().toISOString() },
+        },
+      }));
+    } catch (e) {
+      if (!(e instanceof ConditionalCheckFailedException)) throw e;
+      // Already true — expected.
+    }
+  }
+  if (s.wasReverted) {
+    try {
+      await dynamoClient.send(new UpdateItemCommand({
+        TableName: AI_USAGE_TABLE,
+        Key: {
+          pk: { S: `REPO#${s.repo}` },
+          sk: { S: `COMMIT#${s.sha}` },
+        },
+        UpdateExpression: 'SET was_reverted = :true, updated_at = :now',
+        ConditionExpression: 'attribute_exists(pk) AND was_reverted = :false',
+        ExpressionAttributeValues: {
+          ':true': { BOOL: true },
+          ':false': { BOOL: false },
+          ':now': { S: new Date().toISOString() },
+        },
+      }));
+    } catch (e) {
+      if (!(e instanceof ConditionalCheckFailedException)) throw e;
+      // Already true — expected.
+    }
+  }
+
+  return true;
 }
 
 /** Process attribution spans. Returns count of writes. */
@@ -692,7 +735,7 @@ export async function queryCommitAttribution(repo: string, sha: string): Promise
     traceId,
     user,
     project: item.project?.S ?? '',
-    inMain: item.in_main?.BOOL ?? false,
+    inMain: (item.in_main?.BOOL ?? false) || item.origin_source?.S === 'ci-seeded',
     wasReverted: item.was_reverted?.BOOL ?? false,
     timestamp: item.timestamp?.S ?? '',
     aiOrigin,
@@ -755,7 +798,7 @@ export async function queryRepoCommits(repo: string, limit = 50): Promise<Commit
       traceId,
       user,
       project: item.project?.S ?? '',
-      inMain: item.in_main?.BOOL ?? false,
+      inMain: (item.in_main?.BOOL ?? false) || item.origin_source?.S === 'ci-seeded',
       wasReverted: item.was_reverted?.BOOL ?? false,
       timestamp: item.timestamp?.S ?? '',
       aiOrigin,
@@ -1010,7 +1053,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
         rawCommits.push({
           user: userParam,
           traceId: item.trace_id?.S ?? '',
-          inMain: item.in_main?.BOOL ?? false,
+          inMain: (item.in_main?.BOOL ?? false) || item.origin_source?.S === 'ci-seeded',
           wasReverted: item.was_reverted?.BOOL ?? false,
           storedOrigin: item.ai_origin?.S,
         });
@@ -1035,7 +1078,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
         rawCommits.push({
           user: item.user?.S ?? '',
           traceId: item.trace_id?.S ?? '',
-          inMain: item.in_main?.BOOL ?? false,
+          inMain: (item.in_main?.BOOL ?? false) || item.origin_source?.S === 'ci-seeded',
           wasReverted: item.was_reverted?.BOOL ?? false,
           storedOrigin: item.ai_origin?.S,
         });
@@ -1168,7 +1211,7 @@ async function handleReposQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
         repo: (item.pk?.S ?? '').replace(/^REPO#/, ''),
         user: item.user?.S ?? '',
         traceId: item.trace_id?.S ?? '',
-        inMain: item.in_main?.BOOL ?? false,
+        inMain: (item.in_main?.BOOL ?? false) || item.origin_source?.S === 'ci-seeded',
         wasReverted: item.was_reverted?.BOOL ?? false,
         ts: item.timestamp?.S ?? '',
         storedOrigin: item.ai_origin?.S,
