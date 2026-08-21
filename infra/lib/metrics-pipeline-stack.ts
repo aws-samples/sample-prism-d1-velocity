@@ -240,6 +240,9 @@ export class MetricsPipelineStack extends cdk.Stack {
         EVENTS_TABLE: this.eventsTable.tableName,
         METADATA_TABLE: this.metadataTable.tableName,
         METRIC_NAMESPACE: 'PRISM/D1/Velocity',
+        // When a prism.d1.pr event arrives, seed COMMIT# items with
+        // ai_origin=human for each SHA. Codeburn upgrades to ai-generated later.
+        AI_USAGE_TABLE: this.aiUsageTable.tableName,
         // When the OTEL collector is enabled, the otel-metrics-publisher owns
         // AIInputTokens/AIOutputTokens/AICostUSD — the processor skips its
         // trailer-sourced copies to avoid double-counting.
@@ -263,6 +266,8 @@ export class MetricsPipelineStack extends cdk.Stack {
     // -------------------------------------------------------
     this.eventsTable.grantWriteData(metricsProcessor);
     this.metadataTable.grantWriteData(metricsProcessor);
+    // Seeding COMMIT# items as human default — conditional writes only, no read needed.
+    this.aiUsageTable.grantWriteData(metricsProcessor);
 
     metricsProcessor.addToRolePolicy(
       new iam.PolicyStatement({

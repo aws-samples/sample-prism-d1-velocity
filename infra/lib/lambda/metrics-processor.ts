@@ -196,6 +196,11 @@ const cloudwatchClient = new CloudWatchClient({});
 const EVENTS_TABLE = process.env.EVENTS_TABLE!;
 const METADATA_TABLE = process.env.METADATA_TABLE!;
 const METRIC_NAMESPACE = process.env.METRIC_NAMESPACE ?? 'PRISM/D1/Velocity';
+// Optional: when set, PR events seed the attribution store with default-human
+// COMMIT# items so that commits not yet pushed by codeburn are visible as human
+// rather than absent. The otel-receiver's condition expression allows a later
+// codeburn push to upgrade human → ai-generated, so ordering does not matter.
+const AI_USAGE_TABLE = process.env.AI_USAGE_TABLE;
 
 
 // ---- Handler ----
@@ -220,9 +225,10 @@ export async function handler(event: EventBridgeEvent): Promise<void> {
     writeEventToDynamo(detailType, detail),
     writeMetadataToDynamo(detailType, detail),
     publishCloudWatchMetrics(detailType, detail),
+    seedCommitAttribution(detailType, detail),
   ]);
 
-  const labels = ['writeEventToDynamo', 'writeMetadataToDynamo', 'publishCloudWatchMetrics'];
+  const labels = ['writeEventToDynamo', 'writeMetadataToDynamo', 'publishCloudWatchMetrics', 'seedCommitAttribution'];
   results.forEach((result, idx) => {
     if (result.status === 'rejected') {
       console.error(`[metrics-processor] ${labels[idx]} FAILED:`, result.reason);
@@ -843,4 +849,83 @@ function mapUnit(unit: string): StandardUnit {
     none: StandardUnit.None,
   };
   return unitMap[unit?.toLowerCase()] ?? StandardUnit.None;
+}
+
+
+// ---- Commit attribution seeding ----
+
+/**
+ * When a prism.d1.pr event arrives with commit_shas, seed a COMMIT# item for
+ * each SHA in the attribution store with ai_origin=human and in_main=true.
+ *
+ * This ensures human commits are explicitly represented rather than invisible.
+ * The otel-receiver's condition expression allows a later codeburn push to
+ * upgrade human → ai-generated:
+ *
+ *   OR (ai_origin = :human AND :ao = :ai)
+ *
+ * So ordering between PR merge and codeburn sync does not matter:
+ * - If codeburn pushed first: item already has ai_origin=ai-generated, this
+ *   write is rejected by the condition (never downgrade ai→human). ✓
+ * - If PR merges first: item is written as human, codeburn upgrades later. ✓
+ * - Simultaneous: DDB conditional write is atomic, one wins. ✓
+ *
+ * The repo format from the CI workflow is bare (owner/name), but codeburn
+ * stores with a host prefix (github.com/owner/name). We write under the bare
+ * form because the /v1/repos and /v1/productivity endpoints scan ALL COMMIT#
+ * items regardless of repo format, and repoKeyCandidates() in the security
+ * processor already handles both forms for point lookups.
+ */
+async function seedCommitAttribution(detailType: string, detail: any): Promise<void> {
+  // Only process prism.d1.pr events that carry commit SHAs
+  if (detailType !== 'prism.d1.pr') return;
+  if (!AI_USAGE_TABLE) return;
+
+  const pr = detail.pr as PrDetail | undefined;
+  const shas = pr?.commit_shas;
+  if (!shas || shas.length === 0) return;
+
+  const repo = detail.repo as string;
+  const timestamp = detail.timestamp as string ?? new Date().toISOString();
+  const ttl = Math.floor(Date.now() / 1000) + 365 * 86400; // 1 year
+
+  let seeded = 0;
+  for (const sha of shas) {
+    try {
+      await dynamoClient.send(new PutItemCommand({
+        TableName: AI_USAGE_TABLE,
+        Item: {
+          pk: { S: `REPO#${repo}` },
+          sk: { S: `COMMIT#${sha}` },
+          record_type: { S: 'OTEL_ATTR_COMMIT' },
+          ai_origin: { S: 'human' },
+          ai_tool: { S: 'none' },
+          ai_model: { S: '' },
+          origin_source: { S: 'ci-seeded' },
+          in_main: { BOOL: true },
+          was_reverted: { BOOL: false },
+          timestamp: { S: timestamp },
+          updated_at: { S: new Date().toISOString() },
+          ttl: { N: String(ttl) },
+        },
+        // Only write if the item does NOT already exist. If codeburn already
+        // pushed this commit (with ai_origin=ai-generated), do not overwrite.
+        // If the metrics-processor already seeded it on a prior invocation
+        // (retry), this is idempotent.
+        ConditionExpression: 'attribute_not_exists(pk)',
+      }));
+      seeded++;
+    } catch (err: any) {
+      // ConditionalCheckFailedException means item already exists — expected
+      // when codeburn pushed first or on retry. Not an error.
+      if (err.name !== 'ConditionalCheckFailedException') {
+        console.error(`[seedCommitAttribution] Failed to seed ${sha}:`, err);
+        throw err;
+      }
+    }
+  }
+
+  if (seeded > 0) {
+    console.log(`[seedCommitAttribution] Seeded ${seeded}/${shas.length} commits as human for ${repo}`);
+  }
 }
