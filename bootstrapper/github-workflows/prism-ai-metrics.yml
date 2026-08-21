@@ -36,6 +36,7 @@ on:
 
 env:
   PRISM_AWS_REGION: us-west-2
+  PRISM_REPO: github.com/${{ github.repository }}
 
 permissions:
   id-token: write
@@ -154,7 +155,7 @@ jobs:
 
           PR_EVENT=$(jq -n \
             --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
-            --arg repo "${{ github.repository }}" \
+            --arg repo "${PRISM_REPO}" \
             --arg timestamp "${TIMESTAMP}" \
             --argjson lead_time_seconds "${{ steps.facts.outputs.lead_time_seconds }}" \
             --argjson is_failure_fix "${{ steps.facts.outputs.is_failure_fix }}" \
@@ -211,7 +212,7 @@ jobs:
           # carrying it on both double-counted the DeploymentFrequency metric.
           DEPLOY_EVENT=$(jq -n \
             --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
-            --arg repo "${{ github.repository }}" \
+            --arg repo "${PRISM_REPO}" \
             --arg timestamp "${TIMESTAMP}" \
             '{
               "team_id": $team_id,

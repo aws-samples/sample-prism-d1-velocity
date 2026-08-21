@@ -28,6 +28,7 @@ prism-agent-eval:
   variables:
     PRISM_AWS_REGION: us-west-2
     AWS_DEFAULT_REGION: $PRISM_AWS_REGION
+    PRISM_REPO: ${CI_SERVER_HOST}/${CI_PROJECT_PATH}
   before_script:
     - apt-get update -qq && apt-get install -y -qq jq bc git curl unzip
     - curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
@@ -134,7 +135,7 @@ prism-agent-eval:
       # Emit event
       TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       EVAL_EVENT=$(jq -n \
-        --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
+        --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" --arg timestamp "${TIMESTAMP}" \
         --argjson score "${SCORE:-0}" --arg result "${RESULT}" --argjson file_count "${FILE_COUNT}" \
         --arg mr_iid "${CI_MERGE_REQUEST_IID}" --arg mock_ran "${MOCK_RAN}" \
         '{team_id:$team_id, repo:$repo, timestamp:$timestamp, prism_level:3,

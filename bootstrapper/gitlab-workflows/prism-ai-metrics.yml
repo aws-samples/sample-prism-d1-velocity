@@ -34,6 +34,7 @@ prism-ai-metrics:
   variables:
     PRISM_AWS_REGION: us-west-2
     AWS_DEFAULT_REGION: $PRISM_AWS_REGION
+    PRISM_REPO: ${CI_SERVER_HOST}/${CI_PROJECT_PATH}
   before_script:
     - yum install -y -q jq git
     - git fetch --unshallow || true
@@ -114,7 +115,7 @@ prism-ai-metrics:
       # shape — the processor only persists a known section list.
       PR_EVENT=$(jq -n \
         --arg team_id "${TEAM_ID}" \
-        --arg repo "${CI_PROJECT_PATH}" \
+        --arg repo "${PRISM_REPO}" \
         --arg timestamp "${TIMESTAMP}" \
         --argjson lead_time_seconds "${LEAD_TIME_SECONDS}" \
         --argjson is_failure_fix "${IS_FAILURE_FIX}" \
@@ -141,7 +142,7 @@ prism-ai-metrics:
 
       # Sole deployment signal — deployment_frequency lives ONLY on this event.
       # Carrying it on prism.d1.pr as well double-counted the metric.
-      DEPLOY_EVENT=$(jq -n --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
+      DEPLOY_EVENT=$(jq -n --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" --arg timestamp "${TIMESTAMP}" \
         '{team_id: $team_id, repo: $repo, timestamp: $timestamp, prism_level: 2,
          metric: {name: "deployment", value: 1, unit: "count"},
          dora: {deployment_frequency: 1}}')

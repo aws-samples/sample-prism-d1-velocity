@@ -19,6 +19,7 @@ on:
 
 env:
   PRISM_AWS_REGION: us-west-2
+  PRISM_REPO: github.com/${{ github.repository }}
 
 permissions:
   id-token: write
@@ -205,7 +206,7 @@ jobs:
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           EVAL_EVENT=$(jq -n \
             --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
-            --arg repo "${{ github.repository }}" \
+            --arg repo "${PRISM_REPO}" \
             --arg timestamp "${TIMESTAMP}" \
             --argjson score "${{ steps.eval.outputs.avg_score }}" \
             --arg result "${{ steps.eval.outputs.overall_result }}" \
@@ -421,7 +422,7 @@ jobs:
           AWS_REGION: ${{ env.PRISM_AWS_REGION }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          REPO="${{ github.repository }}"
+          REPO="${PRISM_REPO}"
           TEAM_ID="${{ steps.prism-config.outputs.team_id }}"
           FINDINGS='${{ steps.security-gate.outputs.findings_json }}'
 

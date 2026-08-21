@@ -18,6 +18,7 @@ on:
 
 env:
   PRISM_AWS_REGION: us-west-2
+  PRISM_REPO: github.com/${{ github.repository }}
 
 permissions:
   id-token: write
@@ -225,7 +226,7 @@ jobs:
         env:
           AWS_REGION: ${{ env.PRISM_AWS_REGION }}
           TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
-          REPO: ${{ github.repository }}
+          REPO: ${{ env.PRISM_REPO }}
           REVIEW_SCORE: ${{ steps.review.outputs.score }}
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
           REVIEW_FINDINGS: ${{ steps.review.outputs.findings }}
@@ -263,7 +264,7 @@ jobs:
           AWS_REGION: ${{ env.PRISM_AWS_REGION }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
+          REPO: ${{ env.PRISM_REPO }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Config is read FIRST, on purpose. "Continuum was never deployed" is a
@@ -413,7 +414,7 @@ jobs:
         env:
           AWS_REGION: ${{ env.PRISM_AWS_REGION }}
           TEAM_ID: ${{ steps.prism-config.outputs.team_id }}
-          REPO: ${{ github.repository }}
+          REPO: ${{ env.PRISM_REPO }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}

@@ -23,6 +23,7 @@ prism-eval-gate:
   variables:
     PRISM_AWS_REGION: us-west-2
     AWS_DEFAULT_REGION: $PRISM_AWS_REGION
+    PRISM_REPO: ${CI_SERVER_HOST}/${CI_PROJECT_PATH}
   before_script:
     - yum install -y -q jq bc git
     - git fetch --unshallow || true
@@ -140,7 +141,7 @@ prism-eval-gate:
       # Emit event
       TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       EVAL_EVENT=$(jq -n \
-        --arg team_id "${TEAM_ID}" --arg repo "${CI_PROJECT_PATH}" --arg timestamp "${TIMESTAMP}" \
+        --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" --arg timestamp "${TIMESTAMP}" \
         --argjson score "${AVG_SCORE}" --arg result "${OVERALL}" \
         --argjson total_files "${TOTAL_FILES}" --argjson pass_count "${PASS_COUNT}" \
         --argjson fail_count "${FAIL_COUNT}" --argjson hallucinations "${TOTAL_HALLUCINATIONS}" \
