@@ -95,7 +95,16 @@ export class DashboardStack extends cdk.Stack {
       // Commits / Day and Merge Ratio replaced by DDB-backed custom widget to
       // avoid CloudWatch increment-only double-count when CI-seeded human items
       // are later upgraded to AI by codeburn attribution.
-      ...(props?.velocityWidgetArn ? [velocityPanel('Commits & Merge Rate (AI vs Human)', 'commits-trend', 6)] : []),
+      ...(props?.velocityWidgetArn ? [new cloudwatch.CustomWidget({
+        functionArn: props.velocityWidgetArn,
+        title: 'Commits & Merge Rate (AI vs Human)',
+        width: 16,
+        height: 6,
+        params: { view: 'commits-trend' },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
+      })] : []),
       new cloudwatch.GraphWidget({
         title: 'AI Defect Trend (reverted / merged)',
         left: [
