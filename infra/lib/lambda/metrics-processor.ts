@@ -886,6 +886,13 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
   if (!shas || shas.length === 0) return;
 
   const repo = detail.repo as string;
+  // codeburn stores repos as 'github.com/owner/repo' or 'gitlab.com/group/project',
+  // but CI workflows emit bare 'owner/repo' (from ${{ github.repository }} or
+  // ${CI_PROJECT_PATH}). Normalize to match codeburn's convention so the
+  // ConditionExpression hits existing items correctly.
+  const normalizedRepo = repo.includes('/') && !repo.includes('.')
+    ? `github.com/${repo}` // bare owner/repo → full GitHub form
+    : repo;               // already has domain (e.g., gitlab.com/...) or is custom
   const timestamp = detail.timestamp as string ?? new Date().toISOString();
   const ttl = Math.floor(Date.now() / 1000) + 365 * 86400; // 1 year
 
@@ -895,7 +902,7 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
       await dynamoClient.send(new PutItemCommand({
         TableName: AI_USAGE_TABLE,
         Item: {
-          pk: { S: `REPO#${repo}` },
+          pk: { S: `REPO#${normalizedRepo}` },
           sk: { S: `COMMIT#${sha}` },
           record_type: { S: 'OTEL_ATTR_COMMIT' },
           ai_origin: { S: 'human' },
@@ -926,6 +933,6 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
   }
 
   if (seeded > 0) {
-    console.log(`[seedCommitAttribution] Seeded ${seeded}/${shas.length} commits as human for ${repo}`);
+    console.log(`[seedCommitAttribution] Seeded ${seeded}/${shas.length} commits as human for ${normalizedRepo}`);
   }
 }
