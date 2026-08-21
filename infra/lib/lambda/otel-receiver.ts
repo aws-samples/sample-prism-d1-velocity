@@ -1239,6 +1239,73 @@ async function handleReposQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
   });
 }
 
+/**
+ * GET /v1/commits-daily?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *
+ * Returns per-day commit counts bucketed by ai_origin. Designed for dashboard
+ * bar charts that replace the CloudWatch-native "Commits / Day (AI vs Human)"
+ * graph — reading DDB at render time avoids the increment-only CloudWatch
+ * limitation that makes origin upgrades (human->ai) double-count.
+ */
+async function handleCommitsDailyQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
+  const caller = resolveIdentity(event);
+  if (!caller) return jsonResponse(401, { message: 'No resolvable identity claim in token' });
+
+  const url = new URL(event.rawPath + '?' + (event.rawQueryString ?? ''), 'http://localhost');
+  const now = new Date();
+  const from = url.searchParams.get('from') ?? new Date(now.getTime() - 30 * 86400_000).toISOString().slice(0, 10);
+  const to = url.searchParams.get('to') ?? now.toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return jsonResponse(400, { message: 'from/to must be YYYY-MM-DD' });
+  }
+
+  // Scan COMMIT# items in the date range.
+  const days = new Map<string, { ai: number; human: number; mergedAi: number; mergedHuman: number }>();
+  let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
+  do {
+    const result = await dynamoClient.send(new ScanCommand({
+      TableName: AI_USAGE_TABLE,
+      FilterExpression: 'record_type = :rt AND #ts BETWEEN :lo AND :hi',
+      ExpressionAttributeNames: { '#ts': 'timestamp' },
+      ExpressionAttributeValues: {
+        ':rt': { S: 'OTEL_ATTR_COMMIT' },
+        ':lo': { S: from },
+        ':hi': { S: `${to}\uffff` },
+      },
+      ProjectionExpression: '#ts, ai_origin, in_main',
+      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+    }));
+    for (const item of result.Items ?? []) {
+      const ts = item.timestamp?.S ?? '';
+      const day = ts.slice(0, 10);
+      if (!day) continue;
+      const origin = item.ai_origin?.S ?? 'human';
+      const inMain = item.in_main?.BOOL ?? false;
+      let bucket = days.get(day);
+      if (!bucket) { bucket = { ai: 0, human: 0, mergedAi: 0, mergedHuman: 0 }; days.set(day, bucket); }
+      if (origin === 'ai-generated') {
+        bucket.ai++;
+        if (inMain) bucket.mergedAi++;
+      } else {
+        bucket.human++;
+        if (inMain) bucket.mergedHuman++;
+      }
+    }
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  // Sort ascending by date and return as an array.
+  const sorted = [...days.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, counts]) => ({ date, ...counts }));
+
+  return jsonResponse(200, {
+    range: { from, to },
+    generatedAt: new Date().toISOString(),
+    days: sorted,
+  });
+}
+
 function accumulateUsage(u: UserProductivity, item: Record<string, { S?: string; N?: string }>): void {
   const tool = item.tool?.S ?? 'unknown';
   const cost = Number(item.cost_usd?.N ?? 0);
@@ -1278,6 +1345,9 @@ export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
   }
   if (method === 'GET' && path === '/v1/repos') {
     return handleReposQuery(event);
+  }
+  if (method === 'GET' && path === '/v1/commits-daily') {
+    return handleCommitsDailyQuery(event);
   }
   return jsonResponse(404, { message: 'Not found' });
 }

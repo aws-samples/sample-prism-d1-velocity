@@ -92,47 +92,10 @@ export class DashboardStack extends cdk.Stack {
       });
 
     teamDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Commits / Day (AI vs Human)',
-        left: [
-          dailySum('AICommits', 'AI commits'),
-          dailySum('HumanCommits', 'Human commits'),
-        ],
-        view: cloudwatch.GraphWidgetView.BAR,
-        stacked: true,
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, label: 'Commits' },
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'Merge Ratio: AI vs Human',
-        left: [
-          // Both lines from attribution spans. Divergence is the signal:
-          // AI code merging at a materially lower rate than human code means
-          // review friction or quality problems, not just "AI is used a lot".
-          new cloudwatch.MathExpression({
-            expression: 'FILL(IF(FILL(aiCommits, 0) > 0, 100 * FILL(mergedAi, 0) / FILL(aiCommits, 0)), REPEAT)',
-            usingMetrics: {
-              mergedAi: dailySum('MergedAICommits'),
-              aiCommits: dailySum('AICommits'),
-            },
-            label: 'AI merge rate (%)',
-            period: cdk.Duration.days(1),
-          }),
-          new cloudwatch.MathExpression({
-            expression: 'FILL(IF(FILL(humanCommits, 0) > 0, 100 * FILL(mergedHuman, 0) / FILL(humanCommits, 0)), REPEAT)',
-            usingMetrics: {
-              mergedHuman: dailySum('MergedHumanCommits'),
-              humanCommits: dailySum('HumanCommits'),
-            },
-            label: 'Human merge rate (%)',
-            period: cdk.Duration.days(1),
-          }),
-        ],
-        width: 8,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Percent' },
-      }),
+      // Commits / Day and Merge Ratio replaced by DDB-backed custom widget to
+      // avoid CloudWatch increment-only double-count when CI-seeded human items
+      // are later upgraded to AI by codeburn attribution.
+      ...(props?.velocityWidgetArn ? [velocityPanel('Commits & Merge Rate (AI vs Human)', 'commits-trend', 6)] : []),
       new cloudwatch.GraphWidget({
         title: 'AI Defect Trend (reverted / merged)',
         left: [
@@ -232,18 +195,17 @@ export class DashboardStack extends cdk.Stack {
       });
 
     execDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'AI vs Human Commits (Weekly)',
-        left: [
-          weeklySum('AICommits', 'AI commits'),
-          weeklySum('HumanCommits', 'Human commits'),
-        ],
-        view: cloudwatch.GraphWidgetView.BAR,
-        stacked: true,
+      // AI vs Human Commits (Weekly) replaced by DDB-backed custom widget.
+      ...(props?.velocityWidgetArn ? [new cloudwatch.CustomWidget({
+        functionArn: props.velocityWidgetArn,
+        title: 'AI vs Human Commits & Merge Rate',
         width: 8,
         height: 6,
-        leftYAxis: { min: 0, label: 'Commits' },
-      }),
+        params: { view: 'commits-trend' },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
+      })] : []),
       new cloudwatch.GraphWidget({
         title: 'AI Spend Trend (Weekly)',
         left: [weeklySum('AICostUSD', 'Spend ($)')],
@@ -273,27 +235,11 @@ export class DashboardStack extends cdk.Stack {
     );
 
     // Row 4: quality — "is AI code as reliable as human code?"
+    // Merge Rate: AI vs Human is already included in the commits-trend custom
+    // widget above (DDB-backed, avoids CloudWatch double-count). Only the AI
+    // Defect Trend (RevertedAICommits / MergedAICommits) remains as CloudWatch
+    // native because it uses AI-only metrics with no upgrade double-count issue.
     execDashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'Merge Rate: AI vs Human (Weekly)',
-        left: [
-          new cloudwatch.MathExpression({
-            expression: 'FILL(IF(FILL(xAi, 0) > 0, 100 * FILL(xMergedAi, 0) / FILL(xAi, 0)), REPEAT)',
-            usingMetrics: { xMergedAi: weeklySum('MergedAICommits'), xAi: weeklySum('AICommits') },
-            label: 'AI merge rate (%)',
-            period: cdk.Duration.days(7),
-          }),
-          new cloudwatch.MathExpression({
-            expression: 'FILL(IF(FILL(xHuman, 0) > 0, 100 * FILL(xMergedHuman, 0) / FILL(xHuman, 0)), REPEAT)',
-            usingMetrics: { xMergedHuman: weeklySum('MergedHumanCommits'), xHuman: weeklySum('HumanCommits') },
-            label: 'Human merge rate (%)',
-            period: cdk.Duration.days(7),
-          }),
-        ],
-        width: 12,
-        height: 6,
-        leftYAxis: { min: 0, max: 100, label: 'Percent' },
-      }),
       new cloudwatch.GraphWidget({
         title: 'AI Defect Trend (Weekly)',
         left: [
@@ -757,19 +703,18 @@ export class DashboardStack extends cdk.Stack {
         }),
       );
 
-      // --- Row 2: Org trends (native interactive charts) ---
+      // --- Row 2: Org trends ---
       devDashboard.addWidgets(
-        new cloudwatch.GraphWidget({
-          title: 'Commits / Day (AI vs Human)',
-          left: [
-            dailyMetric('AICommits', 'AI commits'),
-            dailyMetric('HumanCommits', 'Human commits'),
-          ],
-          view: cloudwatch.GraphWidgetView.BAR,
-          stacked: true,
+        // Commits / Day (AI vs Human) replaced by DDB-backed custom widget.
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'Commits & Merge Rate (AI vs Human)',
           width: 8,
           height: 6,
-          leftYAxis: { min: 0, label: 'Commits' },
+          params: { view: 'commits-trend' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
         }),
         new cloudwatch.GraphWidget({
           title: 'AI Spend / Day',
