@@ -685,11 +685,26 @@ export class DashboardStack extends cdk.Stack {
         });
 
       devDashboard.addWidgets(
-        ratioKpi('AI Share of Commits (%)', 'IF(FILL(kTotal, 0) > 0, 100 * FILL(kAi, 0) / FILL(kTotal, 0))', {
-          kAi: dailyMetric('AICommits', 'kAi'), kTotal: dailyMetric('CommitsTotal', 'kTotal'),
+        // AI Share and AI Merge Rate are DDB-backed (accurate, no CloudWatch delay)
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'AI Share of Commits',
+          width: 6,
+          height: 4,
+          params: { view: 'ai-share-kpi' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
         }),
-        ratioKpi('AI Merge Rate (%)', 'IF(FILL(kAi2, 0) > 0, 100 * FILL(kMerged, 0) / FILL(kAi2, 0))', {
-          kMerged: dailyMetric('MergedAICommits', 'kMerged'), kAi2: dailyMetric('AICommits', 'kAi2'),
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'AI Merge Rate',
+          width: 6,
+          height: 4,
+          params: { view: 'merge-rate-kpi' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
         }),
         ratioKpi('Cost per Shipped Commit ($)', 'IF(FILL(kMerged2, 0) > 0, FILL(kCost, 0) / FILL(kMerged2, 0))', {
           kCost: dailyMetric('AICostUSD', 'kCost'), kMerged2: dailyMetric('MergedAICommits', 'kMerged2'),
@@ -705,13 +720,13 @@ export class DashboardStack extends cdk.Stack {
 
       // --- Row 2: Org trends ---
       devDashboard.addWidgets(
-        // Commits / Day (AI vs Human) replaced by DDB-backed custom widget.
+        // Commits bar chart — just AI vs Human stacked bars, no KPIs or merge rate
         new cloudwatch.CustomWidget({
           functionArn: props.velocityWidgetArn ?? '',
-          title: 'Commits & Merge Rate (AI vs Human)',
+          title: 'Commits / Day (AI vs Human)',
           width: 8,
           height: 6,
-          params: { view: 'commits-trend' },
+          params: { view: 'commits-bar' },
           updateOnRefresh: true,
           updateOnResize: false,
           updateOnTimeRangeChange: true,
@@ -723,19 +738,16 @@ export class DashboardStack extends cdk.Stack {
           height: 6,
           leftYAxis: { min: 0, label: 'USD' },
         }),
-        new cloudwatch.GraphWidget({
-          title: 'AI Merge Ratio Trend',
-          left: [
-            new cloudwatch.MathExpression({
-              expression: 'FILL(IF(FILL(tAi, 0) > 0, 100 * FILL(tMerged, 0) / FILL(tAi, 0)), REPEAT)',
-              usingMetrics: { tMerged: dailyMetric('MergedAICommits', 'tMerged'), tAi: dailyMetric('AICommits', 'tAi') },
-              label: 'Merge ratio (%)',
-              period: cdk.Duration.days(1),
-            }),
-          ],
+        // Merge Rate Trend — DDB-backed line chart replacing CloudWatch AI Merge Ratio Trend
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'Merge Rate Trend (AI vs Human)',
           width: 8,
           height: 6,
-          leftYAxis: { min: 0, max: 100, label: 'Percent' },
+          params: { view: 'merge-rate-trend' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
         }),
       );
 

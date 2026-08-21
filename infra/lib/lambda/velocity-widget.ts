@@ -1562,6 +1562,183 @@ async function renderCommitsTrend(fromIso: string, toIso: string, days: number, 
   `;
 }
 
+// ---- View: commits-bar (just the stacked bar chart, no KPIs or merge rate) ----
+
+async function renderCommitsBar(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
+  let data: any;
+  try {
+    data = await invokeReceiver('/v1/commits-daily', `from=${fromIso.slice(0, 10)}&to=${toIso.slice(0, 10)}`);
+  } catch (err) {
+    return emptyState('commit trend', `Attribution store unreachable (${(err as Error).message}).`, p);
+  }
+
+  const dayBuckets: Array<{ date: string; ai: number; human: number }> = data?.days ?? [];
+  if (dayBuckets.length === 0) {
+    return emptyState('commit trend', 'No COMMIT# items in the selected range. Run `codeburn sync push --attribution` or merge a PR with prism-ai-metrics.yml.', p);
+  }
+
+  const useWeekly = days > 21;
+  type Bucket = { label: string; ai: number; human: number };
+  let buckets: Bucket[];
+  if (useWeekly) {
+    const weeks = new Map<string, Bucket>();
+    for (const d of dayBuckets) {
+      const dt = new Date(d.date);
+      const weekStart = new Date(dt);
+      weekStart.setDate(dt.getDate() - dt.getDay());
+      const key = weekStart.toISOString().slice(0, 10);
+      let w = weeks.get(key);
+      if (!w) { w = { label: key, ai: 0, human: 0 }; weeks.set(key, w); }
+      w.ai += d.ai; w.human += d.human;
+    }
+    buckets = [...weeks.values()].sort((a, b) => a.label.localeCompare(b.label));
+  } else {
+    buckets = dayBuckets.map(d => ({ label: d.date, ai: d.ai, human: d.human }));
+  }
+
+  const totalAi = buckets.reduce((s, b) => s + b.ai, 0);
+  const totalHuman = buckets.reduce((s, b) => s + b.human, 0);
+  const chartW = 500;
+  const chartH = 120;
+  const barW = Math.max(4, Math.min(24, Math.floor((chartW - 20) / buckets.length) - 2));
+  const maxCommits = Math.max(...buckets.map(b => b.ai + b.human), 1);
+
+  const barsSvg = buckets.map((b, i) => {
+    const x = 10 + i * (barW + 2);
+    const totalH = ((b.ai + b.human) / maxCommits) * (chartH - 10);
+    const aiH = (b.ai / maxCommits) * (chartH - 10);
+    const humanH = totalH - aiH;
+    const humanY = chartH - totalH;
+    const aiY = humanY + humanH;
+    return `<rect x="${x}" y="${humanY}" width="${barW}" height="${humanH}" fill="${p.mut}" opacity="0.5"/>` +
+           `<rect x="${x}" y="${aiY}" width="${barW}" height="${aiH}" fill="${p.accent}"/>`;
+  }).join('');
+
+  const periodLabel = useWeekly ? 'weekly' : 'daily';
+  return `
+    <div style="margin-bottom:4px;color:${p.mut};font-size:10px">
+      Commits ${periodLabel} · <span style="color:${p.accent}">■</span> AI (${totalAi}) · <span style="opacity:0.5">■</span> Human (${totalHuman})
+    </div>
+    <svg width="${chartW}" height="${chartH}" style="display:block">${barsSvg}</svg>
+    ${footnote(`Source: attribution store. ${totalAi + totalHuman} commits in range.`, p)}
+  `;
+}
+
+// ---- View: ai-share-kpi (single big-number KPI for AI share %) ----
+
+async function renderAiShareKpi(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  let report: any;
+  try {
+    report = await fetchProductivity(fromIso, toIso);
+  } catch {
+    return emptyState('AI share', 'Attribution store unreachable.', p);
+  }
+  const aiSharePct = report?.totals?.ratios?.aiSharePct ?? null;
+  const ai = report?.totals?.commits?.ai ?? 0;
+  const total = report?.totals?.commits?.total ?? 0;
+  const color = aiSharePct === null ? p.mut : aiSharePct >= 30 ? p.ok : p.warn;
+  return `
+    <div style="text-align:center;padding:12px">
+      <div style="color:${p.mut};font-size:11px">AI Share of Commits</div>
+      <div style="color:${color};font-size:36px;font-weight:700;margin:4px 0">${aiSharePct !== null ? `${aiSharePct.toFixed(0)}%` : '—'}</div>
+      <div style="color:${p.mut};font-size:10px">${ai} AI / ${total} total · L2 ≥30%</div>
+    </div>
+  `;
+}
+
+// ---- View: merge-rate-kpi (single big-number KPI for AI merge rate %) ----
+
+async function renderMergeRateKpi(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  let report: any;
+  try {
+    report = await fetchProductivity(fromIso, toIso);
+  } catch {
+    return emptyState('merge rate', 'Attribution store unreachable.', p);
+  }
+  const mergeRatePct = report?.totals?.ratios?.mergeRatePct ?? null;
+  const mergedAi = report?.totals?.commits?.mergedAi ?? 0;
+  const ai = report?.totals?.commits?.ai ?? 0;
+  const color = mergeRatePct === null ? p.mut : mergeRatePct >= 45 ? p.ok : mergeRatePct >= 20 ? p.warn : p.danger;
+  return `
+    <div style="text-align:center;padding:12px">
+      <div style="color:${p.mut};font-size:11px">AI Merge Rate</div>
+      <div style="color:${color};font-size:36px;font-weight:700;margin:4px 0">${mergeRatePct !== null ? `${mergeRatePct.toFixed(0)}%` : '—'}</div>
+      <div style="color:${p.mut};font-size:10px">${mergedAi} merged / ${ai} AI commits · L4 ≥45%</div>
+    </div>
+  `;
+}
+
+// ---- View: merge-rate-trend (line chart of merge rate over time) ----
+
+async function renderMergeRateTrend(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
+  let data: any;
+  try {
+    data = await invokeReceiver('/v1/commits-daily', `from=${fromIso.slice(0, 10)}&to=${toIso.slice(0, 10)}`);
+  } catch (err) {
+    return emptyState('merge rate trend', `Attribution store unreachable (${(err as Error).message}).`, p);
+  }
+
+  const dayBuckets: Array<{ date: string; ai: number; human: number; mergedAi: number; mergedHuman: number }> = data?.days ?? [];
+  if (dayBuckets.length === 0) {
+    return emptyState('merge rate trend', 'No commit data in range.', p);
+  }
+
+  const useWeekly = days > 21;
+  type Bucket = { label: string; ai: number; human: number; mergedAi: number; mergedHuman: number };
+  let buckets: Bucket[];
+  if (useWeekly) {
+    const weeks = new Map<string, Bucket>();
+    for (const d of dayBuckets) {
+      const dt = new Date(d.date);
+      const weekStart = new Date(dt);
+      weekStart.setDate(dt.getDate() - dt.getDay());
+      const key = weekStart.toISOString().slice(0, 10);
+      let w = weeks.get(key);
+      if (!w) { w = { label: key, ai: 0, human: 0, mergedAi: 0, mergedHuman: 0 }; weeks.set(key, w); }
+      w.ai += d.ai; w.human += d.human; w.mergedAi += d.mergedAi; w.mergedHuman += d.mergedHuman;
+    }
+    buckets = [...weeks.values()].sort((a, b) => a.label.localeCompare(b.label));
+  } else {
+    buckets = dayBuckets.map(d => ({ label: d.date, ...d }));
+  }
+
+  const chartW = 500;
+  const chartH = 100;
+  const step = buckets.length > 1 ? (chartW - 20) / (buckets.length - 1) : 0;
+
+  const aiRates = buckets.map(b => b.ai > 0 ? (b.mergedAi / b.ai) * 100 : null);
+  const humanRates = buckets.map(b => b.human > 0 ? (b.mergedHuman / b.human) * 100 : null);
+
+  const drawLine = (rates: (number | null)[], color: string): string => {
+    const pts = rates.map((v, i) => v !== null ? { x: 10 + i * step, y: chartH - 5 - (v / 100) * (chartH - 10) } : null)
+      .filter(Boolean) as { x: number; y: number }[];
+    if (pts.length < 2) return '';
+    return `<polyline points="${pts.map(pt => `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="2"/>`;
+  };
+
+  // Summary stats
+  const totalAi = buckets.reduce((s, b) => s + b.ai, 0);
+  const totalMergedAi = buckets.reduce((s, b) => s + b.mergedAi, 0);
+  const totalHuman = buckets.reduce((s, b) => s + b.human, 0);
+  const totalMergedHuman = buckets.reduce((s, b) => s + b.mergedHuman, 0);
+  const aiOverall = totalAi > 0 ? ((totalMergedAi / totalAi) * 100).toFixed(0) : '—';
+  const humanOverall = totalHuman > 0 ? ((totalMergedHuman / totalHuman) * 100).toFixed(0) : '—';
+
+  const periodLabel = useWeekly ? 'weekly' : 'daily';
+  return `
+    <div style="margin-bottom:4px;color:${p.mut};font-size:10px">
+      Merge rate ${periodLabel} · <span style="color:${p.accent}">— AI ${aiOverall}%</span> · <span style="color:${p.mut}">— Human ${humanOverall}%</span>
+    </div>
+    <svg width="${chartW}" height="${chartH}" style="display:block">
+      <line x1="10" y1="${chartH - 5}" x2="${chartW - 10}" y2="${chartH - 5}" stroke="${p.bord}" stroke-width="0.5"/>
+      <line x1="10" y1="${(chartH - 5) / 2}" x2="${chartW - 10}" y2="${(chartH - 5) / 2}" stroke="${p.bord}" stroke-width="0.5" stroke-dasharray="3"/>
+      ${drawLine(aiRates, p.accent)}
+      ${drawLine(humanRates, p.mut)}
+    </svg>
+    ${footnote(`Source: attribution store. 50% line shown dashed.`, p)}
+  `;
+}
+
 // ---- Handler ----
 
 export async function handler(event: WidgetEvent): Promise<string> {
@@ -1594,6 +1771,10 @@ export async function handler(event: WidgetEvent): Promise<string> {
       case 'ciso-shiftleft': body = await renderCisoShiftleft(fromIso, toIso, p); break;
       case 'ciso-classes': body = await renderCisoClasses(fromIso, toIso, p); break;
       case 'commits-trend': body = await renderCommitsTrend(fromIso, toIso, days, p); break;
+      case 'commits-bar': body = await renderCommitsBar(fromIso, toIso, days, p); break;
+      case 'ai-share-kpi': body = await renderAiShareKpi(fromIso, toIso, p); break;
+      case 'merge-rate-kpi': body = await renderMergeRateKpi(fromIso, toIso, p); break;
+      case 'merge-rate-trend': body = await renderMergeRateTrend(fromIso, toIso, days, p); break;
       default: body = `<div style="color:${p.danger}">Unknown view: ${esc(view)}</div>`;
     }
     return `<div style="font-family:'Amazon Ember',Helvetica,Arial,sans-serif;color:${p.fg};font-size:13px">${body}</div>`;
