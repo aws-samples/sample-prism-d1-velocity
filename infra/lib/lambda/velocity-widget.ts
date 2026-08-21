@@ -1489,40 +1489,12 @@ async function renderCommitsTrend(fromIso: string, toIso: string, days: number, 
     buckets = dayBuckets.map(d => ({ label: d.date, ai: d.ai, human: d.human, mergedAi: d.mergedAi, mergedHuman: d.mergedHuman }));
   }
 
-  // Totals for summary
+  // Summary stats
   const totalAi = buckets.reduce((s, b) => s + b.ai, 0);
   const totalHuman = buckets.reduce((s, b) => s + b.human, 0);
   const totalMergedAi = buckets.reduce((s, b) => s + b.mergedAi, 0);
   const totalMergedHuman = buckets.reduce((s, b) => s + b.mergedHuman, 0);
 
-  // Stacked bar chart SVG
-  const chartW = 500;
-  const chartH = 100;
-  const barW = Math.max(4, Math.min(24, Math.floor((chartW - 20) / buckets.length) - 2));
-  const maxCommits = Math.max(...buckets.map(b => b.ai + b.human), 1);
-  const barsSvg = buckets.map((b, i) => {
-    const x = 10 + i * (barW + 2);
-    const totalH = ((b.ai + b.human) / maxCommits) * (chartH - 10);
-    const aiH = (b.ai / maxCommits) * (chartH - 10);
-    const humanH = totalH - aiH;
-    const humanY = chartH - totalH;
-    const aiY = humanY + humanH;
-    return `<rect x="${x}" y="${humanY}" width="${barW}" height="${humanH}" fill="${p.mut}" opacity="0.5"/>` +
-           `<rect x="${x}" y="${aiY}" width="${barW}" height="${aiH}" fill="${p.accent}"/>`;
-  }).join('');
-
-  // Merge rate line chart SVG
-  const mergeRateH = 60;
-  const aiRates = buckets.map(b => b.ai > 0 ? (b.mergedAi / b.ai) * 100 : null);
-  const humanRates = buckets.map(b => b.human > 0 ? (b.mergedHuman / b.human) * 100 : null);
-
-  const rateLine = (rates: (number | null)[], color: string): string => {
-    const pts = rates.map((v, i) => v !== null ? { x: 10 + i * (barW + 2) + barW / 2, y: mergeRateH - 5 - (v / 100) * (mergeRateH - 10) } : null).filter(Boolean) as { x: number; y: number }[];
-    if (pts.length < 2) return '';
-    return `<polyline points="${pts.map(pt => `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
-  };
-
-  const periodLabel = useWeekly ? 'weekly' : 'daily';
   const aiPct = totalAi + totalHuman > 0 ? ((totalAi / (totalAi + totalHuman)) * 100).toFixed(0) : '—';
   const aiMergeRate = totalAi > 0 ? ((totalMergedAi / totalAi) * 100).toFixed(0) : '—';
   const humanMergeRate = totalHuman > 0 ? ((totalMergedHuman / totalHuman) * 100).toFixed(0) : '—';
@@ -1550,14 +1522,6 @@ async function renderCommitsTrend(fromIso: string, toIso: string, days: number, 
         <div style="color:${p.fg};font-size:20px;font-weight:600">${humanMergeRate}%</div>
       </div>
     </div>
-    <div style="margin-bottom:4px;color:${p.mut};font-size:10px">Commits ${periodLabel} · <span style="color:${p.accent}">■</span> AI · <span style="opacity:0.5">■</span> Human</div>
-    <svg width="${chartW}" height="${chartH}" style="display:block">${barsSvg}</svg>
-    <div style="margin-top:8px;margin-bottom:4px;color:${p.mut};font-size:10px">Merge rate ${periodLabel} · <span style="color:${p.accent}">—</span> AI · <span style="color:${p.mut}">—</span> Human</div>
-    <svg width="${chartW}" height="${mergeRateH}" style="display:block">
-      <line x1="10" y1="${mergeRateH - 5}" x2="${chartW}" y2="${mergeRateH - 5}" stroke="${p.bord}" stroke-width="0.5"/>
-      ${rateLine(aiRates, p.accent)}
-      ${rateLine(humanRates, p.mut)}
-    </svg>
     ${footnote(`Source: attribution store (DDB query at render time). ${totalAi + totalHuman} commits in range.`, p)}
   `;
 }
