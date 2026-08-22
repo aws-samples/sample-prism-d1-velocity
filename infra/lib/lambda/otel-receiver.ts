@@ -1091,8 +1091,9 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
   // usage spans exist for the commit's traceId).
   const traceMaps = new Map<string, Map<string, { tool: string; model: string }>>();
   for (const c of rawCommits) {
-    if (!c.user) continue;
-    const u = getUser(c.user);
+    // CI-seeded items may lack a user field — still count them in fleet totals.
+    const userKey = c.user || '__unattributed__';
+    const u = getUser(userKey);
     u.commits.total++;
     // Prefer the verdict frozen at ingest. Legacy items (no ai_origin) fall
     // back to a live span join, which is only reliable inside SPAN_TTL_DAYS.
@@ -1100,12 +1101,12 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
     if (c.storedOrigin === 'ai-generated' || c.storedOrigin === 'human') {
       isAi = c.storedOrigin === 'ai-generated';
     } else {
-      let traceMap = traceMaps.get(c.user);
-      if (!traceMap) {
+      let traceMap = c.user ? traceMaps.get(c.user) : undefined;
+      if (c.user && !traceMap) {
         traceMap = await buildUserTraceMap(c.user);
         traceMaps.set(c.user, traceMap);
       }
-      isAi = c.traceId !== '' && traceMap.has(c.traceId);
+      isAi = c.traceId !== '' && !!traceMap?.has(c.traceId);
     }
     if (isAi) {
       u.commits.ai++;
@@ -1149,7 +1150,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
     range: { from, to },
     scope: userParam === 'all' ? 'org' : 'user',
     generatedAt: new Date().toISOString(),
-    users: [...users.values()].sort((a, b) => b.usage.costUsd - a.usage.costUsd),
+    users: [...users.values()].filter(u => u.user !== '__unattributed__').sort((a, b) => b.usage.costUsd - a.usage.costUsd),
     totals,
   });
 }
