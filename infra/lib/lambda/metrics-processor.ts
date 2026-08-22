@@ -885,6 +885,7 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
   const shas = pr?.commit_shas;
   if (!shas || shas.length === 0) return;
 
+  const authors: string[] = (pr as any)?.commit_authors ?? [];
   const repo = detail.repo as string;
   // CI workflows now emit fully-qualified repo names (github.com/owner/repo
   // or gitlab.com/group/project) matching codeburn's convention. No
@@ -893,7 +894,9 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
   const ttl = Math.floor(Date.now() / 1000) + 365 * 86400; // 1 year
 
   let seeded = 0;
-  for (const sha of shas) {
+  for (let i = 0; i < shas.length; i++) {
+    const sha = shas[i];
+    const author = authors[i] ?? ''; // parallel array; may be shorter or absent
     try {
       await dynamoClient.send(new PutItemCommand({
         TableName: AI_USAGE_TABLE,
@@ -910,6 +913,13 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
           timestamp: { S: timestamp },
           updated_at: { S: new Date().toISOString() },
           ttl: { N: String(ttl) },
+          // Author email from git log --format='%ae'. Enables per-developer
+          // attribution in /v1/productivity even before codeburn syncs.
+          ...(author ? {
+            user: { S: author },
+            gsi_user: { S: `USER#${author}` },
+            gsi_user_sk: { S: `COMMIT#${timestamp}` },
+          } : {}),
         },
         // Only write if the item does NOT already exist. If codeburn already
         // pushed this commit (with ai_origin=ai-generated), do not overwrite.
