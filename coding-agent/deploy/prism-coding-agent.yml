@@ -1,0 +1,228 @@
+# prism-coding-agent.yml — Autonomous issue → fix → PR.
+#
+# Installed by: prism-cli bootstrapper install-coding-agent
+#
+# This file deliberately does NOT live in bootstrapper/github-workflows/.
+# install-github-workflows copies every .yml in that directory, so putting it
+# there would hand an autonomous, Bedrock-billing, branch-pushing agent to every
+# repo that ran the workflow installer — including repos that never asked for
+# one. It is installed only by its own command.
+#
+#
+# AUTHORIZATION MODEL
+#
+# The trigger is `issues: [labeled]`, gated on a specific label. That is the
+# security control, and it is load-bearing: anybody with a GitHub account can
+# open an issue in a public repo, but applying a label requires triage
+# permission or above. Triggering on `issues: [opened]` instead would let any
+# stranger spend your Bedrock budget and put a branch in your repository.
+#
+# The agent can push branches and open PRs. It cannot merge them — nothing here
+# grants that, and branch protection should be relied on rather than trust.
+#
+#
+# REQUIRED SETUP
+#   - prism-cli bootstrapper setup-github-oidc   (grants bedrock:InvokeModel)
+#   - Repository secret PRISM_METRICS_ROLE_ARN
+#   - A label matching AGENT_LABEL below, created in the repo
+#   - .coding-agent/config.json committed (written by install-coding-agent)
+
+name: PRISM Coding Agent
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to fix'
+        required: true
+        type: string
+
+env:
+  PRISM_AWS_REGION: us-west-2
+  PRISM_REPO: github.com/${{ github.repository }}
+
+permissions:
+  id-token: write       # OIDC → AWS
+  contents: write       # push the fix branch
+  pull-requests: write  # open the PR
+  issues: write         # comment the outcome back on the issue
+
+jobs:
+  fix-issue:
+    # On the label path, run only for the agent label. Any other label added to
+    # any issue also fires this workflow, so this condition is what keeps the
+    # job from running on every triage action in the repository.
+    #
+    # The label is a literal here, not an env var, because the `env` context is
+    # not available in a job-level `if`. An AGENT_LABEL variable above would look
+    # configurable and change nothing — if you rename the label, edit this line.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'agent-fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the issue to work on
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+
+          # Both branches write the same shape: a GitHub event payload with the
+          # issue under an `issue` key, which is what agent.py --github-event
+          # reads. The dispatch branch has to wrap it, because `gh issue view`
+          # returns a bare issue object.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Validate before use: this value reaches an API path.
+            if ! [[ "${DISPATCH_NUMBER}" =~ ^[0-9]+$ ]]; then
+              echo "::error::issue_number must be numeric, got '${DISPATCH_NUMBER}'"
+              exit 1
+            fi
+            gh issue view "${DISPATCH_NUMBER}" --json number,title,body,labels \
+              | jq '{issue: .}' > /tmp/issue.json
+          else
+            # The event payload already carries the full issue. Reading it from
+            # the payload rather than re-fetching avoids a race where the issue
+            # is edited between the label and this step.
+            jq '{issue: (.issue | {number, title, body, labels})}' \
+              "${GITHUB_EVENT_PATH}" > /tmp/issue.json
+          fi
+
+          NUMBER=$(jq -r '.issue.number' /tmp/issue.json)
+          echo "number=${NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Working on issue #${NUMBER}: $(jq -r '.issue.title' /tmp/issue.json)"
+
+      - name: Acknowledge on the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment "${{ steps.issue.outputs.number }}" \
+            --body "🤖 PRISM coding agent picked this up — [run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install agent dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          pip install --quiet -r .prism/coding-agent/requirements.txt
+
+      - name: Install project dependencies
+        run: |
+          set -euo pipefail
+          # Best effort: the agent needs the project's own toolchain to run its
+          # verification command. A project whose install step differs should
+          # replace this step rather than expect the agent to guess.
+          if [[ -f package-lock.json ]]; then npm ci
+          elif [[ -f package.json ]]; then npm install
+          elif [[ -f requirements.txt ]]; then pip install -r requirements.txt
+          elif [[ -f pyproject.toml ]]; then pip install -e . || true
+          else echo "No recognised dependency manifest — skipping."
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
+          aws-region: ${{ env.PRISM_AWS_REGION }}
+
+      - name: Record the pre-agent commit
+        id: baseline
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run the agent
+        id: agent
+        env:
+          # create_pr reads the ambient token rather than taking it as an
+          # argument, so it never appears in a process listing or a log line.
+          GH_TOKEN: ${{ github.token }}
+          PRISM_AWS_REGION: ${{ env.PRISM_AWS_REGION }}
+        run: |
+          # GitHub runs `run:` blocks under `bash -e`, so a non-zero exit from
+          # the agent would end the step here and skip straight past the step
+          # that works out what it committed. `set +e` around the call keeps the
+          # exit code as data instead of as control flow.
+          set -o pipefail
+          set +e
+          python .prism/coding-agent/agent.py \
+            --repo . \
+            --github-event /tmp/issue.json \
+            --region "${PRISM_AWS_REGION}" \
+            --create-pr \
+            2>&1 | tee /tmp/agent.log
+          EXIT_CODE=$?
+          set -e
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          echo "Agent exited ${EXIT_CODE}."
+
+      - name: Determine what the agent actually did
+        id: outcome
+        if: always()
+        run: |
+          set -euo pipefail
+          # Git is the ground truth, not the agent's self-report. An agent that
+          # claims success in prose but committed nothing reads as "no commits"
+          # here, which is the honest answer.
+          COMMITS=$(git rev-list --count "${{ steps.baseline.outputs.sha }}..HEAD")
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "commits=${COMMITS}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${COMMITS}" -gt 0 ]]; then
+            echo "The agent made ${COMMITS} commit(s) on ${BRANCH}."
+            git log --oneline "${{ steps.baseline.outputs.sha }}..HEAD"
+          else
+            echo "The agent made no commits."
+          fi
+
+      - name: Report the outcome on the issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMITS: ${{ steps.outcome.outputs.commits }}
+          BRANCH: ${{ steps.outcome.outputs.branch }}
+          EXIT_CODE: ${{ steps.agent.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # NOTE: this posts agent output to an issue comment, which is public on
+          # a public repository. The agent has a shell tool, so an issue crafted
+          # to make it print its environment would have that output land here.
+          # The label gate is what prevents that: an untrusted user cannot
+          # trigger this workflow. If you widen the trigger, stop echoing the log.
+          TAIL=$(tail -c 2000 /tmp/agent.log 2>/dev/null || echo "(no agent output captured)")
+
+          if [[ "${COMMITS:-0}" -gt 0 ]]; then
+            BODY=$(printf '✅ **Agent produced a fix** — %s commit(s) on `%s`.\n\nSee the pull request for review. Nothing has been merged.\n\n[Run log](%s)' \
+              "${COMMITS}" "${BRANCH}" "${RUN_URL}")
+          else
+            # No commit is not automatically a failure. Declining to change
+            # anything is the correct outcome for an issue that asks the agent
+            # to weaken a test suite, or whose premise is wrong.
+            BODY=$(printf '⚠️ **Agent made no changes** (exit %s). This is expected when the issue asks for something it should refuse, or when it could not verify a fix.\n\n<details><summary>Last 2000 characters of output</summary>\n\n```\n%s\n```\n\n</details>\n\n[Run log](%s)' \
+              "${EXIT_CODE:-?}" "${TAIL}" "${RUN_URL}")
+          fi
+
+          gh issue comment "${{ steps.issue.outputs.number }}" --body "${BODY}"
+
+      - name: Upload the agent transcript
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-log-issue-${{ steps.issue.outputs.number }}
+          path: /tmp/agent.log
+          retention-days: 14

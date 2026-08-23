@@ -1,0 +1,8 @@
+# Pinned rather than floored so a CI run a month from now installs what was
+# actually verified. pyproject.toml keeps the looser floors for local
+# development; this file is what the GitHub Actions workflow installs.
+#
+# Verified against: Python 3.11, agent construction + tool wiring confirmed.
+strands-agents==1.53.0
+strands-agents-tools==0.8.6
+boto3==1.43.78

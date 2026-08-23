@@ -88,6 +88,48 @@ Run from a GitHub Actions event and open a PR:
 python agent.py --repo . --github-event "$GITHUB_EVENT_PATH" --create-pr
 ```
 
+## Installing into another repository
+
+```bash
+prism-cli bootstrapper install-coding-agent
+```
+
+Detects the project type, asks for the verification commands with the detected
+values as defaults, and writes three things:
+
+| Path | What |
+|---|---|
+| `.coding-agent/config.json` | how to verify a fix in this project |
+| `.prism/coding-agent/` | the agent source, vendored so it stays readable and editable |
+| `.github/workflows/prism-coding-agent.yml` | issue → fix → PR (skip with `--no-workflow`) |
+
+Non-interactive form for CI:
+
+```bash
+prism-cli bootstrapper install-coding-agent --yes \
+  --test-command "pytest -q" --agent-email agent@corp.example.com --region eu-west-1
+```
+
+`--uninstall` removes all three paths. Project-type detection is not
+reimplemented in the CLI — it shells out to `config.py --detect`, so there is one
+detector table rather than two that can disagree.
+
+### The workflow's authorization model
+
+The trigger is `issues: [labeled]`, gated on the `agent-fix` label. That gate is
+load-bearing: anyone can open an issue on a public repo, but applying a label
+requires triage permission. Triggering on `issues: [opened]` would let a stranger
+spend your Bedrock budget and put a branch in your repository.
+
+The agent can push a branch and open a PR. It cannot merge one. Rely on branch
+protection for that rather than on the agent's good behaviour.
+
+The workflow echoes the last 2000 characters of agent output into an issue
+comment, which is public on a public repository. The agent holds a shell tool, so
+an issue crafted to make it print its environment would surface that output
+there. The label gate is what prevents it; if you widen the trigger, stop echoing
+the log.
+
 ## Eval harness
 
 ```bash
@@ -159,7 +201,20 @@ counted against that person.
 
 ## Status
 
-Core agent, config resolution, tools and eval harness are implemented. Not yet
-built: the `prism-cli bootstrapper install-coding-agent` installer, the GitHub
-Actions workflow, and OTEL emission of the agent's own token usage to the PRISM
-collector.
+Implemented and exercised: the agent, config resolution, both custom tools, the
+eval harness, the `install-coding-agent` installer, and the GitHub Actions
+workflow. The installer and the workflow's shell logic were each run end to end
+against throwaway repositories in six ecosystems.
+
+Not yet built: OTEL emission of the agent's own token usage to the PRISM
+collector. Until that exists, the agent's commits are attributed (via the CI
+`commit_authors` join) but its cost is not.
+
+**The agent has never called a model.** This devbox's instance profile lacks
+`bedrock:InvokeModel`, so every claim above is about scaffolding, wiring and
+plumbing — not about fix quality. Nothing here says the agent can actually fix a
+bug. Establishing that needs a run from a Bedrock-enabled profile:
+
+```bash
+python eval/run_eval.py --repo ../sample-app
+```

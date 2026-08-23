@@ -144,3 +144,47 @@ def load_config(repo_path: Path, **overrides: object) -> AgentConfig:
         raise ConfigError("max_attempts must be at least 1")
 
     return cfg
+
+
+def _detect_as_json(repo_path: Path) -> str:
+    """Serialize detection results for a non-Python caller.
+
+    `prism-cli bootstrapper install-coding-agent` needs the same project-type
+    defaults the agent would derive, to offer them at the prompt. It shells out
+    to this rather than carrying a second copy of DETECTORS in TypeScript --
+    two tables would drift, and the symptom would be an installer that offers
+    `npm test` for a repo the agent then runs `pytest` against.
+    """
+    test_cmd, build_cmd, label = detect_project(repo_path)
+    existing = repo_path / CONFIG_DIR / CONFIG_FILE
+    return json.dumps(
+        {
+            "test_command": test_cmd,
+            "build_command": build_cmd or "",
+            "project_type": label,
+            "config_exists": existing.exists(),
+        }
+    )
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Inspect PRISM coding agent configuration.")
+    parser.add_argument("--detect", metavar="REPO", help="Print detection results for REPO as JSON")
+    parser.add_argument("--show", metavar="REPO", help="Print the fully resolved config for REPO")
+    args = parser.parse_args()
+
+    try:
+        if args.detect:
+            print(_detect_as_json(Path(args.detect)))
+        elif args.show:
+            resolved = load_config(Path(args.show))
+            print(json.dumps({k: str(v) for k, v in vars(resolved).items()}, indent=2))
+        else:
+            parser.print_help()
+            sys.exit(2)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
