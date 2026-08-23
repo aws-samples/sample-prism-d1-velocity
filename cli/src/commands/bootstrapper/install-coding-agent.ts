@@ -74,11 +74,19 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
   return new Promise((r) => rl.question(`${question}${suffix}: `, (a) => { rl.close(); r(a.trim() || defaultValue || ''); }));
 }
 
+interface Toolchain {
+  tool?: string;
+  version?: string;
+  source: 'existing' | 'idiomatic' | 'manifest' | 'local' | 'none';
+  file?: string;
+}
+
 interface Detection {
   test_command: string;
   build_command: string;
   project_type: string;
   config_exists: boolean;
+  toolchain?: Toolchain;
 }
 
 /**
@@ -103,6 +111,56 @@ function detectProject(agentSourceDir: string, repoRoot: string): Detection | un
     }
   }
   return undefined;
+}
+
+/**
+ * Pins the project's toolchain version in .tool-versions, if it can be known.
+ *
+ * The harness installs the toolchain at session start from the repository's own
+ * version files, so an unpinned repo gets whatever is newest that day -- and a
+ * suite that passes today can fail next week for reasons unrelated to any change
+ * in the repository. Install time is the right moment to record this, because it
+ * is the one moment when the version the project actually builds with is
+ * observable.
+ *
+ * Four things it deliberately does not do:
+ *
+ *  - overwrite an existing .tool-versions (repo-owned, possibly deliberate)
+ *  - write alongside .nvmrc or rust-toolchain.toml, which mise already reads --
+ *    two files answering one question is worse than one
+ *  - resolve a range like ">=18" to a point release, which would be inventing a
+ *    decision the repo declined to make
+ *  - write anything when no version can be established, since a guessed pin
+ *    looks reviewed and is not
+ */
+function writeToolVersions(repoRoot: string, toolchain: Toolchain | undefined): void {
+  if (!toolchain) return;
+  const path = join(repoRoot, '.tool-versions');
+
+  switch (toolchain.source) {
+    case 'existing':
+      console.log('  · .tool-versions (kept — yours, never overwritten)');
+      return;
+    case 'idiomatic':
+      console.log(`  · ${toolchain.file} already pins the toolchain; mise reads it directly`);
+      return;
+    case 'none':
+      console.log('  ⚠ no .tool-versions written — could not establish a version');
+      console.log('    The harness will install whatever is newest at run time, so a');
+      console.log('    passing suite can start failing without the repo changing.');
+      console.log(`    Pin it yourself: echo "<tool> <version>" > .tool-versions`);
+      return;
+    case 'manifest':
+    case 'local':
+      break;
+  }
+
+  if (!toolchain.tool || !toolchain.version) return;
+  writeFileSync(path, `${toolchain.tool} ${toolchain.version}\n`);
+  const origin = toolchain.source === 'manifest'
+    ? 'from this repo\'s own manifest'
+    : 'from the toolchain on this machine — check it is the one you want';
+  console.log(`  ✓ .tool-versions (${toolchain.tool} ${toolchain.version}, ${origin})`);
 }
 
 function checkCommand(value: string, label: string): string {
@@ -546,11 +604,16 @@ export default {
       model_id: opts.model || DEFAULT_MODEL,
       region,
       detected_project_type: detected?.project_type || 'unknown',
+      toolchain: detected?.toolchain?.tool
+        ? { tool: detected.toolchain.tool, version: detected.toolchain.version || '', source: detected.toolchain.source }
+        : undefined,
     };
 
     mkdirSync(configDir, { recursive: true });
     writeFileSync(join(configDir, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
     console.log(`\n  ✓ ${CONFIG_DEST}/config.json`);
+
+    writeToolVersions(repoRoot, detected?.toolchain);
 
     const copied = copyAgentSource(agentSource, agentDir);
     console.log(`  ✓ ${AGENT_DEST}/ (${copied} files)`);
