@@ -2,10 +2,7 @@
 
 Two implementations behind one protocol:
 
-`BotoTransport` calls `invoke-agent-runtime` for real. It picks the harness from a
-toolchain map, because a harness's environment is one container image and a
-coding agent has to run the *target project's* test command -- so there is one
-harness per toolchain, routed on what the repo turned out to be.
+`BotoTransport` calls `invoke-agent-runtime` for real.
 
 `StubTransport` reads a canned response from disk. It exists because the harness
 cannot be reached from every machine that needs to work on this code, and because
@@ -18,57 +15,71 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Protocol
 
 from .contract import ContractError, FixRequest, FixResponse
 
-# Toolchain -> harness. The value is an env var name rather than an ARN so the
-# same code works across accounts and regions without a config file, matching how
-# the CI workflows already take PRISM_METRICS_ROLE_ARN from the environment.
+# One harness serves every toolchain.
 #
-# Keys are config.json's detected_project_type. A repo whose type has no harness
-# fails loudly: silently falling back to a default would run `cargo test` in a
-# Node container and report the resulting mess as an agent defect.
-HARNESS_ENV_BY_TYPE = {
-    "node": "PRISM_HARNESS_ARN_NODE",
-    "python": "PRISM_HARNESS_ARN_PYTHON",
-    "rust": "PRISM_HARNESS_ARN_RUST",
-    "go": "PRISM_HARNESS_ARN_GO",
-    "java-maven": "PRISM_HARNESS_ARN_JAVA",
-    "java-gradle": "PRISM_HARNESS_ARN_JAVA",
-    "ruby": "PRISM_HARNESS_ARN_RUBY",
-}
+# The first design was a harness per language, routed on detected_project_type.
+# The image size cap settled it: an AgentCore Runtime image may not exceed 2 GB
+# and that quota is not adjustable, while the official language images total
+# ~9.3 GB. So the harness image ships mise and installs the toolchain at session
+# start from the repository's own .tool-versions -- which also means language and
+# version stop being a deployment concern at all.
+PRIMARY_ENV = "PRISM_HARNESS_ARN"
+
+# Escape hatch, not the main path. A toolchain that genuinely needs its own image
+# -- something mise cannot install, or a build that needs system packages beyond
+# what the shared image carries -- can have a dedicated harness without forcing
+# everyone else back into a matrix.
+#
+# The variable name is derived rather than looked up in a table: a table with one
+# row per toolchain is a second list of supported languages that drifts away from
+# DETECTORS, and the whole point of the shared harness is that the list no longer
+# needs to exist.
+_TOOLCHAIN_ALIASES = {"java-maven": "java", "java-gradle": "java"}
 
 
 class Transport(Protocol):
     def send(self, request: FixRequest) -> FixResponse: ...
 
 
-def resolve_harness_arn(project_type: str, env: dict[str, str] | None = None) -> str:
-    """Find the harness for this project type, or explain what is missing."""
+def toolchain_env_var(project_type: str) -> str:
+    """The per-toolchain override variable name for a project type."""
+    name = _TOOLCHAIN_ALIASES.get(project_type, project_type)
+    # Only characters legal in an environment variable name survive.
+    name = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
+    return f"{PRIMARY_ENV}_{name}" if name else ""
+
+
+def resolve_harness_arn(project_type: str = "", env: dict[str, str] | None = None) -> str:
+    """Find the harness to invoke, preferring a toolchain-specific one if set.
+
+    Order is deliberate. The specific override wins so a single awkward toolchain
+    can be peeled off without disturbing anything else, and the shared harness is
+    the fallback because it is the normal case.
+    """
     env = os.environ if env is None else env
 
-    override = env.get("PRISM_HARNESS_ARN")
-    if override:
-        return override
+    specific = toolchain_env_var(project_type) if project_type else ""
+    if specific and env.get(specific):
+        return env[specific]
 
-    var = HARNESS_ENV_BY_TYPE.get(project_type)
-    if not var:
-        raise ContractError(
-            f"no harness is mapped for project type {project_type!r}. "
-            f"Known: {', '.join(sorted(set(HARNESS_ENV_BY_TYPE)))}. "
-            f"Set PRISM_HARNESS_ARN to override, or add a harness whose image "
-            f"carries this toolchain."
-        )
-    arn = env.get(var)
-    if not arn:
-        raise ContractError(
-            f"{var} is not set. Project type {project_type!r} needs a harness whose "
-            f"container image provides its toolchain; deploy one and export its ARN."
-        )
-    return arn
+    shared = env.get(PRIMARY_ENV)
+    if shared:
+        return shared
+
+    hint = f" (or {specific} for a dedicated one)" if specific else ""
+    raise ContractError(
+        f"{PRIMARY_ENV} is not set{hint}. Deploy the harness in "
+        f"coding-agent/deploy/Dockerfile and export its ARN. One harness serves "
+        f"every toolchain: it installs what a repository declares in "
+        f".tool-versions at session start."
+    )
 
 
 class BotoTransport:
@@ -80,7 +91,7 @@ class BotoTransport:
     things a stub cannot vouch for on its behalf.
     """
 
-    def __init__(self, project_type: str, region: str = "us-west-2",
+    def __init__(self, project_type: str = "", region: str = "us-west-2",
                  client=None, env: dict[str, str] | None = None) -> None:
         self.arn = resolve_harness_arn(project_type, env)
         self.region = region

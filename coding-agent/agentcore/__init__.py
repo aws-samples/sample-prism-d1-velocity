@@ -18,4 +18,11 @@ from .contract import (  # noqa: F401
     render_task_message,
 )
 from .patch import ApplyResult, ApplyStatus, apply_patch, commit_applied  # noqa: F401
-from .client import BotoTransport, StubTransport, Transport, resolve_harness_arn  # noqa: F401
+from .client import (  # noqa: F401
+    PRIMARY_ENV,
+    BotoTransport,
+    StubTransport,
+    Transport,
+    resolve_harness_arn,
+    toolchain_env_var,
+)

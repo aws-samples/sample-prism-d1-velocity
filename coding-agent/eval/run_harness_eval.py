@@ -49,8 +49,8 @@ from agentcore import (  # noqa: E402
     Verification,
     apply_patch,
 )
+from agentcore.invoke import build_fix_request  # noqa: E402
 from config import load_config  # noqa: E402
-from system_prompt import collect_repo_guidance  # noqa: E402
 
 # Reusing these keeps one implementation of the parts that were hard to get right.
 from run_eval import (  # noqa: E402
@@ -78,29 +78,13 @@ class Result:
 
 
 def build_request(fixture: dict, repo: Path, cfg, url: str, ref: str, subdir: str) -> FixRequest:
-    """Turn a fixture plus this repo's config into one invocation.
+    """Adapt a fixture into the same request the CI workflow would send.
 
-    Guidance is read from the repository being evaluated, using the same loader
-    the local agent uses, so an eval measures the prompt the repo actually ships
-    rather than a copy that has drifted from it.
+    Delegates to build_fix_request rather than assembling its own: if the eval
+    built requests differently from the workflow, it would be scoring something
+    that never runs in production.
     """
-    guidance, _sources, _warnings = collect_repo_guidance(repo)
-    return FixRequest(
-        issue=Issue(
-            number=int(fixture.get("number") or 0),
-            title=str(fixture.get("title") or ""),
-            body=str(fixture.get("body") or ""),
-        ),
-        repo=RepoRef(url=url, ref=ref, subdir=subdir),
-        verification=Verification(
-            test_command=cfg.test_command,
-            build_command=cfg.build_command,
-            lint_command=cfg.lint_command,
-            max_attempts=cfg.max_attempts,
-        ),
-        guidance=guidance,
-        attribution=Attribution(user=cfg.agent_email, repo_slug=url),
-    )
+    return build_fix_request(repo, cfg, fixture, url=url, ref=ref, subdir=subdir)
 
 
 def score(fixture: dict, response, clone_root: Path, work: Path, cfg) -> Result:

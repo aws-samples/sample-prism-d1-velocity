@@ -31,6 +31,7 @@ from agentcore import (  # noqa: E402
     apply_patch,
     render_task_message,
     resolve_harness_arn,
+    toolchain_env_var,
 )
 from agentcore.contract import CONSTRAINTS_TAIL  # noqa: E402
 
@@ -182,34 +183,53 @@ def test_usage_survives_the_round_trip_for_attribution():
 
 
 # --------------------------------------------------------------------------
-# Harness routing
+# Harness routing: one harness, with a per-toolchain escape hatch
 # --------------------------------------------------------------------------
 
-def test_each_toolchain_routes_to_its_own_harness():
-    env = {"PRISM_HARNESS_ARN_NODE": "arn:node", "PRISM_HARNESS_ARN_RUST": "arn:rust"}
-    assert resolve_harness_arn("node", env) == "arn:node"
+def test_the_shared_harness_serves_any_toolchain():
+    """One image + mise means language is no longer a deployment concern, so a
+    type nobody enumerated is not an error."""
+    env = {"PRISM_HARNESS_ARN": "arn:shared"}
+    for project_type in ("node", "rust", "java-gradle", "haskell", ""):
+        assert resolve_harness_arn(project_type, env) == "arn:shared"
+
+
+def test_a_toolchain_specific_harness_wins_when_deployed():
+    """The escape hatch exists so one awkward toolchain can be peeled off without
+    forcing everyone else back into a per-language matrix."""
+    env = {"PRISM_HARNESS_ARN": "arn:shared", "PRISM_HARNESS_ARN_RUST": "arn:rust"}
     assert resolve_harness_arn("rust", env) == "arn:rust"
+    assert resolve_harness_arn("node", env) == "arn:shared"
 
 
-def test_unmapped_toolchain_fails_loudly_rather_than_defaulting():
-    """Defaulting would run cargo test in a Node container and blame the agent."""
-    with pytest.raises(ContractError, match="no harness is mapped"):
-        resolve_harness_arn("haskell", {})
-
-
-def test_mapped_but_undeployed_toolchain_says_which_variable_is_missing():
-    with pytest.raises(ContractError, match="PRISM_HARNESS_ARN_GO is not set"):
+def test_with_nothing_deployed_the_error_names_both_options():
+    with pytest.raises(ContractError) as exc:
         resolve_harness_arn("go", {})
+    message = str(exc.value)
+    assert "PRISM_HARNESS_ARN is not set" in message
+    assert "PRISM_HARNESS_ARN_GO" in message
+    assert ".tool-versions" in message
 
 
-def test_both_java_build_systems_share_one_harness():
-    env = {"PRISM_HARNESS_ARN_JAVA": "arn:java"}
-    assert resolve_harness_arn("java-maven", env) == resolve_harness_arn("java-gradle", env)
+def test_both_java_build_systems_share_one_override_variable():
+    assert toolchain_env_var("java-maven") == toolchain_env_var("java-gradle") == "PRISM_HARNESS_ARN_JAVA"
+
+
+@pytest.mark.parametrize("project_type,expected", [
+    ("node", "PRISM_HARNESS_ARN_NODE"),
+    ("java-maven", "PRISM_HARNESS_ARN_JAVA"),
+    ("c++", "PRISM_HARNESS_ARN_C"),
+    ("dotnet-6", "PRISM_HARNESS_ARN_DOTNET_6"),
+])
+def test_override_variable_names_are_derived_not_tabulated(project_type, expected):
+    """Derived rather than looked up: a table with one row per toolchain is a
+    second list of supported languages that drifts from DETECTORS."""
+    assert toolchain_env_var(project_type) == expected
 
 
 def test_attribution_reaches_the_invocation_not_just_the_payload():
     """runtimeUserId and baggage are what propagate into OTEL spans."""
-    t = BotoTransport("node", env={"PRISM_HARNESS_ARN_NODE": "arn:node"})
+    t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
     args = t.invoke_args(make_request(
         attribution=Attribution(user="dev@example.com", team_id="team-a", repo_slug="acme/api")))
     assert args["runtimeUserId"] == "dev@example.com"
@@ -218,7 +238,7 @@ def test_attribution_reaches_the_invocation_not_just_the_payload():
 
 
 def test_attribution_omits_empty_members_rather_than_sending_blanks():
-    t = BotoTransport("node", env={"PRISM_HARNESS_ARN_NODE": "arn:node"})
+    t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
     args = t.invoke_args(make_request(attribution=Attribution(team_id="team-a")))
     assert args["baggage"] == "team_id=team-a"
     assert "runtimeUserId" not in args
