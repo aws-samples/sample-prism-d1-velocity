@@ -1,0 +1,12 @@
+{
+  "number": 2,
+  "title": "Add status filtering to GET /tasks",
+  "body": "## Request\n\n`GET /tasks` always returns every task. With more than a handful of tasks the client has to filter locally, which means transferring rows it will immediately discard.\n\nSupport a `status` query parameter:\n\n```\nGET /tasks?status=todo\nGET /tasks?status=in-progress\nGET /tasks?status=done\n```\n\n## Expected behaviour\n\n- `?status=todo` returns only tasks in that status.\n- `count` reflects the number of tasks returned, not the total in the store.\n- An invalid status returns `400` with an error listing the valid values, matching how `POST /tasks` already validates status.\n- Omitting the parameter keeps the current behaviour: return everything.\n\n## Notes\n\nThe route already has a `VALID_STATUSES` array and an `isValidStatus` helper. Reuse them rather than duplicating the list.",
+  "expected_behaviour": "GET /tasks?status=<valid> filters the result set and reports the filtered count. Invalid status yields 400. Omitted status returns all tasks unchanged.",
+  "expected_files": [
+    "src/routes/tasks.ts"
+  ],
+  "difficulty": "easy",
+  "kind": "feature",
+  "notes": "Additive change. Exercises reuse of existing helpers rather than writing new validation."
+}

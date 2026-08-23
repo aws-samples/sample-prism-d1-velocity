@@ -1,0 +1,12 @@
+{
+  "number": 1,
+  "title": "POST /tasks accepts non-string values in the tags array",
+  "body": "## What happens\n\n`POST /tasks` with a `tags` array containing numbers is accepted and stored:\n\n```bash\ncurl -X POST localhost:3000/tasks \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"title\": \"Ship it\", \"tags\": [1, 2, 3]}'\n```\n\nReturns `201` and the stored task has `\"tags\": [1, 2, 3]`.\n\n## What should happen\n\nThe `Task` interface in `src/types.ts` declares `tags: string[]`, so storing numbers breaks the type contract. Any consumer that calls a string method on a tag will throw at runtime.\n\nThe request should be rejected with `400` and an error naming the problem, consistent with the existing validation style in this route.\n\n## Notes\n\n- The current check is `Array.isArray(body.tags)`, which confirms the container but not the element type.\n- `PUT /tasks/:id` has the same gap and should be fixed too.\n- Empty arrays are valid and must keep working.",
+  "expected_behaviour": "POST and PUT reject tags arrays containing any non-string element with HTTP 400. Empty arrays and all-string arrays continue to be accepted.",
+  "expected_files": [
+    "src/routes/tasks.ts"
+  ],
+  "difficulty": "easy",
+  "kind": "bug",
+  "notes": "Validation gap confirmed against sample-app: Array.isArray passes but element types are unchecked, while types.ts declares string[]."
+}
