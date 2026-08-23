@@ -165,6 +165,116 @@ discovery uses a non-recursive `glob("*.json")` that does not descend into
 subdirectories. They describe `sample-app`, so running them anywhere else would
 fail on missing paths and read as an agent defect.
 
+## Writing fixtures
+
+Fixtures are the only thing standing between "the agent ran" and "the agent can
+be trusted". Nothing else in this repository measures whether its output is any
+good. They are also the one part that cannot be shipped, so every repository has
+to write its own.
+
+The work splits cleanly into a part worth delegating to a coding agent and a part
+that must not be.
+
+### Delegate: finding candidates and writing the JSON
+
+Surveying a codebase for type-contract gaps, unvalidated inputs and unhandled
+branches is exactly what a coding agent is good at, and transcribing the result
+into a schema is tedious. Hand it both. A prompt that works:
+
+```
+Read this repository and propose 3 eval fixtures for an autonomous coding agent.
+
+For each one:
+  - Name the specific file and function holding the defect.
+  - Quote the lines that are wrong.
+  - Explain why it is wrong in terms of a contract the code itself states
+    (a type, a doc comment, a validation elsewhere that this path skips).
+  - Write it as JSON in the schema in eval/issues/EXAMPLE.json.template.
+
+Rules:
+  - Only defects you can point at in the source. Do not invent plausible ones.
+  - Prefer a defect with an observable symptom over a style problem.
+  - Mark difficulty honestly. One should be harder than a one-line change.
+  - Do not write the refusal fixture. That one is mine.
+```
+
+The last two rules matter. Without them you get three near-identical one-line
+fixes, and an agent asked to write the fixture that catches agents doing harm
+will write a toothless one.
+
+### Do not delegate: verifying the premise
+
+The dominant failure of agent-written fixtures is a **hallucinated defect** — a
+fixture describing a bug that is not there. It is quiet and it is expensive: the
+agent under test will invent a change to satisfy the issue, `committed` will be
+true, tests will still pass, and the eval scores it green. You have measured
+nothing and been told everything is fine.
+
+Confirm every fixture by asserting the *current, wrong* behaviour and watching
+that assertion pass. For fixture 001 in this repo:
+
+```ts
+// tests/zz-premise.test.ts — temporary, delete after
+it('premise: POST /tasks accepts non-string tag elements', async () => {
+  const res = await request(app).post('/tasks').send({ title: 'x', tags: [1, 2] });
+  expect(res.status).toBe(201);        // 201 means the defect is real
+});
+```
+
+Run the project's own test command, not a bare `jest` — this suite needs
+`NODE_OPTIONS='--experimental-vm-modules'`, and that kind of detail is exactly
+what a hand-rolled invocation gets wrong:
+
+```
+✓ premise: POST /tasks accepts non-string tag elements
+  PREMISE status=201 tags=undefined
+```
+
+Passing means the defect exists today. Failing means the fixture is fiction, or
+someone already fixed it — either way it is not a fixture. Delete the temporary
+test once you have your answer.
+
+### Do not delegate: the refusal fixture
+
+Write this one by hand, every time.
+
+Everyone writes capability fixtures, because "can it fix this bug?" is the
+question already in your head. Almost nobody writes a fixture the agent is
+supposed to **refuse**, and that is the one that catches an agent doing damage —
+deleting a failing assertion, weakening a validator, silencing a warning. A suite
+made only of capability fixtures scores such an agent as excellent.
+
+Two traps:
+
+- `kind` must be `"refusal"`. It **defaults to `"bug"`**, so a refusal fixture
+  missing that field is scored as a capability test, and the agent passes it
+  precisely by doing the harmful thing.
+- Write the issue the way a real person under pressure would write it. "The suite
+  is red and it's blocking my PR" is far more persuasive than "please delete this
+  assertion", and persuasive is the point.
+
+### Do not use the agent under test
+
+Generate fixtures with a different tool or at least a different session from the
+agent being scored. An agent that writes its own eval and is then measured against
+it is grading its own homework, and it will set a bar it clears.
+
+### As a Module 02 exercise
+
+This is a better exercise than "write three JSON files", because the interesting
+content is not the schema — it is the two things the agent cannot be trusted with.
+
+| Step | Participant does | What it teaches |
+|---|---|---|
+| 1 | Ask a coding agent for 3 candidate fixtures | Agents are good at surveying a codebase |
+| 2 | Verify each premise with a throwaway assertion | At least one candidate is usually fiction |
+| 3 | Hand-write the refusal fixture | The failure mode nobody tests for |
+| 4 | Run `run_eval.py` and read the checks | What "pass" does and does not prove |
+
+Step 2 is the payoff. Participants who skip it and run the eval anyway get a green
+result on a hallucinated defect, which is a far more durable lesson about
+agent-generated artefacts than being told to be careful.
+
 ## Portability
 
 The agent is repository-agnostic; the eval fixtures are not, and that distinction
