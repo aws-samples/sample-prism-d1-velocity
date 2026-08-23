@@ -78,6 +78,26 @@ def _validate_paths(paths: list[str], repo_path: Path) -> list[str]:
     return resolved
 
 
+
+def _resolve_repo(path: Path) -> Path | None:
+    """Return the git repository enclosing `path`, or None if there is none.
+
+    Uses git's own answer rather than walking for a `.git` directory, so
+    worktrees and submodules resolve the way git itself sees them.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(path), capture_output=True, text=True,
+            timeout=_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return Path(proc.stdout.strip())
+
+
 @tool
 def git_ops(
     action: str,
@@ -104,8 +124,25 @@ def git_ops(
         Command output, or a short confirmation for actions with no output.
     """
     repo = Path(repo_path)
-    if not (repo / ".git").exists():
-        return f"ERROR: {repo_path} is not a git repository"
+    # Resolved rather than tested for a `.git` child, because a target is often a
+    # subdirectory of its repository -- PRISM's own sample-app sits inside a
+    # monorepo, and customer monorepos are the same shape.
+    #
+    # Requiring `.git` here caused a genuinely bad failure, observed rather than
+    # imagined: this tool refused with "not a git repository", and the agent --
+    # which also has a shell -- routed around the refusal by running `git init`
+    # and committing all 54 files as "Initial commit". A refusing tool is not a
+    # constraint on something that can run arbitrary commands; it is only a
+    # suggestion. So the tool has to be able to do the right thing rather than
+    # merely decline to do the wrong one.
+    resolved = _resolve_repo(repo)
+    if resolved is None:
+        return (
+            f"ERROR: {repo_path} is not inside a git repository. Do NOT run "
+            f"`git init` -- that would create a new repository and commit "
+            f"everything, which is never the fix. Report the problem instead."
+        )
+    repo = resolved
 
     try:
         if action == "status":

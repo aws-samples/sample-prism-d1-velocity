@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -83,7 +84,25 @@ def build_agent(cfg, create_pr_enabled: bool):
     Imports happen here rather than at module scope so that --help and config
     validation work without the Strands SDK installed.
     """
+    # strands-agents-tools gates every mutating tool -- editor, file_write, shell
+    # -- behind an interactive confirmation dialog unless BYPASS_TOOL_CONSENT is
+    # set. There is nobody to answer it here: the agent runs in CI or in a
+    # disposable microVM, so the prompt is auto-cancelled and every write silently
+    # fails while the model keeps reasoning.
+    #
+    # The symptom is badly misleading. The agent diagnoses the bug correctly,
+    # writes out the right patch in prose, then reports "unable to complete
+    # because all file modification operations are being cancelled by the system"
+    # -- which reads as a broken agent rather than a missing environment variable.
+    #
+    # Safe to set here because the boundary is the sandbox, not the prompt: the
+    # eval harness gives the agent a throwaway clone, and the AgentCore harness
+    # gives it an isolated microVM. Consent dialogs are for a developer's own
+    # working tree, which this agent is never pointed at.
+    os.environ.setdefault("BYPASS_TOOL_CONSENT", "true")
+
     from strands import Agent
+    from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands_tools import editor, file_read, file_write, shell
 
     from tools import create_pr, git_ops
@@ -92,10 +111,28 @@ def build_agent(cfg, create_pr_enabled: bool):
     if create_pr_enabled:
         tools.append(create_pr)
 
+    # A sliding window bounds how much context each model call carries. It does
+    # NOT bound how many calls happen -- this SDK version has no max_turns or
+    # max_iterations on Agent (checked: the accepted parameters are model,
+    # messages, tools, system_prompt, conversation_manager, hooks, ... and none
+    # caps iterations).
+    #
+    # That gap is real and was observed, not imagined: one run committed a fix and
+    # then sat for fourteen minutes with one second of CPU, blocked on a model
+    # call that never returned, with nothing in the agent to stop it. The only
+    # bounds today are external -- the eval harness's subprocess timeout and the
+    # workflow's timeout-minutes.
+    #
+    # AgentCore Harness takes --max-iterations declaratively, so the harness path
+    # gets the cap this one cannot. That is a concrete argument for the migration
+    # rather than a stylistic one.
     return Agent(
         model=cfg.model_id,
         tools=tools,
         system_prompt=build_system_prompt(cfg, announce=True),
+        conversation_manager=SlidingWindowConversationManager(
+            window_size=max(20, cfg.max_attempts * 12),
+        ),
     )
 
 
