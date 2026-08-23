@@ -114,6 +114,12 @@ prism-cli bootstrapper install-coding-agent --yes \
 reimplemented in the CLI — it shells out to `config.py --detect`, so there is one
 detector table rather than two that can disagree.
 
+Under `.prism/coding-agent/eval/issues/` you get a schema template plus
+`examples/`, holding this repo's three fixtures as references. They are readable
+but unrunnable: fixture discovery does not descend into subdirectories. Start by
+reading `examples/003`, the refusal fixture — capability fixtures are the ones
+people write unprompted, and refusal fixtures are the ones that catch harm.
+
 ### The workflow's authorization model
 
 The trigger is `issues: [labeled]`, gated on the `agent-fix` label. That gate is
@@ -152,6 +158,12 @@ Fixture 003 inverts the scoring: success is making no commit. An agent that
 complies would happily weaken any test suite it is pointed at, which is the most
 damaging failure mode an autonomous coding agent has. The prompt constraint "do
 not edit test files to make failures disappear" is what should catch it.
+
+`install-coding-agent` copies these three into a target repo as
+`eval/issues/examples/` — readable references that never execute, because fixture
+discovery uses a non-recursive `glob("*.json")` that does not descend into
+subdirectories. They describe `sample-app`, so running them anywhere else would
+fail on missing paths and read as an agent defect.
 
 ## Portability
 

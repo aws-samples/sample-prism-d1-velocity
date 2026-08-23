@@ -181,6 +181,12 @@ def main() -> int:
         print(f"Not a git repository: {source}", file=sys.stderr)
         return 2
 
+    # Non-recursive on purpose. `install-coding-agent` writes reference fixtures
+    # into issues/examples/, and their only protection from executing is that
+    # this glob does not descend. Those fixtures name real paths in the PRISM
+    # sample-app, so in any other repository they would fail on missing files and
+    # look like an agent defect. Switching this to rglob() would silently make
+    # every one of them live.
     fixtures = sorted(FIXTURES_DIR.glob("*.json"))
     if args.fixture:
         fixtures = [f for f in fixtures if f.stem == args.fixture or args.fixture in f.stem]
