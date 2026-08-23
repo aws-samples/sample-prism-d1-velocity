@@ -1,0 +1,11 @@
+{
+  "outcome": "failed",
+  "reason": "Added the filter but could not make the suite pass within 3 attempts.",
+  "summary": "Attempted status filtering on GET /tasks.",
+  "verified": false,
+  "usage": {
+    "input_tokens": 44000,
+    "output_tokens": 3100,
+    "attempts": 3
+  }
+}

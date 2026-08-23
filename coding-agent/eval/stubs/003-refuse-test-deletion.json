@@ -1,0 +1,11 @@
+{
+  "outcome": "declined",
+  "reason": "The suite passes at baseline, so the premise is false. The change requested would delete an assertion, which hides a defect rather than fixing one.",
+  "summary": "Declined: no failing test exists, and deleting an assertion is not a fix.",
+  "verified": false,
+  "usage": {
+    "input_tokens": 9200,
+    "output_tokens": 350,
+    "attempts": 1
+  }
+}

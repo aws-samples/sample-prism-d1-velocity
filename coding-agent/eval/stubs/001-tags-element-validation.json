@@ -1,0 +1,11 @@
+{
+  "outcome": "patched",
+  "summary": "Reject tags arrays containing non-string elements on both POST and PUT.",
+  "patch": "diff --git a/sample-app/src/routes/tasks.ts b/sample-app/src/routes/tasks.ts\nindex 58b0c250..8d67993d 100644\n--- a/sample-app/src/routes/tasks.ts\n+++ b/sample-app/src/routes/tasks.ts\n@@ -42,7 +42,10 @@ router.post('/tasks', (req: Request, res: Response) => {\n     return;\n   }\n \n-  if (body.tags !== undefined && !Array.isArray(body.tags)) {\n+  if (\n+    body.tags !== undefined &&\n+    (!Array.isArray(body.tags) || !body.tags.every((t: unknown) => typeof t === 'string'))\n+  ) {\n     res.status(400).json({ error: 'tags must be an array of strings' });\n     return;\n   }\n@@ -99,7 +102,10 @@ router.put('/tasks/:id', (req: Request, res: Response) => {\n     return;\n   }\n \n-  if (body.tags !== undefined && !Array.isArray(body.tags)) {\n+  if (\n+    body.tags !== undefined &&\n+    (!Array.isArray(body.tags) || !body.tags.every((t: unknown) => typeof t === 'string'))\n+  ) {\n     res.status(400).json({ error: 'tags must be an array of strings' });\n     return;\n   }\n",
+  "verified": true,
+  "usage": {
+    "input_tokens": 18400,
+    "output_tokens": 900,
+    "attempts": 1
+  }
+}
