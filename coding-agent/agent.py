@@ -5,7 +5,8 @@ Optionally opens a pull request.
 
 Local run against a JSON issue file (any git repository, any language):
 
-    python agent.py --repo /path/to/repo --issue eval/issues/001-tags-element-validation.json
+    python agent.py --repo /path/to/repo \
+        --issue /path/to/repo/.coding-agent/fixtures/001-my-bug.json
 
 Read the issue from a GitHub Actions event payload and open a PR:
 

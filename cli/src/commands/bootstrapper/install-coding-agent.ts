@@ -1,11 +1,19 @@
 /**
  * install-coding-agent — put the PRISM coding agent into the current repository.
  *
- * Three things land in the repo:
+ * Two directories, split by who owns them:
  *
- *   .coding-agent/config.json               how to verify a fix in THIS project
- *   .prism/coding-agent/                    the agent source (readable, editable)
- *   .github/workflows/prism-coding-agent.yml  issue → fix → PR (optional)
+ *   .coding-agent/              THEIRS. config.json plus fixtures/, which are
+ *                               hand-written, reviewed, and irreplaceable.
+ *                               --uninstall never deletes fixtures/.
+ *   .prism/coding-agent/        OURS. Vendored agent source, safe to replace
+ *                               wholesale on upgrade and safe to delete.
+ *   .github/workflows/…         the issue → fix → PR workflow (optional)
+ *
+ * That split is deliberate and was arrived at the hard way: fixtures originally
+ * lived under .prism/coding-agent/eval/issues/, inside the tree --uninstall
+ * removes, so uninstalling destroyed them — recoverably for anything committed,
+ * permanently for work in progress.
  *
  * The source is copied rather than installed from a package index because the
  * agent is not published to PyPI, and because the workshop's whole point is that
@@ -17,8 +25,8 @@
  * and real bugs in one specific repository. Copying sample-app's fixtures in as
  * live fixtures would produce an eval that fails on missing paths, which reads as
  * a broken agent rather than as fixtures pointed at the wrong codebase. They land
- * under eval/issues/examples/ instead, which the harness's non-recursive glob
- * never reaches, alongside a template to copy.
+ * under .coding-agent/fixtures/examples/ instead, which the harness's
+ * non-recursive glob never reaches, alongside a template to copy.
  */
 
 import { createInterface } from 'node:readline';
@@ -153,39 +161,55 @@ function copyAgentSource(source: string, dest: string): number {
     }
   }
 
-  // The harness is portable; the fixtures it reads are not. Ship the harness,
-  // the real fixtures as non-executing references, and a template.
+  // The harness is vendored with the agent; the fixtures it reads are not, and
+  // live under .coding-agent/fixtures/ instead. See writeFixtureScaffold.
   const harness = join(source, 'eval', 'run_eval.py');
   if (existsSync(harness)) {
-    const issuesDir = join(dest, 'eval', 'issues');
-    mkdirSync(issuesDir, { recursive: true });
+    mkdirSync(join(dest, 'eval'), { recursive: true });
     cpSync(harness, join(dest, 'eval', 'run_eval.py'));
     count++;
-    writeFileSync(join(issuesDir, 'EXAMPLE.json.template'), FIXTURE_TEMPLATE);
-    count++;
+  }
 
-    // Reference fixtures go one directory down, which is what keeps them from
-    // running. run_eval.py discovers work with `FIXTURES_DIR.glob("*.json")` --
-    // non-recursive -- so anything under examples/ is readable but never
-    // executed. That matters: these name real paths in the PRISM sample-app, so
-    // running them against another repository would fail on missing files and
-    // read as a broken agent rather than as fixtures aimed at the wrong code.
-    const exampleSource = join(source, 'eval', 'issues');
-    if (existsSync(exampleSource)) {
-      const exampleDest = join(issuesDir, 'examples');
-      mkdirSync(exampleDest, { recursive: true });
-      let examples = 0;
-      for (const entry of readdirSync(exampleSource)) {
-        if (!entry.endsWith('.json')) continue;
-        cpSync(join(exampleSource, entry), join(exampleDest, entry));
-        examples++;
-        count++;
-      }
-      if (examples > 0) {
-        writeFileSync(join(exampleDest, 'README.md'), EXAMPLES_README);
-        count++;
-      }
-    }
+  return count;
+}
+
+/**
+ * Writes the schema template and reference examples into the user-owned
+ * fixtures directory.
+ *
+ * Never overwrites a fixture. Only two fixed filenames are written
+ * (EXAMPLE.json.template and examples/*), so a hand-written fixture beside them
+ * is untouched by a re-install — and because this directory is user-owned,
+ * --uninstall leaves it alone entirely.
+ */
+function writeFixtureScaffold(exampleSource: string, fixturesDir: string): number {
+  mkdirSync(fixturesDir, { recursive: true });
+  let count = 0;
+
+  const templatePath = join(fixturesDir, 'EXAMPLE.json.template');
+  writeFileSync(templatePath, FIXTURE_TEMPLATE);
+  count++;
+
+  // Reference fixtures go one directory down, which is what keeps them from
+  // running. run_eval.py collects work with a non-recursive glob("*.json") over
+  // the fixtures directory, so anything under examples/ is readable but never
+  // executed. That matters: these name real paths in the PRISM sample-app, so
+  // running them against another repository would fail on missing files and read
+  // as a broken agent rather than as fixtures aimed at the wrong code.
+  if (!existsSync(exampleSource)) return count;
+
+  const exampleDest = join(fixturesDir, 'examples');
+  mkdirSync(exampleDest, { recursive: true });
+  let examples = 0;
+  for (const entry of readdirSync(exampleSource)) {
+    if (!entry.endsWith('.json')) continue;
+    cpSync(join(exampleSource, entry), join(exampleDest, entry));
+    examples++;
+    count++;
+  }
+  if (examples > 0) {
+    writeFileSync(join(exampleDest, 'README.md'), EXAMPLES_README);
+    count++;
   }
 
   return count;
@@ -260,11 +284,14 @@ The full method, including a prompt that works, is in the agent's own README und
 
 const FIXTURE_TEMPLATE = `{
   "_comment": [
-    "Copy this to <nnn>-<slug>.json in the PARENT directory and fill it in.",
+    "Copy this to <nnn>-<slug>.json in THIS directory and fill it in.",
     "Fixtures are specific to THIS repository -- they name real files and real",
-    "defects, so they cannot be shipped with the agent. run_eval.py collects",
-    "every .json beside itself in issues/ and does not recurse, which is why",
-    "examples/ can sit there without ever running.",
+    "defects, so they cannot be shipped with the agent. That is also why they",
+    "live here, beside config.json, rather than inside .prism/coding-agent/:",
+    "this directory is yours and --uninstall never deletes it.",
+    "",
+    "run_eval.py collects every .json in this directory and does not recurse,",
+    "which is why examples/ can sit here without ever running.",
     "",
     "Read examples/ first, especially 003: it is a refusal fixture.",
     "",
@@ -335,18 +362,37 @@ export default {
     const repoRoot = gitRoot.stdout;
 
     const configDir = resolve(repoRoot, CONFIG_DEST);
+    const fixturesDir = join(configDir, 'fixtures');
     const agentDir = resolve(repoRoot, AGENT_DEST);
     const workflowPath = resolve(repoRoot, '.github/workflows', WORKFLOW_NAME);
+    const rel = (p: string) => p.replace(`${repoRoot}/`, '');
 
     if (opts.uninstall) {
       console.log('\n🗑  Removing the PRISM coding agent\n');
       let removed = 0;
-      for (const target of [configDir, agentDir, workflowPath]) {
+
+      // Fixtures are hand-written, reviewed, and specific to this repository --
+      // they cannot be reinstalled. This used to delete them as collateral,
+      // because they lived inside the vendored tree below. Anything committed
+      // came back from git; work in progress did not.
+      for (const target of [join(configDir, 'config.json'), agentDir, workflowPath]) {
         if (!existsSync(target)) continue;
         rmSync(target, { recursive: true, force: true });
-        console.log(`  ✓ removed ${target.replace(`${repoRoot}/`, '')}`);
+        console.log(`  ✓ removed ${rel(target)}`);
         removed++;
       }
+
+      if (existsSync(fixturesDir)) {
+        const kept = readdirSync(fixturesDir).filter((f) => f.endsWith('.json')).length;
+        console.log(`\n  Kept ${rel(fixturesDir)} (${kept} fixture${kept === 1 ? '' : 's'}).`);
+        console.log('  Fixtures describe defects in this repository and cannot be');
+        console.log('  reinstalled, so they are never removed. Delete them yourself if');
+        console.log('  you mean to.');
+      } else if (existsSync(configDir) && readdirSync(configDir).length === 0) {
+        rmSync(configDir, { recursive: true, force: true });
+        console.log(`  ✓ removed ${rel(configDir)} (empty)`);
+      }
+
       console.log(removed ? '\n✅ Uninstalled.\n' : '\nNothing to remove.\n');
       return;
     }
@@ -429,6 +475,9 @@ export default {
     const copied = copyAgentSource(agentSource, agentDir);
     console.log(`  ✓ ${AGENT_DEST}/ (${copied} files)`);
 
+    const scaffold = writeFixtureScaffold(join(agentSource, 'fixtures'), fixturesDir);
+    console.log(`  ✓ ${CONFIG_DEST}/fixtures/ (${scaffold} files: template + examples)`);
+
     if (opts.workflow !== false) {
       const asset = getAssetPath(import.meta.url, `coding-agent/deploy/${WORKFLOW_NAME}`);
       let content = readFileSync(asset, 'utf-8');
@@ -461,11 +510,15 @@ export default {
     }
     console.log('');
     console.log('Write your own eval fixtures before trusting it:');
-    console.log(`  ${AGENT_DEST}/eval/issues/examples/    three worked fixtures, read-only references`);
-    console.log(`  ${AGENT_DEST}/eval/issues/EXAMPLE.json.template   the schema to copy`);
-    console.log('  The harness is repo-agnostic. Fixtures name real files, so they are not —');
-    console.log('  examples/ describes the sample-app and is never executed. Start with the');
-    console.log('  refusal fixture (003): it is the one that catches an agent doing harm.');
+    console.log(`  ${CONFIG_DEST}/fixtures/                     yours — never removed by --uninstall`);
+    console.log(`  ${CONFIG_DEST}/fixtures/examples/            three worked references, not executed`);
+    console.log(`  ${CONFIG_DEST}/fixtures/EXAMPLE.json.template the schema to copy`);
+    console.log('  Fixtures name real files, so they belong to this repo rather than to');
+    console.log('  the agent. Start with the refusal fixture (examples/003): it is the');
+    console.log('  one that catches an agent doing harm.');
+    console.log('');
+    console.log('  Then run:');
+    console.log(`    python ${AGENT_DEST}/eval/run_eval.py --repo .`);
     console.log('');
   },
 };

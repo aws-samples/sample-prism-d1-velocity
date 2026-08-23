@@ -72,14 +72,14 @@ Inspect the resolved config and prompt without calling a model:
 
 ```bash
 python agent.py --repo ../sample-app \
-  --issue eval/issues/001-tags-element-validation.json --dry-run
+  --issue ../sample-app/.coding-agent/fixtures/001-tags-element-validation.json --dry-run
 ```
 
 Run against a fixture:
 
 ```bash
 python agent.py --repo ../sample-app \
-  --issue eval/issues/001-tags-element-validation.json
+  --issue ../sample-app/.coding-agent/fixtures/001-tags-element-validation.json
 ```
 
 Run from a GitHub Actions event and open a PR:
@@ -114,11 +114,26 @@ prism-cli bootstrapper install-coding-agent --yes \
 reimplemented in the CLI — it shells out to `config.py --detect`, so there is one
 detector table rather than two that can disagree.
 
-Under `.prism/coding-agent/eval/issues/` you get a schema template plus
-`examples/`, holding this repo's three fixtures as references. They are readable
-but unrunnable: fixture discovery does not descend into subdirectories. Start by
+Under `.coding-agent/fixtures/` you get a schema template plus `examples/`,
+holding this repo's three fixtures as references. They are readable but
+unrunnable: fixture discovery does not descend into subdirectories. Start by
 reading `examples/003`, the refusal fixture — capability fixtures are the ones
 people write unprompted, and refusal fixtures are the ones that catch harm.
+
+### Who owns what
+
+The two directories are split by owner, and `--uninstall` respects the line:
+
+| Path | Owner | On uninstall |
+|---|---|---|
+| `.coding-agent/fixtures/` | you — hand-written, reviewed, irreplaceable | **kept**, and reported |
+| `.coding-agent/config.json` | you, but regenerable | removed |
+| `.prism/coding-agent/` | the CLI — vendored source | removed |
+| `.github/workflows/prism-coding-agent.yml` | the CLI | removed |
+
+Fixtures used to live inside `.prism/coding-agent/`, which is the tree
+`--uninstall` deletes. Uninstalling therefore destroyed them: recoverably for
+anything committed, permanently for work in progress.
 
 ### The workflow's authorization model
 
@@ -146,7 +161,19 @@ Each fixture runs in a throwaway `git clone` under a temp directory. The harness
 never resets, cleans, or checks out anything in the repository you point it at — a
 scoring run must not be able to destroy uncommitted work.
 
-Fixtures live in `eval/issues/`:
+`--repo` may be a repository root or any directory inside one. `sample-app` is a
+subdirectory of this monorepo with no `.git` of its own, so the harness resolves
+the enclosing repository, clones that once, and evaluates the subdirectory within
+the clone. Customer monorepos are the same shape.
+
+Fixtures are resolved from `--repo`, not from where the harness is installed:
+they live in `<repo>/.coding-agent/fixtures/`. That is what makes `--repo` mean
+what it says. When the directory was derived from the harness's own location,
+pointing it at a different checkout scored that checkout against the *installed*
+repo's fixtures, silently.
+
+This repo's own fixtures live in `sample-app/.coding-agent/fixtures/`, beside the
+code they describe:
 
 | Fixture | Kind | What it exercises |
 |---|---|---|
@@ -160,10 +187,10 @@ damaging failure mode an autonomous coding agent has. The prompt constraint "do
 not edit test files to make failures disappear" is what should catch it.
 
 `install-coding-agent` copies these three into a target repo as
-`eval/issues/examples/` — readable references that never execute, because fixture
-discovery uses a non-recursive `glob("*.json")` that does not descend into
-subdirectories. They describe `sample-app`, so running them anywhere else would
-fail on missing paths and read as an agent defect.
+`.coding-agent/fixtures/examples/` — readable references that never execute,
+because fixture discovery uses a non-recursive `glob("*.json")` that does not
+descend into subdirectories. They describe `sample-app`, so running them anywhere
+else would fail on missing paths and read as an agent defect.
 
 ## Writing fixtures
 
@@ -189,7 +216,7 @@ For each one:
   - Quote the lines that are wrong.
   - Explain why it is wrong in terms of a contract the code itself states
     (a type, a doc comment, a validation elsewhere that this path skips).
-  - Write it as JSON in the schema in eval/issues/EXAMPLE.json.template.
+  - Write it as JSON in the schema in .coding-agent/fixtures/EXAMPLE.json.template.
 
 Rules:
   - Only defects you can point at in the source. Do not invent plausible ones.
@@ -285,7 +312,7 @@ is deliberate.
 | `config.py`, `system_prompt.py`, `agent.py` | No. `package.json` is one of 11 detector entries, and verification commands reach the prompt by injection rather than being written into it. |
 | `tools/git_ops.py`, `tools/create_pr.py` | No. Pure git and `gh`. |
 | `eval/run_eval.py` | Only in which dependency directories it symlinks (`node_modules`, `.venv`, `target`, …), so a fixture repo does not reinstall per run. |
-| `eval/issues/*.json` | **Yes, by design.** They describe real defects in `sample-app`. A fixture that named no real code would not test anything. |
+| `.coding-agent/fixtures/*.json` | **Yes, by design.** They describe real defects in `sample-app`. A fixture that named no real code would not test anything. |
 
 Verified against throwaway Python, Rust, Go and Ruby repositories: each resolves its
 own test command, and no Node-specific string reaches the prompt. To evaluate a
@@ -328,14 +355,23 @@ eval harness, the `install-coding-agent` installer, and the GitHub Actions
 workflow. The installer and the workflow's shell logic were each run end to end
 against throwaway repositories in six ecosystems.
 
+The harness now runs its full loop against `sample-app` — clone, config
+resolution, agent invocation, real test suite, scoring. It did not before: it
+required `--repo` to be a repository root, and `sample-app` is a monorepo
+subdirectory with no `.git`, so the command this README documented exited 2
+without cloning anything. That went unnoticed because no run ever got far enough
+to need the clone.
+
 Not yet built: OTEL emission of the agent's own token usage to the PRISM
 collector. Until that exists, the agent's commits are attributed (via the CI
 `commit_authors` join) but its cost is not.
 
 **The agent has never called a model.** This devbox's instance profile lacks
 `bedrock:InvokeModel`, so every claim above is about scaffolding, wiring and
-plumbing — not about fix quality. Nothing here says the agent can actually fix a
-bug. Establishing that needs a run from a Bedrock-enabled profile:
+plumbing — not about fix quality. A real run currently scores `0/1` with
+`✗ committed` and `✓ tests_pass`: everything around the model works, and the model
+step does not run. Nothing here says the agent can actually fix a bug.
+Establishing that needs a Bedrock-enabled profile:
 
 ```bash
 python eval/run_eval.py --repo ../sample-app

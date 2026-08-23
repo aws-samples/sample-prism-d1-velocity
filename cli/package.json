@@ -22,7 +22,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "npx tsc && rm -rf dist/assets && mkdir -p dist/assets/infra dist/assets/coding-agent && cp -r ../bootstrapper/metric-hooks ../bootstrapper/eval-harness ../bootstrapper/github-workflows ../bootstrapper/gitlab-workflows dist/assets/ && cp -r ../infra/bin ../infra/lib ../infra/package.json ../infra/tsconfig.json ../infra/cdk.json dist/assets/infra/ && cp -r ../coding-agent/agent.py ../coding-agent/config.py ../coding-agent/system_prompt.py ../coding-agent/requirements.txt ../coding-agent/pyproject.toml ../coding-agent/README.md ../coding-agent/tools ../coding-agent/eval ../coding-agent/deploy dist/assets/coding-agent/ && find dist/assets/coding-agent -name __pycache__ -type d -prune -exec rm -rf {} +",
+    "build": "npx tsc && rm -rf dist/assets && mkdir -p dist/assets/infra dist/assets/coding-agent && cp -r ../bootstrapper/metric-hooks ../bootstrapper/eval-harness ../bootstrapper/github-workflows ../bootstrapper/gitlab-workflows dist/assets/ && cp -r ../infra/bin ../infra/lib ../infra/package.json ../infra/tsconfig.json ../infra/cdk.json dist/assets/infra/ && cp -r ../coding-agent/agent.py ../coding-agent/config.py ../coding-agent/system_prompt.py ../coding-agent/requirements.txt ../coding-agent/pyproject.toml ../coding-agent/README.md ../coding-agent/tools ../coding-agent/eval ../coding-agent/deploy dist/assets/coding-agent/ && mkdir -p dist/assets/coding-agent/fixtures && cp ../sample-app/.coding-agent/fixtures/*.json dist/assets/coding-agent/fixtures/ && find dist/assets/coding-agent -name __pycache__ -type d -prune -exec rm -rf {} +",
     "prepublishOnly": "npm run build",
     "start": "tsx bin/prism-cli.ts",
     "dev": "tsx bin/prism-cli.ts"
