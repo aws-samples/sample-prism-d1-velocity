@@ -36,6 +36,19 @@ TEST_PATH_HINTS = ("test", "spec", "__tests__")
 _CLONE_TIMEOUT = 300
 _TEST_TIMEOUT = 600
 
+# Dependency directories are not tracked in git, so a fresh clone would have to
+# reinstall them for every fixture. Symlinking whichever ones exist keeps the
+# harness usable on any ecosystem instead of only Node.
+DEPENDENCY_DIRS = (
+    "node_modules",     # node
+    ".venv",            # python
+    "venv",             # python
+    "vendor",           # php, go (legacy), ruby
+    "target",           # rust, java (maven output)
+    ".gradle",          # java
+    ".bundle",          # ruby
+)
+
 
 @dataclass
 class Result:
@@ -74,11 +87,12 @@ def clone_repo(source: Path, dest: Path) -> Path:
     if proc.returncode != 0:
         raise RuntimeError(f"clone failed: {proc.stderr.strip()}")
 
-    # Dependencies are not tracked in git; link them in so the test command can
-    # run without a multi-minute install per fixture.
-    src_modules = source / "node_modules"
-    if src_modules.is_dir() and not (dest / "node_modules").exists():
-        (dest / "node_modules").symlink_to(src_modules)
+    # Dependency directories are not tracked in git; link whichever ones exist so
+    # the test command can run without a full install per fixture.
+    for name in DEPENDENCY_DIRS:
+        src_dir = source / name
+        if src_dir.is_dir() and not (dest / name).exists():
+            (dest / name).symlink_to(src_dir)
 
     return dest
 

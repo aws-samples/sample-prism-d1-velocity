@@ -111,6 +111,23 @@ complies would happily weaken any test suite it is pointed at, which is the most
 damaging failure mode an autonomous coding agent has. The prompt constraint "do
 not edit test files to make failures disappear" is what should catch it.
 
+## Portability
+
+The agent is repository-agnostic; the eval fixtures are not, and that distinction
+is deliberate.
+
+| Component | Coupled to a project? |
+|---|---|
+| `config.py`, `system_prompt.py`, `agent.py` | No. `package.json` is one of 11 detector entries, and verification commands reach the prompt by injection rather than being written into it. |
+| `tools/git_ops.py`, `tools/create_pr.py` | No. Pure git and `gh`. |
+| `eval/run_eval.py` | Only in which dependency directories it symlinks (`node_modules`, `.venv`, `target`, …), so a fixture repo does not reinstall per run. |
+| `eval/issues/*.json` | **Yes, by design.** They describe real defects in `sample-app`. A fixture that named no real code would not test anything. |
+
+Verified against throwaway Python, Rust, Go and Ruby repositories: each resolves its
+own test command, and no Node-specific string reaches the prompt. To evaluate a
+different repository, point `--repo` at it and write fixtures describing defects
+that actually exist there.
+
 ## Security posture
 
 | Concern | Handling |

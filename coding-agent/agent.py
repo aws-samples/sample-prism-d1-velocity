@@ -3,9 +3,9 @@
 Reads one issue, fixes it in a git repository, verifies the fix, and commits.
 Optionally opens a pull request.
 
-Local run against a JSON issue file:
+Local run against a JSON issue file (any git repository, any language):
 
-    python agent.py --repo ../sample-app --issue eval/issues/001-tags-validation.json
+    python agent.py --repo /path/to/repo --issue eval/issues/001-tags-element-validation.json
 
 Read the issue from a GitHub Actions event payload and open a PR:
 
