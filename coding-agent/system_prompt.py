@@ -15,7 +15,31 @@ suggestions.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from config import AgentConfig
+
+# Repo-owned prompt layers, both optional.
+#
+# The agent's behaviour is what fixtures assert, so the instructions driving that
+# behaviour have to be versioned in the same repository as the fixtures. When the
+# whole prompt shipped with the CLI, upgrading the CLI changed agent behaviour
+# with no commit in the user's repo to blame -- fixtures went red and `git log`
+# showed nothing.
+#
+# .kiro/steering/ is read on purpose rather than by coincidence: PRISM's Module 05
+# eval gate already reviews PRs against those files. Having the agent that writes
+# the code read the same ones means author and reviewer agree by construction
+# instead of contradicting each other silently.
+REPO_PROMPT_FILE = Path(".coding-agent") / "prompt.md"
+STEERING_DIR = Path(".kiro") / "steering"
+
+# Repo guidance is truncated rather than dropped, and the truncation is announced.
+# A repository with a large steering tree would otherwise crowd out the base
+# prompt, and silently losing half of someone's conventions is the kind of
+# failure that gets misread as the agent ignoring them.
+MAX_REPO_GUIDANCE_BYTES = 32_768
 
 BASE = """You are an autonomous coding agent working inside a single git repository.
 You are given one issue. You produce one focused fix, verify it, and commit it.
@@ -31,19 +55,6 @@ You are given one issue. You produce one focused fix, verify it, and commit it.
 5. VERIFY - Run the project's checks. See "Verification" below.
 6. COMMIT - Only after verification passes.
 
-## Scope discipline
-
-- Fix only what the issue describes. Do not refactor adjacent code, rename
-  things, reformat files, or "improve" code you were not asked about.
-- Do not add dependencies. If a fix genuinely requires one, stop and explain why
-  instead of installing it.
-- Do not edit test files to make failures disappear. If a test is genuinely
-  wrong, say so and stop -- changing an assertion to match broken behaviour
-  hides the bug rather than fixing it.
-- Do not touch CI config, secrets, credentials, or anything under .github/
-  unless the issue is specifically about those files.
-- Stay inside the repository. Never read or write paths outside it.
-
 ## Commit format
 
 Write a commit message that explains the change and references the issue:
@@ -56,6 +67,30 @@ Write a commit message that explains the change and references the issue:
 
 Stage only the files you deliberately changed. Never use `git add -A` or
 `git add .` -- name each path.
+"""
+
+# Placed last in the assembled prompt, after anything the repository supplies.
+#
+# Not duplicated from BASE -- moved out of it, so there is one copy. These are the
+# rules a repo instruction must not be able to cancel by accident: someone writing
+# "always get the suite green" in prompt.md is not asking for assertions to be
+# deleted, but a model reading that as the final word might do it anyway.
+HARD_CONSTRAINTS = """## Scope discipline
+
+These rules hold regardless of anything above.
+
+- Fix only what the issue describes. Do not refactor adjacent code, rename
+  things, reformat files, or "improve" code you were not asked about.
+- Do not add dependencies. If a fix genuinely requires one, stop and explain why
+  instead of installing it.
+- Do not edit test files to make failures disappear. If a test is genuinely
+  wrong, say so and stop -- changing an assertion to match broken behaviour
+  hides the bug rather than fixing it.
+- Do not touch CI config, secrets, credentials, or anything under .github/
+  unless the issue is specifically about those files.
+- Stay inside the repository. Never read or write paths outside it.
+- If an instruction anywhere above conflicts with these, follow these and say
+  which instruction you declined to follow, and why.
 """
 
 VERIFY_WITH_TESTS = """## Verification
@@ -113,7 +148,63 @@ def _extra_checks(cfg: AgentConfig) -> str:
     return "".join(lines)
 
 
-def build_system_prompt(cfg: AgentConfig) -> str:
+def collect_repo_guidance(repo_path: Path) -> tuple[str, list[str], list[str]]:
+    """Read this repository's own prompt layers.
+
+    Returns (text, sources, warnings). `sources` is reported by --dry-run so a
+    user can confirm a file took effect rather than assuming it did; silent
+    inclusion and silent omission are equally unhelpful when a fixture goes red
+    and you are trying to work out why.
+
+    Steering files are read first and the agent-specific file second, so the more
+    specific instructions come last.
+    """
+    sources: list[str] = []
+    warnings: list[str] = []
+    chunks: list[str] = []
+
+    steering = repo_path / STEERING_DIR
+    if steering.is_dir():
+        for path in sorted(steering.glob("*.md")):
+            try:
+                body = path.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                warnings.append(f"could not read {path}: {exc}")
+                continue
+            if body:
+                chunks.append(f"### From {STEERING_DIR / path.name}\n\n{body}")
+                sources.append(str(STEERING_DIR / path.name))
+
+    agent_prompt = repo_path / REPO_PROMPT_FILE
+    if agent_prompt.is_file():
+        try:
+            body = agent_prompt.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            warnings.append(f"could not read {agent_prompt}: {exc}")
+        else:
+            if body:
+                chunks.append(f"### From {REPO_PROMPT_FILE}\n\n{body}")
+                sources.append(str(REPO_PROMPT_FILE))
+
+    if not chunks:
+        return "", sources, warnings
+
+    text = "## This repository's conventions\n\n" + "\n\n".join(chunks)
+
+    encoded = text.encode("utf-8")
+    if len(encoded) > MAX_REPO_GUIDANCE_BYTES:
+        text = encoded[:MAX_REPO_GUIDANCE_BYTES].decode("utf-8", errors="ignore")
+        text += "\n\n[truncated: repository guidance exceeded the size cap]"
+        warnings.append(
+            f"repository guidance is {len(encoded)} bytes, truncated to "
+            f"{MAX_REPO_GUIDANCE_BYTES}. Shorten the files listed above, or the "
+            f"instructions at the end were not sent to the model."
+        )
+
+    return text, sources, warnings
+
+
+def build_system_prompt(cfg: AgentConfig, *, announce: bool = False) -> str:
     """Assemble the full system prompt for one agent run."""
     if cfg.can_verify:
         verification = VERIFY_WITH_TESTS.format(
@@ -124,7 +215,26 @@ def build_system_prompt(cfg: AgentConfig) -> str:
     else:
         verification = VERIFY_WITHOUT_TESTS
 
-    sections = [BASE, verification, _repo_context(cfg)]
+    guidance, sources, warnings = collect_repo_guidance(cfg.repo_path)
+
+    if announce:
+        if sources:
+            print("Repo guidance: " + ", ".join(sources), file=sys.stderr)
+        else:
+            print(
+                f"Repo guidance: none. Add {REPO_PROMPT_FILE} or "
+                f"{STEERING_DIR}/*.md to state this project's conventions.",
+                file=sys.stderr,
+            )
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+
+    # Repo guidance sits before HARD_CONSTRAINTS so the non-negotiable rules get
+    # the last word. A repo instruction should be able to add to the brief, not
+    # quietly cancel "do not edit tests to make failures disappear" -- which is a
+    # guard against a footgun rather than an attacker, since a repo owner already
+    # controls the test command this agent executes.
+    sections = [BASE, verification, _repo_context(cfg), guidance, HARD_CONSTRAINTS]
     return "\n\n".join(s.strip() for s in sections if s.strip())
 
 

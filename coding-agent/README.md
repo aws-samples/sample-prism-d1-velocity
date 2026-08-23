@@ -192,6 +192,88 @@ because fixture discovery uses a non-recursive `glob("*.json")` that does not
 descend into subdirectories. They describe `sample-app`, so running them anywhere
 else would fail on missing paths and read as an agent defect.
 
+## The lifecycle of a repo's fixtures
+
+Fixtures are not written once. They are a gate that has to stay honest as the
+code, the prompt, and the model all move underneath it.
+
+| Stage | What happens | Owner |
+|---|---|---|
+| 1. Bootstrap | `install-coding-agent` writes the schema template and `examples/` | the CLI |
+| 2. Author | the agent proposes candidates; a human verifies every premise and writes the refusal fixture | both |
+| 3. Review | fixtures go through code review like code — the reviewer checks that the premise holds, not just that the JSON parses | human |
+| 4. Gate | CI runs the eval on every PR. A fixture nobody runs is documentation, not a gate | CI |
+| 5. Triage | a fixture goes red, and someone has to work out which of three things changed | human |
+| 6. Evolve | prompt and fixtures change together, in one commit | human |
+
+Stage 2 is covered in detail below. Stage 5 is the one that shapes the whole
+design.
+
+### Stage 5: why a red fixture is a three-way question
+
+When a fixture fails there are exactly three causes, and they need different
+responses:
+
+1. **The model or the task.** The model regressed, or the fixture is genuinely
+   hard. Response: nothing, or raise `max_attempts`.
+2. **The prompt.** The agent was never told to do this. Response: change the
+   prompt.
+3. **The fixture.** Its premise stopped being true — usually because somebody
+   fixed the defect it describes. Response: retire it.
+
+You can only tell these apart if the prompt is versioned in the same repository
+as the fixtures. That is why the repo-owned prompt layers below exist: when the
+prompt ships with the CLI, upgrading the CLI changes agent behaviour with no
+commit in your repository to blame, fixtures go red, and `git log` shows nothing.
+Cause 2 becomes invisible and gets misdiagnosed as cause 1.
+
+With everything under `.coding-agent/`, `git log .coding-agent/` lists every
+change that could have caused the failure.
+
+### Stage 6: what a prompt change obliges you to do
+
+A prompt change without a fixture change is an untested behaviour change. If you
+add "always add a regression test for a bug fix", something has to assert it — and
+in this case you also have to set `allow_test_edits` on the affected fixtures, or
+your new rule fails every one of them.
+
+The reverse holds too. A fixture asserting behaviour the prompt never asks for is
+testing luck.
+
+## Repo-owned prompt layers
+
+The agent's system prompt is assembled from vendored templates plus whatever your
+repository says. Two files, both optional, both yours:
+
+| Source | For | Shared with |
+|---|---|---|
+| `.kiro/steering/*.md` | repo-wide conventions: style, architecture, what "good" looks like here | the Module 05 eval gate |
+| `.coding-agent/prompt.md` | rules about being an autonomous committer: commit shape, when to refuse, PR conventions | nothing |
+
+Reading `.kiro/steering/` is deliberate rather than incidental. The eval gate that
+**reviews** a PR already reads those files; having the agent that **writes** the
+code read the same ones means the author and the reviewer agree by construction.
+Without it they can contradict each other silently — the agent writes what its
+vendored prompt says, the gate rejects it for violating a steering rule the agent
+never saw.
+
+`--dry-run` prints the assembled prompt and names every source that contributed,
+so you can confirm a file took effect rather than assuming it did:
+
+```bash
+python agent.py --repo /path/to/repo --title x --body y --dry-run
+```
+
+Two things to know:
+
+- **Your text is appended, then the hard constraints are restated after it.** A
+  repo instruction can add to the agent's brief but cannot quietly cancel "do not
+  edit tests to make failures disappear" or "only modify files in this
+  repository". That is a guard against a footgun, not against an attacker: a repo
+  owner already controls the test command the agent executes.
+- **There is a size cap.** Repo guidance is truncated past 32 KB with a warning on
+  stderr. Silently dropping half your conventions would be worse than saying so.
+
 ## Writing fixtures
 
 Fixtures are the only thing standing between "the agent ran" and "the agent can

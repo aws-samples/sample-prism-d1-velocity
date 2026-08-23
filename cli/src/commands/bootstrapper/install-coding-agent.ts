@@ -3,9 +3,11 @@
  *
  * Two directories, split by who owns them:
  *
- *   .coding-agent/              THEIRS. config.json plus fixtures/, which are
- *                               hand-written, reviewed, and irreplaceable.
- *                               --uninstall never deletes fixtures/.
+ *   .coding-agent/              THEIRS. config.json, prompt.md, and fixtures/,
+ *                               which are hand-written, reviewed, and
+ *                               irreplaceable. --uninstall never deletes
+ *                               fixtures/ or prompt.md, and a re-install never
+ *                               overwrites either.
  *   .prism/coding-agent/        OURS. Vendored agent source, safe to replace
  *                               wholesale on upgrade and safe to delete.
  *   .github/workflows/…         the issue → fix → PR workflow (optional)
@@ -13,7 +15,9 @@
  * That split is deliberate and was arrived at the hard way: fixtures originally
  * lived under .prism/coding-agent/eval/issues/, inside the tree --uninstall
  * removes, so uninstalling destroyed them — recoverably for anything committed,
- * permanently for work in progress.
+ * permanently for work in progress. prompt.md exists for the same reason: the
+ * only way to state a repository's conventions used to be editing the vendored
+ * system_prompt.py, which a re-install silently reverted.
  *
  * The source is copied rather than installed from a package index because the
  * agent is not published to PyPI, and because the workshop's whole point is that
@@ -172,6 +176,74 @@ function copyAgentSource(source: string, dest: string): number {
 
   return count;
 }
+
+/**
+ * Writes the starter prompt.md, unless one already exists.
+ *
+ * Never overwritten. This file is the repository's own statement of how the agent
+ * should behave, edited over time and reviewed like code — reinstalling the CLI
+ * must not revert it. That is the failure this file was created to remove: before
+ * it existed, the only place to put conventions was the vendored
+ * system_prompt.py, which every re-install silently replaced.
+ */
+function writeRepoPrompt(configDir: string): 'created' | 'kept' {
+  const path = join(configDir, 'prompt.md');
+  if (existsSync(path)) return 'kept';
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path, REPO_PROMPT_STARTER);
+  return 'created';
+}
+
+const REPO_PROMPT_STARTER = `# Coding agent instructions for this repository
+
+Everything here is appended to the agent's system prompt on every run. Delete the
+guidance comments and write your own rules.
+
+Confirm a change took effect before trusting it — the agent names every file that
+shaped its brief:
+
+    python .prism/coding-agent/agent.py --repo . --title x --body y --dry-run
+
+## Scope
+
+Put **repo-wide** conventions in \`.kiro/steering/*.md\` instead. The agent reads
+those too, and so does the PRISM eval gate that reviews pull requests — one file
+means the agent writing the code and the gate judging it follow the same rules,
+rather than contradicting each other silently.
+
+Keep this file for things specific to an agent that commits on its own:
+what a commit should look like, when to stop and ask, what it must never touch.
+
+## What good looks like here
+
+<!-- Replace these. They are plausible, not prescriptive. -->
+
+- Prefer editing an existing module over adding a new one.
+- Public functions need a docstring stating what the caller is responsible for.
+- Any new dependency needs a comment explaining why the standard library or an
+  existing dependency was insufficient.
+
+## When to stop instead of committing
+
+- The issue's premise is wrong — say so rather than finding something to change.
+- The fix needs a decision only a human can make (an API contract change, a data
+  migration, anything user-visible).
+- You cannot verify the change. An unverified commit is worse than no commit,
+  because it looks finished.
+
+## Remember
+
+Rules here cannot override the agent's hard constraints — it will not edit tests
+to make failures disappear, touch CI or secrets, or write outside the repository,
+whatever this file says. If you need one of those, do it yourself.
+
+## Keep this honest
+
+A rule added here is untested until a fixture asserts it. If you add "always add a
+regression test for a bug fix", write the fixture that proves it happens — and set
+\`allow_test_edits\` on the fixtures it affects, or your new rule will fail every
+one of them.
+`;
 
 /**
  * Writes the schema template and reference examples into the user-owned
@@ -382,12 +454,20 @@ export default {
         removed++;
       }
 
+      const promptPath = join(configDir, 'prompt.md');
+      const keptPaths: string[] = [];
       if (existsSync(fixturesDir)) {
-        const kept = readdirSync(fixturesDir).filter((f) => f.endsWith('.json')).length;
-        console.log(`\n  Kept ${rel(fixturesDir)} (${kept} fixture${kept === 1 ? '' : 's'}).`);
-        console.log('  Fixtures describe defects in this repository and cannot be');
-        console.log('  reinstalled, so they are never removed. Delete them yourself if');
-        console.log('  you mean to.');
+        const n = readdirSync(fixturesDir).filter((f) => f.endsWith('.json')).length;
+        keptPaths.push(`${rel(fixturesDir)} (${n} fixture${n === 1 ? '' : 's'})`);
+      }
+      if (existsSync(promptPath)) keptPaths.push(rel(promptPath));
+
+      if (keptPaths.length > 0) {
+        console.log('');
+        for (const p of keptPaths) console.log(`  Kept ${p}`);
+        console.log('  These state what this repository expects of the agent and what');
+        console.log('  good looks like in it. Neither can be reinstalled, so neither is');
+        console.log('  ever removed. Delete them yourself if you mean to.');
       } else if (existsSync(configDir) && readdirSync(configDir).length === 0) {
         rmSync(configDir, { recursive: true, force: true });
         console.log(`  ✓ removed ${rel(configDir)} (empty)`);
@@ -474,6 +554,11 @@ export default {
 
     const copied = copyAgentSource(agentSource, agentDir);
     console.log(`  ✓ ${AGENT_DEST}/ (${copied} files)`);
+
+    const promptState = writeRepoPrompt(configDir);
+    console.log(promptState === 'created'
+      ? `  ✓ ${CONFIG_DEST}/prompt.md`
+      : `  · ${CONFIG_DEST}/prompt.md (kept — yours, never overwritten)`);
 
     const scaffold = writeFixtureScaffold(join(agentSource, 'fixtures'), fixturesDir);
     console.log(`  ✓ ${CONFIG_DEST}/fixtures/ (${scaffold} files: template + examples)`);

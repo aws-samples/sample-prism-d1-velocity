@@ -95,7 +95,7 @@ def build_agent(cfg, create_pr_enabled: bool):
     return Agent(
         model=cfg.model_id,
         tools=tools,
-        system_prompt=build_system_prompt(cfg),
+        system_prompt=build_system_prompt(cfg, announce=True),
     )
 
 
@@ -173,7 +173,7 @@ def main() -> int:
         print("=" * 72)
         print("SYSTEM PROMPT")
         print("=" * 72)
-        print(build_system_prompt(cfg))
+        print(build_system_prompt(cfg, announce=True))
         print()
         print("=" * 72)
         print("TASK PROMPT")
