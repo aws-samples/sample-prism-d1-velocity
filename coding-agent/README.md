@@ -24,16 +24,19 @@ cd sample-prism-d1-velocity/coding-agent/deploy
 ```
 
 Creates the ECR repository, builds and pushes the `linux/arm64` image, creates the
-execution role, then creates or updates the harness and waits for `READY`. It
-prints an ARN and the command to publish it:
+execution role, then creates or updates the harness, waits for `READY`, and writes
+the ARN to SSM at `/prism/d1/harness-arn`. The workflow reads it from there after
+assuming its OIDC role.
+
+Optionally, for faster early-fail before OIDC credentials are available:
 
 ```bash
 gh variable set PRISM_HARNESS_ARN --org <your-org> --body "<printed ARN>"
 ```
 
-An org variable is inherited by every repository, which is what "deploy once"
-should feel like. An ARN is an identifier rather than a credential, so it belongs
-in a variable and not a secret.
+This is not required — if the variable is empty, the workflow falls back to SSM
+after OIDC. But it saves ~15 seconds on a misconfigured run by failing before
+Python setup rather than after.
 
 ### 2. Once per repository — install
 
@@ -166,7 +169,9 @@ The five files that matter most, if you read nothing else:
 `deploy-harness.sh` is idempotent: re-running rebuilds the image, pushes, and
 updates the existing harness in place rather than creating a second one. It matches
 on harness *name*, because the id carries a generated suffix
-(`PrismCodingAgent-XC93iEIa7W`) nobody can predict.
+(`PrismCodingAgent-XC93iEIa7W`) nobody can predict. It also writes the ARN to SSM
+at `/prism/d1/harness-arn`, which the workflow reads after assuming its OIDC role —
+so deploying the harness is enough, with no manual copy step.
 
 Three details, each of which cost a failed deployment to learn:
 
@@ -723,24 +728,28 @@ make every secret in the account readable from CI.
 
 ### Configuration
 
-The workflow reads telemetry config from **SSM Parameter Store** rather than GitHub
-variables — CDK writes the parameters at deploy time so they cannot drift:
+The workflow reads all config from **SSM Parameter Store** — CDK and
+`deploy-harness.sh` write the parameters at deploy time so they cannot drift:
 
-| SSM path | What |
-|---|---|
-| `/prism/d1/collector-url` | the collector base URL |
-| `/prism/d1/token-endpoint` | Cognito `/oauth2/token` |
-| `/prism/d1/agent-secret-id` | Secrets Manager id holding `{client_id, client_secret}` |
+| SSM path | Written by | What |
+|---|---|---|
+| `/prism/d1/harness-arn` | `deploy-harness.sh` | the AgentCore harness ARN |
+| `/prism/d1/collector-url` | `cdk deploy` | the OTEL collector base URL |
+| `/prism/d1/token-endpoint` | `cdk deploy` | Cognito `/oauth2/token` |
+| `/prism/d1/agent-secret-id` | `cdk deploy` | Secrets Manager id for `{client_id, client_secret}` |
 
-No GitHub org variables needed. The OIDC role already grants `ssm:GetParameter` on
-`/prism/d1/*`, and `cdk deploy` populates the parameters. If the parameters are
-empty or missing, telemetry is simply skipped — the run still produces a patch and
-opens a PR.
+No GitHub org variables needed for telemetry. One optional variable —
+`PRISM_HARNESS_ARN` — gives a faster early-fail (before OIDC credentials are
+available), but the workflow falls back to SSM if it's empty.
 
-Absence is not an error. A repository that has not deployed the collector still gets
-its issues fixed; it just does not get cost attribution. And emission never fails a
-run — the patch is the product, the measurement is the reporting layer, so a
-collector outage prints to stderr and the workflow continues.
+The OIDC role grants `ssm:GetParameter` on `/prism/d1/*`. If the parameters are
+empty or missing (infra not deployed, different account), telemetry is simply
+skipped and the harness check fails with a clear message.
+
+Absence is not an error for telemetry. A repository that has not deployed the
+collector still gets its issues fixed; it just does not get cost attribution. And
+emission never fails a run — the patch is the product, the measurement is the
+reporting layer, so a collector outage prints to stderr and the workflow continues.
 
 ### What the receiver does not read yet
 
@@ -794,23 +803,18 @@ issue never mentioned.
 
 ### Not yet done
 
-- **The receiver does not persist `prism.autonomous` or `prism.issue_number`.** The
-  emitter sends both; nothing reads them, so "issues worked on" is not yet reportable
-  and agent spend is not yet separable from human spend in `totals`.
-- **The M2M app client does not exist in the CDK yet.** The emitter authenticates
-  through Cognito's client-credentials flow, and the deployed user pool has only the
-  `userSrp` + authorization-code client codeburn uses. Until a resource server and a
-  client-credentials app client are added, `PRISM_COLLECTOR_URL` stays unset and
-  emission is skipped.
-- **No span has reached a live collector.** The payloads are verified against the
-  receiver's own accessor functions, applied to real emitter output — but that is the
-  parser, not the endpoint.
 - **The workflow has never run in CI.** Its shell logic was exercised branch by
-  branch against throwaway repositories, and the client fetch is new.
+  branch against throwaway repositories, and the client fetch is new. Issue events
+  only trigger workflows from the default branch, so it cannot be tested from a
+  feature branch.
 - **Only `sample-app` has been used as a target.** Whether the exploration cost
-  holds on an unfamiliar repository is untested.
+  (~540K input tokens per issue) holds on an unfamiliar repository is untested.
 - **Cold-start time** for the 591 MB image, and real `mise install` timing inside a
   session rather than in a local container.
+- **Agent PRs do not trigger the eval gate.** A PR opened with `GITHUB_TOKEN` does
+  not fire `on: pull_request` workflows. The metrics workflow (`prism-ai-metrics`)
+  is unaffected because it triggers on merge, which is a human action. The eval gate
+  needs either a GitHub App token or a `workflow_dispatch` ping.
 
 ---
 
