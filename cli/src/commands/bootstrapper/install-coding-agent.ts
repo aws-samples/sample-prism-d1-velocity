@@ -460,6 +460,7 @@ export default {
     { flags: '--model <id>', description: 'Bedrock model id', default: DEFAULT_MODEL },
     { flags: '--region <region>', description: 'AWS region for Bedrock; must match setup-github-oidc', default: DEFAULT_REGION },
     { flags: '--no-workflow', description: 'Write config and source only, skip the GitHub Actions workflow' },
+    { flags: '--subdir <path>', description: 'Subdirectory to scope the agent to (for monorepos). Detection and verification run here.' },
     { flags: '--yes', description: 'Take flags and detection without prompting (for CI)' },
     { flags: '--uninstall', description: 'Remove everything this command installed' },
   ],
@@ -468,6 +469,7 @@ export default {
     testCommand?: string; buildCommand?: string; lintCommand?: string;
     agentEmail?: string; agentName?: string; maxAttempts?: string;
     model?: string; region?: string; workflow?: boolean; yes?: boolean; uninstall?: boolean;
+    subdir?: string;
   }) {
     const gitRoot = run('git', ['rev-parse', '--show-toplevel']);
     if (!gitRoot.ok) {
@@ -528,9 +530,21 @@ export default {
     const region = validateAwsRegion(opts.region || DEFAULT_REGION);
     const agentSource = getAssetPath(import.meta.url, 'coding-agent/agent.py').replace(/\/agent\.py$/, '');
 
-    console.log('\n🤖 Installing the PRISM coding agent\n');
+    // Resolve the subdir: explicit flag > inferred from cwd > none (whole repo).
+    // This is what scopes detection, verification, and the harness's --subdir.
+    const cwd = process.cwd();
+    let subdir = opts.subdir || '';
+    if (!subdir && cwd !== repoRoot && cwd.startsWith(repoRoot + '/')) {
+      subdir = cwd.slice(repoRoot.length + 1);
+    }
+    const detectPath = subdir ? resolve(repoRoot, subdir) : repoRoot;
 
-    const detected = detectProject(agentSource, repoRoot);
+    console.log('\n🤖 Installing the PRISM coding agent\n');
+    if (subdir) {
+      console.log(`  Subdir: ${subdir} (detection + verification scoped here)`);
+    }
+
+    const detected = detectProject(agentSource, detectPath);
     if (detected) {
       if (detected.project_type === 'unknown') {
         console.log('  Project type: not recognised — no verification command to suggest.');
@@ -594,6 +608,9 @@ export default {
       model_id: opts.model || DEFAULT_MODEL,
       region,
       detected_project_type: detected?.project_type || 'unknown',
+      // Where inside the repo the agent works. The harness clones the whole repo
+      // and then cds here for verification. Absent or '.' means the repo root.
+      subdir: subdir || undefined,
       toolchain: detected?.toolchain?.tool
         ? { tool: detected.toolchain.tool, version: detected.toolchain.version || '', source: detected.toolchain.source }
         : undefined,
