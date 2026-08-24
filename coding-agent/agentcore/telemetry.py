@@ -286,7 +286,6 @@ class CollectorConfig:
     url: str                       # the collector base, e.g. https://…/prod
     token_endpoint: str = ""       # Cognito /oauth2/token
     secret_id: str = ""            # Secrets Manager id for the client credentials
-    scope: str = ""                # resource-server scope, e.g. prism/emit
     region: str = "us-west-2"
     access_token: str = ""         # supply directly to bypass the exchange
 
@@ -304,7 +303,6 @@ class CollectorConfig:
             url=url.rstrip("/"),
             token_endpoint=os.environ.get("PRISM_OIDC_TOKEN_ENDPOINT", "").strip(),
             secret_id=os.environ.get("PRISM_AGENT_SECRET_ID", "").strip(),
-            scope=os.environ.get("PRISM_AGENT_SCOPE", "").strip(),
             region=os.environ.get("PRISM_AWS_REGION", "us-west-2").strip(),
             access_token=os.environ.get("PRISM_COLLECTOR_TOKEN", "").strip(),
         )
@@ -334,8 +332,6 @@ def fetch_access_token(cfg: CollectorConfig) -> str:
 
     form = {"grant_type": "client_credentials", "client_id": client_id,
             "client_secret": client_secret}
-    if cfg.scope:
-        form["scope"] = cfg.scope
 
     request = urllib.request.Request(
         cfg.token_endpoint,
@@ -351,7 +347,7 @@ def fetch_access_token(cfg: CollectorConfig) -> str:
         # carry back parts of the request, and the request contains the secret.
         raise TelemetryError(
             f"token endpoint returned {exc.code}; check the client id, the secret, "
-            f"and that the scope {cfg.scope!r} is granted to the app client"
+            f"and that the client id and secret are correct"
         ) from exc
     except urllib.error.URLError as exc:
         raise TelemetryError(f"token endpoint unreachable: {exc.reason}") from exc

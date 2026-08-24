@@ -470,10 +470,6 @@ export class OtelCollectorConstruct extends Construct {
         value: this.agentSecret.secretName,
         description: 'Set as the PRISM_AGENT_SECRET_ID repo/org variable',
       }).overrideLogicalId('PrismAgentSecretId');
-      new cdk.CfnOutput(this, 'PrismAgentScope', {
-        value: 'prism/emit',
-        description: 'Set as the PRISM_AGENT_SCOPE repo/org variable',
-      }).overrideLogicalId('PrismAgentScope');
     }
   }
 }

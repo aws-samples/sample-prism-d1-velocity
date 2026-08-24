@@ -221,7 +221,6 @@ jobs:
           PRISM_COLLECTOR_URL: ${{ vars.PRISM_COLLECTOR_URL }}
           PRISM_OIDC_TOKEN_ENDPOINT: ${{ vars.PRISM_OIDC_TOKEN_ENDPOINT }}
           PRISM_AGENT_SECRET_ID: ${{ vars.PRISM_AGENT_SECRET_ID }}
-          PRISM_AGENT_SCOPE: ${{ vars.PRISM_AGENT_SCOPE }}
         run: |
           # GitHub runs `run:` blocks under `bash -e`, so a non-zero exit would
           # end the step and skip straight past reporting. `set +e` keeps the exit
@@ -299,7 +298,6 @@ jobs:
           PRISM_COLLECTOR_URL: ${{ vars.PRISM_COLLECTOR_URL }}
           PRISM_OIDC_TOKEN_ENDPOINT: ${{ vars.PRISM_OIDC_TOKEN_ENDPOINT }}
           PRISM_AGENT_SECRET_ID: ${{ vars.PRISM_AGENT_SECRET_ID }}
-          PRISM_AGENT_SCOPE: ${{ vars.PRISM_AGENT_SCOPE }}
         run: |
           set -euo pipefail
           python -m agentcore.emit_commit \

@@ -730,7 +730,6 @@ All four are variables, not secrets — none is a credential:
 | `PRISM_COLLECTOR_URL` | the collector base. **Unset disables telemetry entirely** |
 | `PRISM_OIDC_TOKEN_ENDPOINT` | Cognito `/oauth2/token` |
 | `PRISM_AGENT_SECRET_ID` | Secrets Manager id holding `{client_id, client_secret}` |
-| `PRISM_AGENT_SCOPE` | the resource-server scope granted to the app client |
 
 Absence is not an error. A repository that has not set up the collector still gets
 its issues fixed; it just does not get cost attribution. And emission never fails a
