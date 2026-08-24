@@ -20,12 +20,14 @@ import uuid
 from pathlib import Path
 from typing import Protocol
 
+from .session import collect_patch, prepare_environment
 from .contract import (
     INVOKE_TIMEOUT_SECONDS,
     MAX_ITERATIONS,
     ContractError,
     FixRequest,
     FixResponse,
+    Outcome,
     parse_agent_reply,
     render_system_addendum,
     render_task_message,
@@ -144,7 +146,8 @@ class BotoTransport:
             cleaned = f"a{cleaned}" if cleaned else "prism-agent"
         return cleaned[:100]
 
-    def invoke_args(self, request: FixRequest) -> dict[str, object]:
+    def invoke_args(self, request: FixRequest, *, session_id: str = "",
+                    workdir: str = "") -> dict[str, object]:
         """The arguments for invoke_harness, exposed so they can be asserted.
 
         Repo guidance goes in `systemPrompt`, not smuggled into the user message.
@@ -161,8 +164,9 @@ class BotoTransport:
         system = [{"text": render_system_addendum(request)}] if request.guidance else []
         args: dict[str, object] = {
             "harnessArn": self.arn,
-            "runtimeSessionId": self._session_id(),
-            "messages": [{"role": "user", "content": [{"text": render_task_message(request)}]}],
+            "runtimeSessionId": session_id or self._session_id(),
+            "messages": [{"role": "user", "content": [{"text":
+                render_task_message(request, workdir=workdir)}]}],
             "maxIterations": MAX_ITERATIONS,
             "timeoutSeconds": INVOKE_TIMEOUT_SECONDS,
         }
@@ -173,8 +177,32 @@ class BotoTransport:
         return args
 
     def send(self, request: FixRequest) -> FixResponse:
+        """Prepare the session, run the agent, then take the patch from git.
+
+        Three calls rather than one, and the order matters. The first real
+        invocation was a single InvokeHarness with nothing cloned: the agent spent
+        all forty iterations looking for a repository and returned
+        max_iterations_exceeded. Preparation is deterministic and free; only the
+        middle step costs tokens.
+        """
         request.validate()
-        stream = self.client.invoke_harness(**self.invoke_args(request))["stream"]
+        session_id = self._session_id()
+
+        prepared = prepare_environment(self.client, self.arn, session_id, request)
+        if not prepared.ok:
+            failed = prepared.failure
+            return FixResponse(
+                outcome=Outcome.FAILED,
+                reason=(f"environment preparation failed at '{failed.name}' "
+                        f"(exit {failed.exit_code}): "
+                        f"{(failed.stderr or failed.stdout).strip()[:600]}"),
+                summary="The agent was never started: the repository could not be "
+                        "prepared, so any failure here is the environment's, not the agent's.",
+            ).validate()
+
+        args = self.invoke_args(request, session_id=session_id,
+                               workdir=prepared.workdir)
+        stream = self.client.invoke_harness(**args)["stream"]
 
         chunks: list[str] = []
         stop_reason = ""
@@ -201,10 +229,35 @@ class BotoTransport:
                 # arrived here as AccessDeniedException on ListEvents.
                 raise ContractError(f"runtime: {event['runtimeClientError'].get('message')}")
 
-        return parse_agent_reply(
+        reply = parse_agent_reply(
             "".join(chunks), stop_reason=stop_reason,
             input_tokens=usage_in, output_tokens=usage_out,
         )
+
+        # git in the VM is the authority on what changed, not the model's prose.
+        # An agent that edited files but did not paste a diff would otherwise be
+        # recorded as having declined, and one that pasted a diff it never applied
+        # would be recorded as having fixed something.
+        collected = collect_patch(self.client, self.arn, session_id, request)
+        actual = collected.stdout if collected.ok else ""
+
+        if actual.strip():
+            return FixResponse(
+                outcome=Outcome.PATCHED, patch=actual,
+                summary=reply.summary or "(no summary returned)",
+                verified=reply.verified, usage=reply.usage,
+            ).validate()
+
+        if reply.outcome is Outcome.PATCHED:
+            # It described a patch that is not in the working tree.
+            return FixResponse(
+                outcome=Outcome.FAILED,
+                reason="the reply contained a diff but the working tree is unchanged, "
+                       "so nothing was actually applied",
+                summary=reply.summary, usage=reply.usage,
+            ).validate()
+
+        return reply
 
 
 class StubTransport:

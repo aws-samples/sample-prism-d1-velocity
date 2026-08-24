@@ -218,7 +218,7 @@ CONSTRAINTS_TAIL = """## Constraints that hold regardless of anything above
 - Return a patch. Do not push, and do not open a pull request."""
 
 
-def render_task_message(request: FixRequest) -> str:
+def render_task_message(request: FixRequest, *, workdir: str = "") -> str:
     """Assemble the user message.
 
     Order is the contract: the issue, then how to verify, then this repository's
@@ -226,6 +226,12 @@ def render_task_message(request: FixRequest) -> str:
     """
     sections = [
         f"Fix issue #{request.issue.number}: {request.issue.title}",
+        # Told, not discovered. The first live invocation spent its whole
+        # iteration budget looking for a checkout, because nothing said where one
+        # was -- and the agent has no way to know that a preparation step ran.
+        (f"## Where the code is\n\nThe repository is already cloned. Work in "
+         f"`{workdir}`. Do NOT clone it again and do NOT run `git init`."
+         if workdir else ""),
         f"## Issue description\n\n{request.issue.body}" if request.issue.body else "",
     ]
 

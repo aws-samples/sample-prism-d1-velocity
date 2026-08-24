@@ -17,6 +17,14 @@ from .contract import (  # noqa: F401
     Verification,
     render_task_message,
 )
+from .session import (  # noqa: F401
+    PrepareResult,
+    StepResult,
+    build_steps,
+    collect_patch_command,
+    prepare_environment,
+    workdir_for,
+)
 from .patch import ApplyResult, ApplyStatus, apply_patch, commit_applied  # noqa: F401
 from .client import (  # noqa: F401
     PRIMARY_ENV,

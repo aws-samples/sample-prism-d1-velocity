@@ -325,18 +325,78 @@ previous PRISM integration whose message named nothing useful.
 `systemPrompt` carries only the static half — workflow, verification framing and
 the hard constraints. Repo guidance travels in the invocation payload, for the
 reason recorded above: `invoke-agent-runtime` has no prompt parameter.
+## Corrections from invoking the harness
+
+Deploying a harness and calling it turned three decisions recorded above into
+mistakes. They are left in place rather than edited away, because the reasoning
+that produced them was sound given what was checkable at the time — and the shape
+of the error is worth keeping.
+
+**`InvokeHarness` is the operation, not `InvokeAgentRuntime`.** The harness ARN was
+rejected with "No endpoint or agent found with qualifier 'DEFAULT'", and so was
+its `DEFAULT` endpoint ARN, which existed and was `READY`. A harness has its own
+data-plane operation. boto3 1.42.97 exposes it; AWS CLI 2.36.19 does not — which is
+how the wrong API came to be written, since every other finding in this document
+was verified through the CLI.
+
+**The system prompt is not fixed at create time.** Recorded above: "No per-call
+system prompt override … the payload is the only per-call channel, so passing repo
+guidance there is not a workaround; it is the mechanism." That is true of
+`InvokeAgentRuntime` and false of `InvokeHarness`, which accepts `systemPrompt`,
+`maxIterations`, `maxTokens` and `timeoutSeconds` on every call. Repo conventions
+now go in the system prompt, with the hard constraints still restated after them.
+
+**Attribution is `actorId`.** Recorded above: `runtimeUserId` and `baggage` carry
+it. `InvokeHarness` has neither. And `actorId` cannot hold an email — the pattern
+`[a-zA-Z0-9][a-zA-Z0-9-_/]*…` excludes `@` and `.`, which surfaced as a
+`ValidationException` from `ListEvents`, wrapped in a `runtimeClientError`, naming
+the field but not the caller that set it. It is now substituted
+(`prism-agent_example_com`); the authoritative identity remains the commit author
+email, which git sets.
+
+`InvokeAgentRuntimeCommand` does carry `baggage` and `traceParent`, so trace
+context still has a home — on the preparation calls rather than the agent call.
+
+Two further gaps that only deploying could show. A harness **provisions its own
+AgentCore Memory**, so the execution role needs memory actions; omitting them
+failed as `AccessDenied` on `ListEvents` against a resource that did not exist
+when the role was written. And `runtimeSessionId` has a 33-character minimum.
+
+### The preparation step was missing, and its absence was expensive
+
+The first full invocation returned `max_iterations_exceeded`, and the reply showed
+why: the agent was "checking if there's a repository in a parent directory". Nothing
+had cloned the code. Forty iterations went on hunting for a checkout, at a cost of
+9,400 input tokens, for a session that could never have succeeded.
+
+`agentcore/session.py` is that step: clone, `mise install`, then a
+manifest-inferred dependency install, each through
+`InvokeAgentRuntimeCommand` — deterministic, and free of model tokens. The task
+message now also *tells* the agent where the code is, because it has no way to know
+a preparation step ran.
+
+Two consequences worth recording:
+
+- **The patch is taken from git in the VM, not from the model's prose.** An agent
+  that edits files but pastes no diff would otherwise read as having declined, and
+  one that pastes a diff it never applied would read as having fixed something.
+  Collection runs at the clone root, since `git diff` emits root-relative paths
+  regardless of the directory it runs in.
+- **A preparation failure is reported as the environment's fault, not the
+  agent's**, and the agent is never started. Blaming an agent for a failed clone
+  is how a working agent gets a reputation it does not deserve.
+
 ## Still not verified
 
-The harness exists but has never been invoked. Nothing has yet exercised the path
-this ADR is actually about: payload in, patch out. Specifically untested —
+The harness has been invoked and runs the image — a smoke call reported
+`aarch64`, `mise 2026.8.11` and `git 2.47.3` from inside a real session, which also
+settles the `ENTRYPOINT`/`CMD` override question in passing. What remains untested:
 
-- `ENTRYPOINT`/`CMD` override. Documented, and the image has only ever been run
-  with an explicit `--entrypoint`.
-- `InvokeAgentRuntimeCommand` for session-start `mise install`. The timings above
-  were measured in a local container, not in a harness session.
-- Whether the declarative harness, given the same fixture, produces a patch the
-  eval scores the way the local agent's commit was scored.
-- Cold-start time for a 591 MB image.
-
-Until an invocation round-trips, this remains a design validated against API
-shapes plus one local agent run.
+- Whether the prepared harness produces a patch the eval scores the way the local
+  agent's commit was scored. The preparation step is written and unit-tested
+  against its command list, but a full prepare → fix → collect cycle has not yet
+  come back green.
+- Cold-start time for a 591 MB image, and real `mise install` timing inside a
+  session rather than in a local container.
+- The thin workflow end to end. It calls `agentcore.invoke`, which is now a
+  three-call sequence, but no CI run has exercised it.
