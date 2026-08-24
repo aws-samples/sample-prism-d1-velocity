@@ -25,6 +25,7 @@ judgement. `Outcome` forces the harness to say which happened.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -343,3 +344,84 @@ class FixResponse:
             ),
             contract_version=str(data.get("contract_version") or CONTRACT_VERSION),
         ).validate()
+
+
+# Per-invocation bounds. InvokeHarness accepts maxIterations, maxTokens and
+# timeoutSeconds on every call, not only at create time -- which is the cap the
+# local Strands agent has no way to express, and the reason one local run sat for
+# fourteen minutes on a model call that never returned.
+MAX_ITERATIONS = 40
+INVOKE_TIMEOUT_SECONDS = 1800
+
+# stopReason values that mean the harness was cut off rather than finished.
+TRUNCATING_STOP_REASONS = frozenset({
+    "max_iterations_exceeded", "max_output_tokens_exceeded",
+    "timeout_exceeded", "model_context_window_exceeded",
+    "content_filtered", "malformed_model_output", "malformed_tool_use",
+    "interrupted", "partial_turn",
+})
+
+
+def render_system_addendum(request: FixRequest) -> str:
+    """Repo conventions, for InvokeHarness's per-call systemPrompt.
+
+    Conventions belong in the system prompt, and InvokeHarness allows one per
+    call -- so they go there rather than being folded into the user message. The
+    hard constraints are restated after them for the same reason as before: a
+    repository instruction should be able to add to the brief, not cancel it.
+    """
+    return "\n\n".join([request.guidance.strip(), CONSTRAINTS_TAIL])
+
+
+def parse_agent_reply(text: str, *, stop_reason: str = "",
+                      input_tokens: int = 0, output_tokens: int = 0) -> FixResponse:
+    """Turn a harness's final prose into a FixResponse.
+
+    A declarative harness returns a conversation, not the JSON envelope a custom
+    handler would. Being cut off is reported as FAILED regardless of what the text
+    claims, because a truncated agent often sounds finished.
+    """
+    usage = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
+
+    if stop_reason in TRUNCATING_STOP_REASONS:
+        return FixResponse(
+            outcome=Outcome.FAILED,
+            reason=f"harness stopped early: {stop_reason}",
+            summary=text.strip()[:2000],
+            usage=usage,
+        ).validate()
+
+    patch = _extract_diff(text)
+    if patch:
+        return FixResponse(
+            outcome=Outcome.PATCHED, patch=patch,
+            summary=_without_diff(text)[:2000],
+            verified="tests pass" in text.lower() or "suite passes" in text.lower(),
+            usage=usage,
+        ).validate()
+
+    return FixResponse(
+        outcome=Outcome.DECLINED,
+        reason=text.strip()[:2000] or "no patch and no explanation",
+        summary=text.strip()[:2000],
+        usage=usage,
+    ).validate()
+
+
+_DIFF_FENCE = re.compile(r"```(?:diff|patch)?\s*\n(diff --git .*?)```", re.S)
+
+
+def _extract_diff(text: str) -> str:
+    """Pull a unified diff out of the reply, fenced or bare."""
+    fenced = _DIFF_FENCE.search(text)
+    if fenced:
+        return fenced.group(1).rstrip() + "\n"
+    start = text.find("diff --git ")
+    return text[start:].rstrip() + "\n" if start != -1 else ""
+
+
+def _without_diff(text: str) -> str:
+    cut = text.find("```diff")
+    if cut == -1:
+        cut = text.find("diff --git ")
+    return (text[:cut] if cut != -1 else text).strip()

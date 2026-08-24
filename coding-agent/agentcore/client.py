@@ -20,7 +20,16 @@ import uuid
 from pathlib import Path
 from typing import Protocol
 
-from .contract import ContractError, FixRequest, FixResponse
+from .contract import (
+    INVOKE_TIMEOUT_SECONDS,
+    MAX_ITERATIONS,
+    ContractError,
+    FixRequest,
+    FixResponse,
+    parse_agent_reply,
+    render_system_addendum,
+    render_task_message,
+)
 
 # One harness serves every toolchain.
 #
@@ -83,13 +92,18 @@ def resolve_harness_arn(project_type: str = "", env: dict[str, str] | None = Non
 
 
 class BotoTransport:
-    """Invokes a deployed harness.
+    """Invokes a deployed harness via InvokeHarness.
 
-    Not exercised in this repository's tests: it needs credentials that can reach
-    AgentCore. What is tested is that the request it would send satisfies the
-    contract, and that attribution reaches the invocation arguments -- the two
-    things a stub cannot vouch for on its behalf.
+    Not `invoke_agent_runtime`, which was the first attempt and is wrong for a
+    harness: it rejects both the harness ARN and its endpoint ARN with
+    "No endpoint or agent found with qualifier 'DEFAULT'". A harness has its own
+    data-plane operation, `InvokeHarness`, which boto3 exposes and AWS CLI 2.36.19
+    does not -- so the CLI is not a way to check this.
     """
+
+    # AgentCore rejects a shorter one; the quota is documented as a 33-character
+    # minimum for session ids.
+    _SESSION_ID_MIN = 33
 
     def __init__(self, project_type: str = "", region: str = "us-west-2",
                  client=None, env: dict[str, str] | None = None) -> None:
@@ -105,33 +119,92 @@ class BotoTransport:
             self._client = boto3.client("bedrock-agentcore", region_name=self.region)
         return self._client
 
-    def invoke_args(self, request: FixRequest) -> dict[str, object]:
-        """The arguments for invoke_agent_runtime, exposed so they can be asserted.
+    def _session_id(self) -> str:
+        raw = f"prism-{uuid.uuid4()}"
+        return raw.ljust(self._SESSION_ID_MIN, "0")
 
-        Attribution rides on runtimeUserId and baggage rather than being buried in
-        the payload, because those are the fields that propagate into OTEL spans.
-        A shared harness can then still report cost per developer and per team,
-        which is what PRISM's Developer Productivity dashboard joins on.
+    @staticmethod
+    def _actor_id(user: str) -> str:
+        """Make a user identifier acceptable as an actorId.
+
+        AgentCore constrains actorId to
+        `[a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*`, which
+        excludes `@` and `.` -- so an email address, the obvious identifier and
+        the one PRISM attributes commits by, is rejected outright. The failure is
+        also indirect: it surfaces as a ValidationException from ListEvents wrapped
+        in a runtimeClientError, naming actorId but not the caller that set it.
+
+        Substituting rather than dropping keeps the mapping reversible enough to
+        recognise, and the authoritative identity is unaffected either way: the
+        commit author email is what the dashboards join on, and that is set by git,
+        not here.
         """
+        cleaned = re.sub(r"[^A-Za-z0-9\-_/]", "_", user).strip("_")
+        if not cleaned or not cleaned[0].isalnum():
+            cleaned = f"a{cleaned}" if cleaned else "prism-agent"
+        return cleaned[:100]
+
+    def invoke_args(self, request: FixRequest) -> dict[str, object]:
+        """The arguments for invoke_harness, exposed so they can be asserted.
+
+        Repo guidance goes in `systemPrompt`, not smuggled into the user message.
+        That corrects an earlier conclusion: `invoke-agent-runtime` has no prompt
+        parameter, so the ADR recorded that the payload was the only per-call
+        channel -- but `InvokeHarness` takes `systemPrompt`, `maxIterations`,
+        `maxTokens` and `timeoutSeconds` per call. Conventions therefore live where
+        they belong, and the hard constraints can still be restated last because
+        this side assembles the text.
+
+        Attribution uses `actorId`. There is no runtimeUserId or baggage on this
+        operation, so the team and repo ride in the message rather than in headers.
+        """
+        system = [{"text": render_system_addendum(request)}] if request.guidance else []
         args: dict[str, object] = {
-            "agentRuntimeArn": self.arn,
-            "payload": request.to_payload(),
-            "runtimeSessionId": str(uuid.uuid4()),
-            "contentType": "application/json",
-            "accept": "application/json",
+            "harnessArn": self.arn,
+            "runtimeSessionId": self._session_id(),
+            "messages": [{"role": "user", "content": [{"text": render_task_message(request)}]}],
+            "maxIterations": MAX_ITERATIONS,
+            "timeoutSeconds": INVOKE_TIMEOUT_SECONDS,
         }
+        if system:
+            args["systemPrompt"] = system
         if request.attribution.user:
-            args["runtimeUserId"] = request.attribution.user
-        baggage = request.attribution.baggage()
-        if baggage:
-            args["baggage"] = baggage
+            args["actorId"] = self._actor_id(request.attribution.user)
         return args
 
     def send(self, request: FixRequest) -> FixResponse:
-        response = self.client.invoke_agent_runtime(**self.invoke_args(request))
-        body = response.get("response")
-        raw = body.read() if hasattr(body, "read") else body
-        return FixResponse.from_payload(raw)
+        request.validate()
+        stream = self.client.invoke_harness(**self.invoke_args(request))["stream"]
+
+        chunks: list[str] = []
+        stop_reason = ""
+        usage_in = usage_out = 0
+
+        for event in stream:
+            if "contentBlockDelta" in event:
+                delta = event["contentBlockDelta"].get("delta", {})
+                if "text" in delta:
+                    chunks.append(delta["text"])
+            elif "messageStop" in event:
+                stop_reason = event["messageStop"].get("stopReason", "")
+            elif "metadata" in event:
+                usage = event["metadata"].get("usage") or {}
+                usage_in = int(usage.get("inputTokens") or 0)
+                usage_out = int(usage.get("outputTokens") or 0)
+            elif "validationException" in event:
+                raise ContractError(f"validation: {event['validationException'].get('message')}")
+            elif "internalServerException" in event:
+                raise ContractError(f"server: {event['internalServerException'].get('message')}")
+            elif "runtimeClientError" in event:
+                # This is where an execution-role gap surfaces, wrapped and
+                # unhelpfully far from its cause -- a missing memory permission
+                # arrived here as AccessDeniedException on ListEvents.
+                raise ContractError(f"runtime: {event['runtimeClientError'].get('message')}")
+
+        return parse_agent_reply(
+            "".join(chunks), stop_reason=stop_reason,
+            input_tokens=usage_in, output_tokens=usage_out,
+        )
 
 
 class StubTransport:

@@ -33,7 +33,7 @@ from agentcore import (  # noqa: E402
     resolve_harness_arn,
     toolchain_env_var,
 )
-from agentcore.contract import CONSTRAINTS_TAIL  # noqa: E402
+from agentcore.contract import CONSTRAINTS_TAIL, parse_agent_reply  # noqa: E402
 
 
 def git(args, cwd, stdin=None):
@@ -227,21 +227,83 @@ def test_override_variable_names_are_derived_not_tabulated(project_type, expecte
     assert toolchain_env_var(project_type) == expected
 
 
-def test_attribution_reaches_the_invocation_not_just_the_payload():
-    """runtimeUserId and baggage are what propagate into OTEL spans."""
+def test_attribution_uses_actorId_because_that_is_what_InvokeHarness_takes():
+    """Corrects an earlier assumption. invoke_agent_runtime carries runtimeUserId
+    and baggage; InvokeHarness -- the operation a harness actually needs -- has
+    neither, only actorId."""
     t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
     args = t.invoke_args(make_request(
         attribution=Attribution(user="dev@example.com", team_id="team-a", repo_slug="acme/api")))
-    assert args["runtimeUserId"] == "dev@example.com"
-    assert "team_id=team-a" in args["baggage"]
-    assert "repo=acme/api" in args["baggage"]
+    assert args["actorId"] == "dev@example.com"
+    assert "runtimeUserId" not in args and "baggage" not in args
 
 
-def test_attribution_omits_empty_members_rather_than_sending_blanks():
+def test_invocation_targets_the_harness_and_carries_its_own_bounds():
+    """invoke_agent_runtime rejects a harness ARN outright, so this must be
+    InvokeHarness -- and its per-call bounds are the cap the local agent lacks."""
     t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
-    args = t.invoke_args(make_request(attribution=Attribution(team_id="team-a")))
-    assert args["baggage"] == "team_id=team-a"
-    assert "runtimeUserId" not in args
+    args = t.invoke_args(make_request())
+    assert args["harnessArn"] == "arn:shared"
+    assert "agentRuntimeArn" not in args
+    assert args["maxIterations"] > 0 and args["timeoutSeconds"] > 0
+    # AgentCore rejects a session id below the documented 33-character minimum.
+    assert len(args["runtimeSessionId"]) >= 33
+
+
+def test_repo_guidance_goes_in_the_system_prompt_not_the_user_message():
+    """InvokeHarness accepts a per-call systemPrompt, so conventions belong there
+    rather than folded into the task text."""
+    t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
+    args = t.invoke_args(make_request(guidance="## Ours\n- Never use `any`."))
+    system = args["systemPrompt"][0]["text"]
+    assert "Never use `any`" in system
+    # Constraints still get the last word, on whichever side assembles the text.
+    assert system.index("Never use `any`") < system.index("Constraints that hold regardless")
+
+
+def test_no_system_prompt_is_sent_when_the_repo_says_nothing():
+    t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
+    assert "systemPrompt" not in t.invoke_args(make_request())
+
+
+# --------------------------------------------------------------------------
+# Parsing a declarative harness's reply
+# --------------------------------------------------------------------------
+
+def test_a_fenced_diff_is_extracted_as_a_patch():
+    reply = f"I fixed it and the tests pass.\n\n```diff\n{GOOD_PATCH}```\n"
+    r = parse_agent_reply(reply, stop_reason="end_turn")
+    assert r.outcome is Outcome.PATCHED and r.verified
+    assert r.patch.startswith("diff --git")
+    assert "```" not in r.summary
+
+
+def test_a_bare_diff_is_extracted_too():
+    r = parse_agent_reply(f"Here is the change.\n\n{GOOD_PATCH}", stop_reason="end_turn")
+    assert r.outcome is Outcome.PATCHED
+
+
+def test_prose_with_no_diff_reads_as_declined():
+    r = parse_agent_reply("The suite passes at baseline; the premise is false.",
+                          stop_reason="end_turn")
+    assert r.outcome is Outcome.DECLINED and "premise is false" in r.reason
+
+
+@pytest.mark.parametrize("stop", ["max_iterations_exceeded", "timeout_exceeded",
+                                  "model_context_window_exceeded", "malformed_tool_use"])
+def test_being_cut_off_is_failed_even_when_the_text_sounds_finished(stop):
+    """A truncated agent often sounds like it succeeded, so the stop reason wins
+    over the prose -- including over a patch it managed to emit."""
+    r = parse_agent_reply(f"All done, tests pass.\n```diff\n{GOOD_PATCH}```", stop_reason=stop)
+    assert r.outcome is Outcome.FAILED
+    assert stop in r.reason
+    assert not r.patch
+
+
+def test_usage_is_carried_through_for_attribution():
+    r = parse_agent_reply("nothing to do here", stop_reason="end_turn",
+                          input_tokens=2093, output_tokens=105)
+    assert (r.usage.input_tokens, r.usage.output_tokens) == (2093, 105)
 
 
 # --------------------------------------------------------------------------
