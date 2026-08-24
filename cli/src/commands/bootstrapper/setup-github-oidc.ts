@@ -239,6 +239,17 @@ export default {
           Resource: '*',
         },
         {
+          // The coding agent workflow invokes the harness (InvokeHarness) and runs
+          // deterministic shell commands in the same session (InvokeAgentRuntimeCommand)
+          // for clone, toolchain install, dependency install, and verification.
+          Effect: 'Allow',
+          Action: [
+            'bedrock-agentcore:InvokeHarness',
+            'bedrock-agentcore:InvokeAgentRuntimeCommand',
+          ],
+          Resource: `arn:aws:bedrock-agentcore:${region}:${accountId}:harness/*`,
+        },
+        {
           // The coding agent's OTEL emitter exchanges Cognito client credentials
           // for a short-lived access token before posting to the collector, and
           // reads those credentials from Secrets Manager with this role -- so
