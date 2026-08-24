@@ -238,6 +238,21 @@ export default {
           Action: 'bedrock:InvokeModel',
           Resource: '*',
         },
+        {
+          // The coding agent's OTEL emitter exchanges Cognito client credentials
+          // for a short-lived access token before posting to the collector, and
+          // reads those credentials from Secrets Manager with this role -- so
+          // nothing long-lived is stored in CI. SAX-02 Outcome 1 names
+          // "hardcoding credentials in application code or environment variables"
+          // as the pitfall this avoids.
+          //
+          // Scoped by name prefix rather than '*': this role is assumed by a
+          // workflow that runs agent-authored code, so a wildcard here would let
+          // any secret in the account be read from CI.
+          Effect: 'Allow',
+          Action: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
+          Resource: `arn:aws:secretsmanager:${region}:${accountId}:secret:prism-d1-*`,
+        },
       ],
     });
 

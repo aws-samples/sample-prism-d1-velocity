@@ -217,6 +217,11 @@ jobs:
         id: invoke
         env:
           PRISM_HARNESS_ARN: ${{ env.PRISM_HARNESS_ARN }}
+          # Unset means telemetry is skipped, not that the run fails.
+          PRISM_COLLECTOR_URL: ${{ vars.PRISM_COLLECTOR_URL }}
+          PRISM_OIDC_TOKEN_ENDPOINT: ${{ vars.PRISM_OIDC_TOKEN_ENDPOINT }}
+          PRISM_AGENT_SECRET_ID: ${{ vars.PRISM_AGENT_SECRET_ID }}
+          PRISM_AGENT_SCOPE: ${{ vars.PRISM_AGENT_SCOPE }}
         run: |
           # GitHub runs `run:` blocks under `bash -e`, so a non-zero exit would
           # end the step and skip straight past reporting. `set +e` keeps the exit
@@ -277,7 +282,31 @@ jobs:
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "applied=true" >> "$GITHUB_OUTPUT"
           echo "files=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git log --oneline -1
+
+      - name: Emit commit attribution
+        # After the commit, because the SHA does not exist before it -- the harness
+        # returns a patch and this workflow makes the commit. Reuses the trace id
+        # from result.json: a fresh one would leave the commit with no correlated
+        # usage, and the receiver would freeze its origin as human-authored.
+        #
+        # continue-on-error, because a reporting gap must not fail a run that has
+        # already produced a reviewed fix.
+        if: steps.apply.outputs.applied == 'true'
+        continue-on-error: true
+        env:
+          PRISM_COLLECTOR_URL: ${{ vars.PRISM_COLLECTOR_URL }}
+          PRISM_OIDC_TOKEN_ENDPOINT: ${{ vars.PRISM_OIDC_TOKEN_ENDPOINT }}
+          PRISM_AGENT_SECRET_ID: ${{ vars.PRISM_AGENT_SECRET_ID }}
+          PRISM_AGENT_SCOPE: ${{ vars.PRISM_AGENT_SCOPE }}
+        run: |
+          set -euo pipefail
+          python -m agentcore.emit_commit \
+            --result /tmp/result.json \
+            --repo "${PRISM_REPO}" \
+            --sha "${{ steps.apply.outputs.sha }}"
+        working-directory: ${{ steps.client.outputs.dir }}
 
       - name: Open the pull request
         id: pr

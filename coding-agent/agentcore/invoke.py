@@ -17,9 +17,11 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .client import BotoTransport, Transport
+from .telemetry import RunTelemetry, emit_run
 from .contract import (
     Attribution,
     ContractError,
@@ -97,6 +99,21 @@ def load_issue(event_path: Path) -> dict:
     return issue
 
 
+
+def _repo_slug(url: str) -> str:
+    """Turn a clone URL into the receiver's repo key form: github.com/owner/name.
+
+    codeburn always writes the full host-qualified form, and a bare `owner/name`
+    would land under a different DynamoDB partition key -- so the agent's commits
+    would sit beside the human ones rather than joining them.
+    """
+    trimmed = url.removeprefix("https://").removeprefix("http://")
+    trimmed = trimmed.removesuffix(".git").rstrip("/")
+    if "@" in trimmed.split("/", 1)[0]:            # git@github.com:owner/name
+        trimmed = trimmed.split("@", 1)[1].replace(":", "/", 1)
+    return trimmed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agentcore.invoke",
@@ -114,6 +131,8 @@ def main() -> int:
     parser.add_argument("--subdir", default=".", help="Project directory within the repo")
     parser.add_argument("--team-id", default="", help="Team id, for cost attribution")
     parser.add_argument("--region", default="us-west-2")
+    parser.add_argument("--no-telemetry", action="store_true",
+                        help="Do not emit usage or attribution spans")
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -149,6 +168,7 @@ def main() -> int:
     print(f"Repo:     {request.repo.url}@{request.repo.ref} ({request.repo.subdir})", file=sys.stderr)
     print(f"Verify:   {cfg.test_command or '(none)'}", file=sys.stderr)
 
+    started_at = time.time()
     try:
         response = transport.send(request)
     except ContractError as exc:
@@ -165,6 +185,23 @@ def main() -> int:
     # The patch is written even when empty so the workflow always has a file to
     # look at, and never has to distinguish "no file" from "no change".
     Path(args.patch_out).write_text(response.patch)
+    # Emitted before the result is written, so the trace id can go into it. The
+    # workflow reads that back when it emits the commit span -- a fresh trace id
+    # there would leave the commit with no correlated usage, and the receiver would
+    # record the agent's own work as human-authored.
+    run = RunTelemetry(
+        repo=_repo_slug(request.repo.url),
+        project=request.repo.subdir or _repo_slug(request.repo.url),
+        issue_number=request.issue.number,
+        model=cfg.model_id,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        outcome=response.outcome.value,
+        verified=response.verified,
+        started_at=started_at,
+    )
+    trace_id = emit_run(run) if not args.no_telemetry else None
+
     Path(args.result_out).write_text(json.dumps({
         "outcome": response.outcome.value,
         "summary": response.summary,
@@ -172,6 +209,10 @@ def main() -> int:
         "verified": response.verified,
         "stop_reason": response.stop_reason,
         "added_files": response.added_files,
+        # Handed to the commit-span step. Empty when telemetry is off or failed,
+        # and that step declines to emit rather than misattribute.
+        "trace_id": trace_id or "",
+        "session_id": run.session_id if trace_id else "",
         "usage": {
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
