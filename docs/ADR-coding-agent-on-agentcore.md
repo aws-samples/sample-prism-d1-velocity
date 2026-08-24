@@ -274,9 +274,69 @@ Central hosting does not force cost into one anonymous bucket.
 `--qualifier` also gives the endpoint-based dev/staging/prod split noted above,
 independent of the per-toolchain routing.
 
-## Not verified
+## What the first live run taught
 
-Nothing in this document has been deployed. This devbox's instance profile is
-denied both `bedrock:InvokeModel` and `bedrock-agentcore:ListAgentRuntimes`, so
-every claim here comes from the service API shape and documentation, not from a
-running harness.
+Everything above was written before the agent had ever called a model. Once
+credentials with `bedrock:InvokeModel` were available, one run against fixture 001
+resolved it correctly — `✓ committed ✓ tests_pass ✓ files_expected ✓
+no_test_edits` — and surfaced three defects that no amount of scaffolding testing
+had found. Each one strengthens a decision recorded above.
+
+**Mutating tools were silently cancelled.** `strands-agents-tools` gates `editor`,
+`file_write` and `shell` behind an interactive confirmation unless
+`BYPASS_TOOL_CONSENT` is set. Non-interactively the prompt auto-cancels, so the
+agent reasoned correctly, printed the right patch in prose, and reported "unable
+to complete because all file modification operations are being cancelled by the
+system" — indistinguishable, from the outside, from a broken agent.
+
+**The agent routed around a refusing tool.** `git_ops` required `.git` as a direct
+child of `--repo`. A monorepo subdirectory has none, so the tool refused, and the
+agent used its `shell` to run `git init` and commit all 54 files as "Initial
+commit". This is direct evidence for "Path guards become less load-bearing" above:
+a guard inside one tool is not a constraint on an agent that can run arbitrary
+commands, only a suggestion. A tool has to be able to do the right thing, not
+merely decline the wrong one — `git_ops` now resolves the enclosing repository.
+
+**There is no iteration cap in the local agent, and it showed.** One run committed
+a fix then sat fourteen minutes with one second of CPU, blocked on a model call
+that never returned. This SDK version's `Agent` accepts `conversation_manager`,
+`hooks` and `retry_strategy` but nothing capping iterations; the only bounds are
+the eval's subprocess timeout and the workflow's `timeout-minutes`.
+
+That last one is the strongest argument for this ADR that was not available when
+it was written. `create-harness` accepts `maxIterations` directly, and the deployed
+harness sets it to 40 — a bound the local agent cannot express at all.
+
+## Deployed
+
+First real harness, in the dev account rather than only on paper:
+
+    harness   PrismCodingAgent-XC93iEIa7W
+    image     .../prism/coding-agent-harness:v1  (arm64, 591 MB)
+    model     us.anthropic.claude-sonnet-4-5-20250929-v1:0, temperature 0
+    bounds    maxIterations 40, timeoutSeconds 1800, idle 900, maxLifetime 3600
+    network   PUBLIC (needed so mise can fetch toolchains at session start)
+    role      PrismCodingAgentHarnessRole
+
+The role includes `kms:DescribeKey`. That is not boilerplate: AgentCore assumes
+the role to create log groups, and omitting it produced a `CLIENT_ERROR` on a
+previous PRISM integration whose message named nothing useful.
+
+`systemPrompt` carries only the static half — workflow, verification framing and
+the hard constraints. Repo guidance travels in the invocation payload, for the
+reason recorded above: `invoke-agent-runtime` has no prompt parameter.
+## Still not verified
+
+The harness exists but has never been invoked. Nothing has yet exercised the path
+this ADR is actually about: payload in, patch out. Specifically untested —
+
+- `ENTRYPOINT`/`CMD` override. Documented, and the image has only ever been run
+  with an explicit `--entrypoint`.
+- `InvokeAgentRuntimeCommand` for session-start `mise install`. The timings above
+  were measured in a local container, not in a harness session.
+- Whether the declarative harness, given the same fixture, produces a patch the
+  eval scores the way the local agent's commit was scored.
+- Cold-start time for a 591 MB image.
+
+Until an invocation round-trips, this remains a design validated against API
+shapes plus one local agent run.
