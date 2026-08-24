@@ -101,14 +101,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fail early if no harness is configured
+      - name: Warn if no harness variable (SSM is the fallback)
         run: |
-          set -euo pipefail
           if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
-            echo "::warning::PRISM_HARNESS_ARN variable is not set. Will try SSM after OIDC." \
-                 "coding-agent/deploy/Dockerfile and set the repository or org" \
-                 "variable. Failing now rather than after commenting on the issue."
-            exit 1
+            echo "::notice::PRISM_HARNESS_ARN variable is not set. Will try SSM /prism/d1/harness-arn after OIDC."
           fi
 
       - name: Resolve the issue to work on
