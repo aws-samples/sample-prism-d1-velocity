@@ -105,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
-            echo "::error::PRISM_HARNESS_ARN is not set. Deploy the harness from" \
+            echo "::warning::PRISM_HARNESS_ARN variable is not set. Will try SSM after OIDC." \
                  "coding-agent/deploy/Dockerfile and set the repository or org" \
                  "variable. Failing now rather than after commenting on the issue."
             exit 1
@@ -228,6 +228,15 @@ jobs:
           echo "PRISM_COLLECTOR_URL=${PRISM_COLLECTOR_URL}" >> "$GITHUB_ENV"
           echo "PRISM_OIDC_TOKEN_ENDPOINT=${PRISM_OIDC_TOKEN_ENDPOINT}" >> "$GITHUB_ENV"
           echo "PRISM_AGENT_SECRET_ID=${PRISM_AGENT_SECRET_ID}" >> "$GITHUB_ENV"
+          # Harness ARN: the GitHub variable is the primary (pre-OIDC early-fail),
+          # but if it was empty (e.g. fork with no org vars), SSM is the fallback.
+          if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
+            PRISM_HARNESS_ARN=$(read_param /prism/d1/harness-arn)
+            if [[ -n "${PRISM_HARNESS_ARN}" ]]; then
+              echo "PRISM_HARNESS_ARN=${PRISM_HARNESS_ARN}" >> "$GITHUB_ENV"
+              echo "Harness ARN loaded from SSM (GitHub variable was empty)"
+            fi
+          fi
           if [[ -n "${PRISM_COLLECTOR_URL}" ]]; then
             echo "Telemetry: ${PRISM_COLLECTOR_URL} (secret: ${PRISM_AGENT_SECRET_ID})"
           else
@@ -239,6 +248,11 @@ jobs:
         env:
           PRISM_HARNESS_ARN: ${{ env.PRISM_HARNESS_ARN }}
         run: |
+          if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
+            echo "::error::No harness ARN available (checked GitHub variable AND SSM /prism/d1/harness-arn)."
+            echo "::error::Run coding-agent/deploy/deploy-harness.sh and set the org variable."
+            exit 1
+          fi
           # GitHub runs `run:` blocks under `bash -e`, so a non-zero exit would
           # end the step and skip straight past reporting. `set +e` keeps the exit
           # code as data instead of as control flow.

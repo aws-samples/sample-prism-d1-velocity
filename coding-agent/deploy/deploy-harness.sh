@@ -167,13 +167,25 @@ HARNESS_ARN=$(
 )
 echo "    ${HARNESS_ARN}"
 
+# ---- 5. Write the ARN to SSM so it is discoverable without manual copying ----
+echo "==> SSM parameter"
+aws ssm put-parameter \
+  --name /prism/d1/harness-arn \
+  --value "${HARNESS_ARN}" \
+  --type String \
+  --overwrite \
+  --description "AgentCore harness ARN — written by deploy-harness.sh" >/dev/null
+echo "    /prism/d1/harness-arn = ${HARNESS_ARN}"
+
 cat <<EOF
 
 ✅ Harness ready
 
   ${HARNESS_ARN}
 
-Set it once as an organization variable and every repository inherits it:
+The ARN is stored in SSM at /prism/d1/harness-arn. For the workflow's early-fail
+check (which runs before AWS credentials are available), also set it as a GitHub
+org variable — this is the one variable that cannot come from SSM alone:
 
   gh variable set PRISM_HARNESS_ARN --org <your-org> \\
     --body "${HARNESS_ARN}"
