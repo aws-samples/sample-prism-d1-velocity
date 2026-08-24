@@ -8,6 +8,7 @@ point of these tests is that a patch which claims to apply actually does.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -230,12 +231,26 @@ def test_override_variable_names_are_derived_not_tabulated(project_type, expecte
 def test_attribution_uses_actorId_because_that_is_what_InvokeHarness_takes():
     """Corrects an earlier assumption. invoke_agent_runtime carries runtimeUserId
     and baggage; InvokeHarness -- the operation a harness actually needs -- has
-    neither, only actorId."""
+    neither, only actorId. And actorId cannot hold an email: AgentCore's pattern
+    excludes @ and . , so it is substituted rather than sent and rejected."""
     t = BotoTransport("node", env={"PRISM_HARNESS_ARN": "arn:shared"})
     args = t.invoke_args(make_request(
         attribution=Attribution(user="dev@example.com", team_id="team-a", repo_slug="acme/api")))
-    assert args["actorId"] == "dev@example.com"
+    assert args["actorId"] == "dev_example_com"
     assert "runtimeUserId" not in args and "baggage" not in args
+
+
+@pytest.mark.parametrize("user,expected", [
+    ("prism-agent@example.com", "prism-agent_example_com"),
+    ("dev@corp.co.uk", "dev_corp_co_uk"),
+    ("_leading-underscore", "leading-underscore"),
+    ("", "prism-agent"),
+    ("already-fine", "already-fine"),
+])
+def test_actor_id_always_satisfies_the_service_pattern(user, expected):
+    actor = BotoTransport._actor_id(user)
+    assert actor == expected
+    assert re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9\-_/]*(?::[a-zA-Z0-9\-_/]+)*[a-zA-Z0-9\-_/]*", actor)
 
 
 def test_invocation_targets_the_harness_and_carries_its_own_bounds():
