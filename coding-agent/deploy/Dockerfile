@@ -84,3 +84,23 @@ ENV MISE_TRUSTED_CONFIG_PATHS=/ \
 
 RUN mkdir -p /opt/mise /workspace
 WORKDIR /workspace
+
+# -----------------------------------------------------------------------
+# The agent and its orchestrator, so the harness is fully self-contained.
+# One InvokeAgentRuntimeCommand runs the entire cycle:
+#   clone → mise install → deps → agent loop → collect patch → verify
+#
+# This eliminates the client-fetch step in the workflow and solves private
+# repo access (the token travels in the clone URL, inside the microVM).
+# -----------------------------------------------------------------------
+COPY requirements.txt /opt/prism-agent/
+RUN pip install --no-cache-dir -r /opt/prism-agent/requirements.txt && \
+    python -c "import strands; import boto3; print('strands + boto3 OK')"
+
+COPY agent.py config.py system_prompt.py /opt/prism-agent/
+COPY agentcore/ /opt/prism-agent/agentcore/
+COPY tools/ /opt/prism-agent/tools/
+COPY deploy/run.py /opt/prism-agent/run.py
+
+ENV PYTHONPATH=/opt/prism-agent \
+    BYPASS_TOOL_CONSENT=true
