@@ -27,6 +27,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as path from 'path';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
@@ -54,6 +55,10 @@ export class OtelCollectorConstruct extends Construct {
   public readonly archiveBucket: s3.Bucket;
   public readonly userPool?: cognito.UserPool;
   public readonly userPoolClient?: cognito.UserPoolClient;
+  /** Machine-to-machine client used by the coding agent's telemetry emitter. */
+  public readonly agentClient?: cognito.UserPoolClient;
+  /** Its credentials, read in CI with the ephemeral OIDC role. */
+  public readonly agentSecret?: secretsmanager.Secret;
   /** ARN of the CloudWatch custom-widget Lambda (Developer Productivity table). */
   public productivityWidgetArn?: string;
   /** The otel-receiver Lambda — other constructs may grant themselves invoke
@@ -74,6 +79,10 @@ export class OtelCollectorConstruct extends Construct {
     let issuer: string;
     let clientId: string;
     let identityClaim: string;
+    let domainPrefix = '';
+    let agentClientId = '';
+    let machineIdentities = '';
+    let tokenEndpoint = '';
 
     if (byoIdp) {
       issuer = props.externalIssuer!.replace(/\/$/, '');
@@ -102,8 +111,9 @@ export class OtelCollectorConstruct extends Construct {
       });
 
       // Hosted UI domain — prefix must be globally unique per region.
+      domainPrefix = `prism-d1-otel-${cdk.Aws.ACCOUNT_ID}`;
       this.userPool.addDomain('Domain', {
-        cognitoDomain: { domainPrefix: `prism-d1-otel-${cdk.Aws.ACCOUNT_ID}` },
+        cognitoDomain: { domainPrefix },
       });
 
       // Public client (no secret) — codeburn does Authorization Code + PKCE
@@ -131,6 +141,85 @@ export class OtelCollectorConstruct extends Construct {
       // Cognito ACCESS tokens carry `username` (no email claim) — with
       // email-alias sign-in and admin-created users, username == email.
       identityClaim = props.identityClaim ?? 'username';
+
+      // -----------------------------------------------------------------
+      // Machine-to-machine path, for the coding agent's own telemetry
+      // -----------------------------------------------------------------
+      // The agent runs in CI, so there is no human to complete an
+      // authorization-code flow. SAX-02 Outcome 3 names Cognito's
+      // client-credentials flow as the machine-to-machine pattern, with a
+      // resource server carrying fine-grained scopes; the alternative — a
+      // Cognito user password in a repository secret — is what Outcome 1 lists
+      // as "hardcoding credentials in application code or environment
+      // variables".
+      //
+      // Client credentials require a resource server: Cognito rejects the grant
+      // for a client whose only scopes are the standard openid/email/profile.
+      const resourceServer = this.userPool.addResourceServer('PrismResourceServer', {
+        identifier: 'prism',
+        scopes: [{ scopeName: 'emit', scopeDescription: 'Emit usage and attribution spans' }],
+      });
+
+      this.agentClient = this.userPool.addClient('CodingAgentClient', {
+        userPoolClientName: 'prism-coding-agent',
+        generateSecret: true,
+        // No authorization-code or SRP flow: this identity is never a person, and
+        // leaving a human flow enabled on it would be a second way in.
+        authFlows: {},
+        oAuth: {
+          flows: { clientCredentials: true, authorizationCodeGrant: false },
+          scopes: [cognito.OAuthScope.resourceServer(resourceServer, {
+            scopeName: 'emit',
+            scopeDescription: 'Emit usage and attribution spans',
+          })],
+        },
+        accessTokenValidity: cdk.Duration.hours(1),
+        enableTokenRevocation: true,
+        preventUserExistenceErrors: true,
+      });
+
+      // The credentials the CI job reads with its ephemeral OIDC role. Named
+      // under prism-d1- because setup-github-oidc grants GetSecretValue scoped
+      // to that prefix rather than to '*' — the role is assumed by a workflow
+      // that runs agent-authored code.
+      this.agentSecret = new secretsmanager.Secret(this, 'CodingAgentOidcSecret', {
+        secretName: 'prism-d1-agent-oidc',
+        description: 'Cognito client credentials for the PRISM coding agent telemetry emitter',
+        secretObjectValue: {
+          client_id: cdk.SecretValue.unsafePlainText(this.agentClient.userPoolClientId),
+          // unsafePlainText names the risk accurately and it does not apply here:
+          // the value is a CloudFormation reference resolved at deploy time, not a
+          // literal in source. The client id is not sensitive; the secret is, and
+          // it never leaves CloudFormation except into this secret.
+          client_secret: this.agentClient.userPoolClientSecret,
+        },
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+      });
+
+      // Cognito app-client secrets cannot be rotated in place — you would recreate
+      // the client, which invalidates every outstanding token and every copy of the
+      // old secret. The suppression documents why rotation is not configured rather
+      // than silently ignoring the rule.
+      NagSuppressions.addResourceSuppressions(this.agentSecret, [
+        {
+          id: 'AwsSolutions-SMG4',
+          reason:
+            'Cognito app-client secrets are immutable: rotating requires replacing the ' +
+            'client, which invalidates all outstanding tokens. Rotation would be a ' +
+            'client-replacement Lambda on a 90-day schedule, acceptable for a workshop ' +
+            'sample but not implemented here. The secret is scoped to one user pool and ' +
+            'grants only the prism/emit scope.',
+        },
+      ]);
+
+      agentClientId = this.agentClient.userPoolClientId;
+      // A client-credentials token has no username, no email, and a `sub` equal to
+      // the app client id — so identity has to be mapped rather than read. Mapped
+      // here, at deploy time, precisely so it is NOT caller-supplied: a payload
+      // that could name its own author would let any holder of any token post as
+      // anyone.
+      machineIdentities = JSON.stringify({ [agentClientId]: 'prism-coding-agent' });
+      tokenEndpoint = `https://${domainPrefix}.auth.${cdk.Aws.REGION}.amazoncognito.com/oauth2/token`;
     }
 
     // -------------------------------------------------------
@@ -191,6 +280,9 @@ export class OtelCollectorConstruct extends Construct {
         IDENTITY_CLAIM: identityClaim,
         OIDC_ISSUER: issuer,
         OIDC_CLIENT_ID: clientId,
+        // clientId -> identity, for tokens that carry no username. Deploy-time
+        // config so the author of a span is never caller-supplied.
+        MACHINE_IDENTITIES: machineIdentities,
         MAX_BATCH_SIZE: '1000',
         SPAN_TTL_DAYS: '90',
       },
@@ -271,8 +363,12 @@ export class OtelCollectorConstruct extends Construct {
 
     // HTTP API JWT authorizers validate the `aud` claim, or `client_id` for
     // Cognito access tokens — both paths work with jwtAudience = [clientId].
+    // Both client ids: API Gateway validates `aud`, or `client_id` for Cognito
+    // access tokens, and a client-credentials token carries the M2M client id.
+    // Listing only the codeburn client would reject every agent span with a 401
+    // that looks like a bad token rather than a missing audience entry.
     const authorizer = new HttpJwtAuthorizer('OtelJwtAuthorizer', issuer, {
-      jwtAudience: [clientId],
+      jwtAudience: agentClientId ? [clientId, agentClientId] : [clientId],
     });
 
     // Discovery doc — unauthenticated by design (it only exposes issuer +
@@ -364,6 +460,20 @@ export class OtelCollectorConstruct extends Construct {
         description: 'Create users: aws cognito-idp admin-create-user --user-pool-id <this> --username <email>',
       });
       poolOutput.overrideLogicalId('OtelUserPoolId');
+    }
+    if (this.agentSecret) {
+      new cdk.CfnOutput(this, 'PrismAgentTokenEndpoint', {
+        value: tokenEndpoint,
+        description: 'Set as the PRISM_OIDC_TOKEN_ENDPOINT repo/org variable',
+      }).overrideLogicalId('PrismAgentTokenEndpoint');
+      new cdk.CfnOutput(this, 'PrismAgentSecretId', {
+        value: this.agentSecret.secretName,
+        description: 'Set as the PRISM_AGENT_SECRET_ID repo/org variable',
+      }).overrideLogicalId('PrismAgentSecretId');
+      new cdk.CfnOutput(this, 'PrismAgentScope', {
+        value: 'prism/emit',
+        description: 'Set as the PRISM_AGENT_SCOPE repo/org variable',
+      }).overrideLogicalId('PrismAgentScope');
     }
   }
 }

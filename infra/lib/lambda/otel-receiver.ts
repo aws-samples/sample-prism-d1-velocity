@@ -33,6 +33,23 @@ const s3Client = new S3Client({});
 const AI_USAGE_TABLE = process.env.AI_USAGE_TABLE || 'prism-d1-ai-usage';
 const ARCHIVE_BUCKET = process.env.ARCHIVE_BUCKET || '';
 const IDENTITY_CLAIM = process.env.IDENTITY_CLAIM || 'username';
+
+// clientId -> identity, for machine-to-machine tokens. A Cognito
+// client-credentials access token carries no `username` and no `email`, and its
+// `sub` is the app client id -- so without a mapping the coding agent would appear
+// on every dashboard as a random opaque string.
+//
+// Deliberately deploy-time configuration rather than anything the caller sends. A
+// payload that could name its own author would let any holder of any token post as
+// anyone, which is a worse problem than an ugly label.
+const MACHINE_IDENTITIES: Record<string, string> = (() => {
+  try {
+    return JSON.parse(process.env.MACHINE_IDENTITIES || '{}');
+  } catch {
+    console.warn('MACHINE_IDENTITIES is not valid JSON; machine tokens will fall back to sub');
+    return {};
+  }
+})();
 const OIDC_ISSUER = process.env.OIDC_ISSUER || '';
 const OIDC_CLIENT_ID = process.env.OIDC_CLIENT_ID || '';
 const MAX_BATCH_SIZE = Number(process.env.MAX_BATCH_SIZE || '1000');
@@ -101,6 +118,10 @@ interface ParsedSpan {
   costUsd: number;
   project: string;
   costEstimated: boolean;
+  /** True for spans the PRISM coding agent emitted: work no human prompted. */
+  autonomous?: boolean;
+  /** The issue the agent was handed. 0 when not an agent span. */
+  issueNumber?: number;
   deviceId: string;
 }
 
@@ -118,6 +139,10 @@ interface ParsedAttributionSpan {
   deviceId: string;
   // session-specific
   commitCount?: number;
+  /** True for spans the PRISM coding agent emitted. */
+  autonomous?: boolean;
+  /** The issue handed to the agent; 0 for human spans. */
+  issueNumber?: number;
   prLinks?: string[];
   // commit-specific
   sha?: string;
@@ -184,6 +209,16 @@ function nanoToIso(nano: string | undefined): string {
 function resolveIdentity(event: HttpApiEvent): string | null {
   const claims = event.requestContext.authorizer?.jwt?.claims;
   if (!claims) return null;
+
+  // A machine token first: checked before the claim chain because its `sub` would
+  // otherwise satisfy that chain with the app client id.
+  for (const claim of ['client_id', 'sub']) {
+    const raw = claims[claim];
+    if (typeof raw === 'string' && MACHINE_IDENTITIES[raw]) {
+      return MACHINE_IDENTITIES[raw].trim().toLowerCase();
+    }
+  }
+
   for (const claim of [IDENTITY_CLAIM, 'username', 'email', 'sub']) {
     const v = claims[claim];
     if (typeof v === 'string' && v.trim()) return v.trim().toLowerCase();
@@ -243,6 +278,8 @@ export function parseOtlpSpans(payload: OtlpPayload): {
               sha: sha.slice(0, 40),
               inMain: bool(attrs.get('git.in_main')),
               wasReverted: bool(attrs.get('git.was_reverted')),
+              autonomous: bool(attrs.get('prism.autonomous')),
+              issueNumber: num(attrs.get('prism.issue_number')),
             });
           } else {
             // session attribution
@@ -267,6 +304,8 @@ export function parseOtlpSpans(payload: OtlpPayload): {
               repo,
               deviceId,
               commitCount: num(attrs.get('git.commit_count')),
+              autonomous: bool(attrs.get('prism.autonomous')),
+              issueNumber: num(attrs.get('prism.issue_number')),
               prLinks: prLinks.slice(0, 20),
             });
           }
@@ -303,6 +342,11 @@ export function parseOtlpSpans(payload: OtlpPayload): {
           project: str(attrs.get('ai.project')).slice(0, 256),
           costEstimated: bool(attrs.get('ai.cost_estimated')),
           deviceId,
+          // Emitted by the PRISM coding agent. `autonomous` separates work no human
+          // prompted from human-assisted AI use, which the PRISM levels treat as
+          // different things -- L5 is about autonomous deployments, not AI share.
+          autonomous: bool(attrs.get('prism.autonomous')),
+          issueNumber: num(attrs.get('prism.issue_number')),
         });
       }
     }
@@ -350,6 +394,7 @@ async function writeSpanIfNew(user: string, s: ParsedSpan): Promise<boolean> {
         sk: { S: `SPAN#${s.timestamp}#${s.spanId}` },
         record_type: { S: 'OTEL_SPAN' },
         trace_id: { S: s.traceId },
+        autonomous: { BOOL: s.autonomous === true },
         tool: { S: s.tool },
         model: { S: s.model },
         input_tokens: { N: String(s.inputTokens) },
@@ -362,6 +407,42 @@ async function writeSpanIfNew(user: string, s: ParsedSpan): Promise<boolean> {
         ttl: { N: String(ttl) },
       },
       // Dedup gate: deterministic span IDs make retried batches no-ops.
+      ConditionExpression: 'attribute_not_exists(pk)',
+    }));
+    return true;
+  } catch (e) {
+    if (e instanceof ConditionalCheckFailedException) return false;
+    throw e;
+  }
+}
+
+/**
+ * Record that this identity worked on one issue.
+ *
+ * One item per (user, repo, issue) rather than a counter, because "issues worked
+ * on" is a count of DISTINCT issues and an agent emits a usage span per invocation
+ * -- a re-run of the same issue would otherwise inflate the number. The dedup is
+ * the condition expression, exactly as it is for spans.
+ *
+ * A separate item rather than a field on the span so counting is a Query on an sk
+ * prefix instead of a scan-and-deduplicate over every span in the window.
+ */
+async function recordIssue(user: string, repo: string, issueNumber: number,
+                           timestamp: string, autonomous: boolean): Promise<boolean> {
+  if (!issueNumber || !repo) return false;
+  try {
+    await dynamoClient.send(new PutItemCommand({
+      TableName: AI_USAGE_TABLE,
+      Item: {
+        pk: { S: `USER#${user}` },
+        sk: { S: `ISSUE#${repo}#${issueNumber}` },
+        record_type: { S: 'OTEL_ISSUE' },
+        repo: { S: repo },
+        issue_number: { N: String(issueNumber) },
+        autonomous: { BOOL: autonomous },
+        first_seen: { S: timestamp },
+        ttl: { N: String(Math.floor(Date.now() / 1000) + COMMIT_TTL_DAYS * 86400) },
+      },
       ConditionExpression: 'attribute_not_exists(pk)',
     }));
     return true;
@@ -421,6 +502,7 @@ async function writeSessionAttribution(user: string, s: ParsedAttributionSpan): 
       timestamp: { S: s.timestamp },
       end_time: { S: s.endTimestamp },
       commit_count: { N: String(s.commitCount ?? 0) },
+      autonomous: { BOOL: s.autonomous === true },
       ttl: { N: String(ttl) },
     };
     if (s.repo) item.repo = { S: s.repo };
@@ -487,7 +569,7 @@ async function writeCommitAttribution(
         '#proj = :proj, #usr = :usr, device_id = :did, ' +
         '#ts = :ts, updated_at = :now, #ttl = :ttl, ' +
         'ai_origin = :ao, ai_tool = :at, ai_model = :am, origin_source = :os, ' +
-        'gsi_user = :gu, gsi_user_sk = :gusk, ' +
+        'gsi_user = :gu, gsi_user_sk = :gusk, autonomous = :auto, ' +
         // Set in_main and was_reverted ONLY on new items. Existing values are
         // preserved — upgrades (false→true) happen in Write 2 below.
         'in_main = if_not_exists(in_main, :im), ' +
@@ -515,6 +597,7 @@ async function writeCommitAttribution(
         ':now': { S: new Date().toISOString() },
         ':ttl': { N: String(ttl) },
         ':ao': { S: aiOrigin },
+        ':auto': { BOOL: s.autonomous === true },
         ':at': { S: aiTool },
         ':am': { S: aiModel },
         ':os': { S: 'write-time-join' },
@@ -596,7 +679,14 @@ async function processAttributionSpans(user: string, spans: ParsedAttributionSpa
   for (let i = 0; i < spans.length; i += CONCURRENCY) {
     const chunk = spans.slice(i, i + CONCURRENCY);
     const results = await Promise.all(chunk.map(async (s) => {
-      if (s.kind === 'session') return writeSessionAttribution(user, s);
+      if (s.kind === 'session') {
+        // Fire alongside, not instead: the issue record answers "how many
+        // issues" and the session record answers "what happened in one
+        // sitting". Failing to dedup an issue must not fail the session write.
+        await recordIssue(user, s.repo ?? '', s.issueNumber ?? 0, s.timestamp,
+                          s.autonomous === true);
+        return writeSessionAttribution(user, s);
+      }
       return writeCommitAttribution(user, s, traceMap);
     }));
     written += results.filter(Boolean).length;
@@ -935,6 +1025,16 @@ type UserProductivity = {
     costPerAiCommit: number | null;
     costPerShippedCommit: number | null;
   };
+  /** Distinct issues this identity worked on -- an agent metric with no human analogue. */
+  issues: number;
+  /**
+   * True when every usage span for this identity was marked prism.autonomous.
+   * Autonomous work is not human-assisted AI use, and PRISM's levels treat them as
+   * different things: L5 is about autonomous deployments, not AI share. Kept
+   * separable so it can be reported on its own rather than quietly inflating
+   * everybody's numbers.
+   */
+  autonomous: boolean;
 };
 
 function computeRatios(u: UserProductivity): void {
@@ -955,6 +1055,8 @@ function emptyUserProductivity(user: string): UserProductivity {
     user,
     usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0, byTool: {}, byModel: {} },
     commits: { total: 0, ai: 0, human: 0, mergedAi: 0, revertedAi: 0 },
+    issues: 0,
+    autonomous: false,
     ratios: { aiSharePct: null, mergeRatePct: null, defectRatePct: null, costPerAiCommit: null, costPerShippedCommit: null },
   };
 }
@@ -1025,6 +1127,36 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
       for (const item of result.Items ?? []) {
         const email = item.pk?.S?.replace('USER#', '') ?? '';
         if (email) accumulateUsage(getUser(email), item);
+      }
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+  }
+
+  // --- Issues worked on ---
+  // Counted from ISSUE# items rather than derived from spans: an agent emits one
+  // usage span per invocation, so a re-run of the same issue would inflate a
+  // span-derived count. The sk is ISSUE#<repo>#<number> and the write is
+  // conditional, so these are distinct by construction and counting them is enough.
+  //
+  // Not date-filtered on purpose. `first_seen` records when an issue was first
+  // touched, and an issue worked across a window boundary should still count once;
+  // filtering by it would drop long-running work from the later window.
+  {
+    let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
+    do {
+      const result = await dynamoClient.send(new ScanCommand({
+        TableName: AI_USAGE_TABLE,
+        FilterExpression: 'record_type = :rt',
+        ExpressionAttributeValues: { ':rt': { S: 'OTEL_ISSUE' } },
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }));
+      for (const item of result.Items ?? []) {
+        const email = item.pk?.S?.replace('USER#', '') ?? '';
+        if (!email) continue;
+        if (userParam !== 'all' && email !== userParam) continue;
+        const u = getUser(email);
+        u.issues += 1;
+        if (item.autonomous?.BOOL === true) u.autonomous = true;
       }
       lastKey = result.LastEvaluatedKey;
     } while (lastKey);
@@ -1146,12 +1278,55 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
   computeRatios(totals);
   totals.usage.costUsd = Math.round(totals.usage.costUsd * 100) / 100;
 
+  // Agents are separated from `totals`, and this is a deliberate change of meaning.
+  //
+  // `totals` sums every key in the map, so once the coding agent started reporting,
+  // its spend and its commits would have flowed into the fleet AI-share and
+  // cost-per-shipped-commit figures that the Developer Productivity and Executive
+  // dashboards render -- at roughly $1.75 an issue, not a rounding error beside
+  // human usage. Two things would have gone wrong at once: the human numbers would
+  // read as worse (or better) than they are, and the autonomous signal would be
+  // spent rather than captured, since PRISM's L5 gate is about autonomous
+  // deployments and not about AI share.
+  //
+  // So `totals` is now humans, `agentTotals` is agents, and `agents` lists them.
+  // Safe to change today because no agent data exists yet; a dashboard reading
+  // `totals` keeps meaning what its author intended.
+  const everyone = [...users.values()].filter(u => u.user !== '__unattributed__');
+  const humans = everyone.filter(u => !u.autonomous);
+  const agents = everyone.filter(u => u.autonomous);
+
+  const humanTotals = emptyUserProductivity('__totals__');
+  const agentTotals = emptyUserProductivity('__agents__');
+  for (const [group, into] of [[humans, humanTotals], [agents, agentTotals]] as const) {
+    for (const u of group) {
+      into.usage.inputTokens += u.usage.inputTokens;
+      into.usage.outputTokens += u.usage.outputTokens;
+      into.usage.costUsd += u.usage.costUsd;
+      into.usage.calls += u.usage.calls;
+      into.commits.total += u.commits.total;
+      into.commits.ai += u.commits.ai;
+      into.commits.human += u.commits.human;
+      into.commits.mergedAi += u.commits.mergedAi;
+      into.commits.revertedAi += u.commits.revertedAi;
+      into.issues += u.issues;
+    }
+    computeRatios(into);
+    into.usage.costUsd = Math.round(into.usage.costUsd * 100) / 100;
+  }
+  agentTotals.autonomous = true;
+
   return jsonResponse(200, {
     range: { from, to },
     scope: userParam === 'all' ? 'org' : 'user',
     generatedAt: new Date().toISOString(),
-    users: [...users.values()].filter(u => u.user !== '__unattributed__').sort((a, b) => b.usage.costUsd - a.usage.costUsd),
-    totals,
+    users: humans.sort((a, b) => b.usage.costUsd - a.usage.costUsd),
+    totals: humanTotals,
+    agents: agents.sort((a, b) => b.usage.costUsd - a.usage.costUsd),
+    agentTotals,
+    // The pre-split figure, so a caller that genuinely wants everything does not
+    // have to add two objects and get the ratios wrong doing it.
+    fleetTotals: totals,
   });
 }
 

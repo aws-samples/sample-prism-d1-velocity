@@ -760,7 +760,25 @@ export class DashboardStack extends cdk.Stack {
         }),
       );
 
-      // --- Row 3: Team comparison table (custom widget, view=table) ---
+      // --- Row 3: The coding agent's own work ---
+      // Its own row rather than a column in the team table: autonomous work is not
+      // human-assisted AI use, and the receiver keeps it out of `totals` for the
+      // same reason. Placed above the human table because an agent that ships more
+      // than a developer should not be discovered by scrolling.
+      devDashboard.addWidgets(
+        new cloudwatch.CustomWidget({
+          functionArn: props.productivityWidgetArn,
+          title: 'PRISM Coding Agent — issues, commits and spend',
+          width: 24,
+          height: 7,
+          params: { view: 'coding-agent' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
+        }),
+      );
+
+      // --- Row 4: Team comparison table (custom widget, view=table) ---
       devDashboard.addWidgets(
         new cloudwatch.CustomWidget({
           functionArn: props.productivityWidgetArn,
