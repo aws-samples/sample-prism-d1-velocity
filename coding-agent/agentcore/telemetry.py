@@ -293,8 +293,13 @@ class CollectorConfig:
     def from_env(cls) -> "CollectorConfig | None":
         """Build from the environment, or None when telemetry is not configured.
 
-        Absence is not an error. A repo that has not set up the collector should
-        still get its issues fixed; it just does not get cost attribution.
+        The workflow reads SSM params into GITHUB_ENV before this runs, so the
+        env vars are populated without GitHub org/repo variables. When run
+        locally without the workflow, set them manually or pass CollectorConfig
+        directly.
+
+        Absence is not an error. A repo that has not deployed the collector
+        still gets its issues fixed; it just does not get cost attribution.
         """
         url = os.environ.get("PRISM_COLLECTOR_URL", "").strip()
         if not url:

@@ -28,6 +28,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as path from 'path';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
@@ -462,13 +463,38 @@ export class OtelCollectorConstruct extends Construct {
       poolOutput.overrideLogicalId('OtelUserPoolId');
     }
     if (this.agentSecret) {
+      // SSM parameters: the workflow reads these at run time instead of requiring
+      // GitHub org variables. One source of truth, written by CDK at deploy time,
+      // cannot drift from what's actually deployed.
+      const ssmPrefix = '/prism/d1';
+      new ssm.StringParameter(this, 'ParamCollectorUrl', {
+        parameterName: `${ssmPrefix}/collector-url`,
+        stringValue: this.httpApi.apiEndpoint,
+        description: 'OTEL collector URL — read by the coding agent workflow',
+        tier: ssm.ParameterTier.STANDARD,
+      });
+      new ssm.StringParameter(this, 'ParamTokenEndpoint', {
+        parameterName: `${ssmPrefix}/token-endpoint`,
+        stringValue: tokenEndpoint,
+        description: 'Cognito token endpoint — read by the coding agent workflow',
+        tier: ssm.ParameterTier.STANDARD,
+      });
+      new ssm.StringParameter(this, 'ParamAgentSecretId', {
+        parameterName: `${ssmPrefix}/agent-secret-id`,
+        stringValue: this.agentSecret.secretName,
+        description: 'Secrets Manager id for the M2M client credentials',
+        tier: ssm.ParameterTier.STANDARD,
+      });
+
+      // Outputs kept for discoverability — printed by `cdk deploy`, but no longer
+      // need to be manually copied into GitHub.
       new cdk.CfnOutput(this, 'PrismAgentTokenEndpoint', {
         value: tokenEndpoint,
-        description: 'Set as the PRISM_OIDC_TOKEN_ENDPOINT repo/org variable',
+        description: 'Also available as SSM /prism/d1/token-endpoint',
       }).overrideLogicalId('PrismAgentTokenEndpoint');
       new cdk.CfnOutput(this, 'PrismAgentSecretId', {
         value: this.agentSecret.secretName,
-        description: 'Set as the PRISM_AGENT_SECRET_ID repo/org variable',
+        description: 'Also available as SSM /prism/d1/agent-secret-id',
       }).overrideLogicalId('PrismAgentSecretId');
     }
   }

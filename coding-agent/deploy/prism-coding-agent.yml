@@ -213,14 +213,31 @@ jobs:
           role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
           aws-region: ${{ env.PRISM_AWS_REGION }}
 
+      - name: Load telemetry config from SSM
+        # One source of truth: CDK writes these at deploy time, so they cannot
+        # drift from what's actually deployed. Falls back gracefully — a missing
+        # parameter means telemetry is unconfigured, not that the run fails.
+        run: |
+          set -euo pipefail
+          read_param() {
+            aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""
+          }
+          PRISM_COLLECTOR_URL=$(read_param /prism/d1/collector-url)
+          PRISM_OIDC_TOKEN_ENDPOINT=$(read_param /prism/d1/token-endpoint)
+          PRISM_AGENT_SECRET_ID=$(read_param /prism/d1/agent-secret-id)
+          echo "PRISM_COLLECTOR_URL=${PRISM_COLLECTOR_URL}" >> "$GITHUB_ENV"
+          echo "PRISM_OIDC_TOKEN_ENDPOINT=${PRISM_OIDC_TOKEN_ENDPOINT}" >> "$GITHUB_ENV"
+          echo "PRISM_AGENT_SECRET_ID=${PRISM_AGENT_SECRET_ID}" >> "$GITHUB_ENV"
+          if [[ -n "${PRISM_COLLECTOR_URL}" ]]; then
+            echo "Telemetry: ${PRISM_COLLECTOR_URL} (secret: ${PRISM_AGENT_SECRET_ID})"
+          else
+            echo "Telemetry: not configured (SSM params empty or missing)"
+          fi
+
       - name: Invoke the harness
         id: invoke
         env:
           PRISM_HARNESS_ARN: ${{ env.PRISM_HARNESS_ARN }}
-          # Unset means telemetry is skipped, not that the run fails.
-          PRISM_COLLECTOR_URL: ${{ vars.PRISM_COLLECTOR_URL }}
-          PRISM_OIDC_TOKEN_ENDPOINT: ${{ vars.PRISM_OIDC_TOKEN_ENDPOINT }}
-          PRISM_AGENT_SECRET_ID: ${{ vars.PRISM_AGENT_SECRET_ID }}
         run: |
           # GitHub runs `run:` blocks under `bash -e`, so a non-zero exit would
           # end the step and skip straight past reporting. `set +e` keeps the exit
@@ -295,9 +312,6 @@ jobs:
         if: steps.apply.outputs.applied == 'true'
         continue-on-error: true
         env:
-          PRISM_COLLECTOR_URL: ${{ vars.PRISM_COLLECTOR_URL }}
-          PRISM_OIDC_TOKEN_ENDPOINT: ${{ vars.PRISM_OIDC_TOKEN_ENDPOINT }}
-          PRISM_AGENT_SECRET_ID: ${{ vars.PRISM_AGENT_SECRET_ID }}
         run: |
           set -euo pipefail
           python -m agentcore.emit_commit \

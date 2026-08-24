@@ -253,6 +253,14 @@ export default {
           Action: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
           Resource: `arn:aws:secretsmanager:${region}:${accountId}:secret:prism-d1-*`,
         },
+        {
+          // Telemetry config (collector URL, token endpoint, secret id) is stored
+          // in SSM by the CDK stack rather than requiring manual GitHub org
+          // variables. One source of truth, cannot drift from what's deployed.
+          Effect: 'Allow',
+          Action: 'ssm:GetParameter',
+          Resource: `arn:aws:ssm:${region}:${accountId}:parameter/prism/d1/*`,
+        },
       ],
     });
 

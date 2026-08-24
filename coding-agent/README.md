@@ -723,15 +723,21 @@ make every secret in the account readable from CI.
 
 ### Configuration
 
-All four are variables, not secrets — none is a credential:
+The workflow reads telemetry config from **SSM Parameter Store** rather than GitHub
+variables — CDK writes the parameters at deploy time so they cannot drift:
 
-| Variable | Purpose |
+| SSM path | What |
 |---|---|
-| `PRISM_COLLECTOR_URL` | the collector base. **Unset disables telemetry entirely** |
-| `PRISM_OIDC_TOKEN_ENDPOINT` | Cognito `/oauth2/token` |
-| `PRISM_AGENT_SECRET_ID` | Secrets Manager id holding `{client_id, client_secret}` |
+| `/prism/d1/collector-url` | the collector base URL |
+| `/prism/d1/token-endpoint` | Cognito `/oauth2/token` |
+| `/prism/d1/agent-secret-id` | Secrets Manager id holding `{client_id, client_secret}` |
 
-Absence is not an error. A repository that has not set up the collector still gets
+No GitHub org variables needed. The OIDC role already grants `ssm:GetParameter` on
+`/prism/d1/*`, and `cdk deploy` populates the parameters. If the parameters are
+empty or missing, telemetry is simply skipped — the run still produces a patch and
+opens a PR.
+
+Absence is not an error. A repository that has not deployed the collector still gets
 its issues fixed; it just does not get cost attribution. And emission never fails a
 run — the patch is the product, the measurement is the reporting layer, so a
 collector outage prints to stderr and the workflow continues.
