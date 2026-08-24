@@ -35,6 +35,9 @@ CLONE_TIMEOUT = 600
 TOOLCHAIN_TIMEOUT = 900
 DEPS_TIMEOUT = 1200
 COLLECT_TIMEOUT = 120
+# A suite that has not finished in ten minutes is not going to settle the question
+# of whether a six-line fix works.
+VERIFY_TIMEOUT = 600
 
 # A ref reaches a shell command. Validated as an allowlist rather than escaped,
 # because git refs have a narrow legal alphabet anyway and an allowlist cannot be
@@ -272,6 +275,27 @@ class CollectedPatch:
     def empty(self) -> bool:
         return not self.patch.strip()
 
+    @property
+    def added_files(self) -> list[str]:
+        """Paths the patch creates rather than edits.
+
+        Surfaced because a prompt rule against leaving scratch files behind is
+        advisory, and one run's patch carried `sample-app/test_fix.js` -- a 51-line
+        throwaway the agent used to check its own work. Naming added files is a
+        deterministic signal a reviewer can act on; guessing at scratch filenames
+        would mean excluding `test_*` patterns that are a legitimate convention in
+        other languages.
+        """
+        added: list[str] = []
+        lines = self.patch.splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("new file mode"):
+                for previous in reversed(lines[:i]):
+                    if previous.startswith("diff --git a/"):
+                        added.append(previous.split(" b/", 1)[-1])
+                        break
+        return added
+
 
 def collect_patch_command(request: FixRequest) -> tuple[str, str, int]:
     """The command that extracts the agent's work as a patch.
@@ -371,6 +395,50 @@ def parse_collected_patch(step: StepResult) -> CollectedPatch:
     return CollectedPatch(
         patch=patch, declared_bytes=declared, received_bytes=received, step=step
     )
+
+
+def verify_command(request: FixRequest) -> tuple[str, str, int] | None:
+    """Run the project's own test command against the agent's work.
+
+    This is the independent check the ADR argued for and never got: `verified` was
+    computed by looking for the words "tests pass" in the model's prose, and only on
+    the branch where the model pasted a diff into its reply. Since the patch is taken
+    from git instead, that branch stopped firing -- so `verified` was structurally
+    False on every real run, including one whose reply said "All existing tests pass
+    (50 tests)".
+
+    Deterministic and free: InvokeAgentRuntimeCommand costs no model tokens, and an
+    exit code is a fact rather than a claim.
+
+    Returns None when the project declares no test command, in which case `verified`
+    stays False and means "not checked" rather than "checked and failed".
+
+    Run *after* the patch is collected, deliberately. A test run can emit coverage or
+    build output, and collecting afterwards would fold those artifacts into the patch
+    -- the failure mode that produced a 1.1 MB diff of `dist/index.js`.
+    """
+    command = request.verification.test_command.strip()
+    if not command:
+        return None
+    work = shlex.quote(workdir_for(request))
+    # Quoted as a single argument rather than interpolated. The command comes from
+    # the repository's own config, which is more trusted than an issue body but is
+    # still not something to splice into a shell unquoted.
+    return (
+        "verify",
+        f"cd {work} && mise exec -- sh -c {shlex.quote(command)}",
+        VERIFY_TIMEOUT,
+    )
+
+
+def verify_patch(client, harness_arn: str, session_id: str,
+                 request: FixRequest) -> StepResult | None:
+    """Execute the verification step, or None if the project declares none."""
+    step = verify_command(request)
+    if step is None:
+        return None
+    name, command, timeout = step
+    return run_command(client, harness_arn, session_id, name, command, timeout)
 
 
 def run_command(client, harness_arn: str, session_id: str, name: str,

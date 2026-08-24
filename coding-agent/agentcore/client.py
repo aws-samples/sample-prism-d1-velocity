@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Protocol
 
-from .session import collect_patch, prepare_environment
+from .session import collect_patch, prepare_environment, verify_patch
 from .contract import (
     INVOKE_TIMEOUT_SECONDS,
     MAX_ITERATIONS,
@@ -91,6 +91,13 @@ def resolve_harness_arn(project_type: str = "", env: dict[str, str] | None = Non
         f"every toolchain: it installs what a repository declares in "
         f".tool-versions at session start."
     )
+
+
+
+def _tail(text: str, lines: int = 8) -> str:
+    """The end of a failing suite's output -- where the assertion lands."""
+    kept = (text or "").strip().splitlines()[-lines:]
+    return " / ".join(line.strip() for line in kept if line.strip())
 
 
 class BotoTransport:
@@ -253,14 +260,32 @@ class BotoTransport:
                 reason=f"could not collect the patch: {collected.reason}",
                 summary=reply.summary, usage=reply.usage,
                 stop_reason=reply.stop_reason,
+                full_text=reply.full_text,
             ).validate()
 
         if not collected.empty:
+            # Verified by running the suite, not by finding "tests pass" in the
+            # reply. Collected first so a coverage or build artifact the test run
+            # emits cannot end up inside the patch.
+            checked = verify_patch(self.client, self.arn, session_id, request)
+            if checked is None:
+                verified, note = False, "no test command declared, so not checked"
+            elif checked.ok:
+                verified, note = True, ""
+            else:
+                verified, note = False, (
+                    f"the patch was collected but the suite failed "
+                    f"(exit {checked.exit_code}): "
+                    f"{_tail(checked.stdout + checked.stderr)}"
+                )
+
             return FixResponse(
                 outcome=Outcome.PATCHED, patch=collected.patch,
                 summary=reply.summary or "(no summary returned)",
-                verified=reply.verified, usage=reply.usage,
+                verified=verified, reason=note, usage=reply.usage,
                 stop_reason=reply.stop_reason,
+                full_text=reply.full_text,
+                added_files=collected.added_files,
             ).validate()
 
         if reply.outcome is Outcome.PATCHED:
@@ -271,6 +296,7 @@ class BotoTransport:
                        "so nothing was actually applied",
                 summary=reply.summary, usage=reply.usage,
                 stop_reason=reply.stop_reason,
+                full_text=reply.full_text,
             ).validate()
 
         return reply

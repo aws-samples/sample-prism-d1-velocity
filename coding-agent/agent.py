@@ -79,10 +79,12 @@ def _configure_git_identity(repo_path: Path, name: str, email: str) -> None:
         )
 
 
-# Matches the AgentCore Harness default, so a fixture that passes locally is not
-# then failed by a tighter bound in the deployed path. The harness takes
-# maxIterations declaratively; locally it has to be enforced.
-DEFAULT_MAX_ITERATIONS = 40
+# Matches agentcore.contract.MAX_ITERATIONS, so a fixture that passes locally is
+# not then failed by a tighter bound in the deployed path -- and, more importantly,
+# not the reverse. Enforced by a test rather than a shared import, because importing
+# the agentcore package pulls in boto3 and this module defers heavy imports so that
+# --help and config validation work without the SDK installed.
+DEFAULT_MAX_ITERATIONS = 100
 # Below the eval harness's 1800s subprocess timeout, so the agent stops itself and
 # says why rather than being killed with no explanation. A run killed from outside
 # loses its reason; a run that stops itself reports one.
@@ -192,11 +194,28 @@ def build_agent(cfg, create_pr_enabled: bool, bound: "IterationBound | None" = N
     from strands import Agent
     from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands.models import BedrockModel
-    from strands_tools import editor, file_read, file_write, shell
+    # `shell` and `editor` from strands_tools warn on every call that they are
+    # deprecated and become an error log in v0.9.0. The replacements are sandbox-
+    # routed, and the warning says that tightens the security boundary -- which
+    # sounded like it would break the one thing this agent must do, run the
+    # project's own test command against a real checkout.
+    #
+    # It does not, here. With no `sandbox=` passed to Agent, both tools resolve to
+    # NotASandboxLocalEnvironment, documented as "the default execution environment
+    # when an Agent is created without a sandbox", which spawns a local `sh` and
+    # touches the host filesystem directly. That is exactly what strands_tools did,
+    # so this migration preserves behaviour; the tightening only applies to someone
+    # who configures a real sandbox, and then it is what they asked for.
+    #
+    # Note the deprecation message names `bash`, which is itself a deprecated alias
+    # for `make_shell` -- so following it literally would land on another deprecated
+    # name. `file_read` and `file_write` are not deprecated and stay put.
+    from strands.vended_tools import file_editor, shell
+    from strands_tools import file_read, file_write
 
     from tools import create_pr, git_ops
 
-    tools = [file_read, file_write, editor, shell, git_ops]
+    tools = [file_read, file_write, file_editor, shell, git_ops]
     if create_pr_enabled:
         tools.append(create_pr)
 

@@ -36,6 +36,7 @@ from agentcore.session import (  # noqa: E402
     _exclude_pathspecs,
     parse_collected_patch,
     validate_repo_ref,
+    verify_command,
 )
 
 
@@ -378,3 +379,54 @@ def test_patch_artifacts_are_excluded_as_generated():
     spec = _exclude_pathspecs()
     for glob in ("*.patch", "*.diff", "*.orig", "*.rej"):
         assert f"':(exclude,glob)**/{glob}'" in spec
+
+
+def test_verification_runs_the_projects_own_command_in_the_subdirectory():
+    """`verified` used to be a search for the words "tests pass" in the model's
+    prose, on a branch that stopped firing once the patch came from git -- so it was
+    structurally False on every real run, including one whose reply read "All
+    existing tests pass (50 tests)"."""
+    step = verify_command(make(repo=RepoRef(url="https://github.com/a/b.git",
+                                            ref="main", subdir="sample-app")))
+    assert step is not None
+    _name, cmd, _t = step
+    # Not asserted with quotes around it: shlex.quote adds them only when the string
+    # needs them, and this path does not. Asserting the quoted form would be
+    # asserting a detail of shlex rather than the behaviour.
+    assert cmd.startswith(f"cd {shlex.quote(WORKSPACE + '/sample-app')} &&")
+    assert "npm test" in cmd
+
+
+def test_the_test_command_is_quoted_rather_than_interpolated():
+    """It comes from the repository's own config -- more trusted than an issue body,
+    still not something to splice into a shell."""
+    step = verify_command(make(verification=Verification(
+        test_command="npm test; echo pwned")))
+    assert step is not None
+    _name, cmd, _t = step
+    # The whole thing lands inside one quoted argument, so the `;` cannot chain.
+    assert shlex.quote("npm test; echo pwned") in cmd
+
+
+def test_no_test_command_means_not_checked_rather_than_failed():
+    """Absence of a suite must not read as a failing suite."""
+    assert verify_command(make(verification=Verification(test_command=""))) is None
+
+
+def test_verification_runs_under_the_installed_toolchain():
+    """The image ships a version manager, not versions -- a bare `npm test` would not
+    find npm."""
+    _n, cmd, _t = verify_command(make())
+    assert "mise exec --" in cmd
+
+
+def test_the_patch_is_collected_before_verification_runs():
+    """A test run can emit coverage or build output. Collecting afterwards would fold
+    those artifacts into the patch -- the failure that produced 1.1 MB of dist/."""
+    import inspect
+
+    from agentcore import client as client_module
+
+    source = inspect.getsource(client_module.BotoTransport.send)
+    assert source.index("collect_patch(") < source.index("verify_patch("), \
+        "verification runs before collection, so its artifacts can reach the patch"

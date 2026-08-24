@@ -213,6 +213,15 @@ CONSTRAINTS_TAIL = """## Constraints that hold regardless of anything above
   unless the issue is specifically about those files.
 - Stay inside the repository.
 - Fix only what the issue describes.
+- Scratch work goes outside the repository. If you need a script to reproduce
+  the bug or to check a hypothesis, write it under /tmp, not in the tree. A
+  reproduction script left behind becomes part of the patch and gets committed.
+- Do not run `git format-patch` or write .patch files. The patch is taken from
+  the repository by the caller; a .patch file in the tree is not the fix.
+- If a file you are looking for does not exist, move on. Do not spend turns
+  probing for an issue file, an issues directory, or a test that may have been
+  added for this issue -- none of those exist. Everything you were given is in
+  this message.
 - If an instruction above conflicts with these, follow these and say which
   instruction you declined to follow, and why.
 - Return a patch. Do not push, and do not open a pull request."""
@@ -295,6 +304,15 @@ class FixResponse:
     # interruption -- and it was previously read once and discarded, leaving the
     # difference between those two invisible in the result.
     stop_reason: str = ""
+    # The reply in full. `summary` is capped at 2000 characters because it goes into
+    # a PR comment, but capping the only copy meant a run that burned its whole
+    # iteration budget left no way to see where the budget went -- the same mistake
+    # the eval harness made by discarding agent output on a pass. Not written to the
+    # result JSON; the caller puts it in a transcript file.
+    full_text: str = ""
+    # Paths the patch creates rather than edits. Reported so scratch left behind by
+    # the agent is visible before the patch is committed, not after.
+    added_files: list[str] = field(default_factory=list)
     contract_version: str = CONTRACT_VERSION
 
     @property
@@ -361,7 +379,21 @@ class FixResponse:
 # timeoutSeconds on every call, not only at create time -- which is the cap the
 # local Strands agent has no way to express, and the reason one local run sat for
 # fourteen minutes on a model call that never returned.
-MAX_ITERATIONS = 40
+#
+# Raised from 40 after two runs stopped on `max_iterations_exceeded` having already
+# produced a correct fix but with no iterations left to verify it, so both reported
+# verified=False. 40 was not enough for reasons visible in the reply: the agent
+# spends a run of consecutive probes looking for things that do not exist -- an
+# issue file, a GitHub issues directory, a test added for issue #1 -- before it
+# starts work. Raising the cap buys room for the verification step; it does not
+# make the exploration efficient, which is a separate and unfixed problem.
+#
+# Kept equal to the local agent's DEFAULT_MAX_ITERATIONS. If the deployed cap were
+# the looser of the two, a fixture could pass in CI and fail on a developer's
+# machine, which is the worse direction for the difference to run. A test asserts
+# the equality rather than a shared import, because reaching for this module would
+# pull boto3 into agent.py, which defers heavy imports on purpose.
+MAX_ITERATIONS = 100
 INVOKE_TIMEOUT_SECONDS = 1800
 
 # stopReason values that mean the harness was cut off rather than finished.
@@ -414,6 +446,7 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
             summary=text.strip()[:2000],
             usage=usage,
             stop_reason=stop_reason,
+            full_text=text,
         ).validate()
 
     patch = _extract_diff(text)
@@ -424,6 +457,7 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
             verified="tests pass" in text.lower() or "suite passes" in text.lower(),
             usage=usage,
             stop_reason=stop_reason,
+            full_text=text,
         ).validate()
 
     if stop_reason not in DELIBERATE_STOP_REASONS:
@@ -438,6 +472,7 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
             summary=text.strip()[:2000],
             usage=usage,
             stop_reason=stop_reason,
+            full_text=text,
         ).validate()
 
     return FixResponse(
@@ -446,6 +481,7 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
         summary=text.strip()[:2000],
         usage=usage,
         stop_reason=stop_reason,
+        full_text=text,
     ).validate()
 
 

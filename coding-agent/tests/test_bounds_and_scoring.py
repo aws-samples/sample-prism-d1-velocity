@@ -82,8 +82,20 @@ def test_the_deadline_fires_independently_of_the_iteration_count():
 
 
 def test_the_default_matches_the_harness_so_local_and_deployed_agree():
-    """A fixture that passes locally must not then fail on a tighter deployed bound."""
-    assert IterationBound().max_iterations == DEFAULT_MAX_ITERATIONS == 40
+    """Asserted as an equality between the two constants, not against a literal.
+
+    Written against a literal first, which meant raising the harness cap failed this
+    test with `assert 100 == 40` -- correct, but it would have been just as happy if
+    someone had updated the literal and left the two bounds different. The point is
+    that they track each other: if the deployed cap were the looser one, a fixture
+    could pass in CI and fail on a developer's machine.
+
+    A test rather than a shared import, because importing agentcore pulls boto3 into
+    agent.py, which defers heavy imports so --help works without the SDK.
+    """
+    from agentcore.contract import MAX_ITERATIONS
+
+    assert IterationBound().max_iterations == DEFAULT_MAX_ITERATIONS == MAX_ITERATIONS
 
 
 def test_the_deadline_sits_below_the_eval_harness_subprocess_timeout():

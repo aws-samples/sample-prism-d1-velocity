@@ -386,17 +386,138 @@ Two consequences worth recording:
   agent's**, and the agent is never started. Blaming an agent for a failed clone
   is how a working agent gets a reputation it does not deserve.
 
+### Taking the patch from git is right, and took four attempts to get right
+
+"The patch is taken from git in the VM, not from the model's prose" is the correct
+decision and the section above is unchanged. But the *implementation* of it was
+wrong four separate ways, and every one of them reported a plausible outcome while
+being wrong. They are recorded together because they share a shape: the pipeline
+inferred a fact it could have measured, and nothing in it could tell a wrong answer
+from a right one.
+
+**1. The exclusion pathspec matched nothing.** Build output was reaching the patch,
+so generated directories were excluded with `':(exclude)dist'`. A pathspec applies
+relative to its base directory, so run at the clone root that expression never
+matched `sample-app/dist` — the guard was present, inert, and untested at the level
+where it mattered. The next run returned a 1,196,474-byte diff with the fix
+supposedly in place. `':(exclude,glob)**/dist/**'` matches at every depth and, unlike
+`':(exclude)*dist/*'`, does not also swallow a directory called `notdist`.
+
+Three tests asserted `"':(exclude)dist'" in cmd` and stayed green throughout. A test
+on the *string form* of a pathspec cannot see that the pathspec selects nothing. They
+now run `git diff --name-only` against a fixture tree holding `dist/`,
+`sample-app/dist/` and a decoy `notdist/`.
+
+**2. The patch was silently truncated in transit.** The diff travels back as command
+stdout, and that stream has a ceiling. The 1.1 MB response stopped mid-token on
+`if ("string" !=`, so the diff was structurally invalid — and a truncated diff is
+still a non-empty string, so it was accepted as a patch. The collected diff is now
+framed: a declared byte count before it, a sentinel after it. A short or unframed
+transfer is a reported failure. A diff over 1 MB is refused on its declared size,
+before streaming, so the reason is legible rather than a mid-line cut.
+
+**3. `git diff HEAD` measures only uncommitted work.** The agent is instructed to
+commit, and once it does, its change is in `HEAD` and absent from that diff. One run
+produced a correct six-line fix, committed it, ran `git format-patch`, and returned a
+patch whose entire content was the `.patch` file it had just written — a file
+describing the change instead of the change. The clone step now records the commit it
+started from and collection diffs against that, covering committed and uncommitted
+work alike. `*.patch`, `*.diff`, `*.orig` and `*.rej` are excluded as artifacts.
+
+**4. Cost was understated 26x, and the stop reason was discarded.** A harness streams
+one message per iteration, each with its own `metadata`; usage was assigned rather
+than accumulated, so a run reported the cost of its final model call as the cost of
+the run — 21,970 input tokens against an actual 550,188. `stopReason` was read once
+into a local and dropped, which mattered more: `end_turn` with no patch is a refusal,
+`tool_use` with no patch is an interruption, and the recorded result could not
+distinguish them. A run that ended mid-sentence on "Now I need to update the",
+immediately before its first edit, was recorded as a deliberate refusal. `declined`
+now requires a stop reason that says the agent chose to stop.
+
+### `verified` was structurally false, and is now measured
+
+`verified` was computed by searching the model's prose for the words "tests pass",
+and only on the branch where the model pasted a diff into its reply. Once the patch
+came from git instead, that branch stopped firing — so the field was `False` on every
+real run, including one whose reply read "✅ All existing tests pass (50 tests)".
+
+The independent check this document argued for was never implemented. It is now: the
+project's own test command runs in the microVM through
+`InvokeAgentRuntimeCommand` after the patch is collected, and `verified` is that
+exit code. No model tokens, and an exit status is a fact rather than a claim. When a
+project declares no test command the step is skipped and `verified` stays `False`
+meaning *not checked*, which is reported distinctly from checked-and-failed.
+
+Collection runs **before** verification, deliberately. A test run can emit coverage
+or build output, and collecting afterwards would fold those artifacts into the
+patch — which is how defect 1 above presented in the first place.
+
+### The iteration cap moved from 40 to 100
+
+Two runs stopped on `max_iterations_exceeded` having already produced a correct fix
+with no iterations left to verify it. The reply shows where the budget went: before
+starting work the agent spends a run of consecutive probes looking for things that do
+not exist — an issue file, a GitHub issues directory, a test that might have been
+added for this issue. The constraints tail now says none of those exist and to stop
+looking, and the cap has room for the verification step. Raising a cap does not make
+exploration efficient, which remains unfixed.
+
+The local agent's bound was raised to match. If the deployed cap were the looser of
+the two, a fixture could pass in CI and fail on a developer's machine, which is the
+worse direction for the difference to run. A test asserts the two constants are
+equal, rather than a shared import, because reaching into `agentcore` would pull
+boto3 into a module that defers heavy imports so `--help` works without the SDK.
+
+### Scratch files, and why the fix is a prompt rule
+
+One patch carried `sample-app/test_fix.js`, a 51-line throwaway the agent wrote to
+check its own work. The tempting fix — excluding `test_*` — is wrong: that is a
+legitimate naming convention in several languages, and excluding it would silently
+drop real tests. So the rule is stated in the constraints tail (scratch work goes
+under `/tmp`, outside the tree) and the deterministic half is *visibility* rather
+than filtering: the response now names the files a patch creates rather than edits,
+so anything left behind is seen before it is committed rather than after.
+
+### The deprecated `shell` and `editor` tools
+
+`strands_tools.shell` and `strands_tools.editor` warn on every call and become an
+error log in v0.9.0. The warning says the replacements route through the agent's
+sandbox instead of the host, "a change in the tightening direction" — which read like
+it would break the one thing this agent must do: run the project's real test command
+against a real checkout.
+
+It does not. With no `sandbox=` passed to `Agent`, the vended tools resolve to
+`NotASandboxLocalEnvironment`, documented as the default when an agent is created
+without a sandbox, which spawns a local `sh` and uses the host filesystem directly —
+what `strands_tools` already did. The migration preserves behaviour; the tightening
+applies only to someone who configures a real sandbox, and then it is what they
+asked for. Worth noting the deprecation message names `bash`, which is itself a
+deprecated alias for `make_shell`, so following it literally lands on another
+deprecated name. `file_read` and `file_write` are not deprecated and were left alone.
+
 ## Still not verified
 
 The harness has been invoked and runs the image — a smoke call reported
 `aarch64`, `mise 2026.8.11` and `git 2.47.3` from inside a real session, which also
-settles the `ENTRYPOINT`/`CMD` override question in passing. What remains untested:
+settles the `ENTRYPOINT`/`CMD` override question in passing.
 
-- Whether the prepared harness produces a patch the eval scores the way the local
-  agent's commit was scored. The preparation step is written and unit-tested
-  against its command list, but a full prepare → fix → collect cycle has not yet
-  come back green.
+The full `prepare → fix → collect` cycle now works. It returned a 6,689-byte patch
+touching `src/routes/tasks.ts` and `src/mcp/tools.ts` — the agent found the same
+defect in the MCP tools, which the issue never mentioned — and that patch applies
+clean to a fresh clone with 57 tests passing, up from 50 because it added seven. A
+later run returned a focused 1,421-byte single-file patch and finished on `end_turn`
+rather than exhausting its iterations.
+
+What remains untested:
+
 - Cold-start time for a 591 MB image, and real `mise install` timing inside a
   session rather than in a local container.
 - The thin workflow end to end. It calls `agentcore.invoke`, which is now a
-  three-call sequence, but no CI run has exercised it.
+  four-call sequence — clone, toolchain, dependencies, then the agent, then collect
+  and verify — but no CI run has exercised it.
+- Whether the exploration thrash costs the same on a repository the agent has not
+  seen before. Every run so far has been against `sample-app`.
+- Cost. A single issue consumed roughly 550,000 input tokens. That figure was only
+  visible after the usage accumulation bug was fixed, and nothing has yet been done
+  about the number itself, which matters for the cost-per-shipped-commit metric this
+  project exists to report.

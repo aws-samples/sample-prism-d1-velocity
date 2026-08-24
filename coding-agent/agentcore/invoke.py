@@ -106,6 +106,9 @@ def main() -> int:
     parser.add_argument("--github-event", required=True, help="GitHub event payload JSON")
     parser.add_argument("--patch-out", required=True, help="Where to write the returned patch")
     parser.add_argument("--result-out", required=True, help="Where to write the outcome JSON")
+    parser.add_argument("--transcript-out", default="",
+                        help="Where to write the agent's full reply "
+                             "(default: alongside --result-out as .transcript.log)")
     parser.add_argument("--repo-url", default="", help="Clone URL the harness should use")
     parser.add_argument("--ref", default="", help="Ref the harness should check out")
     parser.add_argument("--subdir", default=".", help="Project directory within the repo")
@@ -168,6 +171,7 @@ def main() -> int:
         "reason": response.reason,
         "verified": response.verified,
         "stop_reason": response.stop_reason,
+        "added_files": response.added_files,
         "usage": {
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
@@ -175,7 +179,29 @@ def main() -> int:
         },
     }, indent=2) + "\n")
 
+    # Always written, even for a clean pass. `summary` is capped at 2000 characters
+    # because it goes into a PR comment; a run that spends its whole iteration
+    # budget needs the uncapped copy to show where the budget went.
+    transcript = Path(args.transcript_out) if args.transcript_out else \
+        Path(args.result_out).with_suffix(".transcript.log")
+    transcript.write_text(
+        f"outcome     : {response.outcome.value}\n"
+        f"stop_reason : {response.stop_reason}\n"
+        f"verified    : {response.verified}\n"
+        f"tokens      : {response.usage.input_tokens} in / "
+        f"{response.usage.output_tokens} out\n"
+        f"patch bytes : {len(response.patch.encode())}\n"
+        f"added files : {response.added_files or '(none)'}\n"
+        f"reason      : {response.reason}\n"
+        f"{'─' * 70}\n{response.full_text}\n"
+    )
+
     print(f"Outcome:  {response.outcome.value}", file=sys.stderr)
+    print(f"Stopped:  {response.stop_reason or '(not reported)'}   "
+          f"verified: {response.verified}", file=sys.stderr)
+    print(f"Tokens:   {response.usage.input_tokens} in / "
+          f"{response.usage.output_tokens} out", file=sys.stderr)
+    print(f"Transcript: {transcript}", file=sys.stderr)
     # Exit 0 for any well-formed answer, including a refusal. Declining to change
     # anything can be the correct result, and a non-zero exit would make the
     # workflow treat good judgement as a failure.
