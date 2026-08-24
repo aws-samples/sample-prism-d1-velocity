@@ -142,11 +142,23 @@ def main() -> int:
     try:
         cfg = load_config(repo)
         issue = load_issue(Path(args.github_event))
+        # subdir: CLI flag > config.json > default "."
+        subdir = args.subdir if args.subdir != '.' else '.'
+        cfg_subdir = ''
+        try:
+            import json as _json
+            cfg_path = repo / '.coding-agent' / 'config.json'
+            if cfg_path.exists():
+                cfg_subdir = _json.loads(cfg_path.read_text()).get('subdir', '') or ''
+        except Exception:
+            pass
+        if subdir == '.' and cfg_subdir:
+            subdir = cfg_subdir
         request = build_fix_request(
             repo, cfg, issue,
             url=args.repo_url or _git(["remote", "get-url", "origin"], repo),
             ref=args.ref or _git(["rev-parse", "HEAD"], repo),
-            subdir=args.subdir,
+            subdir=subdir,
             team_id=args.team_id,
         )
         # Validated here, before any transport exists. Otherwise the first thing
