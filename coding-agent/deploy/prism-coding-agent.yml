@@ -325,7 +325,6 @@ jobs:
         # already produced a reviewed fix.
         if: steps.apply.outputs.applied == 'true'
         continue-on-error: true
-        env:
         run: |
           set -euo pipefail
           python -m agentcore.emit_commit \
