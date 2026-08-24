@@ -217,8 +217,11 @@ class BotoTransport:
                 stop_reason = event["messageStop"].get("stopReason", "")
             elif "metadata" in event:
                 usage = event["metadata"].get("usage") or {}
-                usage_in = int(usage.get("inputTokens") or 0)
-                usage_out = int(usage.get("outputTokens") or 0)
+                # Accumulated, not assigned. A harness streams one message per
+                # iteration and each carries its own metadata, so overwriting
+                # reported the cost of the last model call as the cost of the run.
+                usage_in += int(usage.get("inputTokens") or 0)
+                usage_out += int(usage.get("outputTokens") or 0)
             elif "validationException" in event:
                 raise ContractError(f"validation: {event['validationException'].get('message')}")
             elif "internalServerException" in event:
@@ -239,13 +242,25 @@ class BotoTransport:
         # recorded as having declined, and one that pasted a diff it never applied
         # would be recorded as having fixed something.
         collected = collect_patch(self.client, self.arn, session_id, request)
-        actual = collected.stdout if collected.ok else ""
 
-        if actual.strip():
+        if not collected.ok:
+            # The tree may well hold a correct fix; we could not retrieve it
+            # intact. Reporting that as `patched` would ship a partial diff, and
+            # reporting it as `declined` would credit the agent with a judgement it
+            # never made. It is our failure, and it says so.
             return FixResponse(
-                outcome=Outcome.PATCHED, patch=actual,
+                outcome=Outcome.FAILED,
+                reason=f"could not collect the patch: {collected.reason}",
+                summary=reply.summary, usage=reply.usage,
+                stop_reason=reply.stop_reason,
+            ).validate()
+
+        if not collected.empty:
+            return FixResponse(
+                outcome=Outcome.PATCHED, patch=collected.patch,
                 summary=reply.summary or "(no summary returned)",
                 verified=reply.verified, usage=reply.usage,
+                stop_reason=reply.stop_reason,
             ).validate()
 
         if reply.outcome is Outcome.PATCHED:
@@ -255,6 +270,7 @@ class BotoTransport:
                 reason="the reply contained a diff but the working tree is unchanged, "
                        "so nothing was actually applied",
                 summary=reply.summary, usage=reply.usage,
+                stop_reason=reply.stop_reason,
             ).validate()
 
         return reply

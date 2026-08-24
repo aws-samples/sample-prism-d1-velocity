@@ -8,6 +8,7 @@ cannot reach a shell unquoted, and that the steps say what they are meant to say
 from __future__ import annotations
 
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,7 +26,17 @@ from agentcore import (  # noqa: E402
     collect_patch_command,
     workdir_for,
 )
-from agentcore.session import WORKSPACE, validate_repo_ref  # noqa: E402
+from agentcore.session import (  # noqa: E402
+    BASE_SHA_FILE,
+    MAX_PATCH_BYTES,
+    PATCH_HEADER,
+    PATCH_SENTINEL,
+    WORKSPACE,
+    StepResult,
+    _exclude_pathspecs,
+    parse_collected_patch,
+    validate_repo_ref,
+)
 
 
 def make(**kw) -> FixRequest:
@@ -197,18 +208,173 @@ def test_generated_directories_are_excluded_from_the_collected_patch():
     The actual source change was not in it."""
     _n, cmd, _t = collect_patch_command(make())
     for d in ("node_modules", "dist", "build", "target", ".venv", "coverage"):
-        assert f"':(exclude){d}'" in cmd
+        assert f"':(exclude,glob)**/{d}/**'" in cmd
 
 
 def test_exclusions_apply_to_both_the_add_and_the_diff():
     """Excluding only on `git add -N` would still diff a tracked build artifact."""
     _n, cmd, _t = collect_patch_command(make())
     add, diff = cmd.split("git diff", 1)
-    assert "':(exclude)dist'" in add and "':(exclude)dist'" in diff
+    spec = "':(exclude,glob)**/dist/**'"
+    assert spec in add and spec in diff
 
 
 def test_exclusion_is_by_pathspec_not_by_trusting_gitignore():
     """Whether a repo ignores its build output is a property of that repo, and the
     run that failed did so because the cloned ref did not ignore dist/."""
     _n, cmd, _t = collect_patch_command(make())
-    assert ":(exclude)" in cmd
+    assert ":(exclude" in cmd
+
+
+def _fixture_repo(tmp_path: Path) -> Path:
+    """A monorepo-shaped tree: generated output both nested and at the root."""
+    repo = tmp_path / "repo"
+    for d in ("sample-app/dist", "sample-app/src", "sample-app/notdist", "dist"):
+        (repo / d).mkdir(parents=True)
+    (repo / "keep.txt").write_text("base\n")
+    run = lambda *a: subprocess.run(  # noqa: E731
+        ["git", *a], cwd=str(repo), capture_output=True, text=True, check=True)
+    run("init", "-q", ".")
+    run("config", "user.email", "a@b.c")
+    run("config", "user.name", "a")
+    run("add", "-A")
+    run("commit", "-qm", "init")
+    (repo / "sample-app/dist/index.js").write_text("bundle\n")
+    (repo / "dist/root.js").write_text("bundle\n")
+    (repo / "sample-app/notdist/x.js").write_text("authored\n")
+    (repo / "sample-app/src/tasks.ts").write_text("authored\n")
+    return repo
+
+
+def test_the_exclusion_pathspec_actually_excludes_a_nested_generated_dir(tmp_path):
+    """Run against real git, because the string-shape assertions above cannot see
+    this and did not: `:(exclude)dist` matches only `dist` relative to the
+    pathspec's base, so at the clone root it never touched `sample-app/dist`. The
+    guard was present and inert, and the next run still produced a 1,196,474-byte
+    diff.
+    """
+    repo = _fixture_repo(tmp_path)
+    spec = _exclude_pathspecs()
+    subprocess.run(f"git add -N . {spec}", cwd=str(repo), shell=True,
+                   capture_output=True)
+    out = subprocess.run(f"git diff HEAD --name-only -- . {spec}", cwd=str(repo),
+                         shell=True, capture_output=True, text=True).stdout
+    changed = set(out.split())
+
+    assert "sample-app/dist/index.js" not in changed, "nested dist/ leaked in"
+    assert "dist/root.js" not in changed, "top-level dist/ leaked in"
+    # And it must not over-match: `:(exclude)*dist/*` would take this too.
+    assert "sample-app/notdist/x.js" in changed, "a dir merely named notdist was eaten"
+    assert "sample-app/src/tasks.ts" in changed, "the authored fix was excluded"
+
+
+def test_the_collected_patch_is_framed_so_truncation_is_detectable(tmp_path):
+    """The framing has to survive a real shell, not just look right in Python."""
+    repo = _fixture_repo(tmp_path)
+    _n, cmd, _t = collect_patch_command(make())
+    cmd = cmd.replace(f"cd {WORKSPACE}", f"cd {repo}")
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    step = StepResult(name="collect", command=cmd, exit_code=0, stdout=proc.stdout)
+    collected = parse_collected_patch(step)
+
+    assert collected.ok, collected.reason
+    assert collected.declared_bytes == collected.received_bytes
+    assert "sample-app/src/tasks.ts" in collected.patch
+    assert "dist/index.js" not in collected.patch
+
+
+def test_a_truncated_patch_is_a_failure_not_a_patch():
+    """The 1.1 MB diff that reached the eval ended mid-token, on `if ("string" !=`.
+    A cut diff is still a non-empty string, so nothing noticed."""
+    diff = "diff --git a/x b/x\n-old\n+new\n"
+    step = StepResult(name="collect", command="c", exit_code=0,
+                      stdout=f"{PATCH_HEADER} {len(diff.encode())}\n{diff[:12]}")
+    collected = parse_collected_patch(step)
+    assert not collected.ok
+    assert "truncated" in collected.reason
+    assert PATCH_SENTINEL in collected.reason
+
+
+def test_a_patch_that_changed_size_in_transit_is_rejected():
+    diff = "diff --git a/x b/x\n+new\n"
+    step = StepResult(name="collect", command="c", exit_code=0,
+                      stdout=f"{PATCH_HEADER} 9999\n{diff}{PATCH_SENTINEL}\n")
+    collected = parse_collected_patch(step)
+    assert not collected.ok and "changed size" in collected.reason
+
+
+def test_an_implausibly_large_diff_is_refused_before_it_is_streamed():
+    """Refused on the declared size, so the reason is comprehensible rather than a
+    mid-line truncation someone has to diagnose from a megabyte of bundle."""
+    step = StepResult(name="collect", command="c", exit_code=0,
+                      stdout=f"{PATCH_HEADER} {MAX_PATCH_BYTES + 1}\n")
+    collected = parse_collected_patch(step)
+    assert not collected.ok
+    assert "over the" in collected.reason and not collected.patch
+
+
+def test_an_empty_diff_is_intact_and_empty_not_a_failure():
+    """An agent that deliberately changed nothing must reach the declined path, not
+    be reported as a collection failure."""
+    step = StepResult(name="collect", command="c", exit_code=0,
+                      stdout=f"{PATCH_HEADER} 0\n{PATCH_SENTINEL}\n")
+    collected = parse_collected_patch(step)
+    assert collected.ok and collected.empty
+
+
+def test_unframed_output_is_rejected_rather_than_treated_as_a_diff():
+    step = StepResult(name="collect", command="c", exit_code=0,
+                      stdout="fatal: not a git repository\n")
+    collected = parse_collected_patch(step)
+    assert not collected.ok and PATCH_HEADER in collected.reason
+
+
+def test_committed_work_is_collected_not_just_uncommitted(tmp_path):
+    """The agent is told to commit. `git diff HEAD` measures only uncommitted work,
+    so once it commits the fix disappears from the diff -- which is how a run that
+    produced a correct six-line fix returned only the `git format-patch` artifact the
+    agent had generated beside it.
+    """
+    repo = _fixture_repo(tmp_path)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo),
+                          capture_output=True, text=True).stdout.strip()
+    Path(repo / BASE_SHA_FILE.lstrip("/")).parent.mkdir(parents=True, exist_ok=True)
+
+    # The agent edits, commits, and leaves a format-patch artifact behind.
+    (repo / "sample-app/src/tasks.ts").write_text("fixed\n")
+    subprocess.run(["git", "add", "-A", "sample-app/src"], cwd=str(repo), check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "fix: the real change"], cwd=str(repo),
+                   check=True, capture_output=True)
+    (repo / "0001-fix-the-real-change.patch").write_text("From abc123\nSubject: fix\n")
+
+    spec = _exclude_pathspecs()
+    subprocess.run(f"git add -N . {spec}", cwd=str(repo), shell=True, capture_output=True)
+    from_head = subprocess.run(f"git diff HEAD --name-only -- . {spec}", cwd=str(repo),
+                               shell=True, capture_output=True, text=True).stdout.split()
+    from_base = subprocess.run(f"git diff {base} --name-only -- . {spec}", cwd=str(repo),
+                               shell=True, capture_output=True, text=True).stdout.split()
+
+    assert "sample-app/src/tasks.ts" not in from_head, "premise wrong: HEAD saw the commit"
+    assert "sample-app/src/tasks.ts" in from_base, "the committed fix was not collected"
+    assert not any(f.endswith(".patch") for f in from_base), "format-patch artifact leaked"
+
+
+def test_the_collect_command_diffs_against_the_recorded_base():
+    _n, cmd, _t = collect_patch_command(make())
+    assert BASE_SHA_FILE in cmd
+    assert "git diff HEAD --" not in cmd, "still measuring only uncommitted work"
+
+
+def test_the_clone_step_records_the_base_commit():
+    """Recorded to a file because the clone and the collect are separate
+    InvokeAgentRuntimeCommand calls that share only a filesystem."""
+    steps = {name: cmd for name, cmd, _ in build_steps(make())}
+    assert f"git rev-parse HEAD > {BASE_SHA_FILE}" in steps["clone"]
+
+
+def test_patch_artifacts_are_excluded_as_generated():
+    """A file describing a change is not a change."""
+    spec = _exclude_pathspecs()
+    for glob in ("*.patch", "*.diff", "*.orig", "*.rej"):
+        assert f"':(exclude,glob)**/{glob}'" in spec

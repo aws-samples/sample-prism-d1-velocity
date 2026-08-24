@@ -290,6 +290,11 @@ class FixResponse:
     verified: bool = False
     reason: str = ""
     usage: Usage = field(default_factory=Usage)
+    # Why the harness stopped talking. Recorded because the outcome depends on it --
+    # `end_turn` with no patch is a refusal, `tool_use` with no patch is an
+    # interruption -- and it was previously read once and discarded, leaving the
+    # difference between those two invisible in the result.
+    stop_reason: str = ""
     contract_version: str = CONTRACT_VERSION
 
     @property
@@ -367,6 +372,19 @@ TRUNCATING_STOP_REASONS = frozenset({
     "interrupted", "partial_turn",
 })
 
+# Only these mean the agent chose to stop. Everything else means it was stopped.
+#
+# The distinction is the whole reason Outcome separates DECLINED from FAILED, and
+# it was being thrown away one layer up: any stop reason not in the truncating set
+# fell through to DECLINED whenever the text held no diff. A run that ended
+# mid-sentence on "Now I need to update the" -- cut off immediately before its first
+# edit, tree untouched -- was reported as a deliberate refusal. `tool_use` in
+# particular means the opposite of finished: the agent was asking to act.
+#
+# The empty string is included because a reply with no messageStop at all predates
+# this field and is what the stubs produce; a real harness always sends one.
+DELIBERATE_STOP_REASONS = frozenset({"end_turn", "stop_sequence", ""})
+
 
 def render_system_addendum(request: FixRequest) -> str:
     """Repo conventions, for InvokeHarness's per-call systemPrompt.
@@ -395,6 +413,7 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
             reason=f"harness stopped early: {stop_reason}",
             summary=text.strip()[:2000],
             usage=usage,
+            stop_reason=stop_reason,
         ).validate()
 
     patch = _extract_diff(text)
@@ -404,6 +423,21 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
             summary=_without_diff(text)[:2000],
             verified="tests pass" in text.lower() or "suite passes" in text.lower(),
             usage=usage,
+            stop_reason=stop_reason,
+        ).validate()
+
+    if stop_reason not in DELIBERATE_STOP_REASONS:
+        # No patch, and it did not choose to stop. Crediting this as a refusal
+        # would put the agent's best signal -- declining to do something harmful --
+        # on the same footing as being cut off mid-edit.
+        return FixResponse(
+            outcome=Outcome.FAILED,
+            reason=f"the agent produced no change and did not finish "
+                   f"deliberately (stopReason {stop_reason!r}); it was stopped "
+                   f"rather than declining",
+            summary=text.strip()[:2000],
+            usage=usage,
+            stop_reason=stop_reason,
         ).validate()
 
     return FixResponse(
@@ -411,6 +445,7 @@ def parse_agent_reply(text: str, *, stop_reason: str = "",
         reason=text.strip()[:2000] or "no patch and no explanation",
         summary=text.strip()[:2000],
         usage=usage,
+        stop_reason=stop_reason,
     ).validate()
 
 

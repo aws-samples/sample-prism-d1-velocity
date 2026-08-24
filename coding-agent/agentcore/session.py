@@ -24,6 +24,10 @@ from dataclasses import dataclass, field
 from .contract import ContractError, FixRequest
 
 WORKSPACE = "/workspace/repo"
+# Where the clone step records the commit it started from, read back by the collect
+# step. A file rather than plumbed through Python state because the two steps are
+# separate InvokeAgentRuntimeCommand calls sharing only a filesystem.
+BASE_SHA_FILE = "/tmp/prism-base-sha"
 
 # Each step gets its own budget. Cloning a large repo and compiling a toolchain
 # have very different shapes, and one shared timeout would be wrong for both.
@@ -103,9 +107,17 @@ def build_steps(request: FixRequest) -> list[tuple[str, str, int]]:
         # A shallow clone at a named ref. Depth is bounded because the agent needs
         # the tree, not the history, and a deep clone of a busy repo is minutes of
         # dead time before any work starts.
+        #
+        # The base commit is recorded to a file because the patch has to be measured
+        # against where the clone started, not against HEAD. The agent is instructed
+        # to commit, and once it does, `git diff HEAD` reports nothing of the change
+        # -- which is how a run that correctly fixed the bug returned a diff
+        # containing only the `git format-patch` output the agent had generated
+        # alongside it.
         ("clone",
          f"rm -rf {WORKSPACE} && git clone --depth 50 --branch {ref} {url} {WORKSPACE} "
-         f"&& cd {wq} && git rev-parse --short HEAD",
+         f"&& cd {WORKSPACE} && git rev-parse HEAD > {BASE_SHA_FILE} "
+         f"&& cd {wq} && cat {BASE_SHA_FILE}",
          CLONE_TIMEOUT),
         # mise reads the repo's own .tool-versions, .nvmrc and friends. When the
         # repo pins nothing that is a no-op -- and a no-op leaves the image with no
@@ -193,8 +205,83 @@ GENERATED_DIRS = (
 )
 
 
+# Files that describe a change rather than being one. An agent that commits its fix
+# and then runs `git format-patch` leaves one of these behind, and a run did exactly
+# that: the collected diff was a single new file,
+# 0001-fix-validate-that-tags-array-contains-only-strings.patch, whose contents were
+# the real fix. Applying it would have added a patch file to the repository and
+# changed no code.
+GENERATED_FILE_GLOBS = ("*.patch", "*.diff", "*.orig", "*.rej")
+
+
+def _exclude_pathspecs() -> str:
+    """Exclude the generated directories at any depth.
+
+    The form matters, and getting it wrong is silent. A bare `:(exclude)dist`
+    matches only `dist` relative to the pathspec's base -- so run at the clone root
+    it never touched `sample-app/dist`, and the exclusion added to stop build output
+    reaching the patch did nothing at all. The next run returned a 1,196,474-byte
+    diff with the guard supposedly in place.
+
+    `:(exclude,glob)**/dist/**` matches at every depth including the top level, and
+    unlike `:(exclude)*dist/*` -- which also works, because `*` spans `/` without
+    glob magic -- it does not swallow a directory merely named `notdist`. Verified
+    against git rather than inferred from the pathspec documentation.
+    """
+    dirs = [f"':(exclude,glob)**/{d}/**'" for d in GENERATED_DIRS]
+    files = [f"':(exclude,glob)**/{g}'" for g in GENERATED_FILE_GLOBS]
+    return " ".join(dirs + files)
+
+
+# The patch travels back as command stdout, and that stream has a ceiling. The
+# run that returned dist/index.js hit it: 1,138,688 bytes arrived and the last
+# line stopped mid-token, so the diff was structurally invalid and the source fix
+# -- which sorted after `dist/` alphabetically -- never made it into the stream at
+# all. Nothing in the pipeline noticed, because a truncated diff is still a
+# non-empty string.
+#
+# So the collected patch is framed: a declared byte count before it and a sentinel
+# after it. If the sentinel is missing the transfer was cut, and if the byte counts
+# disagree something in between altered it. Either way the answer is a reported
+# failure, never a patch.
+PATCH_HEADER = "PRISM-PATCH-BYTES"
+PATCH_SENTINEL = "PRISM-PATCH-END"
+
+# A diff this large is not a fix. The agent is asked to resolve one issue, and the
+# largest legitimate patch any fixture has produced is under 2 KB. Refusing early
+# gives a comprehensible reason instead of a mid-line truncation for whoever has to
+# work out why `git apply` rejected a megabyte of something.
+MAX_PATCH_BYTES = 1_000_000
+
+
+@dataclass
+class CollectedPatch:
+    """A patch taken from the harness, with evidence that it arrived intact."""
+
+    patch: str = ""
+    declared_bytes: int = -1
+    received_bytes: int = 0
+    reason: str = ""
+    step: StepResult | None = None
+
+    @property
+    def ok(self) -> bool:
+        return not self.reason
+
+    @property
+    def empty(self) -> bool:
+        return not self.patch.strip()
+
+
 def collect_patch_command(request: FixRequest) -> tuple[str, str, int]:
     """The command that extracts the agent's work as a patch.
+
+    Diffed against the commit the clone started at, not against HEAD. The agent is
+    told to commit its fix, and `git diff HEAD` measures only what is *un*committed
+    -- so once it commits, the change vanishes from the diff. A run that produced a
+    correct six-line fix returned instead a single new file: the `git format-patch`
+    output the agent had generated beside it. Diffing from the base covers committed
+    and uncommitted work alike.
 
     Run from the clone root, because `git diff` emits repository-root-relative
     paths whatever directory it runs in -- the convention FixResponse documents,
@@ -203,16 +290,86 @@ def collect_patch_command(request: FixRequest) -> tuple[str, str, int]:
 
     Untracked files are included via `git add -N`, because an agent that creates a
     new file would otherwise have that work silently dropped. Generated
-    directories are excluded by pathspec, since including them turns a one-line fix
-    into a megabyte of build output and -- worse -- makes an agent that only ran a
-    build look like an agent that fixed something.
+    directories and patch artifacts are excluded by pathspec, since including them
+    turns a one-line fix into a megabyte of build output and -- worse -- makes an
+    agent that only ran a build look like an agent that fixed something.
+
+    The diff goes to a file first so its true size can be declared before any of it
+    is streamed. Measuring it after the fact would measure whatever survived the
+    stream, which is exactly the quantity in question.
     """
-    excludes = " ".join(f"':(exclude){d}'" for d in GENERATED_DIRS)
+    excludes = _exclude_pathspecs()
+    diff_file = "/tmp/prism-collected.diff"
+    # Falls back to HEAD if the base file is missing, so a session prepared by an
+    # older path still collects something rather than erroring on an empty revision.
+    base = f'"$(cat {BASE_SHA_FILE} 2>/dev/null || echo HEAD)"'
     return (
         "collect",
         f"cd {WORKSPACE} && git add -N . {excludes} >/dev/null 2>&1; "
-        f"git diff HEAD -- . {excludes}",
+        f"git diff {base} -- . {excludes} > {diff_file} 2>/dev/null; "
+        f"printf '{PATCH_HEADER} %s\\n' \"$(wc -c < {diff_file} | tr -d ' ')\"; "
+        f"cat {diff_file}; "
+        f"printf '{PATCH_SENTINEL}\\n'",
         COLLECT_TIMEOUT,
+    )
+
+
+def parse_collected_patch(step: StepResult) -> CollectedPatch:
+    """Unwrap the framed patch, refusing anything that did not arrive whole."""
+    if not step.ok:
+        return CollectedPatch(
+            reason=f"could not read the working tree (exit {step.exit_code})", step=step
+        )
+
+    text = step.stdout
+    header, newline, rest = text.partition("\n")
+    if not newline or not header.startswith(PATCH_HEADER):
+        return CollectedPatch(
+            reason=f"collected output did not begin with {PATCH_HEADER}; "
+                   f"got {header[:80]!r}",
+            step=step,
+        )
+
+    try:
+        declared = int(header[len(PATCH_HEADER):].strip())
+    except ValueError:
+        return CollectedPatch(
+            reason=f"{PATCH_HEADER} was not a number: {header[:80]!r}", step=step
+        )
+
+    if declared > MAX_PATCH_BYTES:
+        return CollectedPatch(
+            declared_bytes=declared,
+            reason=f"the working tree holds a {declared:,}-byte diff, over the "
+                   f"{MAX_PATCH_BYTES:,}-byte limit; a change this large is not a "
+                   f"fix for one issue. Check whether generated output is being "
+                   f"picked up, or whether the agent rewrote more than it was asked to",
+            step=step,
+        )
+
+    if PATCH_SENTINEL not in rest:
+        received = len(rest.encode())
+        return CollectedPatch(
+            declared_bytes=declared, received_bytes=received,
+            reason=f"the patch was truncated in transit: {declared:,} bytes were "
+                   f"produced but only {received:,} arrived, and the closing "
+                   f"{PATCH_SENTINEL} marker is absent. A partial diff is not a "
+                   f"patch, so this is reported as a failure rather than applied",
+            step=step,
+        )
+
+    patch, _, _ = rest.rpartition(PATCH_SENTINEL)
+    received = len(patch.encode())
+    if received != declared:
+        return CollectedPatch(
+            patch=patch, declared_bytes=declared, received_bytes=received,
+            reason=f"the patch changed size in transit: {declared:,} bytes were "
+                   f"produced, {received:,} arrived",
+            step=step,
+        )
+
+    return CollectedPatch(
+        patch=patch, declared_bytes=declared, received_bytes=received, step=step
     )
 
 
@@ -273,7 +430,8 @@ def prepare_environment(client, harness_arn: str, session_id: str,
 
 
 def collect_patch(client, harness_arn: str, session_id: str,
-                  request: FixRequest) -> StepResult:
-    """Extract the agent's changes as a unified diff."""
+                  request: FixRequest) -> CollectedPatch:
+    """Extract the agent's changes as a unified diff, verified to have arrived whole."""
     name, command, timeout = collect_patch_command(request)
-    return run_command(client, harness_arn, session_id, name, command, timeout)
+    step = run_command(client, harness_arn, session_id, name, command, timeout)
+    return parse_collected_patch(step)
