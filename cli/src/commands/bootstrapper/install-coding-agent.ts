@@ -1,28 +1,28 @@
 /**
  * install-coding-agent — put the PRISM coding agent into the current repository.
  *
- * Two directories, split by who owns them:
+ * What lands in the repo, and nothing else:
  *
  *   .coding-agent/              THEIRS. config.json, prompt.md, and fixtures/,
  *                               which are hand-written, reviewed, and
  *                               irreplaceable. --uninstall never deletes
  *                               fixtures/ or prompt.md, and a re-install never
  *                               overwrites either.
- *   .prism/coding-agent/        OURS. Vendored agent source, safe to replace
- *                               wholesale on upgrade and safe to delete.
+ *   .tool-versions              the toolchain pin mise reads in the harness
  *   .github/workflows/…         the issue → fix → PR workflow (optional)
  *
- * That split is deliberate and was arrived at the hard way: fixtures originally
- * lived under .prism/coding-agent/eval/issues/, inside the tree --uninstall
- * removes, so uninstalling destroyed them — recoverably for anything committed,
- * permanently for work in progress. prompt.md exists for the same reason: the
- * only way to state a repository's conventions used to be editing the vendored
- * system_prompt.py, which a re-install silently reverted.
+ * The agent source is NOT vendored. It lives in the sample repo, and the agent
+ * itself runs in an AgentCore harness deployed once into the org's own account;
+ * the workflow fetches only the thin orchestrator client at run time, pinned by
+ * the PRISM_AGENT_REF variable. So a fix to the agent reaches every repo without
+ * an N-repo migration.
  *
- * The source is copied rather than installed from a package index because the
- * agent is not published to PyPI, and because the workshop's whole point is that
- * participants read and extend it. A vendored copy also means a repo keeps
- * working when this CLI moves on.
+ * An earlier version copied agent.py, config.py, system_prompt.py and tools/ into
+ * .prism/coding-agent/. That is gone, and its removal fixed more than it cost:
+ * the vendored set never included agentcore/, which is the only thing the
+ * workflow actually runs, so `python -m agentcore.invoke` could not have resolved
+ * in any repo the installer touched. The copy was both redundant and broken --
+ * unnoticed because no CI run had exercised it.
  *
  * Eval fixtures are shipped as references, never as runnable work. The harness
  * (run_eval.py) is repo-agnostic; fixtures never are — each one names real files
@@ -43,14 +43,12 @@ import { run } from '../../utils/exec.js';
 import { validateAwsRegion } from '../../utils/validate.js';
 import { DEFAULT_REGION } from '../../utils/region.js';
 
-const AGENT_DEST = '.prism/coding-agent';
 const CONFIG_DEST = '.coding-agent';
+/** Where the agent source used to be vendored. Removed on install/uninstall. */
+const LEGACY_AGENT_DEST = '.prism/coding-agent';
 const WORKFLOW_NAME = 'prism-coding-agent.yml';
 const DEFAULT_MODEL = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
 
-/** Agent modules copied into the target repo. Everything else is left behind. */
-const SOURCE_FILES = ['agent.py', 'config.py', 'system_prompt.py', 'requirements.txt', 'pyproject.toml', 'README.md'];
-const SOURCE_DIRS = ['tools'];
 
 /**
  * Mirrors _FORBIDDEN in coding-agent/config.py.
@@ -199,40 +197,28 @@ function checkAttempts(value: string): number {
   return n;
 }
 
-function copyAgentSource(source: string, dest: string): number {
-  mkdirSync(dest, { recursive: true });
-  let count = 0;
+/**
+ * Removes the dead vendored tree, and its parent only if that leaves it empty.
+ *
+ * `.prism/` is not ours to delete. It also holds config.json, whose team_id flows
+ * into the EventBridge event and becomes a DynamoDB partition key for every CI
+ * metric this project emits — removing it because the coding agent happened to
+ * live in a sibling directory would break attribution for reasons nobody would
+ * connect back to this command. So the parent goes only when it is empty.
+ */
+function removeLegacyVendorTree(repoRoot: string): boolean {
+  const dir = resolve(repoRoot, LEGACY_AGENT_DEST);
+  if (!existsSync(dir)) return false;
+  rmSync(dir, { recursive: true, force: true });
 
-  for (const file of SOURCE_FILES) {
-    const from = join(source, file);
-    if (!existsSync(from)) continue;
-    cpSync(from, join(dest, file));
-    count++;
+  const parent = resolve(repoRoot, '.prism');
+  try {
+    if (existsSync(parent) && readdirSync(parent).length === 0) rmSync(parent, { recursive: true });
+  } catch {
+    // An unreadable or concurrently-modified .prism is not worth failing an
+    // install over -- the tree that mattered is already gone.
   }
-
-  for (const dir of SOURCE_DIRS) {
-    const from = join(source, dir);
-    if (!existsSync(from) || !statSync(from).isDirectory()) continue;
-    const to = join(dest, dir);
-    mkdirSync(to, { recursive: true });
-    // __pycache__ is machine-specific and would be committed otherwise.
-    for (const entry of readdirSync(from)) {
-      if (entry === '__pycache__') continue;
-      cpSync(join(from, entry), join(to, entry), { recursive: true });
-      count++;
-    }
-  }
-
-  // The harness is vendored with the agent; the fixtures it reads are not, and
-  // live under .coding-agent/fixtures/ instead. See writeFixtureScaffold.
-  const harness = join(source, 'eval', 'run_eval.py');
-  if (existsSync(harness)) {
-    mkdirSync(join(dest, 'eval'), { recursive: true });
-    cpSync(harness, join(dest, 'eval', 'run_eval.py'));
-    count++;
-  }
-
-  return count;
+  return true;
 }
 
 /**
@@ -260,7 +246,7 @@ guidance comments and write your own rules.
 Confirm a change took effect before trusting it — the agent names every file that
 shaped its brief:
 
-    python .prism/coding-agent/agent.py --repo . --title x --body y --dry-run
+    python <sample-repo>/coding-agent/agent.py --repo . --title x --body y --dry-run
 
 ## Scope
 
@@ -417,7 +403,7 @@ const FIXTURE_TEMPLATE = `{
     "Copy this to <nnn>-<slug>.json in THIS directory and fill it in.",
     "Fixtures are specific to THIS repository -- they name real files and real",
     "defects, so they cannot be shipped with the agent. That is also why they",
-    "live here, beside config.json, rather than inside .prism/coding-agent/:",
+    "live here, beside config.json, rather than with the agent:",
     "this directory is yours and --uninstall never deletes it.",
     "",
     "run_eval.py collects every .json in this directory and does not recurse,",
@@ -493,7 +479,6 @@ export default {
 
     const configDir = resolve(repoRoot, CONFIG_DEST);
     const fixturesDir = join(configDir, 'fixtures');
-    const agentDir = resolve(repoRoot, AGENT_DEST);
     const workflowPath = resolve(repoRoot, '.github/workflows', WORKFLOW_NAME);
     const rel = (p: string) => p.replace(`${repoRoot}/`, '');
 
@@ -501,11 +486,16 @@ export default {
       console.log('\n🗑  Removing the PRISM coding agent\n');
       let removed = 0;
 
+      if (removeLegacyVendorTree(repoRoot)) {
+        console.log(`  ✓ removed ${LEGACY_AGENT_DEST}/`);
+        removed++;
+      }
+
       // Fixtures are hand-written, reviewed, and specific to this repository --
       // they cannot be reinstalled. This used to delete them as collateral,
       // because they lived inside the vendored tree below. Anything committed
       // came back from git; work in progress did not.
-      for (const target of [join(configDir, 'config.json'), agentDir, workflowPath]) {
+      for (const target of [join(configDir, 'config.json'), workflowPath]) {
         if (!existsSync(target)) continue;
         rmSync(target, { recursive: true, force: true });
         console.log(`  ✓ removed ${rel(target)}`);
@@ -615,8 +605,9 @@ export default {
 
     writeToolVersions(repoRoot, detected?.toolchain);
 
-    const copied = copyAgentSource(agentSource, agentDir);
-    console.log(`  ✓ ${AGENT_DEST}/ (${copied} files)`);
+    if (removeLegacyVendorTree(repoRoot)) {
+      console.log(`  ✓ removed ${LEGACY_AGENT_DEST}/ (no longer vendored)`);
+    }
 
     const promptState = writeRepoPrompt(configDir);
     console.log(promptState === 'created'
@@ -650,11 +641,13 @@ export default {
       console.log('       gh label create agent-fix --description "Hand this issue to the PRISM coding agent"');
       console.log('     Only users with triage permission can apply a label, which is what');
       console.log('     stops a stranger from spending your Bedrock budget.');
-      console.log('  4. Commit the three paths above, then label an issue agent-fix');
+      console.log('  4. Commit .coding-agent/, .tool-versions and the workflow, then label an issue agent-fix');
     } else {
-      console.log('  3. Run it locally:');
-      console.log(`       pip install -r ${AGENT_DEST}/requirements.txt`);
-      console.log(`       python ${AGENT_DEST}/agent.py --repo . --title "..." --body "..."`);
+      console.log('  3. Run it locally from a clone of the sample repo:');
+      console.log('       git clone https://github.com/aws-samples/sample-prism-d1-velocity');
+      console.log('       cd sample-prism-d1-velocity/coding-agent');
+      console.log('       pip install -r requirements.txt');
+      console.log(`       python agent.py --repo ${repoRoot} --title "..." --body "..."`);
     }
     console.log('');
     console.log('Write your own eval fixtures before trusting it:');
@@ -666,7 +659,7 @@ export default {
     console.log('  one that catches an agent doing harm.');
     console.log('');
     console.log('  Then run:');
-    console.log(`    python ${AGENT_DEST}/eval/run_eval.py --repo .`);
+    console.log(`    python <sample-repo>/coding-agent/eval/run_eval.py --repo ${repoRoot}`);
     console.log('');
   },
 };

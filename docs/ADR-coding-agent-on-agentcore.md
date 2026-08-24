@@ -21,8 +21,9 @@ centrally and routed on `config.json`'s `detected_project_type`.
 
 ## Why
 
-The agent is currently vendored into every repo at `.prism/coding-agent/`. Four
-defects found in one day were all consequences of that, not of the agent:
+The agent was vendored into every repo at `.prism/coding-agent/` when this was
+written. That has since been removed -- see "De-vendored" below. Four defects found
+in one day were all consequences of it, not of the agent:
 
 | Defect | Cause |
 |---|---|
@@ -494,6 +495,47 @@ applies only to someone who configures a real sandbox, and then it is what they
 asked for. Worth noting the deprecation message names `bash`, which is itself a
 deprecated alias for `make_shell`, so following it literally lands on another
 deprecated name. `file_read` and `file_write` are not deprecated and were left alone.
+
+### De-vendored: the agent lives in the sample repo, not in every consumer
+
+The layout this ADR argued against is now gone. `install-coding-agent` writes
+`.coding-agent/` (config, prompt, fixtures), `.tool-versions`, and the workflow —
+and nothing else. `.prism/coding-agent/` is deleted if found, along with `.prism/`
+itself when that leaves it empty; `.prism/config.json` holds the `team_id` that
+becomes a DynamoDB partition key for every CI metric here, so the parent is never
+removed unconditionally.
+
+The workflow fetches the orchestrator client from the sample repo at run time into
+`$RUNNER_TEMP`, pinned by the `PRISM_AGENT_REF` variable, which accepts a branch, a
+tag, or a commit SHA. `$RUNNER_TEMP` and not the workspace, because the workspace is
+the tree the patch is applied to and committed from — a client checkout sitting
+there is one `git add -A` away from being committed into somebody's fix, and
+`actions/checkout` cannot write anywhere else, which is why the fetch is a plain
+`git init` + `fetch --depth 1` instead.
+
+Removing the vendored copy fixed more than it cost, in a way worth recording
+because it argues for running a path rather than reasoning about it:
+
+| | |
+|---|---|
+| The vendored set was `agent.py`, `config.py`, `system_prompt.py`, `tools/`, `eval/run_eval.py` | It never included `agentcore/` |
+| The workflow ran `python -m agentcore.invoke` with `working-directory: .prism/coding-agent` | So it could not have resolved the module in any repo the installer touched |
+| It also passed `--repo .` from that directory | Which resolves to the agent directory, not the repository, so config loading would have failed even if the import had worked |
+
+Both were latent in every install, and neither had been noticed, because no CI run
+had ever exercised the workflow. The vendored tree was simultaneously redundant and
+non-functional.
+
+`deploy/deploy-harness.sh` plus `deploy/create_harness.py` now make the one-time
+platform step executable: ECR repository, `linux/arm64` build and push, execution
+role including the Memory actions, then create-or-update the harness and wait for
+`READY`. It is idempotent by harness *name*, because the id carries a generated
+suffix nobody can predict — matching on the id would create a second harness on
+every run. Writing it surfaced one more API asymmetry: `get_harness` returns the
+object nested under a `harness` key while `list_harnesses` returns flat objects in
+`harnesses`, so reading `status` off the top level yields `None` forever. The first
+version of the wait loop would have spun its full 300 seconds and then reported
+failure against a harness that had been `READY` throughout.
 
 ## Still not verified
 
