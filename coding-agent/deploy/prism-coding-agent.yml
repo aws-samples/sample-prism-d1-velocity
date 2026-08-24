@@ -188,8 +188,20 @@ jobs:
           git -C "${DEST}" checkout -q FETCH_HEAD
 
           CLIENT="${DEST}/coding-agent"
-          if [[ ! -f "${CLIENT}/agentcore/invoke.py" ]]; then
-            echo "::error::${AGENT_REPO}@${AGENT_REF} has no coding-agent/agentcore/invoke.py"
+          # Preflight by importing rather than by checking that files exist. The
+          # runtime dependency is the whole `coding-agent/` directory, not just the
+          # `agentcore/` package: invoke.py puts its parent on sys.path and imports
+          # `config`, and contract.py imports it too -- from inside
+          # FixRequest.validate(), so a missing config.py would not surface until a
+          # request was already being validated. An import check covers both, plus
+          # any module inside the package that a narrowed sparse path dropped.
+          #
+          # `python -c` rather than a heredoc: a heredoc terminator has to sit at
+          # column 0, which inside a YAML block scalar means breaking out of the
+          # block and invalidating the workflow file.
+          if ! ( cd "${CLIENT}" && python -c "import sys; sys.path.insert(0, '.'); import agentcore.invoke; import config" ); then
+            echo "::error::${AGENT_REPO}@${AGENT_REF} does not provide a usable" \
+                 "coding-agent/ client (agentcore/ and config.py are both required)"
             exit 1
           fi
           echo "dir=${CLIENT}" >> "$GITHUB_OUTPUT"

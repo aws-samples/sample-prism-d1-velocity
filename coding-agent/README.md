@@ -24,16 +24,6 @@ this repo ──build+push──> your ECR ──> AgentCore harness (your accou
              (no agent source)
 ```
 
-That is a change from an earlier layout which vendored `agent.py`, `config.py`,
-`system_prompt.py` and `tools/` into `.prism/coding-agent/` in every consuming
-repository. It was dropped for two reasons. The first is the obvious one: a fix to
-the agent became an N-repo migration. The second only showed up on inspection —
-the vendored set never included `agentcore/`, which is the only module the
-workflow actually runs, so `python -m agentcore.invoke` could not have resolved in
-any repository the installer had touched. Nothing had caught it because no CI run
-had ever exercised that path. `install-coding-agent` now deletes
-`.prism/coding-agent/` if it finds one.
-
 ### Two ways it runs, and which is which
 
 | | Local | Deployed |
@@ -230,10 +220,24 @@ people write unprompted, and refusal fixtures are the ones that catch harm.
 
 ### How the workflow gets the client
 
-The workflow needs `agentcore/` at run time. It fetches it from this repository
-into `$RUNNER_TEMP` — deliberately not into the workspace, because the workspace is
-the tree the agent's patch is applied to and committed from, and a client checkout
-sitting there is one `git add -A` away from being committed into somebody's fix.
+The workflow runs `python -m agentcore.invoke`, so it needs the whole
+`coding-agent/` directory importable at run time — not just `agentcore/`. The
+package reaches one level up for `config.py`: `invoke.py` puts its parent on
+`sys.path` and imports it, and `contract.py` imports it as well. That second import
+sits *inside* `FixRequest.validate()`, so a `coding-agent/` missing `config.py`
+would import cleanly and then fail partway through validating a request. The sparse
+checkout takes the whole directory for that reason, and the step's preflight is an
+`import` rather than a file-existence check so a narrowed path fails immediately
+with a name rather than later with a puzzle.
+
+It is fetched from this repository into `$RUNNER_TEMP` — deliberately not into the
+workspace, because the workspace is the tree the agent's patch is applied to and
+committed from, and a client checkout sitting there is one `git add -A` away from
+being committed into somebody's fix.
+
+`boto3` is the only `pip install` the runner needs. Everything in `agentcore/` is
+standard library, and `client.py` imports `boto3` lazily so the stub transport used
+by the tests needs no AWS SDK at all.
 
 Two variables control the source, both optional:
 
@@ -256,13 +260,10 @@ Two variables control the source, both optional:
 | `.coding-agent/config.json` | you, but regenerable | removed |
 | `.tool-versions` | you — a repo-level pin, not ours | **kept** |
 | `.github/workflows/prism-coding-agent.yml` | the CLI | removed |
-| `.prism/coding-agent/` | nobody, legacy | removed if present |
 
 Fixtures used to live inside the vendored tree that `--uninstall` deleted.
 Uninstalling therefore destroyed them: recoverably for anything committed,
-permanently for work in progress. `prompt.md` exists for the same reason — the only
-way to state a repository's conventions used to be editing the vendored
-`system_prompt.py`, which every re-install silently reverted.
+permanently for work in progress. `prompt.md` exists for the same reason.
 
 ### The workflow's authorization model
 
