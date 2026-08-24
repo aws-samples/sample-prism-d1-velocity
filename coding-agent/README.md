@@ -102,13 +102,14 @@ The undotted one is what you are reading now. During a CI run it is cloned into
 your git history and never appears in your working tree.
 
 ```
-your repo (committed)              CI runner (ephemeral)
-├── .coding-agent/                 $RUNNER_TEMP/prism-agent/
-│   ├── config.json                └── coding-agent/     ← fetched, then gone
-│   ├── prompt.md                      ├── agentcore/
-│   └── fixtures/                      └── config.py
-├── .tool-versions
-└── .github/workflows/prism-coding-agent.yml
+your repo (committed)              Harness image (baked in at deploy time)
+├── .coding-agent/                 /opt/prism-agent/
+│   ├── config.json                ├── run.py         (orchestrator)
+│   ├── prompt.md                  ├── agent.py       (Strands agent)
+│   └── fixtures/                  ├── agentcore/     (contract, telemetry)
+├── .tool-versions                 ├── config.py      (detection)
+└── .github/workflows/             └── tools/         (git_ops, create_pr)
+    prism-coding-agent.yml
 ```
 
 An earlier layout *did* vendor the agent into every repository, at
@@ -145,8 +146,10 @@ coding-agent/
 │   ├── run_eval.py       scores the local agent against fixtures
 │   └── run_harness_eval.py  scores the deployed harness against the same fixtures
 ├── deploy/
-│   ├── Dockerfile        the mise-based harness image
-│   ├── deploy-harness.sh one-time account setup
+│   ├── Dockerfile        the mise-based harness image (now includes strands + agent code)
+│   ├── run.py            runs INSIDE the harness — the full cycle in one script
+│   ├── invoke_harness.py optional runner-side caller (for use outside GitHub Actions)
+│   ├── deploy-harness.sh one-time account setup (ECR + role + create harness + SSM)
 │   ├── create_harness.py create-or-update via boto3 (the AWS CLI has no create-harness)
 │   └── prism-coding-agent.yml  the workflow installed into consuming repos
 └── tests/                180 tests; run with pytest
@@ -186,42 +189,52 @@ Three details, each of which cost a failed deployment to learn:
   AWS CLI (2.36.19) does not, which is how this project originally came to call the
   wrong API and why deployment goes through `create_harness.py`.
 
-The image is a single mise-based base (~591 MB, 29% of the 2 GB cap) rather than one
-per language. It ships a version *manager* and installs whatever a repository pins
-in `.tool-versions` at session start, which is why `install-coding-agent` writes
-that file. See [the ADR](../docs/ADR-coding-agent-on-agentcore.md) for the
-arithmetic that ruled out per-language images.
+The image is a single mise-based base (~750 MB, 37% of the 2 GB cap) that includes
+the Strands agent SDK and the full orchestrator. It ships a version *manager* and
+installs whatever a repository pins in `.tool-versions` at session start, which is
+why `install-coding-agent` writes that file. See
+[the ADR](../docs/ADR-coding-agent-on-agentcore.md) for the arithmetic that ruled
+out per-language images.
 
-### How the workflow gets the client
+Because the agent code is in the image, updating it requires an image rebuild
+(`deploy-harness.sh --tag v2`). This is a trade-off for simplicity: the workflow has
+no client-fetch step, no sparse checkout, and no `PRISM_AGENT_REPO`/`PRISM_AGENT_REF`
+variables to pin. One image rebuild propagates to every repo.
 
-The workflow runs `python -m agentcore.invoke`, so it needs the whole
-`coding-agent/` directory importable — not just `agentcore/`. The package reaches
-one level up for `config.py`: `invoke.py` puts its parent on `sys.path` and imports
-it, and `contract.py` imports it as well. That second import sits *inside*
-`FixRequest.validate()`, so a `coding-agent/` missing `config.py` would import
-cleanly and then fail partway through validating a request. The sparse checkout
-takes the whole directory for that reason, and the step's preflight is an `import`
-rather than a file-existence check so a narrowed path fails immediately with a name.
+### How the workflow invokes the agent
 
-It is fetched into `$RUNNER_TEMP`, deliberately not the workspace: the workspace is
-the tree the patch is applied to and committed from, and a client checkout sitting
-there is one `git add -A` away from being committed into somebody's fix.
+The harness image contains the full agent and orchestrator. The workflow makes a
+single `InvokeAgentRuntimeCommand` call, and everything happens inside the microVM:
 
-`boto3` is the only `pip install` the runner needs. Everything in `agentcore/` is
-standard library, and `client.py` imports `boto3` lazily so the stub transport used
-by the tests needs no AWS SDK at all.
+```
+Runner (this workflow)                  Harness microVM
+──────────────────────                  ───────────────
+resolve issue → /tmp/issue.json
+OIDC → AWS credentials
+                                        run.py:
+InvokeAgentRuntimeCommand ──────────►     1. git clone (with token)
+                                          2. mise install
+                                          3. npm ci / pip install
+                                          4. agent.py (Strands ReAct loop)
+                                          5. git diff → patch
+                                          6. npm test → verified
+stdout ◄────────────────────────────      7. print result JSON + patch
+apply patch
+git push + gh pr create
+```
 
-Two variables control the source, both optional:
+No client code is fetched per-run. No sparse checkout. No `PRISM_AGENT_REPO` or
+`PRISM_AGENT_REF` variables needed — the agent code is baked into the image at
+`deploy-harness.sh` time. Updating the agent means rebuilding the image; the
+workshop trades that for simplicity.
 
-| Variable | Default | Why you would set it |
-|---|---|---|
-| `PRISM_AGENT_REPO` | `aws-samples/sample-prism-d1-velocity` | a fork or an internal mirror |
-| `PRISM_AGENT_REF` | `main` | **pin this.** A floating default means a third party's push changes what runs in your CI |
+**Private repo access**: the workflow's `GITHUB_TOKEN` is passed in the clone URL.
+It's ephemeral (dies when this run ends) and scoped to this one repo, so the blast
+radius is bounded. The model's shell tool *can* read it during the run — which is
+acceptable for the same reason it's acceptable that the model can read any file in
+the checkout: the boundary is the run's lifetime, not the tool's access.
 
-`PRISM_AGENT_REF` accepts a branch, a tag, or a full commit SHA. It defaults to
-`main` so the workshop works on day one; for anything you care about, pin it. Note
-that fetching from a public repository is a live availability dependency — an
-internal mirror via `PRISM_AGENT_REPO` is the answer if that matters.
+`boto3` is the only `pip install` the runner needs — to make the one API call.
 
 ---
 
@@ -231,43 +244,39 @@ internal mirror via `PRISM_AGENT_REPO` is the answer if that matters.
 
 | | Local | Deployed |
 |---|---|---|
-| Entry point | `agent.py` | `agentcore/invoke.py` → `InvokeHarness` |
-| Where the model runs | your machine, via `bedrock:InvokeModel` | the harness, in your account |
-| Where code is edited | a throwaway clone on your disk | a microVM from the harness image |
-| Iteration bound | `IterationBound` hook (`--max-iterations`) | `maxIterations` per invocation |
+| Entry point | `agent.py` | `deploy/run.py` inside the harness image |
+| Where the model runs | your machine, via `bedrock:InvokeModel` | the harness microVM |
+| Where code is edited | a throwaway clone on your disk | a throwaway clone inside the microVM |
+| Iteration bound | `IterationBound` hook (`--max-iterations`) | same — `run.py` passes it to `agent.py` |
 | Used by | `eval/run_eval.py`, development, reading the code | CI, via the workflow |
+| API calls from runner | N/A (local) | **one** `InvokeAgentRuntimeCommand` |
 
-Both are supported. The local agent is what the workshop reads and extends and what
-the eval scores; the harness is what runs in CI. They share `config.py`, the prompt
-layering, and the fixture schema.
+Both are supported. The local agent is what the workshop reads, extends, and what
+the eval scores; the deployed path is what runs in CI.
 
 ### The call chain in CI
 
-`BotoTransport.send()` makes five or six AWS calls, all sharing one
-`runtimeSessionId` (`prism-<uuid4>` — the API has a 33-character minimum). The
-shared id is what makes them see the same filesystem.
+One API call. The runner calls `InvokeAgentRuntimeCommand` with a command that runs
+`/opt/prism-agent/run.py` inside the microVM. That script does the full cycle
+locally — no further API calls back to AgentCore:
 
-| Call | API | Model tokens |
+| Phase | What `run.py` does | Model tokens |
 |---|---|---|
-| clone at the base commit | `InvokeAgentRuntimeCommand` | none |
-| `mise install` the toolchain | `InvokeAgentRuntimeCommand` | none |
-| install dependencies | `InvokeAgentRuntimeCommand` | none |
-| **the agent loop** | **`InvokeHarness`** | yes |
-| collect the patch (`git diff` from base) | `InvokeAgentRuntimeCommand` | none |
-| run the project's test suite | `InvokeAgentRuntimeCommand` | none |
+| clone | `git clone --depth 50` (with token in URL) | none |
+| toolchain | `mise install` from `.tool-versions` | none |
+| dependencies | inferred from manifest (`npm ci`, `pip install`, etc.) | none |
+| **fix** | `python agent.py --repo ... --issue ...` | **yes** |
+| collect | `git diff` from clone base, excluding generated dirs | none |
+| verify | the project's own test command via `mise exec` | none |
 
-Only one of the six reasons; the rest are deterministic shell at zero token cost.
-That split is the design. Preparation being deterministic is why a failed clone is
-reported as the environment's fault with the agent never started. Verification
-being deterministic is why `verified` is an exit code rather than a phrase found in
-the model's prose.
+The result (outcome, patch, verified flag) is printed to stdout with markers so the
+runner can parse it. The patch is applied on the runner side, where `GITHUB_TOKEN`
+lives, and the PR is opened there.
 
-The harness never pushes. It returns a patch; the workflow applies it, commits, and
-opens the PR with its own ephemeral `GITHUB_TOKEN`. That keeps the harness's
-credentials read-only and confines write access to the repository the run was
-triggered from. One consequence: a PR opened with `GITHUB_TOKEN` does **not**
-trigger further workflows, so the agent's PR will not kick off `prism-ai-metrics`
-or the eval gate without a GitHub App or PAT.
+The harness never pushes. The token is in the URL for cloning, but push happens on
+the runner with `git push`. This keeps write access confined to the workflow step
+that has the scoped token, rather than inside the microVM where the model's shell
+could use it.
 
 ### The agent itself
 
