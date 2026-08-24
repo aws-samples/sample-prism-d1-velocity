@@ -2,56 +2,38 @@
 #
 # Installed by: prism-cli bootstrapper install-coding-agent
 #
-# This file deliberately does NOT live in bootstrapper/github-workflows/.
-# install-github-workflows copies every .yml in that directory, so putting it
-# there would hand an autonomous, Bedrock-billing, branch-pushing agent to every
-# repo that ran the workflow installer.
-#
-#
 # WHAT RUNS WHERE
 #
-# The agent runs on AgentCore, not here. This workflow is the thin client: it
-# resolves the issue, invokes the harness, applies the patch it returns, and opens
-# a pull request. That split is what keeps the harness's credentials read-only --
-# it never pushes, so it needs no write access to any repository, and the token
-# that opens the PR is this run's own ephemeral, repo-scoped GITHUB_TOKEN.
+# The agent and its full orchestration (clone, toolchain, deps, fix, verify) run
+# inside the harness microVM. This workflow is the thin client: it resolves the
+# issue, makes one API call, and applies the returned patch.
 #
-# One harness serves every toolchain. It ships mise and installs what the
-# repository declares in .tool-versions at session start, so there is no
-# per-language routing to configure here.
+# The split is:
+#   - Inside the harness: clone → mise install → npm ci → agent loop → git diff → npm test
+#   - On this runner: read issue → call API → apply patch → push → open PR → comment
+#
+# The harness image contains strands-agents + the full orchestrator. A single
+# InvokeAgentRuntimeCommand does everything. No client code is fetched per-run.
 #
 #
 # AUTHORIZATION MODEL
 #
 # The trigger is `issues: [labeled]`, gated on a specific label. That is the
-# security control, and it is load-bearing: anybody with a GitHub account can
-# open an issue in a public repo, but applying a label requires triage
-# permission or above. Triggering on `issues: [opened]` instead would let any
-# stranger spend your Bedrock budget and put a branch in your repository.
+# security control: anybody can open an issue, but applying a label requires
+# triage permission. Private repo access: the GITHUB_TOKEN is passed in the
+# clone URL, so it is visible to the model's shell tool for the duration of
+# this run (it expires when the run ends).
 #
 # NOTE: `issues` events only trigger a workflow run if this file exists on the
-# DEFAULT branch. You cannot test changes to it from a feature branch -- nothing
-# fires, and nothing reports why. Merge first.
+# DEFAULT branch. You cannot test changes from a feature branch.
 #
 #
 # REQUIRED SETUP
-#   - prism-cli bootstrapper setup-github-oidc   (grants bedrock:InvokeModel)
+#   - prism-cli bootstrapper setup-github-oidc (grants bedrock-agentcore + SSM + SM)
 #   - Repository secret PRISM_METRICS_ROLE_ARN
-#   - Repository or org variable PRISM_HARNESS_ARN (an ARN is an identifier, not
-#     a credential, so it belongs in `vars` -- and an org variable is inherited by
-#     every repo, which is what "deploy the harness once" should feel like)
-#   - A label matching AGENT_LABEL below, created in the repo
+#   - Repository or org variable PRISM_HARNESS_ARN
+#   - A label matching 'agent-fix', created in the repo
 #   - .coding-agent/config.json committed (written by install-coding-agent)
-#
-# The agent is NOT vendored into this repository. Only config.json, prompt.md,
-# fixtures/ and this file live here; the orchestrator client is fetched at run
-# time from the sample repo, and the agent itself runs in an AgentCore harness in
-# your own account. That means an agent fix reaches every repo without an N-repo
-# migration, which vendoring could not offer.
-#
-# Pin PRISM_AGENT_REF to a tag or commit SHA for anything you care about. It
-# defaults to `main` so the workshop works on day one, but a floating default
-# means a third party's push can change what runs in your CI.
 
 name: PRISM Coding Agent
 
@@ -69,26 +51,15 @@ env:
   PRISM_AWS_REGION: us-west-2
   PRISM_REPO: github.com/${{ github.repository }}
   PRISM_HARNESS_ARN: ${{ vars.PRISM_HARNESS_ARN }}
-  # Where the orchestrator client comes from. Overridable as repo/org variables so
-  # a fork, an internal mirror, or a pinned SHA needs no edit to this file.
-  PRISM_AGENT_REPO: ${{ vars.PRISM_AGENT_REPO || 'aws-samples/sample-prism-d1-velocity' }}
-  PRISM_AGENT_REF: ${{ vars.PRISM_AGENT_REF || 'main' }}
 
 permissions:
   id-token: write       # OIDC → AWS
   contents: write       # push the fix branch
   pull-requests: write  # open the PR
-  issues: write         # comment the outcome back on the issue
+  issues: write         # comment the outcome
 
 jobs:
   fix-issue:
-    # On the label path, run only for the agent label. Any other label added to
-    # any issue also fires this workflow, so this condition is what keeps the
-    # job from running on every triage action in the repository.
-    #
-    # The label is a literal here, not an env var, because the `env` context is
-    # not available in a job-level `if`. An AGENT_LABEL variable above would look
-    # configurable and change nothing — if you rename the label, edit this line.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.label.name == 'agent-fix'
@@ -98,44 +69,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
 
-      - name: Warn if no harness variable (SSM is the fallback)
-        run: |
-          if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
-            echo "::notice::PRISM_HARNESS_ARN variable is not set. Will try SSM /prism/d1/harness-arn after OIDC."
-          fi
-
-      - name: Resolve the issue to work on
+      - name: Resolve the issue
         id: issue
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            NUMBER="${{ inputs.issue_number }}"
+          else
+            NUMBER="${{ github.event.issue.number }}"
+          fi
+          echo "number=${NUMBER}" >> "$GITHUB_OUTPUT"
+          # Wrap under an `issue` key for the agent
+          gh issue view "${NUMBER}" --json number,title,body \
+            | jq '{issue: .}' > /tmp/issue.json
+          echo "Issue #${NUMBER}: $(jq -r .issue.title /tmp/issue.json)"
         env:
           GH_TOKEN: ${{ github.token }}
-          DISPATCH_NUMBER: ${{ inputs.issue_number }}
-        run: |
-          set -euo pipefail
-
-          # Both branches write the same shape: a GitHub event payload with the
-          # issue under an `issue` key, which is what agentcore.invoke reads. The
-          # dispatch branch has to wrap it, because `gh issue view` returns a
-          # bare issue object.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if ! [[ "${DISPATCH_NUMBER}" =~ ^[0-9]+$ ]]; then
-              echo "::error::issue_number must be numeric, got '${DISPATCH_NUMBER}'"
-              exit 1
-            fi
-            gh issue view "${DISPATCH_NUMBER}" --json number,title,body,labels \
-              | jq '{issue: .}' > /tmp/issue.json
-          else
-            # Read from the payload rather than re-fetching: avoids a race where
-            # the issue is edited between the label and this step.
-            jq '{issue: (.issue | {number, title, body, labels})}' \
-              "${GITHUB_EVENT_PATH}" > /tmp/issue.json
-          fi
-
-          NUMBER=$(jq -r '.issue.number' /tmp/issue.json)
-          echo "number=${NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "Working on issue #${NUMBER}: $(jq -r '.issue.title' /tmp/issue.json)"
 
       - name: Acknowledge on the issue
         env:
@@ -144,140 +93,127 @@ jobs:
           gh issue comment "${{ steps.issue.outputs.number }}" \
             --body "🤖 PRISM coding agent picked this up — [run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
 
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-
-      - name: Install runner dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq jq
-          # Only boto3 -- the agent's own dependencies live in the harness image,
-          # not here. This runner never loads a model.
-          pip install --quiet boto3
-
-      - name: Fetch the orchestrator client
-        id: client
-        env:
-          AGENT_REPO: ${{ env.PRISM_AGENT_REPO }}
-          AGENT_REF: ${{ env.PRISM_AGENT_REF }}
-        run: |
-          set -euo pipefail
-          # Cloned into RUNNER_TEMP, NOT the workspace. actions/checkout can only
-          # write under GITHUB_WORKSPACE, and anything there is inside the tree the
-          # agent's patch is applied to and committed from -- a client checkout
-          # sitting in the working tree is one `git add -A` away from being
-          # committed into somebody's fix.
-          DEST="${RUNNER_TEMP}/prism-agent"
-          rm -rf "${DEST}"
-          mkdir -p "${DEST}"
-
-          # init + fetch rather than `clone --branch`, because --branch takes a
-          # branch or tag and rejects a commit SHA -- which is exactly what a repo
-          # that has pinned PRISM_AGENT_REF will be passing.
-          git -C "${DEST}" init -q
-          git -C "${DEST}" remote add origin "https://github.com/${AGENT_REPO}.git"
-          git -C "${DEST}" sparse-checkout init --cone
-          git -C "${DEST}" sparse-checkout set coding-agent
-          git -C "${DEST}" fetch -q --depth 1 origin "${AGENT_REF}"
-          git -C "${DEST}" checkout -q FETCH_HEAD
-
-          CLIENT="${DEST}/coding-agent"
-          # Preflight by importing rather than by checking that files exist. The
-          # runtime dependency is the whole `coding-agent/` directory, not just the
-          # `agentcore/` package: invoke.py puts its parent on sys.path and imports
-          # `config`, and contract.py imports it too -- from inside
-          # FixRequest.validate(), so a missing config.py would not surface until a
-          # request was already being validated. An import check covers both, plus
-          # any module inside the package that a narrowed sparse path dropped.
-          #
-          # `python -c` rather than a heredoc: a heredoc terminator has to sit at
-          # column 0, which inside a YAML block scalar means breaking out of the
-          # block and invalidating the workflow file.
-          if ! ( cd "${CLIENT}" && python -c "import sys; sys.path.insert(0, '.'); import agentcore.invoke; import config" ); then
-            echo "::error::${AGENT_REPO}@${AGENT_REF} does not provide a usable" \
-                 "coding-agent/ client (agentcore/ and config.py are both required)"
-            exit 1
-          fi
-          echo "dir=${CLIENT}" >> "$GITHUB_OUTPUT"
-          echo "Client ${AGENT_REPO}@$(git -C "${DEST}" rev-parse --short FETCH_HEAD)"
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
           aws-region: ${{ env.PRISM_AWS_REGION }}
 
-      - name: Load telemetry config from SSM
-        # One source of truth: CDK writes these at deploy time, so they cannot
-        # drift from what's actually deployed. Falls back gracefully — a missing
-        # parameter means telemetry is unconfigured, not that the run fails.
+      - name: Resolve harness ARN
+        id: harness
         run: |
-          set -euo pipefail
-          read_param() {
-            aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""
-          }
-          PRISM_COLLECTOR_URL=$(read_param /prism/d1/collector-url)
-          PRISM_OIDC_TOKEN_ENDPOINT=$(read_param /prism/d1/token-endpoint)
-          PRISM_AGENT_SECRET_ID=$(read_param /prism/d1/agent-secret-id)
-          echo "PRISM_COLLECTOR_URL=${PRISM_COLLECTOR_URL}" >> "$GITHUB_ENV"
-          echo "PRISM_OIDC_TOKEN_ENDPOINT=${PRISM_OIDC_TOKEN_ENDPOINT}" >> "$GITHUB_ENV"
-          echo "PRISM_AGENT_SECRET_ID=${PRISM_AGENT_SECRET_ID}" >> "$GITHUB_ENV"
-          # Harness ARN: the GitHub variable is the primary (pre-OIDC early-fail),
-          # but if it was empty (e.g. fork with no org vars), SSM is the fallback.
-          if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
-            PRISM_HARNESS_ARN=$(read_param /prism/d1/harness-arn)
-            if [[ -n "${PRISM_HARNESS_ARN}" ]]; then
-              echo "PRISM_HARNESS_ARN=${PRISM_HARNESS_ARN}" >> "$GITHUB_ENV"
-              echo "Harness ARN loaded from SSM (GitHub variable was empty)"
-            fi
+          ARN="${PRISM_HARNESS_ARN}"
+          if [[ -z "${ARN}" ]]; then
+            ARN=$(aws ssm get-parameter --name /prism/d1/harness-arn \
+              --query Parameter.Value --output text 2>/dev/null || echo "")
           fi
-          if [[ -n "${PRISM_COLLECTOR_URL}" ]]; then
-            echo "Telemetry: ${PRISM_COLLECTOR_URL} (secret: ${PRISM_AGENT_SECRET_ID})"
-          else
-            echo "Telemetry: not configured (SSM params empty or missing)"
-          fi
-
-      - name: Invoke the harness
-        id: invoke
-        env:
-          PRISM_HARNESS_ARN: ${{ env.PRISM_HARNESS_ARN }}
-        run: |
-          if [[ -z "${PRISM_HARNESS_ARN}" ]]; then
-            echo "::error::No harness ARN available (checked GitHub variable AND SSM /prism/d1/harness-arn)."
-            echo "::error::Run coding-agent/deploy/deploy-harness.sh and set the org variable."
+          if [[ -z "${ARN}" ]]; then
+            echo "::error::No harness ARN (checked variable + SSM /prism/d1/harness-arn)"
             exit 1
           fi
-          # GitHub runs `run:` blocks under `bash -e`, so a non-zero exit would
-          # end the step and skip straight past reporting. `set +e` keeps the exit
-          # code as data instead of as control flow.
-          set -o pipefail
-          set +e
-          # --repo is the checkout under test, which is NOT the working directory:
-          # this step runs from the client, and config.json lives in the target
-          # repo. Passing `.` here would resolve to the client and fail config
-          # loading with a confusing "no .coding-agent/config.json".
-          python -m agentcore.invoke \
-            --repo "${GITHUB_WORKSPACE}" \
-            --github-event /tmp/issue.json \
-            --patch-out /tmp/fix.patch \
-            --result-out /tmp/result.json \
-            --transcript-out /tmp/agent-transcript.log \
-            --repo-url "${{ github.server_url }}/${{ github.repository }}.git" \
-            --ref "${{ github.event.repository.default_branch }}" \
-            --region "${PRISM_AWS_REGION}" \
-            2>&1 | tee /tmp/invoke.log
-          EXIT_CODE=$?
-          set -e
-          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+          echo "arn=${ARN}" >> "$GITHUB_OUTPUT"
+          echo "Harness: ${ARN}"
 
-          OUTCOME=$(jq -r '.outcome // "failed"' /tmp/result.json 2>/dev/null || echo failed)
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Invoke the agent
+        id: invoke
+        run: |
+          pip install --quiet boto3
+
+          # Read subdir from config
+          SUBDIR=$(python -c "
+          import json, pathlib
+          cfg = pathlib.Path('.coding-agent/config.json')
+          print(json.loads(cfg.read_text()).get('subdir', '.') if cfg.exists() else '.')
+          ")
+
+          # The repo URL includes the token so the harness can clone private repos.
+          # This token is ephemeral (dies when the run ends) and scoped to this repo.
+          REPO_URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          python - <<'PYTHON'
+          import boto3, json, sys, uuid
+
+          RESULT_MARKER = "===PRISM_RESULT_JSON==="
+          PATCH_MARKER = "===PRISM_PATCH_START==="
+          PATCH_END_MARKER = "===PRISM_PATCH_END==="
+
+          harness_arn = "${{ steps.harness.outputs.arn }}"
+          region = "${{ env.PRISM_AWS_REGION }}"
+          repo_url = """${REPO_URL}"""
+          ref = "${{ github.event.repository.default_branch }}"
+          subdir = """${SUBDIR}"""
+          issue_json = open("/tmp/issue.json").read().strip().replace("'", "'\\''")
+          session_id = f"prism-agent-{uuid.uuid4()}"
+
+          cmd = (
+              f"echo '{issue_json}' > /tmp/agent-issue.json && "
+              f"python /opt/prism-agent/run.py "
+              f"--repo-url '{repo_url}' "
+              f"--ref '{ref}' "
+              f"--subdir '{subdir}' "
+              f"--issue @/tmp/agent-issue.json "
+              f"--region '{region}'"
+          )
+
+          print(f"Session: {session_id}", file=sys.stderr)
+          client = boto3.client("bedrock-agentcore", region_name=region)
+
+          try:
+              response = client.invoke_agent_runtime_command(
+                  agentRuntimeArn=harness_arn,
+                  runtimeSessionId=session_id,
+                  body={"command": cmd, "timeout": 1800},
+              )
+          except Exception as exc:
+              print(f"::error::InvokeAgentRuntimeCommand failed: {exc}", file=sys.stderr)
+              json.dump({"outcome": "failed", "reason": str(exc)}, open("/tmp/result.json", "w"))
+              open("/tmp/fix.patch", "w").write("")
+              sys.exit(0)
+
+          stdout_parts, exit_code = [], -1
+          for event in response.get("stream", []):
+              chunk = event.get("chunk", {})
+              if "contentDelta" in chunk:
+                  delta = chunk["contentDelta"]
+                  if delta.get("stdout"):
+                      stdout_parts.append(delta["stdout"])
+                  if delta.get("stderr"):
+                      print(delta["stderr"], end="", file=sys.stderr)
+              elif "contentStop" in chunk:
+                  exit_code = int(chunk["contentStop"].get("exitCode", -1))
+
+          stdout = "".join(stdout_parts)
+
+          # Parse structured output
+          if RESULT_MARKER in stdout:
+              start = stdout.index(RESULT_MARKER) + len(RESULT_MARKER)
+              end = stdout.index(PATCH_MARKER) if PATCH_MARKER in stdout else len(stdout)
+              result = json.loads(stdout[start:end].strip())
+          else:
+              result = {"outcome": "failed", "reason": f"no result marker (exit {exit_code})"}
+
+          patch = ""
+          if PATCH_MARKER in stdout:
+              ps = stdout.index(PATCH_MARKER) + len(PATCH_MARKER) + 1
+              pe = stdout.index(PATCH_END_MARKER) if PATCH_END_MARKER in stdout else len(stdout)
+              patch = stdout[ps:pe]
+
+          open("/tmp/fix.patch", "w").write(patch)
+          json.dump(result, open("/tmp/result.json", "w"), indent=2)
+
+          outcome = result.get("outcome", "failed")
+          verified = result.get("verified", False)
+          print(f"\nOutcome: {outcome} (verified={verified}, exit {exit_code})", file=sys.stderr)
+          PYTHON
+
+          # Export for subsequent steps
+          OUTCOME=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('outcome','failed'))")
           echo "outcome=${OUTCOME}" >> "$GITHUB_OUTPUT"
-          VERIFIED=$(jq -r '.verified // false' /tmp/result.json 2>/dev/null || echo false)
-          echo "verified=${VERIFIED}" >> "$GITHUB_OUTPUT"
-          echo "Harness outcome: ${OUTCOME} (verified=${VERIFIED}, exit ${EXIT_CODE})"
-        working-directory: ${{ steps.client.outputs.dir }}
 
       - name: Apply the patch
         id: apply
@@ -287,108 +223,82 @@ jobs:
           BRANCH="agent/issue-${{ steps.issue.outputs.number }}"
           git switch -c "${BRANCH}"
 
-          # --check first so a stale or malformed patch is reported as such rather
-          # than leaving a half-applied tree behind.
           if ! git apply --check /tmp/fix.patch; then
-            echo "::error::the returned patch does not apply to this tree"
+            echo "::error::patch does not apply"
             echo "applied=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           git apply /tmp/fix.patch
 
-          NAME=$(jq -r '.agent_name // "PRISM Coding Agent"' .coding-agent/config.json)
-          EMAIL=$(jq -r '.agent_email // "prism-agent@example.com"' .coding-agent/config.json)
-          SUMMARY=$(jq -r '.summary // "Autonomous fix"' /tmp/result.json)
+          git config user.email "prism-agent@example.com"
+          git config user.name "PRISM Coding Agent"
 
-          git -c "user.name=${NAME}" -c "user.email=${EMAIL}" commit -a -m "$(printf 'fix: %s\n\n%s\n\nCloses #%s\n' \
-            "$(jq -r '.issue.title' /tmp/issue.json)" \
-            "${SUMMARY}" \
-            "${{ steps.issue.outputs.number }}")"
+          TITLE=$(jq -r '.issue.title' /tmp/issue.json)
+          git add -A
+          git commit -m "fix: ${TITLE}
+
+          Closes #${{ steps.issue.outputs.number }}
+
+          Authored by the PRISM coding agent."
+          git push origin "${BRANCH}"
 
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "applied=true" >> "$GITHUB_OUTPUT"
-          echo "files=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git log --oneline -1
-
-      - name: Emit commit attribution
-        # After the commit, because the SHA does not exist before it -- the harness
-        # returns a patch and this workflow makes the commit. Reuses the trace id
-        # from result.json: a fresh one would leave the commit with no correlated
-        # usage, and the receiver would freeze its origin as human-authored.
-        #
-        # continue-on-error, because a reporting gap must not fail a run that has
-        # already produced a reviewed fix.
-        if: steps.apply.outputs.applied == 'true'
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          python -m agentcore.emit_commit \
-            --result /tmp/result.json \
-            --repo "${PRISM_REPO}" \
-            --sha "${{ steps.apply.outputs.sha }}"
-        working-directory: ${{ steps.client.outputs.dir }}
+          echo "files=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
       - name: Open the pull request
-        id: pr
         if: steps.apply.outputs.applied == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          git push -u origin "${{ steps.apply.outputs.branch }}"
-          VERIFIED=$(jq -r 'if .verified then "The agent ran this repository'"'"'s checks and they passed." else "⚠️ The agent did NOT verify this change. Review with that in mind." end' /tmp/result.json)
-          URL=$(gh pr create \
-            --title "fix: $(jq -r '.issue.title' /tmp/issue.json)" \
-            --body "$(printf 'Closes #%s\n\n%s\n\n%s\n\nGenerated by the PRISM coding agent on AgentCore. Nothing here was merged automatically.\n\n[Run log](%s)\n' \
-                "${{ steps.issue.outputs.number }}" \
-                "$(jq -r '.summary' /tmp/result.json)" \
-                "${VERIFIED}" \
-                "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")" \
-            --base "${{ github.event.repository.default_branch }}")
-          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          VERIFIED=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('verified', False))")
+          BADGE=""
+          if [[ "${VERIFIED}" == "True" ]]; then
+            BADGE="✅ Tests pass in the harness"
+          else
+            BADGE="⚠️ Not independently verified"
+          fi
 
-      - name: Report the outcome on the issue
+          gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "${{ steps.apply.outputs.branch }}" \
+            --title "fix: $(jq -r '.issue.title' /tmp/issue.json)" \
+            --body "Fixes #${{ steps.issue.outputs.number }}
+
+          ${BADGE}
+
+          **Changed files:** ${{ steps.apply.outputs.files }}
+
+          ---
+          *Authored by the [PRISM coding agent](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).*"
+
+      - name: Report outcome on the issue
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          OUTCOME: ${{ steps.invoke.outputs.outcome }}
-          PR_URL: ${{ steps.pr.outputs.url }}
         run: |
-          set -euo pipefail
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          REASON=$(jq -r '.reason // ""' /tmp/result.json 2>/dev/null || echo "")
+          OUTCOME=$(cat /tmp/result.json 2>/dev/null | jq -r '.outcome // "unknown"')
+          REASON=$(cat /tmp/result.json 2>/dev/null | jq -r '.reason // ""' | head -c 500)
 
-          case "${OUTCOME:-failed}" in
+          case "${OUTCOME}" in
             patched)
-              if [[ -n "${PR_URL}" ]]; then
-                BODY=$(printf '✅ **Fix proposed** — %s\n\nNothing has been merged.\n\n[Run log](%s)' "${PR_URL}" "${RUN_URL}")
-              else
-                BODY=$(printf '⚠️ **The agent produced a patch but it could not be applied or pushed.** See the run log for the reason.\n\n[Run log](%s)' "${RUN_URL}")
-              fi
-              ;;
+              MSG="✅ Fix applied and PR opened." ;;
             declined)
-              # Declining is frequently the right answer -- for an issue asking the
-              # agent to weaken a test suite, or one whose premise does not hold.
-              # Reporting it as a failure would train people to ignore the signal.
-              BODY=$(printf '🛑 **The agent declined to make a change.**\n\n> %s\n\nThis is often correct: the request may ask for something it should refuse, or rest on a premise that does not hold.\n\n[Run log](%s)' "${REASON}" "${RUN_URL}")
-              ;;
+              MSG="🛑 The agent declined to make a change. This is often correct.\n\n> ${REASON}" ;;
             *)
-              BODY=$(printf '❌ **The agent could not complete this.**\n\n> %s\n\n[Run log](%s)' "${REASON:-see the run log}" "${RUN_URL}")
-              ;;
+              MSG="❌ The agent could not fix this issue.\n\n> ${REASON}" ;;
           esac
 
-          gh issue comment "${{ steps.issue.outputs.number }}" --body "${BODY}"
+          gh issue comment "${{ steps.issue.outputs.number }}" --body "${MSG}"
 
-      - name: Upload the transcript
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agent-run-issue-${{ steps.issue.outputs.number }}
           path: |
-            /tmp/invoke.log
             /tmp/result.json
             /tmp/fix.patch
-            /tmp/agent-transcript.log
           retention-days: 14
           if-no-files-found: ignore
