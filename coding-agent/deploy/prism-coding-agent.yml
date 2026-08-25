@@ -135,8 +135,9 @@ jobs:
           # This token is ephemeral (dies when the run ends) and scoped to this repo.
           REPO_URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
 
-          python - <<'PYTHON'
+          python - <<PYTHON
           import boto3, json, sys, uuid
+          from botocore.config import Config as BotoConfig
 
           RESULT_MARKER = "===PRISM_RESULT_JSON==="
           PATCH_MARKER = "===PRISM_PATCH_START==="
@@ -161,31 +162,48 @@ jobs:
           )
 
           print(f"Session: {session_id}", file=sys.stderr)
-          client = boto3.client("bedrock-agentcore", region_name=region)
+          client = boto3.client("bedrock-agentcore", region_name=region,
+                                config=BotoConfig(read_timeout=1800, connect_timeout=30,
+                                                  retries={"max_attempts": 0}))
 
-          try:
-              response = client.invoke_agent_runtime_command(
-                  agentRuntimeArn=harness_arn,
-                  runtimeSessionId=session_id,
-                  body={"command": cmd, "timeout": 1800},
-              )
-          except Exception as exc:
-              print(f"::error::InvokeAgentRuntimeCommand failed: {exc}", file=sys.stderr)
-              json.dump({"outcome": "failed", "reason": str(exc)}, open("/tmp/result.json", "w"))
-              open("/tmp/fix.patch", "w").write("")
-              sys.exit(0)
-
+          # Retry once on transient stream drops (ProtocolError / ReadTimeout)
+          MAX_ATTEMPTS = 2
           stdout_parts, exit_code = [], -1
-          for event in response.get("stream", []):
-              chunk = event.get("chunk", {})
-              if "contentDelta" in chunk:
-                  delta = chunk["contentDelta"]
-                  if delta.get("stdout"):
-                      stdout_parts.append(delta["stdout"])
-                  if delta.get("stderr"):
-                      print(delta["stderr"], end="", file=sys.stderr)
-              elif "contentStop" in chunk:
-                  exit_code = int(chunk["contentStop"].get("exitCode", -1))
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              try:
+                  if attempt > 1:
+                      session_id = f"prism-agent-{uuid.uuid4()}"
+                      print(f"[retry] attempt {attempt}, new session: {session_id}", file=sys.stderr)
+
+                  response = client.invoke_agent_runtime_command(
+                      agentRuntimeArn=harness_arn,
+                      runtimeSessionId=session_id,
+                      body={"command": cmd, "timeout": 1800},
+                  )
+
+                  stdout_parts, exit_code = [], -1
+                  for event in response.get("stream", []):
+                      chunk = event.get("chunk", {})
+                      if "contentDelta" in chunk:
+                          delta = chunk["contentDelta"]
+                          if delta.get("stdout"):
+                              stdout_parts.append(delta["stdout"])
+                          if delta.get("stderr"):
+                              print(delta["stderr"], end="", file=sys.stderr)
+                      elif "contentStop" in chunk:
+                          exit_code = int(chunk["contentStop"].get("exitCode", -1))
+                  break  # success -- exit retry loop
+
+              except Exception as exc:
+                  err_name = type(exc).__name__
+                  if attempt < MAX_ATTEMPTS and ("Protocol" in err_name or "Timeout" in err_name or "Read" in str(exc)):
+                      print(f"::warning::Stream interrupted ({err_name}), retrying...", file=sys.stderr)
+                      import time; time.sleep(5)
+                      continue
+                  print(f"::error::InvokeAgentRuntimeCommand failed: {exc}", file=sys.stderr)
+                  json.dump({"outcome": "failed", "reason": str(exc)}, open("/tmp/result.json", "w"))
+                  open("/tmp/fix.patch", "w").write("")
+                  sys.exit(0)
 
           stdout = "".join(stdout_parts)
 
@@ -215,37 +233,30 @@ jobs:
           OUTCOME=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('outcome','failed'))")
           echo "outcome=${OUTCOME}" >> "$GITHUB_OUTPUT"
 
-      - name: Apply the patch
+      - name: Check push result
         id: apply
         if: steps.invoke.outputs.outcome == 'patched'
         run: |
-          set -euo pipefail
-          BRANCH="agent/issue-${{ steps.issue.outputs.number }}"
-          git switch -c "${BRANCH}"
+          # Push now happens inside the harness (run.py). Extract results.
+          BRANCH=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('branch',''))")
+          SHA=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('sha',''))")
+          PUSH_ERR=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('push_error',''))")
 
-          if ! git apply --check /tmp/fix.patch; then
-            echo "::error::patch does not apply"
+          if [[ -n "${PUSH_ERR}" ]]; then
+            echo "::error::Push failed inside harness: ${PUSH_ERR}"
             echo "applied=false" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          git apply /tmp/fix.patch
-
-          git config user.email "prism-agent@example.com"
-          git config user.name "PRISM Coding Agent"
-
-          TITLE=$(jq -r '.issue.title' /tmp/issue.json)
-          git add -A
-          git commit -m "fix: ${TITLE}
-
-          Closes #${{ steps.issue.outputs.number }}
-
-          Authored by the PRISM coding agent."
-          git push origin "${BRANCH}"
+          if [[ -z "${BRANCH}" ]]; then
+            echo "::error::No branch in result — push may have been skipped"
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "applied=true" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "files=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          echo "Pushed: ${BRANCH} (${SHA})"
 
       - name: Open the pull request
         if: steps.apply.outputs.applied == 'true'
@@ -260,18 +271,75 @@ jobs:
             BADGE="⚠️ Not independently verified"
           fi
 
-          gh pr create \
-            --base "${{ github.event.repository.default_branch }}" \
-            --head "${{ steps.apply.outputs.branch }}" \
-            --title "fix: $(jq -r '.issue.title' /tmp/issue.json)" \
-            --body "Fixes #${{ steps.issue.outputs.number }}
+          # Extract changed files and summary from result
+          FILES=$(python -c "
+          import json
+          r = json.load(open('/tmp/result.json'))
+          files = r.get('changed_files', [])
+          print(', '.join(f'\`{f}\`' for f in files) if files else '(unknown)')
+          ")
+
+          SUMMARY=$(python -c "
+          import json
+          r = json.load(open('/tmp/result.json'))
+          # The patch itself serves as the summary — show the diffstat
+          patch = r.get('patch', '')
+          lines = [l for l in patch.splitlines() if l.startswith('+') or l.startswith('-')]
+          adds = len([l for l in lines if l.startswith('+') and not l.startswith('+++')])
+          dels = len([l for l in lines if l.startswith('-') and not l.startswith('---')])
+          print(f'{adds} insertion(s), {dels} deletion(s)')
+          ")
+
+          # Build rich PR body
+          MODEL=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('model', 'unknown'))")
+          IN_TOK=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('usage', {}).get('input_tokens', 0))")
+          OUT_TOK=$(python -c "import json; print(json.load(open('/tmp/result.json')).get('usage', {}).get('output_tokens', 0))")
+          COST=$(python -c "
+          import json
+          r = json.load(open('/tmp/result.json'))
+          cost = r.get('cost_usd', 0)
+          print(f'\${cost:.2f}')
+          ")
+          PR_SUMMARY=$(python -c "import json; r=json.load(open('/tmp/result.json')); s=r.get('summary',''); print(s) if s else None")
+
+          BRANCH="${{ steps.apply.outputs.branch }}"
+          PR_BODY="Fixes #${{ steps.issue.outputs.number }}
 
           ${BADGE}
 
-          **Changed files:** ${{ steps.apply.outputs.files }}
+          ${PR_SUMMARY}
+
+          **Changed files:** ${FILES}
+          **Diff:** ${SUMMARY}
 
           ---
+          **Model:** \`${MODEL}\` | **Tokens:** ${IN_TOK} in / ${OUT_TOK} out | **Cost:** ${COST}
           *Authored by the [PRISM coding agent](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).*"
+
+          # Check if a PR already exists for this branch
+          EXISTING_PR=$(gh pr list --head "${BRANCH}" --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [[ -n "${EXISTING_PR}" ]]; then
+            echo "PR #${EXISTING_PR} already exists — adding comment with new run results"
+            gh pr comment "${EXISTING_PR}" --body "### 🔄 New commit pushed
+
+          ${BADGE}
+
+          ${PR_SUMMARY}
+
+          **Changed files:** ${FILES}
+          **Diff:** ${SUMMARY}
+
+          ---
+          **Model:** \`${MODEL}\` | **Tokens:** ${IN_TOK} in / ${OUT_TOK} out | **Cost:** ${COST}
+          *[Run log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})*"
+          else
+            gh pr create \
+              --base "${{ github.event.repository.default_branch }}" \
+              --head "${BRANCH}" \
+              --title "fix: $(jq -r '.issue.title' /tmp/issue.json)" \
+              --body "${PR_BODY}"
+          fi
 
       - name: Report outcome on the issue
         if: always()
@@ -280,17 +348,51 @@ jobs:
         run: |
           OUTCOME=$(cat /tmp/result.json 2>/dev/null | jq -r '.outcome // "unknown"')
           REASON=$(cat /tmp/result.json 2>/dev/null | jq -r '.reason // ""' | head -c 500)
+          SUMMARY=$(cat /tmp/result.json 2>/dev/null | jq -r '.summary // ""' | head -c 1000)
+          IN_TOK=$(cat /tmp/result.json 2>/dev/null | jq -r '.usage.input_tokens // 0')
+          OUT_TOK=$(cat /tmp/result.json 2>/dev/null | jq -r '.usage.output_tokens // 0')
+          MODEL=$(cat /tmp/result.json 2>/dev/null | jq -r '.model // "unknown"')
+          COST=$(python -c "
+          import json
+          r = json.load(open('/tmp/result.json'))
+          cost = r.get('cost_usd', 0)
+          print(f'\${cost:.2f}')
+          " 2>/dev/null || echo '\$0.00')
+          BRANCH=$(cat /tmp/result.json 2>/dev/null | jq -r '.branch // ""')
+          SHA=$(cat /tmp/result.json 2>/dev/null | jq -r '.sha // ""' | head -c 8)
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           case "${OUTCOME}" in
             patched)
-              MSG="✅ Fix applied and PR opened." ;;
+              BODY="### ✅ Fix applied
+
+          ${SUMMARY}
+
+          **PR branch:** \`${BRANCH}\` (${SHA})
+          **Model:** \`${MODEL}\` | **Tokens:** ${IN_TOK} in / ${OUT_TOK} out | **Cost:** ${COST}
+          **Run:** [workflow log](${RUN_URL})" ;;
             declined)
-              MSG="🛑 The agent declined to make a change. This is often correct.\n\n> ${REASON}" ;;
+              BODY="### 🛑 Declined
+
+          The agent could not confirm a fix was needed.
+
+          > ${REASON}
+
+          **Model:** \`${MODEL}\` | **Tokens:** ${IN_TOK} in / ${OUT_TOK} out | **Cost:** ${COST}
+          **Run:** [workflow log](${RUN_URL})
+
+          _If this is wrong, add more reproduction details to the issue body and re-label \`agent-fix\`._" ;;
             *)
-              MSG="❌ The agent could not fix this issue.\n\n> ${REASON}" ;;
+              BODY="### ❌ Failed
+
+          > ${REASON}
+
+          **Model:** \`${MODEL}\` | **Tokens:** ${IN_TOK} in / ${OUT_TOK} out | **Cost:** ${COST}
+          **Run:** [workflow log](${RUN_URL})" ;;
           esac
 
-          gh issue comment "${{ steps.issue.outputs.number }}" --body "${MSG}"
+          gh issue comment "${{ steps.issue.outputs.number }}" --body "${BODY}"
 
       - name: Upload artifacts
         if: always()

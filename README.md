@@ -110,6 +110,23 @@ Four CloudWatch dashboards, all reading the events table and attribution store d
 - **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), plus an AWS Continuum finding gate
 - **KMS encryption** on all data stores, VPC isolation, exfiltration detection
 
+### Autonomous Coding Agent (Preview)
+
+An autonomous coding agent that takes a GitHub issue, reproduces the bug, fixes the code, writes a regression test, verifies with the project's own test suite, and opens a PR — all inside an Amazon Bedrock AgentCore harness.
+
+```
+Issue labeled `agent-fix` → GitHub Actions → AgentCore harness (microVM) → PR with summary
+```
+
+- **Strands SDK** agent with file_read, file_write, shell, git_ops tools
+- **Claude Sonnet 5** default model (~$0.30-0.50 per issue fix)
+- **REPRODUCE → FIX → TEST → VERIFY** workflow enforced by system prompt
+- **Full OTEL telemetry** — tokens, cost, commit attribution flow through the same pipeline as human AI-assisted work
+- **Rich PR/issue comments** — model-generated summary, token count, cost, run link
+- **One image, any toolchain** — mise installs from `.tool-versions` at session start
+
+Deploy once per account, install per-repo with `prism-cli bootstrapper install-coding-agent`. Full documentation: **[Coding Agent README](coding-agent/README.md)**.
+
 ## Enhanced AI-DORA Metrics
 
 The four classic DORA metrics plus three AI-specific dimensions. **Source** is what actually computes each metric today, and **Status** flags where the pipeline is incomplete — the DORA metrics are currently proxies.

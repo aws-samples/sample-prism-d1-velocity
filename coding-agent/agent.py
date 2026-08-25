@@ -374,6 +374,14 @@ def main() -> int:
         print(f"\nBOUND REACHED: {bound.stopped_reason}", file=sys.stderr)
     print(f"  model calls: {bound.iterations}/{bound.max_iterations}   "
           f"elapsed: {bound.elapsed:.0f}s/{bound.deadline_seconds}s", file=sys.stderr)
+
+    # Report token usage so the orchestrator (run.py) can include it in telemetry.
+    # The format is a structured line that run.py parses from stderr.
+    usage = agent.event_loop_metrics.accumulated_usage
+    in_tok = getattr(usage, "inputTokens", 0) or (usage.get("inputTokens", 0) if isinstance(usage, dict) else 0)
+    out_tok = getattr(usage, "outputTokens", 0) or (usage.get("outputTokens", 0) if isinstance(usage, dict) else 0)
+    print(f"USAGE_REPORT: input_tokens={in_tok} output_tokens={out_tok}", file=sys.stderr)
+
     return 0
 
 

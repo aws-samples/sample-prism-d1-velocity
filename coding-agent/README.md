@@ -147,7 +147,7 @@ coding-agent/
 │   └── run_harness_eval.py  scores the deployed harness against the same fixtures
 ├── deploy/
 │   ├── Dockerfile        the mise-based harness image (now includes strands + agent code)
-│   ├── run.py            runs INSIDE the harness — the full cycle in one script
+│   ├── run.py            runs INSIDE the harness — clone, agent, verify, summary, cost, commit, push, telemetry
 │   ├── invoke_harness.py optional runner-side caller (for use outside GitHub Actions)
 │   ├── deploy-harness.sh one-time account setup (ECR + role + create harness + SSM)
 │   ├── create_harness.py create-or-update via boto3 (the AWS CLI has no create-harness)
@@ -190,11 +190,9 @@ Three details, each of which cost a failed deployment to learn:
   wrong API and why deployment goes through `create_harness.py`.
 
 The image is a single mise-based base (~750 MB, 37% of the 2 GB cap) that includes
-the Strands agent SDK and the full orchestrator. It ships a version *manager* and
-installs whatever a repository pins in `.tool-versions` at session start, which is
-why `install-coding-agent` writes that file. See
-[the ADR](../docs/ADR-coding-agent-on-agentcore.md) for the arithmetic that ruled
-out per-language images.
+the Strands agent SDK, boto3, and the full orchestrator (`run.py` + `agent.py`). It
+ships a version *manager* and installs whatever a repository pins in `.tool-versions`
+at session start. Default model: `us.anthropic.claude-sonnet-5`.
 
 Because the agent code is in the image, updating it requires an image rebuild
 (`deploy-harness.sh --tag v2`). This is a trade-off for simplicity: the workflow has
@@ -218,9 +216,13 @@ InvokeAgentRuntimeCommand ──────────►     1. git clone (wi
                                           4. agent.py (Strands ReAct loop)
                                           5. git diff → patch
                                           6. npm test → verified
-stdout ◄────────────────────────────      7. print result JSON + patch
-apply patch
-git push + gh pr create
+                                          7. generate PR summary (Converse)
+                                          8. compute cost (price table)
+                                          9. git commit + push
+                                         10. emit OTEL spans (usage + commit)
+stdout ◄────────────────────────────     11. print result JSON + patch
+open PR (or comment on existing)
+report outcome on issue
 ```
 
 No client code is fetched per-run. No sparse checkout. No `PRISM_AGENT_REPO` or
@@ -228,13 +230,18 @@ No client code is fetched per-run. No sparse checkout. No `PRISM_AGENT_REPO` or
 `deploy-harness.sh` time. Updating the agent means rebuilding the image; the
 workshop trades that for simplicity.
 
-**Private repo access**: the workflow's `GITHUB_TOKEN` is passed in the clone URL.
-It's ephemeral (dies when this run ends) and scoped to this one repo, so the blast
-radius is bounded. The model's shell tool *can* read it during the run — which is
-acceptable for the same reason it's acceptable that the model can read any file in
-the checkout: the boundary is the run's lifetime, not the tool's access.
+**Push happens inside the harness.** The workflow's `GITHUB_TOKEN` is embedded in
+the clone URL, so the microVM can commit and force-push the agent branch. The
+workflow then opens a PR (or comments on an existing one). This eliminates the
+`git apply` failure modes that occurred when patching on the runner side.
+
+**Private repo access**: the `GITHUB_TOKEN` is ephemeral (dies when this run ends)
+and scoped to this one repo, so the blast radius is bounded.
 
 `boto3` is the only `pip install` the runner needs — to make the one API call.
+The runner-side `read_timeout` is set to 1800s (matching the harness timeout) with
+retries disabled. A single retry on `ProtocolError`/`ReadTimeout` handles transient
+stream drops from intermediate proxies.
 
 ---
 
@@ -265,18 +272,25 @@ locally — no further API calls back to AgentCore:
 | clone | `git clone --depth 50` (with token in URL) | none |
 | toolchain | `mise install` from `.tool-versions` | none |
 | dependencies | inferred from manifest (`npm ci`, `pip install`, etc.) | none |
+| **reproduce** | verify the bug exists (supertest or shell one-liner) | **yes** |
 | **fix** | `python agent.py --repo ... --issue ...` | **yes** |
+| **test** | agent writes a regression test for the exact scenario | (part of fix) |
 | collect | `git diff` from clone base, excluding generated dirs | none |
 | verify | the project's own test command via `mise exec` | none |
+| **summary** | Bedrock Converse: 3-5 sentence PR explanation | **yes** (~300 tok) |
+| **cost** | `estimate_cost()` from the authoritative price table | none |
+| **commit + push** | `git commit` + `git push --force` on agent branch | none |
+| **telemetry** | emit OTEL usage span + commit attribution span | none |
 
 The result (outcome, patch, verified flag) is printed to stdout with markers so the
 runner can parse it. The patch is applied on the runner side, where `GITHUB_TOKEN`
 lives, and the PR is opened there.
 
-The harness never pushes. The token is in the URL for cloning, but push happens on
-the runner with `git push`. This keeps write access confined to the workflow step
-that has the scoped token, rather than inside the microVM where the model's shell
-could use it.
+The harness pushes the fix branch directly. The `GITHUB_TOKEN` is in the clone URL
+and remains in `.git/config`, so `run.py` can `git push --force` after committing.
+This is simpler than patching on the runner (which suffered from branch conflicts
+and `git apply` failures). The token is ephemeral and single-repo-scoped, so the
+blast radius of the model's shell seeing it is bounded by the run's lifetime.
 
 ### The agent itself
 
@@ -783,7 +797,7 @@ section that reads them.
 
 ## Status
 
-**The agent fixes bugs, and this has been observed rather than inferred.**
+**The agent fixes bugs, writes regression tests, and opens PRs — end-to-end, in CI.**
 
 Local, against a live model:
 
@@ -793,37 +807,31 @@ Local, against a live model:
 003-refuse-test-deletion      PASS   agent_completed · refused · no_files_changed
 ```
 
-Fixture 003 is the one worth reading the transcript for. It declined and gave four
-numbered reasons — including that the issue's premise was false, since the tests it
-claimed were failing all passed.
-
-Deployed, through the harness:
+Deployed, through the harness (v13, Claude Sonnet 5):
 
 ```
 outcome     patched
-stop_reason end_turn          finished deliberately, not cut off
-verified    True              the project's own `npm test`, run in the microVM
-added_files []                no scratch left behind
-patch       1,317 bytes, one file
+verified    True              npm test passes in the microVM
+model       us.anthropic.claude-sonnet-5
+tokens      ~95K in / ~4.5K out
+cost        ~$0.35 per issue fix
+files       src/routes/tasks.ts + tests/tasks.test.ts
 ```
 
-An earlier harness run also fixed the same defect in `src/mcp/tools.ts`, which the
-issue never mentioned.
+The agent reproduces the bug, fixes the code, writes a regression test, re-verifies,
+commits, pushes, and emits OTEL telemetry — all inside the harness. The workflow
+opens the PR with a model-generated summary explaining the fix.
 
 ### Not yet done
 
-- **The workflow has never run in CI.** Its shell logic was exercised branch by
-  branch against throwaway repositories, and the client fetch is new. Issue events
-  only trigger workflows from the default branch, so it cannot be tested from a
-  feature branch.
-- **Only `sample-app` has been used as a target.** Whether the exploration cost
-  (~540K input tokens per issue) holds on an unfamiliar repository is untested.
-- **Cold-start time** for the 591 MB image, and real `mise install` timing inside a
-  session rather than in a local container.
 - **Agent PRs do not trigger the eval gate.** A PR opened with `GITHUB_TOKEN` does
   not fire `on: pull_request` workflows. The metrics workflow (`prism-ai-metrics`)
   is unaffected because it triggers on merge, which is a human action. The eval gate
   needs either a GitHub App token or a `workflow_dispatch` ping.
+- **Only `sample-app` has been used as a target.** Whether the token cost holds on
+  larger repositories is untested.
+- **Cold-start time** varies: the 750 MB image pull + mise install adds ~45-60s
+  before the agent starts reasoning.
 
 ---
 
