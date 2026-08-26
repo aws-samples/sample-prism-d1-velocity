@@ -54,6 +54,56 @@ def find_existing(client, name: str) -> str | None:
             return None
 
 
+ROLE_PROPAGATION_TIMEOUT_SECONDS = 180
+ROLE_PROPAGATION_POLL_SECONDS = 5
+
+
+def _is_role_not_yet_visible(exc: ClientError) -> bool:
+    """True when a ValidationException is the IAM propagation race, not a bad role.
+
+    AgentCore validates that it can assume the execution role, and a role created
+    seconds earlier is not yet visible to it:
+
+        ValidationException: Role validation failed for '...'. Please verify that
+        the role exists and its trust policy allows assumption by this service
+
+    The message is identical whether the role is genuinely misconfigured or merely
+    too new, so this matches on the text and lets the timeout below decide. A
+    permanently broken trust policy simply exhausts the retries and reports the
+    original error.
+    """
+    err = exc.response.get("Error", {})
+    if err.get("Code") != "ValidationException":
+        return False
+    message = err.get("Message", "").lower()
+    return "role validation failed" in message or "trust policy" in message
+
+
+def _call_with_role_propagation_retry(label: str, fn):
+    """Run fn(), retrying while AgentCore still cannot see a freshly created role.
+
+    deploy-harness.sh creates the execution role and then immediately creates the
+    harness. On an account where the role already exists that gap is irrelevant, so
+    every re-run succeeds and this race stays invisible -- which is why it first
+    surfaced during workshop provisioning into a brand new account. Measured
+    evidence: a 55-second gap succeeded, a 6-second gap failed.
+    """
+    deadline = time.monotonic() + ROLE_PROPAGATION_TIMEOUT_SECONDS
+    announced = False
+    while True:
+        try:
+            return fn()
+        except ClientError as exc:
+            if not _is_role_not_yet_visible(exc) or time.monotonic() >= deadline:
+                raise
+            if not announced:
+                print(f"    {label}: execution role not visible to AgentCore yet, "
+                      f"retrying for up to {ROLE_PROPAGATION_TIMEOUT_SECONDS}s",
+                      file=sys.stderr)
+                announced = True
+            time.sleep(ROLE_PROPAGATION_POLL_SECONDS)
+
+
 def for_update(client, spec: dict) -> dict:
     """Adapt a CreateHarness spec to the shape UpdateHarness expects.
 
@@ -146,11 +196,13 @@ def main() -> int:
     try:
         if existing:
             print(f"    updating {existing}", file=sys.stderr)
-            client.update_harness(harnessId=existing, **for_update(client, spec))
+            _call_with_role_propagation_retry(
+                "update", lambda: client.update_harness(harnessId=existing, **for_update(client, spec)))
             harness_id = existing
         else:
             print(f"    creating {name}", file=sys.stderr)
-            created = client.create_harness(harnessName=name, **spec)
+            created = _call_with_role_propagation_retry(
+                "create", lambda: client.create_harness(harnessName=name, **spec))
             harness_id = created["harnessId"]
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
@@ -170,6 +222,14 @@ def main() -> int:
                      f"  and iam:PassRole for {role}.\n"
                      f"  IAM authorizes the AgentRuntime action, not the Harness one --\n"
                      f"  read the action name in the message above, not this list.")
+        if code == "ValidationException" and "role" in message.lower():
+            sys.exit(f"{code}: {message}\n"
+                     f"  {role} was still not assumable by AgentCore after "
+                     f"{ROLE_PROPAGATION_TIMEOUT_SECONDS}s, so this is not the usual\n"
+                     f"  propagation delay. Check the trust policy actually allows\n"
+                     f"  bedrock-agentcore.amazonaws.com to sts:AssumeRole:\n"
+                     f"    aws iam get-role --role-name {role.rsplit('/', 1)[-1]} \\\n"
+                     f"      --query Role.AssumeRolePolicyDocument")
         sys.exit(f"{code}: {message}")
 
     wait_ready(client, harness_id)
