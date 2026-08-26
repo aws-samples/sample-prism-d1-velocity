@@ -1257,18 +1257,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
     totals.usage.outputTokens += u.usage.outputTokens;
     totals.usage.costUsd += u.usage.costUsd;
     totals.usage.calls += u.usage.calls;
-    for (const [tool, t] of Object.entries(u.usage.byTool)) {
-      const agg = totals.usage.byTool[tool] ?? { costUsd: 0, calls: 0 };
-      agg.costUsd += t.costUsd;
-      agg.calls += t.calls;
-      totals.usage.byTool[tool] = agg;
-    }
-    for (const [model, m] of Object.entries(u.usage.byModel)) {
-      const agg = totals.usage.byModel[model] ?? { costUsd: 0, calls: 0 };
-      agg.costUsd += m.costUsd;
-      agg.calls += m.calls;
-      totals.usage.byModel[model] = agg;
-    }
+    mergeUsageBreakdowns(totals, u);
     totals.commits.total += u.commits.total;
     totals.commits.ai += u.commits.ai;
     totals.commits.human += u.commits.human;
@@ -1304,6 +1293,7 @@ async function handleProductivityQuery(event: HttpApiEvent): Promise<HttpApiResp
       into.usage.outputTokens += u.usage.outputTokens;
       into.usage.costUsd += u.usage.costUsd;
       into.usage.calls += u.usage.calls;
+      mergeUsageBreakdowns(into, u);
       into.commits.total += u.commits.total;
       into.commits.ai += u.commits.ai;
       into.commits.human += u.commits.human;
@@ -1523,6 +1513,31 @@ async function handleCommitsDailyQuery(event: HttpApiEvent): Promise<HttpApiResp
     generatedAt: new Date().toISOString(),
     days: sorted,
   });
+}
+
+/**
+ * Merge one user's byTool/byModel spend maps into an accumulator.
+ *
+ * Shared by the fleet-total and the human/agent-split loops. It exists as a
+ * function because it did not: the split loop was written later and summed
+ * costUsd, calls, commits and issues but not these two maps, so `totals.usage.byTool`
+ * arrived at the dashboard empty while every scalar beside it was correct. The
+ * Detail view then rendered "no by tool data" next to a populated cost-per-commit
+ * figure. Two loops summing the same shape is the drift; one function is the fix.
+ */
+function mergeUsageBreakdowns(into: UserProductivity, from: UserProductivity): void {
+  for (const [tool, t] of Object.entries(from.usage.byTool)) {
+    const agg = into.usage.byTool[tool] ?? { costUsd: 0, calls: 0 };
+    agg.costUsd = Math.round((agg.costUsd + t.costUsd) * 10000) / 10000;
+    agg.calls += t.calls;
+    into.usage.byTool[tool] = agg;
+  }
+  for (const [model, m] of Object.entries(from.usage.byModel)) {
+    const agg = into.usage.byModel[model] ?? { costUsd: 0, calls: 0 };
+    agg.costUsd = Math.round((agg.costUsd + m.costUsd) * 10000) / 10000;
+    agg.calls += m.calls;
+    into.usage.byModel[model] = agg;
+  }
 }
 
 function accumulateUsage(u: UserProductivity, item: Record<string, { S?: string; N?: string }>): void {
