@@ -54,6 +54,37 @@ def find_existing(client, name: str) -> str | None:
             return None
 
 
+def for_update(client, spec: dict) -> dict:
+    """Adapt a CreateHarness spec to the shape UpdateHarness expects.
+
+    The two operations do not take the same input. Several members that
+    CreateHarness accepts directly are wrapped in an `optionalValue` envelope on
+    UpdateHarness, so that clearing a field can be distinguished from omitting
+    it. At the time of writing that applies to `environmentArtifact`,
+    `authorizerConfiguration` and `memory` -- passing the create shape fails
+    validation client-side with:
+
+        Unknown parameter in environmentArtifact: "containerConfiguration",
+        must be one of: optionalValue
+
+    The set of wrapped members is read off the service model rather than
+    hardcoded, so adding one of the other wrapped fields to `spec` later cannot
+    silently reintroduce this failure.
+    """
+    members = client.meta.service_model.operation_model(
+        "UpdateHarness"
+    ).input_shape.members
+    wrapped = {
+        name
+        for name, shape in members.items()
+        if "optionalValue" in getattr(shape, "members", {})
+    }
+    return {
+        key: {"optionalValue": value} if key in wrapped else value
+        for key, value in spec.items()
+    }
+
+
 def describe(client, harness_id: str) -> dict:
     """Fetch one harness, unwrapping the response envelope.
 
@@ -115,7 +146,7 @@ def main() -> int:
     try:
         if existing:
             print(f"    updating {existing}", file=sys.stderr)
-            client.update_harness(harnessId=existing, **spec)
+            client.update_harness(harnessId=existing, **for_update(client, spec))
             harness_id = existing
         else:
             print(f"    creating {name}", file=sys.stderr)

@@ -102,7 +102,7 @@ docker buildx build \
   --tag "${IMAGE}" \
   --file "${HERE}/Dockerfile" \
   --push \
-  "${HERE}"
+  "${AGENT_DIR}"
 echo "    pushed ${IMAGE}"
 
 # ---- 3. Execution role -------------------------------------------------------
