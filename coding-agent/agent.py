@@ -26,13 +26,35 @@ from config import ConfigError, load_config
 from system_prompt import build_system_prompt, build_task_prompt
 
 
+def _unwrap_issue(payload: dict) -> dict:
+    """Return the issue object, whether or not it is nested under an `issue` key.
+
+    Two producers feed `--issue` and they disagree on shape:
+
+      * eval fixtures (`.coding-agent/fixtures/*.json`) are flat --
+        `{"number": 1, "title": ..., "body": ...}`
+      * the CI workflow wraps, because `gh issue view --json ... | jq '{issue: .}'`
+        produces `{"issue": {"number": 9, ...}}`
+
+    Reading `.get("title")` off the wrapper returns None, so the agent was handed
+    `Fix issue #?: (no title)` with `(no description provided)` as its entire task.
+    It then did the only thing it could -- went looking for something to fix --
+    and produced a correct patch for a bug nobody asked about. The scope-discipline
+    constraints in the system prompt cannot help here: there was no scope to stay
+    inside. That is why this normalises instead of trusting either caller.
+    """
+    if isinstance(payload, dict) and "issue" in payload and isinstance(payload["issue"], dict):
+        return payload["issue"]
+    return payload
+
+
 def _load_issue(args: argparse.Namespace) -> dict:
     """Resolve the issue from a fixture file, a GitHub event payload, or flags."""
     if args.issue:
         path = Path(args.issue)
         if not path.exists():
             raise SystemExit(f"Issue file not found: {path}")
-        return json.loads(path.read_text())
+        return _unwrap_issue(json.loads(path.read_text()))
 
     if args.github_event:
         path = Path(args.github_event)

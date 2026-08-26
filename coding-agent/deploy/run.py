@@ -157,7 +157,14 @@ def main() -> int:
     else:
         issue = json.loads(args.issue)
 
-    issue_number = int(issue.get("number", 0))
+    # The CI workflow wraps the issue (`jq '{issue: .}'`) while eval fixtures are
+    # flat. Normalise here so issue_number, the PR summary, the commit title and
+    # the payload handed to agent.py all read the same shape. Without this the
+    # agent receives an empty title and body and invents its own task.
+    if isinstance(issue.get("issue"), dict):
+        issue = issue["issue"]
+
+    issue_number = int(issue.get("number") or 0)
 
     ref = shlex.quote(args.ref)
     url = shlex.quote(args.repo_url)
