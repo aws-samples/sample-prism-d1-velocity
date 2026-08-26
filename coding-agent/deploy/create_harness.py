@@ -156,9 +156,20 @@ def main() -> int:
         code = exc.response.get("Error", {}).get("Code", "")
         message = exc.response.get("Error", {}).get("Message", str(exc))
         if code == "AccessDeniedException":
+            # The hint names both halves on purpose. The SDK calls CreateHarness /
+            # UpdateHarness / GetHarness / ListHarnesses, but IAM evaluates the
+            # AgentRuntime action underneath each one, so a policy granting only the
+            # *Harness names is denied on *AgentRuntime -- which is what the earlier
+            # version of this message sent people chasing.
             sys.exit(f"{code}: {message}\n"
-                     f"  The calling identity needs bedrock-agentcore:CreateHarness /\n"
-                     f"  UpdateHarness / ListHarnesses, and iam:PassRole for {role}.")
+                     f"  The calling identity needs both halves of each Harness call:\n"
+                     f"    bedrock-agentcore:CreateHarness  + :CreateAgentRuntime\n"
+                     f"    bedrock-agentcore:UpdateHarness  + :UpdateAgentRuntime\n"
+                     f"    bedrock-agentcore:GetHarness     + :GetAgentRuntime\n"
+                     f"    bedrock-agentcore:ListHarnesses  + :ListAgentRuntimes\n"
+                     f"  and iam:PassRole for {role}.\n"
+                     f"  IAM authorizes the AgentRuntime action, not the Harness one --\n"
+                     f"  read the action name in the message above, not this list.")
         sys.exit(f"{code}: {message}")
 
     wait_ready(client, harness_id)
