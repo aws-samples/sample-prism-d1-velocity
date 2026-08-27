@@ -104,7 +104,7 @@ class AgentConfig:
     agent_email: str = "prism-agent@example.com"
     agent_name: str = "PRISM Coding Agent"
     max_attempts: int = 3
-    model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    model_id: str = ""  # Set by --model-id; no default — deploy-harness.sh owns the model choice
     region: str = "us-west-2"
     project_type: str = "unknown"
     source: str = "detected"  # "config" | "detected" | "none"

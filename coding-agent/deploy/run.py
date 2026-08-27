@@ -223,9 +223,12 @@ def main() -> int:
         return 0
 
     model_id = args.model_id or cfg.model_id
+    if not model_id:
+        sys.exit("No model_id. Pass --model-id or set it in .coding-agent/config.json.\n"
+                 "  The harness owns the model choice (deploy-harness.sh MODEL_ID);\n"
+                 "  the workflow should forward it via --model-id.")
     # Set the env var for telemetry (overrides the args-only setdefault from earlier)
-    if model_id:
-        os.environ["PRISM_MODEL_ID"] = model_id
+    os.environ["PRISM_MODEL_ID"] = model_id
     result["model"] = model_id
 
     # Write the issue to a temp file for agent.py
@@ -285,7 +288,7 @@ def main() -> int:
             import boto3 as _b3
             _bedrock = _b3.client("bedrock-runtime", region_name=args.region)
             _summary_resp = _bedrock.converse(
-                modelId=model_id or "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                modelId=model_id,
                 messages=[{
                     "role": "user",
                     "content": [{"text": (
