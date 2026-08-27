@@ -192,7 +192,7 @@ Three details, each of which cost a failed deployment to learn:
 The image is a single mise-based base (~750 MB, 37% of the 2 GB cap) that includes
 the Strands agent SDK, boto3, and the full orchestrator (`run.py` + `agent.py`). It
 ships a version *manager* and installs whatever a repository pins in `.tool-versions`
-at session start. Default model: `us.anthropic.claude-sonnet-5`.
+at session start. Default model: `us.anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
 Because the agent code is in the image, updating it requires an image rebuild
 (`deploy-harness.sh --tag v2`). This is a trade-off for simplicity: the workflow has
@@ -812,7 +812,7 @@ Deployed, through the harness (v13, Claude Sonnet 5):
 ```
 outcome     patched
 verified    True              npm test passes in the microVM
-model       us.anthropic.claude-sonnet-5
+model       us.anthropic.claude-sonnet-4-5-20250929-v1:0
 tokens      ~95K in / ~4.5K out
 cost        ~$0.35 per issue fix
 files       src/routes/tasks.ts + tests/tasks.test.ts

@@ -285,7 +285,7 @@ def main() -> int:
             import boto3 as _b3
             _bedrock = _b3.client("bedrock-runtime", region_name=args.region)
             _summary_resp = _bedrock.converse(
-                modelId=model_id or "us.anthropic.claude-sonnet-5",
+                modelId=model_id or "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                 messages=[{
                     "role": "user",
                     "content": [{"text": (

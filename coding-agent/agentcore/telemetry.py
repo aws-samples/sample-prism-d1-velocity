@@ -60,10 +60,10 @@ PROVIDER = "prism-coding-agent"
 # An unknown model still emits its token counts, which are the durable fact -- cost
 # can be recomputed later from those, but a token count not sent is gone.
 MODEL_PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
-    # Sonnet 5: $3/$15 standard pricing
-    "us.anthropic.claude-sonnet-5": (3.00, 15.00),
-    "anthropic.claude-sonnet-5": (3.00, 15.00),
+    # Sonnet 4.5 / Sonnet 5: $3/$15 standard pricing
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0": (3.00, 15.00),
+    "anthropic.claude-sonnet-5": (3.00, 15.00),
+    "us.anthropic.claude-sonnet-5": (3.00, 15.00),
     "us.anthropic.claude-opus-4-5-20251101-v1:0": (5.00, 25.00),
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": (1.00, 5.00),
     "us.anthropic.claude-3-5-sonnet-20241022-v2:0": (3.00, 15.00),
