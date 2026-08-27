@@ -182,21 +182,50 @@ def describe(client, harness_id: str) -> dict:
     return unwrap_harness(client.get_harness(harnessId=harness_id))
 
 
+def _report_failure(harness_id: str, harness: dict, headline: str):
+    """Exit with everything the harness already told us about why it failed.
+
+    `failureReason` is a member of the Harness shape and is the only field that
+    says *why* provisioning failed. Reporting the status alone -- which is what
+    this did -- costs a whole provisioning run to learn the word "CREATE_FAILED",
+    and the harness then has to be queried by hand to find out anything useful.
+    The image URI and execution role are echoed too because they are the two
+    inputs that most often break a container harness after the control-plane call
+    has already succeeded.
+    """
+    reason = harness.get("failureReason") or "(no failureReason reported)"
+    image = (harness.get("environmentArtifact", {})
+                    .get("containerConfiguration", {})
+                    .get("containerUri", "(none)"))
+    sys.exit(f"{headline}\n"
+             f"  reason:  {reason}\n"
+             f"  image:   {image}\n"
+             f"  role:    {harness.get('executionRoleArn', '(none)')}\n"
+             f"  status:  {harness.get('status', 'unknown')}\n"
+             f"  full detail:\n"
+             f"    aws bedrock-agentcore-control get-harness \\\n"
+             f"      --harness-id {harness_id} --query harness")
+
+
 def wait_ready(client, harness_id: str) -> None:
     deadline = time.monotonic() + READY_TIMEOUT_SECONDS
     last = ""
+    harness: dict = {}
     while time.monotonic() < deadline:
-        status = describe(client, harness_id).get("status", "")
+        harness = describe(client, harness_id)
+        status = harness.get("status", "")
         if status == "READY":
             return
         if status in {"CREATE_FAILED", "UPDATE_FAILED", "FAILED"}:
-            sys.exit(f"harness {harness_id} reached {status}")
+            _report_failure(harness_id, harness,
+                            f"harness {harness_id} reached {status}")
         if status != last:
             print(f"    status {status or 'unknown'}", file=sys.stderr)
             last = status
         time.sleep(POLL_SECONDS)
-    sys.exit(f"harness {harness_id} did not reach READY within "
-             f"{READY_TIMEOUT_SECONDS}s (last status {last or 'unknown'})")
+    _report_failure(harness_id, harness,
+                    f"harness {harness_id} did not reach READY within "
+                    f"{READY_TIMEOUT_SECONDS}s (last status {last or 'unknown'})")
 
 
 def main() -> int:
