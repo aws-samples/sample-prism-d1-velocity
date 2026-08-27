@@ -135,6 +135,40 @@ def for_update(client, spec: dict) -> dict:
     }
 
 
+def unwrap_harness(response: dict) -> dict:
+    """Return the harness object from any single-harness response envelope.
+
+    CreateHarness, UpdateHarness and GetHarness all nest the object under a
+    `harness` key -- they share one `Harness` output shape. Only ListHarnesses
+    differs, returning flat objects in `harnesses`.
+
+    This is a function rather than an inline `.get("harness")` because the same
+    envelope has now been missed twice. First on the read path, where reading
+    `status` off the top level of a get_harness response yielded None forever, so
+    the wait below span its full timeout and reported failure on a harness that
+    had been READY the whole time. Then on the create path, where
+    `created["harnessId"]` raised KeyError: 'harnessId' -- invisible until a
+    provisioning run actually created a harness through this script rather than
+    updating one that already existed.
+    """
+    return response.get("harness", {})
+
+
+def harness_id_from(response: dict, operation: str) -> str:
+    """Pull harnessId out of a create/update response, or say what came back.
+
+    A bare KeyError names the missing key but not the envelope it was missing
+    from, which is a poor trade when the call costs a full provisioning run.
+    """
+    harness = unwrap_harness(response)
+    harness_id = harness.get("harnessId")
+    if not harness_id:
+        sys.exit(f"{operation} returned no harnessId.\n"
+                 f"  envelope keys: {sorted(response)}\n"
+                 f"  harness keys:  {sorted(harness) or '(harness key absent)'}")
+    return harness_id
+
+
 def describe(client, harness_id: str) -> dict:
     """Fetch one harness, unwrapping the response envelope.
 
@@ -145,7 +179,7 @@ def describe(client, harness_id: str) -> dict:
     been READY the whole time. The same mistake also made `maxIterations` look
     unset on a harness that had it set to 40.
     """
-    return client.get_harness(harnessId=harness_id).get("harness", {})
+    return unwrap_harness(client.get_harness(harnessId=harness_id))
 
 
 def wait_ready(client, harness_id: str) -> None:
@@ -203,7 +237,7 @@ def main() -> int:
             print(f"    creating {name}", file=sys.stderr)
             created = _call_with_role_propagation_retry(
                 "create", lambda: client.create_harness(harnessName=name, **spec))
-            harness_id = created["harnessId"]
+            harness_id = harness_id_from(created, "create_harness")
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         message = exc.response.get("Error", {}).get("Message", str(exc))
