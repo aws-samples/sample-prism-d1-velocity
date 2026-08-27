@@ -31,7 +31,7 @@ TAG="v1"
 NAME="PrismCodingAgent"
 ECR_REPO="prism/coding-agent-harness"
 ROLE_NAME="PrismCodingAgentHarnessRole"
-MODEL_ID="us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+MODEL_ID="us.anthropic.claude-sonnet-5"
 # Matches agentcore.contract.MAX_ITERATIONS. The client passes maxIterations on
 # every InvokeHarness call, so this is only the fallback for callers that do not.
 MAX_ITERATIONS=100
