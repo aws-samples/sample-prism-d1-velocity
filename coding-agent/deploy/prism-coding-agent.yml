@@ -113,15 +113,20 @@ jobs:
           fi
           echo "arn=${ARN}" >> "$GITHUB_OUTPUT"
           echo "Harness: ${ARN}"
-          # Extract model from the harness so run.py doesn't need its own default.
-          # deploy-harness.sh is the single source of truth for which model to use.
-          HARNESS_ID=$(echo "${ARN}" | grep -oP '[^/]+$')
-          MODEL_ID=$(python3 -c "
+          # Resolve the model. SSM is the primary source (written by deploy-harness.sh,
+          # readable by the OIDC role). Fallback: extract from the harness API (requires
+          # bedrock-agentcore:GetAgentRuntime which not all roles have).
+          MODEL_ID=$(aws ssm get-parameter --name /prism/d1/harness-model \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [[ -z "${MODEL_ID}" ]]; then
+            HARNESS_ID=$(echo "${ARN}" | grep -oP '[^/]+$')
+            MODEL_ID=$(python3 -c "
           import boto3, json
           c = boto3.client('bedrock-agentcore-control', region_name='${PRISM_AWS_REGION}')
           h = c.get_harness(harnessId='${HARNESS_ID}')['harness']
           print(h.get('model',{}).get('bedrockModelConfig',{}).get('modelId',''))
           " 2>/dev/null || echo "")
+          fi
           echo "model=${MODEL_ID}" >> "$GITHUB_OUTPUT"
           echo "Model: ${MODEL_ID}"
 

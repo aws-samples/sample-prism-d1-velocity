@@ -242,10 +242,14 @@ export default {
           // The coding agent workflow invokes the harness (InvokeHarness) and runs
           // deterministic shell commands in the same session (InvokeAgentRuntimeCommand)
           // for clone, toolchain install, dependency install, and verification.
+          // GetHarness (→ GetAgentRuntime) resolves the model from the harness config
+          // as a fallback when the SSM parameter is missing.
           Effect: 'Allow',
           Action: [
             'bedrock-agentcore:InvokeHarness',
             'bedrock-agentcore:InvokeAgentRuntimeCommand',
+            'bedrock-agentcore:GetHarness',
+            'bedrock-agentcore:GetAgentRuntime',
           ],
           Resource: `arn:aws:bedrock-agentcore:${region}:${accountId}:harness/*`,
         },

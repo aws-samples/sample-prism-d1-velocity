@@ -135,7 +135,13 @@ POLICY=$(cat <<JSON
    "bedrock-agentcore:RetrieveMemoryRecords","bedrock-agentcore:ListMemoryRecords",
    "bedrock-agentcore:GetMemoryRecord","bedrock-agentcore:GetMemory",
    "bedrock-agentcore:CreateMemory","bedrock-agentcore:ListMemories"],
-  "Resource":"*"}
+  "Resource":"*"},
+ {"Sid":"SsmTelemetryConfig","Effect":"Allow","Action":[
+   "ssm:GetParameter","ssm:GetParameters"],
+  "Resource":"arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/prism/d1/*"},
+ {"Sid":"SecretsManagerAgentCreds","Effect":"Allow","Action":[
+   "secretsmanager:GetSecretValue"],
+  "Resource":"arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:prism-d1-*"}
 ]}
 JSON
 )
@@ -167,8 +173,8 @@ HARNESS_ARN=$(
 )
 echo "    ${HARNESS_ARN}"
 
-# ---- 5. Write the ARN to SSM so it is discoverable without manual copying ----
-echo "==> SSM parameter"
+# ---- 5. Write the ARN and model to SSM so they are discoverable without manual copying ----
+echo "==> SSM parameters"
 aws ssm put-parameter \
   --name /prism/d1/harness-arn \
   --value "${HARNESS_ARN}" \
@@ -176,6 +182,13 @@ aws ssm put-parameter \
   --overwrite \
   --description "AgentCore harness ARN — written by deploy-harness.sh" >/dev/null
 echo "    /prism/d1/harness-arn = ${HARNESS_ARN}"
+aws ssm put-parameter \
+  --name /prism/d1/harness-model \
+  --value "${MODEL_ID}" \
+  --type String \
+  --overwrite \
+  --description "Model ID used by the coding agent — written by deploy-harness.sh" >/dev/null
+echo "    /prism/d1/harness-model = ${MODEL_ID}"
 
 cat <<EOF
 
