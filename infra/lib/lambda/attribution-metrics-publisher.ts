@@ -57,6 +57,10 @@ interface StreamImage {
   was_reverted?: AttributeValue;
   timestamp?: AttributeValue;
   record_type?: AttributeValue;
+  /** Origin verdict frozen by the receiver at ingest. Absent on legacy items. */
+  ai_origin?: AttributeValue;
+  /** Tool frozen alongside ai_origin. Absent on legacy items. */
+  ai_tool?: AttributeValue;
 }
 
 interface StreamRecord {

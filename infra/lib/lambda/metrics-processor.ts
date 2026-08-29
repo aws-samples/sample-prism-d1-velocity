@@ -2,6 +2,7 @@ import { PERSISTED_SECTIONS, validateEventShape } from './event-schema';
 import {
   DynamoDBClient,
   PutItemCommand,
+  UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb';
 import {
   CloudWatchClient,
@@ -864,11 +865,25 @@ function mapUnit(unit: string): StandardUnit {
  *
  *   OR (ai_origin = :human AND :ao = :ai)
  *
- * So ordering between PR merge and codeburn sync does not matter:
- * - If codeburn pushed first: item already has ai_origin=ai-generated, this
- *   write is rejected by the condition (never downgrade ai→human). ✓
- * - If PR merges first: item is written as human, codeburn upgrades later. ✓
- * - Simultaneous: DDB conditional write is atomic, one wins. ✓
+ * Two writes, because the two fields have different ownership:
+ *
+ *   ai_origin — either side may write it; the receiver upgrades human→ai and
+ *     refuses ai→human, so ordering is genuinely irrelevant.
+ *   in_main   — ONLY this function can write it. A PR merge is the only event
+ *     that knows a commit reached the default branch; the receiver leaves
+ *     in_main alone on existing items because codeburn cannot know about
+ *     merges.
+ *
+ * Write 1 is create-if-absent. Write 2 promotes in_main on an item that
+ * already existed, which Write 1 cannot do — its condition is
+ * attribute_not_exists(pk), all-or-nothing on the whole item, so a
+ * pre-existing commit loses the in_main=true silently.
+ *
+ * That mattered only for the coding agent. Human codeburn syncs run on a 12h
+ * schedule so the merge event effectively always arrives first and Write 1
+ * covers it; the agent's emit_commit fires synchronously at commit time, tens
+ * of seconds ahead of the merge event, so its commits always pre-existed and
+ * reported 0 shipped.
  *
  * The repo format from the CI workflow is bare (owner/name), but codeburn
  * stores with a host prefix (github.com/owner/name). We write under the bare
@@ -894,6 +909,7 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
   const ttl = Math.floor(Date.now() / 1000) + 365 * 86400; // 1 year
 
   let seeded = 0;
+  let promoted = 0;
   for (let i = 0; i < shas.length; i++) {
     const sha = shas[i];
     const author = authors[i] ?? ''; // parallel array; may be shorter or absent
@@ -921,10 +937,9 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
             gsi_user_sk: { S: `COMMIT#${timestamp}` },
           } : {}),
         },
-        // Only write if the item does NOT already exist. If codeburn already
-        // pushed this commit (with ai_origin=ai-generated), do not overwrite.
-        // If the metrics-processor already seeded it on a prior invocation
-        // (retry), this is idempotent.
+        // Write 1 of 2: create the item only if it does not already exist, so a
+        // commit codeburn pushed first keeps its ai_origin=ai-generated verdict
+        // (never downgrade ai→human). Idempotent on processor retry.
         ConditionExpression: 'attribute_not_exists(pk)',
       }));
       seeded++;
@@ -936,9 +951,61 @@ async function seedCommitAttribution(detailType: string, detail: any): Promise<v
         throw err;
       }
     }
+
+    // Write 2 of 2: promote in_main on an item that already existed.
+    //
+    // in_main has exactly ONE writer: this CI seed. A PR merge is the only
+    // event that knows a commit reached the default branch — the receiver
+    // deliberately leaves in_main alone on existing items precisely because
+    // codeburn cannot know about merges.
+    //
+    // Write 1 therefore cannot be the only write. Its condition is
+    // attribute_not_exists(pk), which is all-or-nothing on the WHOLE item, so
+    // when the commit already exists the in_main=true is discarded along with
+    // everything else and the commit never counts as shipped.
+    //
+    // That was invisible for human developers, whose codeburn sync runs on a
+    // 12h schedule: the merge event virtually always arrives first, Write 1
+    // creates the item, and in_main is correct. The coding agent breaks the
+    // assumption — emit_commit fires synchronously at commit time, tens of
+    // seconds BEFORE the merge event, so the agent's own commits always lost
+    // the race and reported 0 shipped forever.
+    //
+    // Only ever false→true: CI reports merges, never un-merges, so this is
+    // monotonic and cannot fight the receiver. ai_origin/ai_tool are
+    // untouched, leaving the frozen attribution verdict authoritative.
+    try {
+      await dynamoClient.send(new UpdateItemCommand({
+        TableName: AI_USAGE_TABLE,
+        Key: {
+          pk: { S: `REPO#${repo}` },
+          sk: { S: `COMMIT#${sha}` },
+        },
+        UpdateExpression: 'SET in_main = :true, updated_at = :now',
+        // Skip the no-op write when in_main is already true, so the DynamoDB
+        // stream does not emit a MODIFY the attribution publisher would have
+        // to filter out.
+        ConditionExpression: 'attribute_exists(pk) AND in_main = :false',
+        ExpressionAttributeValues: {
+          ':true': { BOOL: true },
+          ':false': { BOOL: false },
+          ':now': { S: new Date().toISOString() },
+        },
+      }));
+      promoted++;
+    } catch (err: any) {
+      // Already true, or the item does not exist because Write 1 just created
+      // it with in_main=true. Both are the expected steady state.
+      if (err.name !== 'ConditionalCheckFailedException') {
+        console.error(`[seedCommitAttribution] Failed to promote in_main for ${sha}:`, err);
+        throw err;
+      }
+    }
   }
 
-  if (seeded > 0) {
-    console.log(`[seedCommitAttribution] Seeded ${seeded}/${shas.length} commits as human for ${repo}`);
+  if (seeded > 0 || promoted > 0) {
+    console.log(
+      `[seedCommitAttribution] repo=${repo} seeded=${seeded} promoted_in_main=${promoted} of ${shas.length}`,
+    );
   }
 }
