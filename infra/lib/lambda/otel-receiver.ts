@@ -231,10 +231,33 @@ export function parseOtlpSpans(payload: OtlpPayload): {
   spans: ParsedSpan[];
   attributionSpans: ParsedAttributionSpan[];
   rejected: number;
+  /**
+   * Per-reason rejection counts.
+   *
+   * `rejected` alone cost an afternoon of code reading to explain a workshop
+   * account showing 5 human / 0 AI commits: the receiver knew exactly which
+   * branch fired and reported the string 'Spans missing required attributes or
+   * failed validation' for all of them. A wire-contract break is now one log
+   * line instead of a bisect over published npm tarballs.
+   */
+  rejectedReasons: {
+    malformedSpan: number;
+    noSession: number;
+    noSha: number;
+    noRepo: number;
+    noProvider: number;
+    badTokens: number;
+  };
 } {
   const spans: ParsedSpan[] = [];
   const attributionSpans: ParsedAttributionSpan[] = [];
   let rejected = 0;
+  let rejectedMalformed = 0;
+  let rejectedNoSession = 0;
+  let rejectedNoSha = 0;
+  let rejectedNoRepo = 0;
+  let rejectedNoProvider = 0;
+  let rejectedBadTokens = 0;
 
   for (const rs of payload.resourceSpans ?? []) {
     const resourceAttrs = attrMap(rs.resource?.attributes);
@@ -249,6 +272,7 @@ export function parseOtlpSpans(payload: OtlpPayload): {
         const timestamp = nanoToIso(span.startTimeUnixNano);
 
         if (!/^[0-9a-f]{16}$/i.test(spanId) || !timestamp) {
+          rejectedMalformed++;
           rejected++;
           continue;
         }
@@ -256,15 +280,33 @@ export function parseOtlpSpans(payload: OtlpPayload): {
         // --- Attribution spans ---
         const attrKind = ATTRIBUTION_SPAN_NAMES[spanName];
         if (attrKind) {
-          const sessionId = str(attrs.get('ai.session_id'));
-          if (!sessionId) { rejected++; continue; }
+          // Session identity moved twice across codeburn releases: `ai.session_id`
+          // (<= 0.9.20) -> dropped entirely (0.9.21, 0.9.22) -> `ai.work_unit_id`
+          // (0.9.23+). This used to hard-reject when `ai.session_id` was absent,
+          // which silently discarded EVERY attribution fact from any codeburn
+          // newer than 0.9.20 -- both kinds, because the check ran before the
+          // session/commit split. The dashboard then showed 100% human commits
+          // with no error surfaced anywhere.
+          //
+          // Falling back to traceId is sound, not a workaround: codeburn derives
+          // the traceId FROM the session id (deriveTraceId(sessionId)), and
+          // traceId -- not sessionId -- is the key every join in this file uses
+          // (buildUserTraceMap, resolveStoredOrigin). Rejecting on a field the
+          // join never reads was strictly worse than accepting the span.
+          const sessionId =
+            str(attrs.get('ai.session_id')) ||
+            str(attrs.get('ai.work_unit_id')) ||
+            traceId.toLowerCase();
+          if (!sessionId) { rejectedNoSession++; rejected++; continue; }
 
           const endTimestamp = nanoToIso(span.endTimeUnixNano) || timestamp;
           const repo = str(attrs.get('git.repo')) || null;
 
           if (attrKind === 'commit') {
             const sha = str(attrs.get('git.sha'));
-            if (!sha || !repo) { rejected++; continue; } // commits without repo can't be joined
+            // commits without repo can't be joined
+            if (!sha) { rejectedNoSha++; rejected++; continue; }
+            if (!repo) { rejectedNoRepo++; rejected++; continue; }
             attributionSpans.push({
               kind: 'commit',
               spanId: spanId.toLowerCase(),
@@ -315,6 +357,7 @@ export function parseOtlpSpans(payload: OtlpPayload): {
         // --- Usage spans (existing logic) ---
         const provider = str(attrs.get('ai.provider'));
         if (!provider) {
+          rejectedNoProvider++;
           rejected++;
           continue;
         }
@@ -326,6 +369,7 @@ export function parseOtlpSpans(payload: OtlpPayload): {
           inputTokens < 0 || outputTokens < 0 || costUsd < 0 ||
           inputTokens > 100_000_000 || outputTokens > 100_000_000 || costUsd > 10_000
         ) {
+          rejectedBadTokens++;
           rejected++;
           continue;
         }
@@ -352,7 +396,19 @@ export function parseOtlpSpans(payload: OtlpPayload): {
     }
   }
 
-  return { spans, attributionSpans, rejected };
+  return {
+    spans,
+    attributionSpans,
+    rejected,
+    rejectedReasons: {
+      malformedSpan: rejectedMalformed,
+      noSession: rejectedNoSession,
+      noSha: rejectedNoSha,
+      noRepo: rejectedNoRepo,
+      noProvider: rejectedNoProvider,
+      badTokens: rejectedBadTokens,
+    },
+  };
 }
 
 // ---- Route: discovery doc ----
@@ -727,7 +783,7 @@ async function handleTraces(event: HttpApiEvent): Promise<HttpApiResponse> {
     return jsonResponse(400, { message: 'Body is not valid JSON' });
   }
 
-  const { spans, attributionSpans, rejected } = parseOtlpSpans(payload);
+  const { spans, attributionSpans, rejected, rejectedReasons } = parseOtlpSpans(payload);
   const totalAccepted = spans.length + attributionSpans.length;
 
   if (totalAccepted > MAX_BATCH_SIZE) {
@@ -743,16 +799,30 @@ async function handleTraces(event: HttpApiEvent): Promise<HttpApiResponse> {
   // Process attribution spans (new flow)
   const attrWritten = await processAttributionSpans(user, attributionSpans);
 
+  // Only name the reasons that actually fired — a always-present zero-filled
+  // breakdown is noise on the overwhelmingly common clean batch.
+  const reasonDetail = Object.entries(rejectedReasons)
+    .filter(([, n]) => n > 0)
+    .map(([reason, n]) => `${reason}=${n}`)
+    .join(' ');
+
   console.log(
     `[otel-receiver] user=${user} ` +
     `usage: received=${spans.length} new=${usageWritten} dupes=${spans.length - usageWritten} | ` +
     `attribution: received=${attributionSpans.length} written=${attrWritten} | ` +
-    `rejected=${rejected}`,
+    `rejected=${rejected}${reasonDetail ? ` (${reasonDetail})` : ''}`,
   );
 
   if (rejected > 0) {
     return jsonResponse(200, {
-      partialSuccess: { rejectedSpans: rejected, errorMessage: 'Spans missing required attributes or failed validation' },
+      partialSuccess: {
+        rejectedSpans: rejected,
+        // Name the failing validation instead of a generic string: the client
+        // prints this, so a contract break is actionable from the CLI output
+        // rather than requiring receiver log access.
+        errorMessage: `Spans failed validation: ${reasonDetail}`,
+        rejectedReasons,
+      },
     });
   }
   return jsonResponse(200, {});

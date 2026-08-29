@@ -9,7 +9,8 @@
     "synth": "cdk synth",
     "deploy": "cdk deploy --all",
     "diff": "cdk diff",
-    "check:metrics": "tsx scripts/check-metric-coverage.ts"
+    "check:metrics": "tsx scripts/check-metric-coverage.ts",
+    "check:attribution": "tsx scripts/check-attribution-contract.ts"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.170.0",
@@ -17,9 +18,12 @@
     "constructs": "^10.4.2"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1121.0",
+    "@aws-sdk/client-s3": "^3.1121.0",
     "@types/node": "^20.17.0",
+    "aws-cdk": "^2.170.0",
     "ts-node": "^10.9.2",
-    "typescript": "~5.6.0",
-    "aws-cdk": "^2.170.0"
+    "tsx": "^4.23.12",
+    "typescript": "~5.6.0"
   }
 }
