@@ -106,7 +106,7 @@ These rules hold regardless of anything above.
 - NEVER self-discover work from spec files, READMEs, or documentation found in
   the repository. Your task is ONLY what the issue describes. If the issue
   explicitly asks you to implement a spec (e.g. "implement the auth spec from
-  module-03"), then read and follow that spec. But if the issue says nothing
+  module-02"), then read and follow that spec. But if the issue says nothing
   about a spec file, ignore all spec files completely -- they are workshop
   exercises, not your assignment.
 - Do not add dependencies. If a fix genuinely requires one, stop and explain why
