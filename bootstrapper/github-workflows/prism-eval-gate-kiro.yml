@@ -298,6 +298,21 @@ jobs:
           if [ -z "$CODE_REVIEW_ID" ]; then
             echo "No Code Review found for ${REPO_SLUG} -- bootstrapping..."
 
+            # Continuum rejects a title containing anything outside
+            # [A-Za-z0-9_-]. REPO_SLUG keeps the dot from the host component
+            # (github.com-owner-repo) because SSM parameter names and S3 keys
+            # both accept dots and those paths must stay stable. The title is
+            # the only consumer that cannot, so it gets its own sanitised form
+            # rather than reshaping the slug everywhere.
+            #
+            # This broke when CI switched to emitting fully-qualified repo names
+            # (github.com/owner/repo) so the attribution keys would match
+            # codeburn's. A bare owner/repo slug had no dot and validated fine.
+            #
+            # printf, not echo: tr -c would otherwise rewrite the trailing
+            # newline into a hyphen and leave every title ending in one.
+            CR_TITLE=$(printf '%s-ci-diff-scan' "${REPO_SLUG}" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-100)
+
             # Get service role (SSM or convention fallback)
             SERVICE_ROLE=$(aws ssm get-parameter --name /prism/continuum/service-role-arn --query Parameter.Value --output text 2>/dev/null || echo "")
             if [ -z "$SERVICE_ROLE" ]; then
@@ -313,11 +328,17 @@ jobs:
             # Create the Code Review resource
             CR_OUTPUT=$(aws securityagent create-code-review \
               --agent-space-id "$AGENT_SPACE_ID" \
-              --title "${REPO_SLUG}-ci-diff-scan" \
+              --title "$CR_TITLE" \
               --service-role "$SERVICE_ROLE" \
               --assets "{\"sourceCode\":[{\"s3Location\":\"s3://${SCAN_BUCKET}/repo/${REPO_SLUG}/latest.zip\"}]}" \
               --output json 2>&1) || true
-            CODE_REVIEW_ID=$(echo "$CR_OUTPUT" | jq -r '.codeReviewId // empty' 2>/dev/null)
+            # `|| echo ""` is load-bearing. CR_OUTPUT captures stderr via 2>&1,
+            # so a failed create leaves AWS's error TEXT here, not JSON. jq exits
+            # 5 on a parse error, and under bash -eo pipefail that aborts the
+            # whole step -- which made the diagnostic below unreachable and
+            # surfaced a bare "Process completed with exit code 5" instead of the
+            # actual ValidationException.
+            CODE_REVIEW_ID=$(echo "$CR_OUTPUT" | jq -r '.codeReviewId // empty' 2>/dev/null || echo "")
 
             if [ -z "$CODE_REVIEW_ID" ]; then
               echo "::error::Could not create the Continuum Code Review resource: ${CR_OUTPUT}"
