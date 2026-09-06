@@ -11,6 +11,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Developer Setup](#developer-setup)
 - [CI-CD Workflows (GitHub and GitLab)](#ci-cd-workflows-github-and-gitlab)
 - [Eval Gates](#eval-gates)
+- [Bedrock Protection Audit](#bedrock-protection-audit)
 - [AWS Continuum Security Agent](#aws-continuum-security-agent)
 - [Dashboards](#dashboards)
 - [Agent Development (MCP + Agent Configs)](#agent-development-mcp--agent-configs)
@@ -421,10 +422,19 @@ Installs:
 
 **How it works:**
 1. PR opened → workflow triggers
-2. kiro-cli reads changed files + the diff via `--trust-all-tools`
-3. Outputs structured JSON: findings with file/line, severity, score
-4. Gate fails if any high-severity finding or score < 0.82
-5. PR comment posted with findings table
+2. **gitleaks installs and scans first**, before anything else runs (see [Secret Scanning](#secret-scanning-gitleaks) for why the order matters)
+3. kiro-cli installs **only if the `KIRO_API_KEY` secret is present** — on a fork PR the install is skipped rather than piping `curl` into `bash` for a binary that will never be invoked
+4. kiro-cli reads the changed files + the diff via `--trust-all-tools`
+5. Outputs structured JSON: findings with file/line, severity, score
+6. Gate fails if any high-severity finding, score < 0.82, **or any gitleaks finding**
+7. PR comment posted with the review verdict and the secret-scan result
+
+Without `KIRO_API_KEY` the review reports `SKIPPED` — never a silent pass — while the secret scan
+still runs and can still block. That is the fork-PR condition, and it is why gitleaks is the gate
+with teeth there.
+
+A failing gate does **not** block the merge on its own; see
+[Making the Gate Block Merges](#making-the-gate-block-merges).
 
 ### Secret Scanning (gitleaks)
 
@@ -433,6 +443,7 @@ The eval gate also performs secret scanning using gitleaks:
 - **Pinned version:** 8.28.0 with a hard-pinned verified SHA256 checksum
 - **Scan scope:** Only the PR's commit range (`BASE..HEAD`), **not** full repository history
 - **Redaction:** Always uses `--redact` — detected secrets are never printed into the CI log
+- **Runs first:** gitleaks installs and scans ahead of the kiro-cli install, the review and the Continuum scan. The order is load-bearing rather than cosmetic — the kiro-cli install pipes `curl` into `bash` with no failure guard, so behind it a network blip or an unsupported glibc would abort the job and take out the one gate that needs no secret. It also means a committed credential surfaces without waiting on a model call
 - **No skip:** gitleaks never skips. It runs on every PR, including fork PRs (it needs no secret and no AWS role, so it is the **only** gate that functions when `KIRO_API_KEY` is unavailable)
 - **Fail-closed:** Install failure, scan error, or any finding fails the gate
 
@@ -609,6 +620,126 @@ the scan, the gate fails.
 ```bash
 prism-cli bootstrapper install-eval-harness --uninstall
 ```
+
+---
+
+## Bedrock Protection Audit
+
+Two read-only commands that audit an account and a repository for LLMjacking exposure — credential
+theft aimed at model inference, where a leaked long-lived key is spent on Bedrock. Full rationale,
+the layered model and the check-by-check reference are in
+**[Bedrock Protection](docs/BEDROCK-PROTECTION.md)**; this section is how to run them.
+
+```bash
+# AWS account — IAM credential hygiene + Bedrock spend guardrails (15 checks)
+prism-cli bedrock-protection scan-account --region us-west-2
+
+# Repository — gitleaks over full history, working tree and commit messages (6 checks)
+prism-cli bedrock-protection scan-repo
+```
+
+Both are **audit-only**: nothing is provisioned, rotated or deleted. The one non-read AWS call is
+`iam:GenerateCredentialReport`, which produces a report artifact — IAM has no way to read the report
+without generating it first.
+
+### scan-account
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `--region <region>` | `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
+| `--profile <name>` | ambient credentials | AWS CLI profile to audit |
+| `--max-key-age <days>` | `90` | Flag active access keys older than this |
+| `--unused-days <days>` | `90` | Flag credentials idle longer than this |
+| `--iam-only` | — | Only the 7 IAM credential hygiene checks |
+| `--bedrock-only` | — | Only the 8 Bedrock spend guardrail and forensics checks |
+| `--json` | — | Machine-readable output |
+| `--fail-on <severity>` | `none` | Exit 1 if any FAIL is at or above this severity |
+
+Covers root MFA and root access keys, access key age, console users without MFA,
+`AdministratorAccess` attached directly to users, idle credentials, password policy, budgets across
+**both** Bedrock billing surfaces, budget alert subscribers, Cost Explorer, cost anomaly detection,
+a CloudWatch alarm on `AWS/Bedrock` metrics, Provisioned Throughput commitments, and model
+invocation logging.
+
+### scan-repo
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `--repo <path>` | `.` | Repository to scan |
+| `--gitleaks <path>` | `$GITLEAKS_PATH`, then `PATH` | Path to the gitleaks binary |
+| `--skip-history` | — | Skip the full-history scan (the slow one on a large repo) |
+| `--json` | — | Machine-readable output |
+| `--fail-on <severity>` | `none` | Exit 1 if any FAIL is at or above this severity |
+
+Requires a `gitleaks` binary. It is **not** auto-downloaded — the CI eval gate fetches a
+version-pinned, checksum-verified binary into a disposable container, but a developer CLI silently
+pulling an executable onto a workstation is a different risk. Without it the three detection checks
+report INDETERMINATE and state that the repository is not cleared.
+
+Honours `.gitleaks.toml` (auto-loaded by gitleaks from the scanned path) and
+`.prism/gitleaks-baseline.json`, the same tuning surface as the [eval gate](#eval-gates). When either
+is present the report says so, because a silently applied allowlist is indistinguishable from a clean
+repository.
+
+**This is a different scope from the CI gate, deliberately.** The gate scans only the PR's commits
+(`BASE..HEAD`) so it can go green on a repo with pre-existing findings; `scan-repo` scans all
+history, all refs, the working tree including ignored files, and commit message text. A green gate
+means nothing new was added — not that the repository is clean.
+
+### Reading the output
+
+Three statuses, and the third one matters:
+
+| Status | Meaning |
+|--------|---------|
+| ✅ `PASS` | Control present and asserted |
+| ❌ `FAIL` | Control absent or ineffective |
+| ❓ `INDETERMINATE` | **The check could not run.** Not a pass |
+
+A missing IAM permission, Cost Explorer being disabled, or an absent gitleaks binary all produce
+INDETERMINATE. The summary names them and tells you to treat the result as a floor:
+
+```
+15 checks: 4 pass, 9 fail, 2 indeterminate
+Findings by severity: CRITICAL 1, HIGH 4, MEDIUM 4, LOW 0
+
+❓ 2 check(s) could not run and are NOT passes: budget-alerting, anomaly-monitor
+   Treat the result as a floor, not a clean bill of health.
+```
+
+Secret values never appear in output. `scan-repo` always passes `--redact` and projects only rule id,
+path, line and commit — never the matched value, and never the commit message, which is itself a
+scan target.
+
+### Running in CI
+
+```bash
+prism-cli bedrock-protection scan-account --json --fail-on HIGH
+prism-cli bedrock-protection scan-repo --json --fail-on CRITICAL
+```
+
+`--fail-on` reacts only to **FAIL**, never INDETERMINATE — otherwise a missing permission would be
+indistinguishable from a real finding. Assert on the indeterminate count in the JSON separately, so a
+silently degraded audit does not read as a passing one.
+
+Required read-only permissions:
+
+```
+iam:GetAccountSummary, iam:GetAccountPasswordPolicy, iam:ListUsers,
+iam:ListAttachedUserPolicies, iam:GenerateCredentialReport, iam:GetCredentialReport,
+budgets:DescribeBudgets, budgets:DescribeBudgetNotificationsForAccount,
+budgets:DescribeSubscribersForNotification, ce:GetAnomalyMonitors,
+ce:GetAnomalySubscriptions, cloudwatch:DescribeAlarms,
+bedrock:ListProvisionedModelThroughputs,
+bedrock:GetModelInvocationLoggingConfiguration, sts:GetCallerIdentity
+```
+
+### Limitations
+
+- No `--fix`. Audit only.
+- Single account per invocation; no Organization scope.
+- `provisioned-throughput` is region-scoped — a commitment elsewhere will not appear.
+- Budget limits are not judged for size. A $1,000,000 Bedrock budget passes.
 
 ---
 
