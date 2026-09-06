@@ -1,14 +1,27 @@
-# prism-eval-gate.yml — Evaluate AI-generated code quality on MRs.
+# prism-eval-gate.yml — AI code quality gate using kiro-cli headless mode,
+# plus gitleaks secret scanning.
 #
 # Include this file in your .gitlab-ci.yml:
 #   include:
 #     - local: '.prism/gitlab-workflows/prism-eval-gate.yml'
 #
 # Required setup:
-#   - CI/CD variable PRISM_METRICS_ROLE_ARN (IAM role with bedrock:InvokeModel + events:PutEvents)
+#   - CI/CD variable KIRO_API_KEY (masked). Generate at https://app.kiro.dev
 #   - PRISM_AWS_REGION variable in the variables: block below controls the region
-#   - .prism/eval-harness/ directory in your repo (run: prism-cli bootstrapper install-eval-harness)
-#   - At least one rubric JSON in .prism/eval-harness/rubrics/
+#   - (Optional) CI/CD variable PRISM_METRICS_ROLE_ARN for EventBridge metrics
+#
+# The Bedrock rubric gate that used to live in this file is retired. It scored
+# changed files against .prism/eval-harness/rubrics/*.json via run-eval.sh; the
+# review is now agentic (kiro-cli against .kiro/steering/code-review.md). The
+# job name and include path are unchanged so existing .gitlab-ci.yml files and
+# any merge-request approval rule matching this job keep working.
+#
+# .prism/eval-harness/ is still installed and still used — by prism-agent-eval,
+# which remains Bedrock-scored. It is no longer read by this gate.
+#
+# Secret scanning needs no CI/CD variable and no AWS role, so unlike the review
+# it also functions on fork merge requests, where GitLab withholds protected
+# variables and KIRO_API_KEY is therefore absent.
 
 prism-eval-gate:
   stage: test
@@ -24,138 +37,342 @@ prism-eval-gate:
     PRISM_AWS_REGION: us-west-2
     AWS_DEFAULT_REGION: $PRISM_AWS_REGION
     PRISM_REPO: ${CI_SERVER_HOST}/${CI_PROJECT_PATH}
+    # Full history: the scan and the review both diff BASE..HEAD, and a shallow
+    # clone makes that range unresolvable.
+    GIT_DEPTH: 0
+    # Pinned deliberately, with the digest verified out of band. Floating to
+    # latest would let an upstream release change what this gate blocks without
+    # a repo change; reading the checksum from the release's own checksums.txt
+    # would confirm nothing if the release itself were replaced.
+    GITLEAKS_VERSION: "8.28.0"
+    GITLEAKS_SHA256: "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb"
   before_script:
-    - yum install -y -q jq bc git
-    - git fetch --unshallow || true
-    - |
-      # Assume AWS role via GitLab OIDC
-      if [[ -n "${PRISM_METRICS_ROLE_ARN}" && -n "${GITLAB_OIDC_TOKEN}" ]]; then
-        echo "Assuming role via OIDC: ${PRISM_METRICS_ROLE_ARN}"
-        if CREDS=$(aws sts assume-role-with-web-identity \
-          --role-arn "${PRISM_METRICS_ROLE_ARN}" \
-          --role-session-name "gitlab-ci-${CI_JOB_ID}" \
-          --web-identity-token "${GITLAB_OIDC_TOKEN}" \
-          --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
-          --output text 2>&1); then
-          export AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}')
-          export AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}')
-          export AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}')
-          echo "✓ OIDC credentials acquired."
-        else
-          echo "⚠️ OIDC assume-role failed: ${CREDS}"
-        fi
-      elif [[ -n "${PRISM_METRICS_ROLE_ARN}" ]]; then
-        echo "⚠️ PRISM_METRICS_ROLE_ARN set but GITLAB_OIDC_TOKEN is empty."
-      fi
+    # unzip is not optional: the kiro-cli installer hard-errors without it.
+    # tar/gzip are for the gitleaks tarball, which the aws-cli image also lacks.
+    - yum install -y -q jq git tar gzip unzip which >/dev/null 2>&1 || yum install -y jq git tar gzip unzip
+    - git fetch --unshallow 2>/dev/null || true
   script:
     - |
-      # Skip if no AWS credentials available
-      if ! aws sts get-caller-identity &>/dev/null; then
-        echo "⚠️ No AWS credentials. Set PRISM_METRICS_ROLE_ARN or configure AWS access."
-        exit 0
-      fi
+      set -u
+      GATE_FAILED=0
 
+      BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}"
+      HEAD_SHA="${CI_COMMIT_SHA:-}"
       TEAM_ID=$(jq -r '.team_id // "no_team"' .prism/config.json 2>/dev/null || echo "no_team")
-      BASE_SHA="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
-      HEAD_SHA="${CI_COMMIT_SHA}"
 
-      # Skip if eval harness not installed
-      if [[ ! -f ".prism/eval-harness/run-eval.sh" ]]; then
-        echo "Eval harness not installed. Run: prism-cli bootstrapper install-eval-harness"
-        echo "Skipping eval gate."
-        exit 0
-      fi
+      # ===================================================================
+      # 1. Secret scanning (gitleaks) — runs FIRST and NEVER skips.
+      # ===================================================================
+      # Ordered first because it is the cheapest gate and a committed
+      # credential should not wait behind a model call to surface.
+      #
+      # Every failure path below fails the gate closed. This is deliberately
+      # unlike the review in step 2, which skips when KIRO_API_KEY is absent
+      # because GitLab structurally withholds protected variables from fork
+      # pipelines. gitleaks needs no variable and no role, so "unavailable"
+      # here is an install failure, not a configuration choice — and a secret
+      # scanner that reports green without having scanned is worse than none,
+      # because it launders an exposure into a passing pipeline.
+      GITLEAKS_LEAKS=""
+      GITLEAKS_ERROR=""
 
-      # Identify AI-generated commits
-      AI_SHAS=""
-      for SHA in $(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null); do
-        if git log -1 --format='%B' "${SHA}" | grep -q 'AI-Origin: ai-generated\|AI-Origin: ai-assisted'; then
-          AI_SHAS="${AI_SHAS} ${SHA}"
-        fi
-      done || true
-      AI_SHAS=$(echo "${AI_SHAS}" | xargs)
+      echo "── Secret scan (gitleaks ${GITLEAKS_VERSION}) ──"
+      TARBALL="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+      URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${TARBALL}"
 
-      if [[ -z "${AI_SHAS}" ]]; then
-        echo "No AI-generated code detected. Skipping eval gate."
-        exit 0
-      fi
+      if ! curl -fsSL --retry 3 --retry-delay 2 -o "/tmp/${TARBALL}" "${URL}"; then
+        echo "❌ Could not download gitleaks ${GITLEAKS_VERSION} — this MR has NOT been secret-scanned."
+        GITLEAKS_ERROR="true"
+      elif ! (cd /tmp && echo "${GITLEAKS_SHA256}  ${TARBALL}" | sha256sum -c -); then
+        echo "❌ gitleaks checksum mismatch — refusing to install an unverified binary."
+        echo "   Expected ${GITLEAKS_SHA256}"
+        echo "   If you bumped GITLEAKS_VERSION, update GITLEAKS_SHA256 to match."
+        GITLEAKS_ERROR="true"
+      else
+        tar -xzf "/tmp/${TARBALL}" -C /tmp gitleaks
+        chmod +x /tmp/gitleaks
+        /tmp/gitleaks version
 
-      # Collect changed source files from AI commits
-      CHANGED_FILES=""
-      for SHA in ${AI_SHAS}; do
-        FILES=$(git diff-tree --no-commit-id --name-only -r "${SHA}" \
-          | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' | grep -v '\.test\.\|\.spec\.' || true)
-        CHANGED_FILES="${CHANGED_FILES}\n${FILES}"
-      done
-      echo -e "${CHANGED_FILES}" | sort -u | grep -v '^$' > /tmp/ai-changed-files.txt || true
-      FILE_COUNT=$(wc -l < /tmp/ai-changed-files.txt | tr -d ' ')
-
-      # Run evaluations
-      chmod +x .prism/eval-harness/run-eval.sh
-      PASS_COUNT=0; FAIL_COUNT=0; TOTAL_SCORE=0; TOTAL_HALLUCINATIONS=0; RESULTS=""
-
-      while IFS= read -r FILE; do
-        [[ -z "${FILE}" || ! -f "${FILE}" ]] && continue
-
-        # Auto-select rubric
-        if echo "${FILE}" | grep -qiE '(agent|assistant|orchestrat|workflow|chain)'; then
-          RUBRIC=".prism/eval-harness/rubrics/agent-quality.json"
-        elif echo "${FILE}" | grep -qiE '(auth|security|guard|policy|iam|permission|crypto)'; then
-          RUBRIC=".prism/eval-harness/rubrics/security-compliance.json"
-        elif echo "${FILE}" | grep -qiE '(api|handler|route|controller)'; then
-          RUBRIC=".prism/eval-harness/rubrics/api-response-quality.json"
+        if [ -z "${BASE_SHA}" ] || [ -z "${HEAD_SHA}" ]; then
+          echo "❌ Missing base/head SHA — cannot determine what to scan, failing closed."
+          GITLEAKS_ERROR="true"
         else
-          RUBRIC=".prism/eval-harness/rubrics/code-quality.json"
+          # Scope is the commits this MR introduces, NOT the whole history.
+          # A full-history scan re-reports every secret predating the gate, so
+          # the gate could never go green and would be switched off within a
+          # week. Pre-existing leaks need a one-time `gitleaks git` sweep plus a
+          # rotation — work an unrelated MR cannot do.
+          #
+          # --redact is load-bearing: without it gitleaks prints the matched
+          # secret into the job log, which is world-readable on a public
+          # project. That turns the scanner into a second disclosure channel
+          # for the thing it just found.
+          #
+          # Smoke-testing this gate: verify your fixture with gitleaks itself
+          # before trusting a green result. A hand-written fake credential can
+          # look completely plausible and still match no rule, in which case
+          # "no leaks found" is correct and the gate only appears broken. Never
+          # infer that from the rule internals -- they are version specific and
+          # change without notice. Ask the tool:
+          #
+          #   gitleaks dir /path/to/fixture --redact --no-banner -v
+          #
+          # A non-zero finding count there is the only evidence the fixture is
+          # usable. Two known traps it will surface: gitleaks' defaults allowlist
+          # AWS's own documentation keys (AKIAIOSFODNN7EXAMPLE), and tooling that
+          # redacts credential-shaped text in transit can rewrite a key NAME out
+          # of a fixture, disarming the rules that need a nearby keyword.
+          #
+          # A PEM block is the most robust fixture -- no charset constraints, no
+          # keyword needed -- and fires `private-key`.
+          GL_ARGS="git ${CI_PROJECT_DIR} --log-opts=${BASE_SHA}..${HEAD_SHA}"
+          GL_ARGS="${GL_ARGS} --report-format=json --report-path=/tmp/gitleaks-report.json"
+          GL_ARGS="${GL_ARGS} --redact --exit-code=1 --no-banner"
+          if [ -f .prism/gitleaks-baseline.json ]; then
+            GL_ARGS="${GL_ARGS} --baseline-path=.prism/gitleaks-baseline.json"
+            echo "Using baseline: .prism/gitleaks-baseline.json"
+          fi
+          [ -f .gitleaks.toml ] && echo "Using repo config: .gitleaks.toml"
+
+          set +e
+          # shellcheck disable=SC2086
+          /tmp/gitleaks ${GL_ARGS}
+          RC=$?
+          set -e
+
+          case "${RC}" in
+            0)
+              echo "✅ No secrets detected in ${BASE_SHA}..${HEAD_SHA}"
+              GITLEAKS_LEAKS=0
+              ;;
+            1)
+              # Exit 1 means leaks were found. If the count cannot be read the
+              # scan still found something, so this must not degrade to 0.
+              GITLEAKS_LEAKS=$(jq 'length' /tmp/gitleaks-report.json 2>/dev/null || echo "")
+              if [ -z "${GITLEAKS_LEAKS}" ]; then
+                echo "❌ gitleaks reported findings but the report could not be parsed — failing closed."
+                GITLEAKS_ERROR="true"
+              else
+                echo "❌ gitleaks found ${GITLEAKS_LEAKS} secret(s) in this MR's commits:"
+                # Only safe fields. The secret is never echoed, even though
+                # --redact already replaced it.
+                jq -r '.[] | "   [\(.RuleID)] \(.File):\(.StartLine) in commit \(.Commit[0:8])"' \
+                  /tmp/gitleaks-report.json || true
+              fi
+              ;;
+            *)
+              echo "❌ gitleaks exited ${RC} — the scan produced no verdict, so this MR is not verified."
+              GITLEAKS_ERROR="true"
+              ;;
+          esac
         fi
-        [[ -f "${RUBRIC}" ]] || RUBRIC=$(ls .prism/eval-harness/rubrics/*.json 2>/dev/null | head -1)
-        [[ -f "${RUBRIC}" ]] || { echo "No rubrics found"; exit 1; }
+      fi
 
-        set +e
-        OUTPUT=$(./.prism/eval-harness/run-eval.sh "${RUBRIC}" "${FILE}" 2>&1)
-        set -e
+      if [ "${GITLEAKS_ERROR}" = "true" ] || { [ -n "${GITLEAKS_LEAKS}" ] && [ "${GITLEAKS_LEAKS}" != "0" ]; }; then
+        GATE_FAILED=1
+      fi
 
-        SCORE=$(echo "${OUTPUT}" | grep '^Score:' | awk '{print $2}' || echo "0")
-        RESULT=$(echo "${OUTPUT}" | grep '^Result:' | awk '{print $2}' || echo "UNKNOWN")
-        HALLUC=$(echo "${OUTPUT}" | grep '^Hallucinations:' | awk '{print $2}' || echo "0")
+      # ===================================================================
+      # 2. Agentic code review (kiro-cli headless)
+      # ===================================================================
+      REVIEW_RESULT="SKIPPED"
+      REVIEW_SCORE=""
 
-        TOTAL_SCORE=$(echo "${TOTAL_SCORE} + ${SCORE}" | bc -l)
-        TOTAL_HALLUCINATIONS=$((TOTAL_HALLUCINATIONS + HALLUC))
-
-        [[ "${RESULT}" == "SKIP" ]] && continue
-        [[ "${RESULT}" == "PASS" ]] && PASS_COUNT=$((PASS_COUNT + 1)) || FAIL_COUNT=$((FAIL_COUNT + 1))
-        RESULTS="${RESULTS}\n| \`${FILE}\` | $(basename "${RUBRIC}" .json) | ${SCORE} | ${RESULT} |"
-      done < /tmp/ai-changed-files.txt
-
-      TOTAL_FILES=$((PASS_COUNT + FAIL_COUNT))
-      [[ "${TOTAL_FILES}" -gt 0 ]] && AVG_SCORE=$(echo "scale=4; ${TOTAL_SCORE} / ${TOTAL_FILES}" | bc -l) || AVG_SCORE="0"
-      [[ "${FAIL_COUNT}" -gt 0 ]] && OVERALL="FAIL" || OVERALL="PASS"
-
-      # Log results
-      EMOJI=$([[ "${OVERALL}" == "PASS" ]] && echo "✅" || echo "❌")
       echo ""
-      echo "## ${EMOJI} PRISM Eval Gate — ${OVERALL}"
-      echo "Score: ${AVG_SCORE} | Files: ${TOTAL_FILES} | Pass: ${PASS_COUNT} | Fail: ${FAIL_COUNT} | Hallucinations: ${TOTAL_HALLUCINATIONS}"
-      echo -e "${RESULTS}"
+      echo "── Code quality review (kiro-cli) ──"
+      if [ -z "${KIRO_API_KEY:-}" ]; then
+        # Fork MRs receive no protected variables. Reported, never silently passed.
+        echo "⚠️  KIRO_API_KEY unavailable (fork MR or unset variable) — review skipped."
+      elif [ -z "${BASE_SHA}" ] || [ -z "${HEAD_SHA}" ]; then
+        echo "⚠️  Missing base/head SHA — review skipped."
+      else
+        FILES=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" \
+          | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' \
+          | grep -vE '\.test\.|\.spec\.|__test__|_test\.' \
+          | head -30 | tr '\n' ' ' || true)
+
+        if [ -z "${FILES}" ]; then
+          echo "No source files changed — review skipped."
+        else
+          # Installs to $HOME/.local/bin, which is not on PATH in this image.
+          export KIRO_API_KEY="$(printf '%s' "${KIRO_API_KEY}" | tr -d '[:space:]')"
+          curl -fsSL https://cli.kiro.dev/install | bash || true
+          export PATH="${HOME}/.local/bin:${PATH}"
+
+          if ! command -v kiro-cli >/dev/null 2>&1; then
+            # FAIL CLOSED: a review that cannot run is not a passing review.
+            echo "❌ kiro-cli is not on PATH after install — review could not run."
+            REVIEW_RESULT="ERROR"
+          else
+            kiro-cli --version || true
+            # Short prompt on purpose: kiro-cli has a bug putting long stdin
+            # into HTTP headers, so let it read the patch off disk itself.
+            git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES} > /tmp/mr-diff.patch
+
+            set +e
+            REVIEW_OUTPUT=$(kiro-cli chat --no-interactive --trust-all-tools --model auto \
+              "Review /tmp/mr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}")
+            set -e
+
+            CLEANED=$(printf '%s' "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
+            REVIEW_JSON=$(printf '%s' "${CLEANED}" | tr '\n' ' ' | grep -o '{.*}' || true)
+
+            if [ -z "${REVIEW_JSON}" ] || ! printf '%s' "${REVIEW_JSON}" | jq -e '.score' >/dev/null 2>&1; then
+              echo "❌ Could not parse kiro-cli review output — failing closed."
+              printf '%s' "${REVIEW_OUTPUT:-<empty>}" | head -c 2000
+              echo ""
+              REVIEW_RESULT="ERROR"
+            else
+              printf '%s' "${REVIEW_JSON}" > /tmp/kiro-review.json
+              REVIEW_SCORE=$(jq -r '.score' /tmp/kiro-review.json)
+              REVIEW_HIGH=$(jq '[.findings[] | select(.severity=="high")] | length' /tmp/kiro-review.json)
+              REVIEW_TOTAL=$(jq '.findings | length' /tmp/kiro-review.json)
+              REVIEW_SUMMARY=$(jq -r '.summary // "No summary"' /tmp/kiro-review.json | head -1 | cut -c1-200)
+
+              PASS=$(awk -v s="${REVIEW_SCORE}" 'BEGIN { print (s >= 0.82) ? "true" : "false" }')
+              if [ "${REVIEW_HIGH}" -gt 0 ] || [ "${PASS}" != "true" ]; then
+                REVIEW_RESULT="FAIL"
+              else
+                REVIEW_RESULT="PASS"
+              fi
+
+              echo "Score: ${REVIEW_SCORE} | Findings: ${REVIEW_TOTAL} (${REVIEW_HIGH} high) | ${REVIEW_RESULT}"
+              echo "Summary: ${REVIEW_SUMMARY}"
+              jq -r '.findings[] | "   [\(.severity)] \(.file):\(.line) — \(.message)"' /tmp/kiro-review.json || true
+            fi
+          fi
+        fi
+      fi
+
+      if [ "${REVIEW_RESULT}" = "FAIL" ] || [ "${REVIEW_RESULT}" = "ERROR" ]; then
+        GATE_FAILED=1
+      fi
+
+      # ===================================================================
+      # 3. Telemetry (best effort — never changes the gate verdict)
+      # ===================================================================
       echo ""
+      echo "── Metrics ──"
+      if [ -n "${PRISM_METRICS_ROLE_ARN:-}" ] && [ -n "${GITLAB_OIDC_TOKEN:-}" ]; then
+        if CREDS=$(aws sts assume-role-with-web-identity \
+            --role-arn "${PRISM_METRICS_ROLE_ARN}" \
+            --role-session-name "gitlab-ci-${CI_JOB_ID}" \
+            --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+            --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+            --output text 2>&1); then
+          AWS_ACCESS_KEY_ID=$(echo "${CREDS}" | awk '{print $1}'); export AWS_ACCESS_KEY_ID
+          AWS_SECRET_ACCESS_KEY=$(echo "${CREDS}" | awk '{print $2}'); export AWS_SECRET_ACCESS_KEY
+          AWS_SESSION_TOKEN=$(echo "${CREDS}" | awk '{print $3}'); export AWS_SESSION_TOKEN
+          echo "✓ OIDC credentials acquired."
+        else
+          echo "⚠️  OIDC assume-role failed — skipping metrics."
+        fi
+      else
+        echo "⚠️  PRISM_METRICS_ROLE_ARN or GITLAB_OIDC_TOKEN unset — skipping metrics."
+      fi
 
-      # Emit event
-      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-      EVAL_EVENT=$(jq -n \
-        --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" --arg timestamp "${TIMESTAMP}" \
-        --argjson score "${AVG_SCORE}" --arg result "${OVERALL}" \
-        --argjson total_files "${TOTAL_FILES}" --argjson pass_count "${PASS_COUNT}" \
-        --argjson fail_count "${FAIL_COUNT}" --argjson hallucinations "${TOTAL_HALLUCINATIONS}" \
-        --arg mr_iid "${CI_MERGE_REQUEST_IID}" \
-        '{team_id:$team_id, repo:$repo, timestamp:$timestamp, prism_level:2,
-         metric:{name:"eval_score",value:$score,unit:"score"},
-         ai_context:{tool:"bedrock-eval",model:"anthropic.claude-sonnet-4-20250514",origin:"ai-generated"},
-         eval:{total_files:$total_files, pass_count:$pass_count, fail_count:$fail_count,
-               result:$result, mr_iid:($mr_iid | tonumber), hallucinations_caught:$hallucinations}}')
+      if aws sts get-caller-identity >/dev/null 2>&1; then
+        TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-      aws events put-events --region "${AWS_DEFAULT_REGION}" \
-        --entries "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",
-          \"EventBusName\":\"prism-d1-metrics\",
-          \"Detail\":$(echo "${EVAL_EVENT}" | jq -c '.' | jq -Rs '.')}]"
+        # Eval event — only when there is a real score (not SKIPPED/ERROR).
+        if [ -n "${REVIEW_SCORE}" ]; then
+          DETAIL=$(jq -n -c \
+            --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" --arg timestamp "${TIMESTAMP}" \
+            --arg score "${REVIEW_SCORE}" --arg result "${REVIEW_RESULT}" \
+            --arg mr_iid "${CI_MERGE_REQUEST_IID:-0}" \
+            '{team_id:$team_id,repo:$repo,timestamp:$timestamp,prism_level:2,
+              metric:{name:"eval_score",value:($score|tonumber),unit:"score"},
+              ai_context:{tool:"kiro-cli",model:"claude-haiku-4.5",origin:"ai-generated"},
+              eval:{score:($score|tonumber),result:$result,rubric:"kiro-headless",
+                    mr_iid:($mr_iid|tonumber),method:"kiro-headless"}}')
+          aws events put-events --region "${AWS_DEFAULT_REGION}" --entries \
+            "[{\"Source\":\"prism.d1.velocity\",\"DetailType\":\"prism.d1.eval\",\"EventBusName\":\"prism-d1-metrics\",\"Detail\":$(printf '%s' "${DETAIL}" | jq -Rs '.')}]" || true
+          echo "Emitted prism.d1.eval"
+        fi
 
-      [[ "${OVERALL:-PASS}" == "FAIL" ]] && exit 1
+        # gitleaks findings — feeds the CISO dashboard. Without this the gate
+        # blocks the MR but the exposure never reaches the metrics pipeline, so
+        # "secrets caught per 100 commits" is unanswerable.
+        if [ -n "${GITLEAKS_LEAKS}" ] && [ "${GITLEAKS_LEAKS}" != "0" ] && [ -s /tmp/gitleaks-report.json ]; then
+          # Deferred origin join: emit commit SHAs as facts and let dashboards
+          # resolve AI-vs-human at render time. Attribution spans arrive on a
+          # ~12h codeburn schedule, so a verdict computed now would usually be
+          # wrong and would be frozen into an immutable event.
+          COMMIT_SHAS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
+
+          # Severity drives real automation: prism.d1.security.code_review also
+          # routes to the security-response-automator, which on CRITICAL/HIGH
+          # writes a penalty record and fires the SecurityCriticalFinding alarm.
+          # So the mapping is fail-safe rather than uniform — provider-specific
+          # rules page as HIGH, while gitleaks' catch-all entropy rule
+          # (generic-api-key, which fires on ordinary `secret = ...` lines)
+          # reports MEDIUM: still recorded, still blocking the MR, not paging.
+          # An unrecognised NEW rule id defaults to HIGH.
+          #
+          # CWE-798 = Use of Hard-coded Credentials. Fingerprint is gitleaks'
+          # own stable id (commit:file:rule:line), so a re-run re-emits the same
+          # finding_id instead of inflating counts. Only safe fields are
+          # projected — never .Secret/.Match (already REDACTED), and never
+          # .Message, which is the commit message and could hold the credential.
+          ENTRIES=$(jq -c \
+            --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" \
+            --argjson commit_shas "${COMMIT_SHAS}" \
+            --argjson mr_iid "${CI_MERGE_REQUEST_IID:-0}" \
+            --argjson low_confidence '["generic-api-key"]' \
+            '[ .[] | . as $f | {
+                Source: "prism.d1.velocity",
+                DetailType: "prism.d1.security.code_review",
+                EventBusName: "prism-d1-metrics",
+                Detail: ({
+                  team_id: $team_id, repo: $repo, timestamp: (now|todate), prism_level: 3,
+                  metric: { name: "security_finding", value: 1, unit: "count" },
+                  ai_context: { tool: "gitleaks", model: "gitleaks-8.28.0" },
+                  security_agent_finding: {
+                    finding_id: ("gl-" + ($f.Fingerprint // "unknown")),
+                    phase: "code_review",
+                    severity: (if ($low_confidence | index($f.RuleID)) then "MEDIUM" else "HIGH" end),
+                    category: ($f.RuleID // "unknown"),
+                    title: ($f.Description // $f.RuleID // "Committed secret detected"),
+                    cwe_id: "CWE-798", cvss_score: null, exploit_validated: false,
+                    commit_shas: $commit_shas, pr_number: $mr_iid,
+                    found_at: (now|todate)
+                  }
+                } | tostring)
+              } ]' /tmp/gitleaks-report.json 2>/dev/null || echo '[]')
+
+          TOTAL=$(printf '%s' "${ENTRIES}" | jq 'length')
+          if [ "${TOTAL}" -gt 0 ]; then
+            # EventBridge accepts max 10 entries per call
+            i=0
+            while [ "${i}" -lt "${TOTAL}" ]; do
+              aws events put-events --region "${AWS_DEFAULT_REGION}" \
+                --entries "$(printf '%s' "${ENTRIES}" | jq -c ".[${i}:$((i+10))]")" || true
+              i=$((i+10))
+            done
+            echo "Emitted ${TOTAL} gitleaks finding events"
+          fi
+        fi
+      fi
+
+      # ===================================================================
+      # 4. Verdict
+      # ===================================================================
+      echo ""
+      if [ "${GATE_FAILED}" -ne 0 ]; then
+        echo "════════════════════════════════════════"
+        echo "  ❌ PRISM Eval Gate FAILED"
+        echo "════════════════════════════════════════"
+        if [ "${GITLEAKS_ERROR}" = "true" ]; then
+          echo "  Secret scan failed closed: this MR has NOT been scanned for credentials."
+        elif [ -n "${GITLEAKS_LEAKS}" ] && [ "${GITLEAKS_LEAKS}" != "0" ]; then
+          echo "  ${GITLEAKS_LEAKS} secret(s) found. Rotate the credential first —"
+          echo "  deleting it from the branch does not un-expose what was pushed."
+          echo "  False positive? Add an allowlist entry to .gitleaks.toml."
+        fi
+        [ "${REVIEW_RESULT}" = "ERROR" ] && echo "  Review failed closed: output could not be parsed."
+        [ "${REVIEW_RESULT}" = "FAIL" ] && echo "  Review score ${REVIEW_SCORE} below threshold, or high-severity findings."
+        exit 1
+      fi
+
+      echo "✅ PRISM Eval Gate passed (secret scan: clean, review: ${REVIEW_RESULT})"
       exit 0

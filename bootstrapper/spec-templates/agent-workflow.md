@@ -256,4 +256,4 @@ Bedrock Evaluation should check:
 - **Safety**: Did the agent respect all guardrails?
 - **Traceability**: Is the reasoning trace complete and coherent?
 
-Rubrics: `.prism/.prism/eval-harness/rubrics/agent-quality.json`, `.prism/.prism/eval-harness/rubrics/code-quality.json`, `.prism/.prism/eval-harness/rubrics/security-compliance.json`
+Enforced by: `.kiro/steering/code-review.md` (the rules the kiro eval gate reviews against). Agent output is additionally scored by `prism-agent-eval.yml` against `.prism/eval-harness/rubrics/agent-quality.json`.

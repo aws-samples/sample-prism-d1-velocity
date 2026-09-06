@@ -139,4 +139,4 @@ Bedrock Evaluation should check:
 - **Security**: No SQL injection, no data leakage in error responses, proper auth checks.
 - **Test coverage**: Do tests cover all acceptance criteria scenarios?
 
-Rubric: `.prism/.prism/eval-harness/rubrics/api-response-quality.json`
+Enforced by: `.kiro/steering/code-review.md` (the rules the kiro eval gate reviews against).

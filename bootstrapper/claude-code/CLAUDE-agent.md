@@ -40,6 +40,10 @@ Before connecting an agent to an MCP server, validate the server independently:
 
 For agents that perform high-impact actions (deployments, data mutations, customer-facing changes), implement a reviewer agent pattern: a second agent that evaluates the primary agent's plan before execution. The reviewer agent should check the plan against the spec's guardrails and acceptance criteria. Log the reviewer's assessment as part of the reasoning trace.
 
+### 7. Eval Gate
+
+The CI eval gate (kiro) reviews every PR against the rules in `.kiro/steering/code-review.md` — code scoring below 0.82 is blocked. Agent-specific quality is additionally evaluated by `prism-agent-eval.yml` using `.prism/eval-harness/rubrics/agent-quality.json`. The gate also runs gitleaks secret scanning on each PR's commits — a PR that introduces a credential will be blocked.
+
 ## Agent Conventions
 
 ### Strands Agents SDK
@@ -148,7 +152,7 @@ Agent-specific metrics extend the base PRISM metrics schema:
 |---|---|
 | Agent workflow spec template | `spec-templates/agent-workflow.md` |
 | MCP server spec template | `spec-templates/mcp-server.md` |
-| Agent eval rubric | `.prism/.prism/eval-harness/rubrics/agent-quality.json` |
+| Agent eval rubric | `.prism/eval-harness/rubrics/agent-quality.json` |
 | AgentCore configs | `agent-configs/` |
 | Guardrails template | `agent-configs/guardrails-template.json` |
 | Agent eval workflow | `.github/workflows/prism-agent-eval.yml` |

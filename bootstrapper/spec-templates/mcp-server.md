@@ -148,4 +148,4 @@ Bedrock Evaluation should check:
 - **Idempotency**: Do read-only tools return consistent results? Do write tools handle retries safely?
 - **Test coverage**: Do tests cover all acceptance criteria scenarios?
 
-Rubric: `.prism/.prism/eval-harness/rubrics/code-quality.json`, `.prism/.prism/eval-harness/rubrics/agent-quality.json`
+Enforced by: `.kiro/steering/code-review.md` (the rules the kiro eval gate reviews against). Agent-facing behaviour is additionally scored by `prism-agent-eval.yml` against `.prism/eval-harness/rubrics/agent-quality.json`.

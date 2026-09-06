@@ -61,15 +61,9 @@ AI-Model: anthropic.claude-sonnet-4-20250514
 - Use structured JSON logging — no unstructured `console.log` / `print` in production code.
 - Emit PRISM metric events for key operations (see Metrics section below).
 
-### 7. Bedrock Evaluation
+### 7. Eval Gate
 
-When generating or reviewing code, reference these eval rubrics:
-
-- **API Response Quality**: `.prism/.prism/eval-harness/rubrics/api-response-quality.json`
-- **Code Quality**: `.prism/.prism/eval-harness/rubrics/code-quality.json`
-- **Security Compliance**: `.prism/.prism/eval-harness/rubrics/security-compliance.json`
-
-AI-generated code that scores below the configured threshold (default 0.82) in any rubric MUST be revised before merging.
+The CI eval gate (kiro) reviews every PR against the rules in `.kiro/steering/code-review.md`. Code scoring below 0.82 MUST be revised before merging. The gate also runs gitleaks secret scanning on each PR's commits — a PR that introduces a credential will be blocked.
 
 ## Code Patterns
 
@@ -96,7 +90,7 @@ This repo emits events to the `prism-d1-metrics` EventBridge bus. Key events:
 |---|---|
 | `prism.d1.commit` | Every commit (via git hook) |
 | `prism.d1.pr` | PR merge (via GitHub Actions) |
-| `prism.d1.eval` | Bedrock Evaluation run |
+| `prism.d1.eval` | Eval gate run |
 | `prism.d1.deploy` | Deployment to any environment |
 
 Ensure the metric hooks are installed (`bash prism-cli bootstrapper install-git-hooks`) and GitHub workflows are configured.
@@ -106,7 +100,7 @@ Ensure the metric hooks are installed (`bash prism-cli bootstrapper install-git-
 | Item | Location |
 |---|---|
 | Spec templates | `spec-templates/` |
-| Eval rubrics | `.prism/.prism/eval-harness/rubrics/` |
+| Eval steering rules | `.kiro/steering/code-review.md` |
 | Git hooks | `metric-hooks/` |
 | CI workflows | `.github/workflows/prism-*.yml` |
 | PRISM config | `.prism/config.json` |

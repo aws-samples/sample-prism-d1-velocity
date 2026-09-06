@@ -123,4 +123,4 @@ Bedrock Evaluation should check:
 - **Index coverage**: Do indexes support all listed access patterns?
 - **Test coverage**: Do tests cover CRUD and edge cases?
 
-Rubric: `.prism/.prism/eval-harness/rubrics/code-quality.json`
+Enforced by: `.kiro/steering/code-review.md` (the rules the kiro eval gate reviews against).

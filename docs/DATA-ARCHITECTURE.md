@@ -34,7 +34,7 @@ This is the only source that can distinguish AI-written from human-written code,
 | Workflow | Trigger | Emits |
 |----------|---------|-------|
 | **prism-ai-metrics.yml** | PR merged to main/master | `prism.d1.pr` + `prism.d1.deploy` — per-PR **facts** only: lead time, `is_failure_fix` label, review verdict counts, commit SHAs, `total_commits`. No rates; the dashboard aggregates at query time. |
-| **prism-eval-gate-kiro.yml** | PR opened/updated | `prism.d1.eval` + `prism.d1.security.*` — agentic review result and AWS Continuum findings |
+| **prism-eval-gate-kiro.yml** | PR opened/updated | `prism.d1.eval` + `prism.d1.security.*` — agentic review via kiro-cli headless, gitleaks secret scanning, and AWS Continuum findings. Installs as `.github/workflows/prism-eval-gate.yml`. |
 | **prism-agent-eval.yml** | PR touching agent paths | `prism.d1.agent.eval` — agent quality scores via Bedrock rubric |
 
 `prism-ai-metrics.yml` fires on every merge regardless of author, which makes its `total_commits` a repo-complete census — the denominator attribution coverage is measured against.
@@ -130,6 +130,34 @@ Every event follows this base structure on EventBridge:
 | `security` | `prism.d1.security` | Alert type, table name, principal ARN, read count |
 | `security_agent_finding` | `prism.d1.security.{design_review,code_review,pen_test}` | Finding ID, phase, severity, CVSS, category, CWE, exploit validated, compliance mappings, **commit SHAs**, spec ref |
 | `security_remediation` | `prism.d1.security.remediation` | Finding ID, severity, remediation time hours, remediated by origin, fix PR number |
+
+### `prism.d1.security.code_review` has two emitters
+
+AWS Continuum and gitleaks both publish this detail-type, distinguished by `ai_context.tool`
+(`continuum` vs `gitleaks`). Both run inside the eval gate on GitHub and GitLab.
+
+gitleaks findings set `phase: code_review`, `cwe_id: CWE-798` (Use of Hard-coded Credentials),
+`exploit_validated: false` — it pattern-matches, it does not prove the credential works — and
+`cvss_score: null`. `finding_id` is `gl-` plus gitleaks' own `Fingerprint`
+(`commit:file:rule:line`), which is stable, so re-running a pipeline re-emits the same id instead
+of inflating finding counts. Only non-secret fields are projected: never `Secret`/`Match` (already
+`REDACTED` by `--redact`), and never `Message`, which is the commit message and could itself
+contain the credential.
+
+**Severity is mapped, not uniform, because it drives paging.** This detail-type also routes to
+`security-response-automator`, which on `CRITICAL`/`HIGH` writes an eval-gate penalty and fires the
+`SecurityCriticalFinding` alarm. So:
+
+| gitleaks rule | Severity | Effect |
+|---|---|---|
+| Provider-specific (`aws-access-token`, `github-pat`, `private-key`, …) | `HIGH` | Blocks the PR, records the finding, **pages** |
+| `generic-api-key` (catch-all entropy rule) | `MEDIUM` | Blocks the PR, records the finding, does not page |
+| Any unrecognised / newly added rule id | `HIGH` | Fail-safe default |
+
+`generic-api-key` is downgraded because it fires on ordinary `secret = ...` lines — it matched an
+`aws_secret_access_key` assignment during testing. Paging on every one of those trains people to
+ignore the alarm. The list only ever downgrades known-noisy rules, so a new gitleaks rule pages by
+default rather than silently landing as low severity.
 
 ---
 
@@ -297,7 +325,7 @@ Published to namespace `PRISM/D1/Velocity`. Dimensions: **TeamId** and **Reposit
 | `AIAcceptanceRate` | Percent | ⚠️ **Removed.** Its AI gate was trailer-derived, and a review-less PR defaulted to 100% acceptance — rewarding skipped reviews. Raw verdict counts now live on `prism.d1.pr` (`pr.reviews_approved` / `pr.reviews_changes_requested`) for query-time AI-vs-human comparison. |
 | `ChangeFailureCount` | Count | Per-merge failure-fix numerator from `prism-ai-metrics.yml`; the CFR alarm divides it by `DeploymentFrequency` via metric math. |
 | `AIToMergeRatio` | Percent | ⚠️ **Removed** — had no consumer, and its CI line was trailer-derived. See the note in `infra/lib/lambda/metrics-processor.ts`. AI merge rate is now computed at query time from attribution (`MergedAICommits` / `AICommits`). |
-| `EvalGatePassRate` | Percent | `prism-agent-eval.yml`. Note the eval-gate workflows emit `EvalGatePassRateByRubric` and `EvalScore` instead. |
+| `EvalGatePassRate` | Percent | `prism-agent-eval.yml`. The agent-eval workflow also emits `EvalGatePassRateByRubric` and `EvalScore`; the kiro eval gate emits `prism.d1.eval` events but not rubric-level metrics. |
 | `PostMergeDefectRate` | Percent | ⚠️ **Removed** — the defect-correlator Lambda that emitted it was deleted as a permanent no-op. The working defect signal is `RevertedAICommits / MergedAICommits` from attribution. |
 | `SpecToCodeHours` | Hours | ⚠️ **Not emitted** — needs `Spec-Ref` on commits; the `prepare-commit-msg` hook does not inject it, and attribution spans carry no spec reference. |
 | `AITestCoverageDelta` | Percent | ⚠️ **Not emitted** — no workflow computes coverage delta by AI origin. Demo-generator only. |
@@ -345,8 +373,8 @@ Published by `attribution-metrics-publisher` from a DynamoDB stream on `REPO#` /
 |------------|------|--------|
 | `AgentInvocationCount` / `AgentStepCount` / `AgentDurationMs` / `AgentTokensUsed` / `AgentToolInvocationCount` / `AgentGuardrailTriggerCount` | Count / ms | Agent runtime events |
 | `AgentSuccessRate` | Percent | 100 if success, 0 if failed |
-| `EvalGatePassRateByRubric` | Percent | Eval gate workflow, per rubric |
-| `EvalScore` | None (0-1) | Eval gate workflow, average score |
+| `EvalGatePassRateByRubric` | Percent | `prism-agent-eval.yml`, per Bedrock rubric |
+| `EvalScore` | None (0-1) | `prism-agent-eval.yml`, average rubric score |
 | `GuardrailTriggerCount` / `GuardrailBlockCount` / `GuardrailAnonymizeCount` | Count | Agent guardrail events, per category |
 | `MCPToolCallCount` / `MCPAuthDeniedCount` / `MCPToolCallDurationMs` | Count / ms | MCP server audit logger |
 

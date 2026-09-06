@@ -75,7 +75,8 @@ prism-cli bootstrapper setup-github-oidc
 This interactively creates:
 - OIDC identity provider for `token.actions.githubusercontent.com`
 - IAM role `GitHubActions-<repo>` with trust policy scoped to your repo
-- Inline policy with `events:PutEvents` and `bedrock:InvokeModel`
+- Inline policy with `events:PutEvents` and `bedrock:InvokeModel` (the latter is granted
+  unconditionally, but only `prism-agent-eval.yml` consumes it — the eval gate does not)
 
 Add `PRISM_METRICS_ROLE_ARN` as a GitHub repo secret (ARN printed by the command).
 
@@ -99,15 +100,15 @@ reaches AWS until you commit them and a PR merges.
 
 ```bash
 # GitHub — writes three workflows to .github/workflows/
-prism-cli bootstrapper install-github-workflows --mode kiro --region us-west-2
+prism-cli bootstrapper install-github-workflows --region us-west-2
 
 # GitLab — writes to .prism/gitlab-workflows/
 prism-cli bootstrapper install-gitlab-workflows --gitlab-url https://gitlab.com --region us-west-2
 ```
 
-`--mode` picks which eval gate to install — `kiro` (the default) or `bedrock`. Only one is written,
-as `prism-eval-gate.yml`, because the two modes declare the same check name and trigger. GitLab has
-no kiro variant and always gets the Bedrock gate.
+Both platforms get the same eval gate: agentic review via kiro-cli headless plus gitleaks secret
+scanning, installed as `prism-eval-gate.yml`. Both require a `KIRO_API_KEY` secret (GitHub) or
+masked CI/CD variable (GitLab).
 
 For GitLab, merge `.prism/gitlab-workflows/.gitlab-ci.yml` into your repo root `.gitlab-ci.yml`
 afterwards; the installer deliberately does not overwrite an existing pipeline definition.
@@ -116,21 +117,41 @@ Pass the **same `--region` you gave `setup-github-oidc` in Step 2**. The OIDC po
 `events:PutEvents` to one region's event bus, and the installer rewrites every region reference in
 the workflows it copies — a mismatch is denied at merge time with nothing failing at setup.
 
-**Eval harness — same mode.**
+> **`--mode bedrock` is retired.** Passing `--mode bedrock` now exits 1 with a migration message.
+> The Bedrock eval gate asset has been removed from the GitHub workflow set.
+
+**Eval harness.**
 
 ```bash
-prism-cli bootstrapper install-eval-harness --mode kiro
+prism-cli bootstrapper install-eval-harness
 ```
 
-The workflow installed above is the gate; this installs what the gate reads — for kiro mode the
-`code-review.md` Kiro steering file, for bedrock mode `.prism/eval-harness/` with its rubrics. Pass
-the same `--mode` to both, or the gate runs against rules that were never installed. kiro mode needs
-`KIRO_API_KEY` from the next step and a paid Kiro subscription; it is the recommended path and the
-only one that does not call Bedrock. See [Eval Gates](#eval-gates) for the difference.
+This installs four things into your repo:
 
-> Upgrading a repo instrumented before `--mode` existed? That installer copied both gates. The new
-> one warns if it finds a leftover `prism-eval-gate-kiro.yml` and prints the `rm` to run — it will
-> not delete a tracked file in your repo for you.
+1. `.kiro/steering/code-review.md` — review rules (plain English) used by the kiro-cli eval gate
+2. `.github/workflows/prism-eval-gate.yml` — the kiro-cli headless CI workflow
+3. `.gitleaks.toml` — starter allowlist for secret scanning
+4. `.prism/eval-harness/` — containing `run-eval.sh`, `eval-config.json`, and `rubrics/agent-quality.json`
+
+> **Important:** `.prism/eval-harness/` is now used **only** by `prism-agent-eval.yml` (which scores
+> agent output via Bedrock). It is **not** used by the eval gate. The eval gate reads
+> `.kiro/steering/code-review.md` for its review rules and runs gitleaks for secret scanning.
+
+The kiro-cli gate needs `KIRO_API_KEY` from the next step and a paid Kiro subscription.
+See [Eval Gates](#eval-gates) for full details.
+
+Available flags:
+
+| Flag | Purpose |
+|---|---|
+| `--region <region>` | AWS region (default `us-west-2`) |
+| `--agent-eval-model <id>` | Bedrock model for `prism-agent-eval.yml` |
+| `--agent-eval-threshold <n>` | Pass threshold for agent eval (0–1) |
+| `--skip-agent-eval-harness` | Skip installing `.prism/eval-harness/` |
+| `--uninstall` | Remove all installed files |
+
+> **`--mode` and `--with-rubrics` are retired.** Passing `--mode bedrock` now exits 1 with a
+> migration message.
 
 **Team attribution (optional).** `prism-ai-metrics.yml` reads the team id from `.prism/config.json`
 in the repo. Create it by hand — it is a single field, and the git-hook installer that used to
@@ -152,7 +173,7 @@ In GitHub → your repo → Settings → Secrets and Variables → Actions, add 
 | Name | Value | Where to Find It | Used By |
 |---|---|---|---|
 | `PRISM_METRICS_ROLE_ARN` | ARN printed by `setup-github-oidc` | Step 2 output | All three installed workflows |
-| `KIRO_API_KEY` | Kiro API key | https://app.kiro.dev → Settings → API Keys | `prism-eval-gate.yml` only, in kiro mode |
+| `KIRO_API_KEY` | Kiro API key | https://app.kiro.dev → Settings → API Keys | `prism-eval-gate.yml` |
 
 No repository **variables** are required — the workflows read none. Team identity comes from a file in the repo instead, `.prism/config.json`:
 
@@ -162,7 +183,7 @@ No repository **variables** are required — the workflows read none. Team ident
 
 `prism-ai-metrics.yml` reads that file with `jq` and falls back to `no_team` when it is absent, so a missing config downgrades attribution grouping rather than failing the run and losing that PR's facts.
 
-If you are not using the kiro-cli eval gate, `PRISM_METRICS_ROLE_ARN` alone is enough. `KIRO_API_KEY` requires a paid Kiro subscription and gates only the kiro-mode `prism-eval-gate.yml`.
+`KIRO_API_KEY` requires a paid Kiro subscription.
 
 ### Step 5: Create Developer Accounts
 
@@ -196,14 +217,14 @@ review, or for building the role by hand.
 | Permission | Resource | Used by |
 |---|---|---|
 | `events:PutEvents` | `event-bus/prism-d1-metrics` | All workflows |
-| `bedrock:InvokeModel` | `*` | `prism-eval-gate.yml` (Bedrock mode) and `prism-agent-eval.yml`, via `.prism/eval-harness/run-eval.sh` |
+| `bedrock:InvokeModel` | `*` | `prism-agent-eval.yml`, via `.prism/eval-harness/run-eval.sh` |
 
-`bedrock:InvokeModel` is **not** needed for the recommended kiro-cli gate — in kiro mode
-`prism-eval-gate.yml` calls the Kiro API with `KIRO_API_KEY` and never touches Bedrock. If you only
-run that gate, `events:PutEvents` is the only permission the metrics path requires.
+`bedrock:InvokeModel` is **not** needed for the eval gate — `prism-eval-gate.yml` calls the Kiro
+API with `KIRO_API_KEY` and never touches Bedrock. It is only required if you use
+`prism-agent-eval.yml` for agent output scoring.
 
-Both eval modes install to the same path, `.github/workflows/prism-eval-gate.yml`, so which
-permissions that file needs depends on the `--mode` you chose in Step 3.
+The eval gate installs to `.github/workflows/prism-eval-gate.yml` and needs only `events:PutEvents`
+and `KIRO_API_KEY`.
 
 **Managed policy `prism-d1-continuum-ci-scan`**, created by the CDK when you deploy with
 `--context enableSecurityAgent=true`, and attached to the same role by Step 2. Required by the
@@ -336,20 +357,14 @@ percentage.
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `prism-ai-metrics.yml` | PR merge to main/master | Emits per-PR **facts** — lead time, failure-fix label, review verdicts, commit SHAs. Computes no rates; the dashboard aggregates at query time. Emits `prism.d1.pr` + `prism.d1.deploy` |
-| `prism-eval-gate.yml` | PR open/update | The eval gate, in whichever mode you installed. **Kiro mode (default)** does an agentic review via kiro-cli headless against `.kiro/steering/code-review.md` and needs `KIRO_API_KEY`. **Bedrock mode (legacy)** scores changed files against auto-selected rubrics via `bedrock:InvokeModel` |
-| `prism-agent-eval.yml` | PR modifying agent code | Runs agent in mock mode, evaluates output with agent-quality rubric |
+| `prism-eval-gate.yml` | PR open/update | Agentic code review via kiro-cli headless against `.kiro/steering/code-review.md`, plus secret scanning via gitleaks. Needs `KIRO_API_KEY` |
+| `prism-agent-eval.yml` | PR modifying agent code | Runs agent in mock mode, evaluates output with `agent-quality.json` rubric via Bedrock |
 
-Either eval mode waits for the AWS Continuum review when it is configured and blocks the merge on
-failure. See [Eval Gates](#eval-gates) for the difference in detail.
+The eval gate also waits for the AWS Continuum review when it is configured and blocks the merge on
+critical or high findings. See [Eval Gates](#eval-gates) for details.
 
-**Only one eval gate is ever installed.** It ships as two assets —
-`prism-eval-gate-kiro.yml` and `prism-eval-gate.yml` — and both
-`install-github-workflows --mode <mode>` and `install-eval-harness --mode <mode>` write the selected
-one to `prism-eval-gate.yml`. That is deliberate: the two assets declare the same
-`name: PRISM Eval Gate` with identical `pull_request` triggers, so having both in
-`.github/workflows/` would produce two same-named check runs on every PR, one billing Bedrock and one
-billing Kiro. Repos instrumented before `--mode` existed received both; the installer now flags the
-leftover file.
+The kiro-cli eval gate asset `prism-eval-gate-kiro.yml` installs **as**
+`.github/workflows/prism-eval-gate.yml`. The old Bedrock eval gate asset has been removed.
 
 ### GitLab CI Workflows
 
@@ -358,11 +373,13 @@ GitLab workflow files are installed to `.prism/gitlab-workflows/`. Copy or merge
 | Job | Trigger | Purpose |
 |---|---|---|
 | `prism-ai-metrics` | Post-merge | Same as GitHub equivalent |
-| `prism-eval-gate` | MR open/update | Same as the GitHub **Bedrock mode** gate |
+| `prism-eval-gate` | MR open/update | kiro-cli agentic review + gitleaks secret scan (same as GitHub) |
 | `prism-agent-eval` | MR modifying agent code | Same as GitHub equivalent |
 
-There is no GitLab equivalent of the kiro gate — `install-eval-harness` only writes GitHub
-workflows, so on GitLab the eval gate is Bedrock mode and `bedrock:InvokeModel` is required.
+The GitLab gate is a port of the GitHub one and behaves identically: the secret scan never skips and
+fails closed, while the review reports `SKIPPED` when `KIRO_API_KEY` is absent — which is what GitLab
+does for fork merge requests, since it withholds protected variables from them. `bedrock:InvokeModel`
+is **not** required by the gate; only `prism-agent-eval` needs it.
 
 ### Events Emitted
 
@@ -381,15 +398,22 @@ All three workflows publish to the `prism-d1-metrics` EventBridge bus with sourc
 
 ## Eval Gates
 
-### Kiro Mode (Recommended)
+### Kiro-CLI Eval Gate
 
 ```bash
-prism-cli bootstrapper install-eval-harness --mode kiro
+prism-cli bootstrapper install-eval-harness
 ```
 
 Installs:
 - `.kiro/steering/code-review.md` — review rules (plain English)
 - `.github/workflows/prism-eval-gate.yml` — kiro-cli headless CI workflow
+- `.gitleaks.toml` — starter allowlist for secret scanning
+- `.prism/eval-harness/` — `run-eval.sh`, `eval-config.json`, `rubrics/agent-quality.json` (used by `prism-agent-eval.yml` only — **not** by the eval gate)
+
+> **`.prism/eval-harness/` is for agent eval, not the eval gate.** The eval gate reads
+> `.kiro/steering/code-review.md` for code review and runs gitleaks for secret scanning. The
+> eval harness directory is consumed exclusively by `prism-agent-eval.yml`, which scores agent
+> output against `agent-quality.json` via Bedrock.
 
 **Requirements:**
 - `KIRO_API_KEY` repository secret (generate at https://app.kiro.dev → Settings → API Keys)
@@ -402,27 +426,99 @@ Installs:
 4. Gate fails if any high-severity finding or score < 0.82
 5. PR comment posted with findings table
 
-### Bedrock Mode (Legacy)
+### Secret Scanning (gitleaks)
 
-```bash
-# Non-interactive install
-prism-cli bootstrapper install-eval-harness --model us.anthropic.claude-haiku-4-5-20251001-v1:0 --threshold 0.82 --with-rubrics
+The eval gate also performs secret scanning using gitleaks:
+
+- **Pinned version:** 8.28.0 with a hard-pinned verified SHA256 checksum
+- **Scan scope:** Only the PR's commit range (`BASE..HEAD`), **not** full repository history
+- **Redaction:** Always uses `--redact` — detected secrets are never printed into the CI log
+- **No skip:** gitleaks never skips. It runs on every PR, including fork PRs (it needs no secret and no AWS role, so it is the **only** gate that functions when `KIRO_API_KEY` is unavailable)
+- **Fail-closed:** Install failure, scan error, or any finding fails the gate
+
+**Optional tuning:**
+- `.gitleaks.toml` — add allowlist rules (a starter file is installed by `install-eval-harness`)
+- `.prism/gitleaks-baseline.json` — adopt on a repo with known pre-existing findings to avoid blocking on them
+
+### Making the Gate Block Merges
+
+**Installing the gate does not, on its own, prevent a bad merge.** A failing check makes the PR
+red, but GitHub still reports it as mergeable and the merge button stays enabled unless a **branch
+protection rule** names the check as required. Verified behaviour on a PR where the gate detected
+committed credentials and exited 1:
+
+```
+eval-gate  ->  conclusion=failure
+PR         ->  mergeable=MERGEABLE   mergeStateStatus=UNSTABLE
 ```
 
-Installs into your repo:
-- `.prism/eval-harness/run-eval.sh` — evaluation script
-- `.prism/eval-harness/eval-config.json` — model, threshold, region
-- `.prism/eval-harness/rubrics/` — rubric JSON files
-- `.github/workflows/prism-eval-gate.yml` — CI workflow
+`UNSTABLE` means "a check failed but nothing blocks the merge". Until you add the rule the gate is
+**advisory** — it reports, it does not enforce.
 
-### Running Evaluations Locally
+**GitHub — add the required check:**
+
+Settings → Branches → add or edit a rule for `main` → enable *Require status checks to pass before
+merging* → search for and add:
+
+```
+eval-gate
+```
+
+> **Use the job id, not the workflow name.** The check is named `eval-gate` (the job id in
+> `prism-eval-gate.yml`), **not** `PRISM Eval Gate` (the workflow `name:`). Searching for the
+> workflow name finds nothing, which reads as though the gate never reported.
+
+The check only appears in that search list after the workflow has run at least once on the branch,
+so open a throwaway PR first if the list is empty.
+
+Or with the CLI:
 
 ```bash
-# Evaluate a single file
-./.prism/eval-harness/run-eval.sh .prism/eval-harness/rubrics/code-quality.json src/handler.ts
+gh api -X PUT "repos/OWNER/REPO/branches/main/protection/required_status_checks" \
+  -F strict=true \
+  -f 'contexts[]=eval-gate'
+```
 
-# With a spec file (for spec-compliance rubric)
-./.prism/eval-harness/run-eval.sh .prism/eval-harness/rubrics/spec-compliance.json src/api.ts --spec specs/api.md
+**GitLab — add the equivalent:**
+
+Settings → Merge requests → *Merge checks* → enable **Pipelines must succeed**. The gate job fails
+the pipeline, so this blocks the merge. Optionally also enable *All threads must be resolved*.
+
+**Why this is left to you rather than automated:** branch protection is a repository administration
+setting, and `install-github-workflows` deliberately does not require admin scope. Adding a required
+check can also block merges immediately on a repo with pre-existing findings — see
+`.prism/gitleaks-baseline.json` under [Secret Scanning](#secret-scanning-gitleaks) for adopting the
+gate on a dirty repo without freezing it.
+
+### Bedrock Rubric Eval Gate (Retired)
+
+The Bedrock rubric eval gate has been retired for GitHub. The asset
+`bootstrapper/github-workflows/prism-eval-gate.yml` has been deleted.
+
+Passing `--mode bedrock` to `install-eval-harness` or `install-github-workflows` now exits 1 with a
+migration message directing you to remove `--mode` and re-run.
+
+GitLab's `bootstrapper/gitlab-workflows/prism-eval-gate.yml` was rewritten in place rather than
+deleted, so the job name and the `.gitlab-ci.yml` include path are unchanged and any merge-request
+approval rule matching that job keeps working.
+
+### Agent Eval (prism-agent-eval.yml)
+
+`prism-agent-eval.yml` is a separate workflow that scores agent output via Bedrock against
+`.prism/eval-harness/rubrics/agent-quality.json`. It is **not** the eval gate — it runs only on PRs
+modifying agent code.
+
+Only `agent-quality.json` is installed into repos. Four additional rubrics (`code-quality.json`,
+`api-response-quality.json`, `security-compliance.json`, `spec-compliance.json`) still exist in
+the CLI's bundled assets as reference material but are **no longer installed**.
+
+### Running Agent Evaluations Locally
+
+The eval harness can be run locally to test agent output scoring:
+
+```bash
+# Evaluate agent output against the agent-quality rubric
+./.prism/eval-harness/run-eval.sh .prism/eval-harness/rubrics/agent-quality.json src/agent.py
 ```
 
 **Output:**
@@ -441,7 +537,7 @@ Exit codes: `0` = pass, `1` = fail, `2` = error.
 
 ### Configuration
 
-`eval-config.json`:
+`eval-config.json` (used by `prism-agent-eval.yml` only — not the eval gate):
 
 | Field | Description | Default |
 |---|---|---|
@@ -453,15 +549,16 @@ Exit codes: `0` = pass, `1` = fail, `2` = error.
 
 ### Rubrics
 
-Five production rubrics are available:
+Only `agent-quality.json` is installed into repos by `install-eval-harness`. Four additional rubrics
+are available as reference material in the CLI's bundled assets but are not installed:
 
-| Rubric | Auto-selected when file path matches |
+| Rubric | Status |
 |---|---|
-| `code-quality.json` | Default fallback |
-| `api-response-quality.json` | `api`, `handler`, `route`, `controller` |
-| `agent-quality.json` | `agent`, `assistant`, `orchestrat`, `workflow`, `chain` |
-| `security-compliance.json` | `auth`, `security`, `guard`, `policy`, `iam`, `crypto` |
-| `spec-compliance.json` | Used when commit has `Spec-Ref:` trailer |
+| `agent-quality.json` | **Installed** — used by `prism-agent-eval.yml` |
+| `code-quality.json` | Reference only (bundled in CLI) |
+| `api-response-quality.json` | Reference only (bundled in CLI) |
+| `security-compliance.json` | Reference only (bundled in CLI) |
+| `spec-compliance.json` | Reference only (bundled in CLI) |
 
 ### Creating a Custom Rubric
 
@@ -483,23 +580,29 @@ Weights must sum to 1.0. The script calculates the weighted average client-side 
 
 ### CI Workflow Behavior
 
-`prism-eval-gate.yml` behaves differently depending on which mode you installed. The shared steps:
+`prism-eval-gate.yml` performs three checks:
 
-1. Emits `prism.d1.eval` to EventBridge
-2. Posts a PR comment with the results
-3. Waits for the AWS Continuum review when it is configured
-4. Fails the check on a failing review or a blocking Continuum finding
+1. **Code review** — kiro-cli headless reviews the full PR diff against `.kiro/steering/code-review.md`
+2. **Secret scanning** — gitleaks scans the PR's commit range (`BASE..HEAD`) for leaked credentials
+3. **Security scan** — waits for the AWS Continuum review when configured
 
-Where they diverge:
+The gate fails on:
+- Any high-severity kiro finding or score below threshold
+- Any gitleaks finding (secrets detected)
+- A critical or high Continuum finding
 
-| | Kiro mode (default) | Bedrock mode (legacy) |
-|---|---|---|
-| **File selection** | The full PR diff — every changed source file is reviewed | Only files touched by commits carrying an `AI-Origin:` trailer |
-| **Review rules** | `.kiro/steering/code-review.md`, applied by kiro-cli headless | A rubric auto-selected per file by path match |
-| **Per-file scoring** | One review over the diff, with findings by file and line | `run-eval.sh` invoked per file |
-| **Fails on** | score below threshold, any high-severity finding, an unparseable review, or a **critical/high** Continuum finding | `overall_result == FAIL`, or **any** Continuum finding regardless of severity |
+The gate emits `prism.d1.eval` to EventBridge and posts a PR comment with the results.
 
-Two consequences worth knowing. Kiro mode does not read commit trailers at all, so it reviews human-written code in the PR as well — deliberate, since AI attribution now comes from codeburn rather than trailers. And Bedrock mode blocks on a MEDIUM Continuum finding where kiro mode would not.
+A failing gate does **not** block the merge by itself — see
+[Making the Gate Block Merges](#making-the-gate-block-merges) for the branch protection rule that
+turns it from advisory into enforcing.
+
+kiro-cli does not read commit trailers — it reviews human-written and AI-written code alike,
+since AI attribution now comes from codeburn rather than trailers.
+
+gitleaks needs no secret and no AWS role, so it is the only check that runs on fork PRs (where
+`KIRO_API_KEY` is unavailable). It fails closed: if gitleaks cannot be installed or errors during
+the scan, the gate fails.
 
 ### Uninstall
 
@@ -525,7 +628,7 @@ Findings flow into the PRISM pipeline where they're:
 - Tagged with Continuum's own `riskLevel` and, where the finding carries one, a CWE id
 - Correlated with AI vs human code origin from codeburn attribution
 - Surfaced in Team, Executive, and CISO dashboards
-- Used to block the eval gate — on **critical or high** findings in kiro mode, on **any** finding in Bedrock mode
+- Used to block the eval gate on **critical or high** findings
 
 ### Setup (CLI — Recommended)
 
@@ -701,7 +804,7 @@ The eval gate (`prism-eval-gate.yml`) integrates Continuum as a deterministic se
 2. Calls `StartCodeReviewJob` with the diff S3 URI
 3. Polls `BatchGetCodeReviewJobs` every 30s, up to 60 attempts (30-minute ceiling; scans typically finish in 5-15 min)
 4. Calls `ListFindings` to get structured results with risk levels
-5. Fails the gate — on **critical or high** findings in kiro mode, on **any** finding in Bedrock mode
+5. Fails the gate on a **critical or high** finding
 6. Forwards findings to EventBridge for dashboard reporting
 
 No GitHub App polling or comment parsing needed — fully API-driven and deterministic.
@@ -722,7 +825,7 @@ git push -u origin test-security-review
 What happens:
 1. Security Agent GitHub App automatically reviews the PR
 2. Posts inline review comments on specific lines (as `aws-security-agent[bot]`)
-3. Eval gate workflow collects findings and blocks — on critical/high in kiro mode, on any finding in Bedrock mode
+3. Eval gate workflow collects findings and blocks on critical/high findings
 4. Findings forwarded to EventBridge carrying Continuum's `riskLevel` as severity, plus the CWE id as metadata
 
 **Test Pen Test:**
@@ -1039,7 +1142,7 @@ python scripts/run-demo.py --mock   # Run agent demo with mock model
 | **Agent Framework** | Strands Agents SDK (Python) | `sample-app/agent/` |
 | **Tool Integration** | Model Context Protocol (MCP) with scope-based auth | `sample-app/src/mcp/` |
 | **Production Hosting** | Amazon Bedrock AgentCore | `bootstrapper/agent-configs/` |
-| **Agent Eval** | kiro-cli headless review + Bedrock rubrics (legacy) | `bootstrapper/eval-harness/` |
+| **Agent Eval** | Bedrock rubric scoring (`agent-quality.json`) via `prism-agent-eval.yml` | `bootstrapper/eval-harness/` |
 | **Security** | Bedrock Guardrails + MCP authorization + Security Agent | `infra/lib/constructs/` |
 | **Workshop** | Module 02: Agent Development | [Workshop Studio catalog](https://catalog.us-east-1.prod.workshops.aws/workshops/d0a8b037-dfe0-4023-9ce2-f5de32ee4c67/en-US) |
 
@@ -1248,7 +1351,7 @@ If no usage data is available or no AI tool is detected, token trailers are omit
 |---|---|
 | OIDC auth fails | Verify trust policy `sub` matches `repo:org/repo:*` |
 | EventBridge put fails | Check `events:PutEvents` on the bus ARN, and that the region matches the one you passed to `setup-github-oidc` |
-| Eval gate skips every file (Bedrock mode) | Bedrock mode only reviews files from commits carrying an `AI-Origin:` trailer. Switch to kiro mode, which reviews the whole PR diff and needs no trailers |
+| Eval gate skips every file | Possible `KIRO_API_KEY` secret is missing or invalid. Check the workflow log for the kiro-cli exit code |
 | Agent eval skips | No agent entry point found — the workflow tries `agent/main.py`, `agents/main.py`, then `agent.py`, and each must accept `--mock` |
 | Continuum scan never completes | The workflow polls every 30s for up to 60 attempts, then gives up. Check the job status with `aws securityagent batch-get-code-review-jobs` |
 
@@ -1282,7 +1385,7 @@ All events flow to the `prism-d1-metrics` EventBridge bus with source `prism.d1.
 |---|---|---|
 | `prism.d1.pr` | `prism-ai-metrics.yml` | PR merge |
 | `prism.d1.deploy` | `prism-ai-metrics.yml` | Merge to main |
-| `prism.d1.eval` | `prism-eval-gate.yml`, either mode | PR opened or updated |
+| `prism.d1.eval` | `prism-eval-gate.yml` | PR opened or updated |
 | `prism.d1.agent.eval` | `prism-agent-eval.yml` | PR touching agent code |
 | `prism.d1.security.code_review` | `prism-eval-gate.yml` (Continuum scan) | PR security scan |
 | `prism.d1.assessment` | `api-handler` Lambda | `POST /assessment` |
@@ -1305,7 +1408,7 @@ Usage instructions for the copy-me artifacts live in [`bootstrapper/README.md`](
 |---|---|
 | `bootstrapper/github-workflows/` | Reusable GitHub Actions for metric collection and eval gating |
 | `bootstrapper/gitlab-workflows/` | GitLab CI templates for metric collection and eval gating |
-| `bootstrapper/eval-harness/` | Bedrock Evaluation rubrics, runner script with `--spec` flag, and the `code-review.md` Kiro steering file |
+| `bootstrapper/eval-harness/` | Agent eval rubric (`agent-quality.json`), runner script with `--spec` flag, and the `code-review.md` Kiro steering file |
 | `bootstrapper/metric-hooks/` | Git hooks for automatic AI-origin tagging (deprecated — use `setup-otel-sync`) |
 
 **Copy-me artifacts** — present only in a clone of this repo; copy them into your own project by hand:

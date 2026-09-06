@@ -107,7 +107,7 @@ Four CloudWatch dashboards, all reading the events table and attribution store d
 
 - **Bedrock Guardrails** — content filters, PII protection, denied topics with per-trigger metrics
 - **MCP Authorization** — scope-based tool access control with audit trail
-- **Eval Gates** — agentic code review via kiro-cli headless (default) or 5 Bedrock rubrics (legacy), plus an AWS Continuum finding gate
+- **Eval Gates** — agentic code review via kiro-cli headless, gitleaks secret scanning, and an AWS Continuum finding gate
 - **KMS encryption** on all data stores, VPC isolation, exfiltration detection
 
 ### Autonomous Coding Agent (Preview)

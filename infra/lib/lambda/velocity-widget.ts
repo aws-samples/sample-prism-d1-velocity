@@ -743,7 +743,7 @@ async function renderExecSecurity(fromIso: string, toIso: string, p: Palette): P
 async function renderEval(fromIso: string, toIso: string, p: Palette): Promise<string> {
   const evals = await queryEvents('prism.d1.eval', fromIso, toIso);
   if (evals.length === 0) {
-    return emptyState('prism.d1.eval', 'Populated by prism-eval-gate-kiro.yml / prism-eval-gate.yml on pull requests.', p);
+    return emptyState('prism.d1.eval', 'Populated by prism-eval-gate-kiro.yml on pull requests, and prism-agent-eval.yml on agent changes.', p);
   }
 
   const byRubric = new Map<string, { total: number; pass: number; scoreSum: number }>();

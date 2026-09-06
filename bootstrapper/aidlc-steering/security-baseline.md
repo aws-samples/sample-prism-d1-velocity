@@ -1,11 +1,11 @@
 # Security Baseline Rules
 
 > Adapted from [AWS AI-DLC Security Baseline](https://github.com/awslabs/aidlc-workflows).
-> These rules are enforced during code generation and validated by the PRISM `security-compliance` eval rubric.
+> These rules are enforced during code generation and validated by the kiro eval gate against `.kiro/steering/code-review.md`.
 
 ## Enforcement
 
-These are **blocking constraints**, not optional guidance. AI coding agents must verify compliance before presenting code for review. The PRISM eval gate validates these rules automatically via the `security-compliance.json` rubric.
+These are **blocking constraints**, not optional guidance. AI coding agents must verify compliance before presenting code for review. The PRISM eval gate validates these rules automatically via `.kiro/steering/code-review.md`.
 
 ---
 
@@ -95,7 +95,7 @@ Findings feed back into the AI-DLC workflow: the engineering team reviews findin
 
 ## PRISM Integration
 
-These rules map to the PRISM `security-compliance.json` eval rubric:
+These rules map to the security criteria enforced by the kiro eval gate:
 
 | Security Rule | Rubric Criterion | Weight |
 |---|---|---|
@@ -110,4 +110,4 @@ These rules map to the PRISM `security-compliance.json` eval rubric:
 | SECURITY-04 (Headers) | `http_security_headers` | 0.04 |
 | SECURITY-08 (Dependencies) | `dependency_security` | 0.04 |
 
-The eval gate runs Bedrock against this rubric on every PR. Score below 0.82 blocks merge.
+The eval gate (kiro) reviews every PR against `.kiro/steering/code-review.md`, which incorporates these security rules. Score below 0.82 blocks merge. The gate also runs gitleaks secret scanning on each PR's commits — a PR that introduces a credential will be blocked. Additionally, the AWS Continuum security scan validates these rules.

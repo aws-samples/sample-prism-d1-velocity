@@ -15,9 +15,9 @@ If a `prism-cli` command installs it, you never touch this directory. If it is a
 
 | Path | Contents |
 |---|---|
-| `github-workflows/` | `prism-ai-metrics.yml` (per-merge DORA facts), `prism-eval-gate-kiro.yml`, `prism-eval-gate.yml`, `prism-agent-eval.yml` |
+| `github-workflows/` | `prism-ai-metrics.yml` (per-merge DORA facts), `prism-eval-gate-kiro.yml`, `prism-agent-eval.yml` |
 | `gitlab-workflows/` | GitLab CI equivalents plus a root `.gitlab-ci.yml` |
-| `eval-harness/` | `eval-config.json`, five Bedrock rubrics, `run-eval.sh`, and `steering/code-review.md` |
+| `eval-harness/` | `eval-config.json`, five Bedrock rubrics, `run-eval.sh`, and `steering/code-review.md`. Only `agent-quality.json` is installed into repos; `run-eval.sh` and `eval-config.json` are used by `prism-agent-eval.yml`, not by the eval gate |
 | `metric-hooks/` | `prepare-commit-msg` hook and `config.json.template` |
 | `claude-code/` | Four `CLAUDE.md` templates by team archetype |
 | `spec-templates/` | Five Kiro-compatible spec templates |
@@ -105,7 +105,7 @@ Spec-Ref: specs/create-order-endpoint.md"
 - **Acceptance criteria should be specific.** Avoid "should handle errors gracefully" — specify what happens for each error type.
 - **Include edge cases.** Given/When/Then makes it easy to enumerate: happy path, validation failures, auth failures, not found, concurrent access, timeouts.
 - **Reference metrics.** Identify which PRISM events the feature emits; this feeds the delivery dashboards.
-- **Reference eval rubrics.** Point at the rubric files in `.prism/eval-harness/rubrics/` so the eval gate knows what to check.
+- **Reference eval criteria.** The kiro eval gate reads `.kiro/steering/code-review.md`; agent evals use rubrics in `.prism/eval-harness/rubrics/`.
 
 ### How spec metrics reach a dashboard
 

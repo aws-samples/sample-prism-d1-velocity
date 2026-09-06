@@ -144,4 +144,4 @@ Bedrock Evaluation should check:
 - **Testability**: Is there a mock/stub for local development and testing?
 - **Observability**: Are all calls logged with the required fields?
 
-Rubrics: `.prism/.prism/eval-harness/rubrics/code-quality.json`, `.prism/.prism/eval-harness/rubrics/security-compliance.json`
+Enforced by: `.kiro/steering/code-review.md` (the rules the kiro eval gate reviews against). Committed credentials are blocked separately by the gate's gitleaks scan.

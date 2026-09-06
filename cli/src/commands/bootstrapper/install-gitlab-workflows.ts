@@ -66,7 +66,16 @@ export default {
     console.log(`  1. Copy ${outputDir}/.gitlab-ci.yml to your repo root`);
     console.log(`  2. Run: prism-cli bootstrapper setup-gitlab-oidc`);
     console.log(`  3. Add CI/CD variable PRISM_METRICS_ROLE_ARN in GitLab`);
-    console.log(`  4. (Optional) Create pipeline schedule for weekly DORA assessment`);
+    console.log(`  4. Add CI/CD variable KIRO_API_KEY (masked) — required by the eval gate`);
+    console.log(`     Generate at: https://app.kiro.dev → Settings → API Keys`);
+    console.log(`  5. Run: prism-cli bootstrapper install-eval-harness`);
+    console.log(`     — installs .kiro/steering/code-review.md (the rules the gate reviews`);
+    console.log(`       against), a .gitleaks.toml starter, and the prism-agent-eval harness`);
+    console.log(`  6. (Optional) Create pipeline schedule for weekly DORA assessment`);
+    console.log('');
+    console.log(`  Secret scanning (gitleaks) needs no CI/CD variable and no AWS role, so it`);
+    console.log(`  is the only part of the gate that runs on fork merge requests — where`);
+    console.log(`  GitLab withholds protected variables and KIRO_API_KEY is absent.`);
     console.log('');
   },
 };

@@ -76,14 +76,9 @@ Any change that affects operational behavior MUST include a runbook update:
 - Integration tests for custom constructs.
 - Validate that `cdk diff` produces no unexpected changes after applying.
 
-### 8. Bedrock Evaluation
+### 8. Eval Gate
 
-AI-generated infrastructure code is evaluated against:
-
-- **Code Quality**: `.prism/.prism/eval-harness/rubrics/code-quality.json`
-- **Security Compliance**: `.prism/.prism/eval-harness/rubrics/security-compliance.json`
-
-Infrastructure code scoring below the configured threshold (default 0.82) MUST be revised before merging. Security rubric failures are hard blockers for platform repos.
+The CI eval gate (kiro) reviews every PR against the rules in `.kiro/steering/code-review.md`. Code scoring below 0.82 MUST be revised before merging. Security rubric failures are hard blockers for platform repos. The gate also runs gitleaks secret scanning on each PR's commits — a PR that introduces a credential will be blocked.
 
 ## Code Patterns
 
@@ -111,7 +106,7 @@ This repo emits events to the `prism-d1-metrics` EventBridge bus:
 |---|---|
 | `prism.d1.commit` | Every commit (via git hook) |
 | `prism.d1.pr` | PR merge (via GitHub Actions) |
-| `prism.d1.eval` | Bedrock Evaluation run |
+| `prism.d1.eval` | Eval gate run |
 | `prism.d1.deploy` | Deployment to any environment |
 | `prism.d1.assessment` | Weekly DORA assessment |
 
@@ -122,7 +117,7 @@ Ensure the metric hooks are installed (`bash prism-cli bootstrapper install-git-
 | Item | Location |
 |---|---|
 | Spec templates | `spec-templates/` |
-| Eval rubrics | `.prism/.prism/eval-harness/rubrics/` |
+| Eval steering rules | `.kiro/steering/code-review.md` |
 | Git hooks | `metric-hooks/` |
 | CI workflows | `.github/workflows/prism-*.yml` |
 | PRISM config | `.prism/config.json` |
