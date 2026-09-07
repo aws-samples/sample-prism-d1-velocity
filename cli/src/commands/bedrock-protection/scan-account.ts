@@ -1,4 +1,4 @@
-import { resolveAccount, PROFILE_OPTION } from '../../utils/aws.js';
+import { AwsTarget, resolveAccount, PROFILE_OPTION } from '../../utils/aws.js';
 import { DEFAULT_REGION } from '../../utils/region.js';
 import { validateAwsRegion } from '../../utils/validate.js';
 import {
@@ -63,7 +63,9 @@ export default {
     if (!Number.isFinite(maxKeyAge) || maxKeyAge < 1) throw new Error('--max-key-age must be a positive integer');
     if (!Number.isFinite(unusedDays) || unusedDays < 1) throw new Error('--unused-days must be a positive integer');
 
-    const accountId = resolveAccount(opts.profile);
+    // One target for every check; scan-org supplies assumed-role creds instead.
+    const target: AwsTarget = { profile: opts.profile };
+    const accountId = resolveAccount(target);
     if (!accountId) { process.exitCode = 2; return; }
 
     const runIam = !opts.bedrockOnly;
@@ -71,21 +73,21 @@ export default {
 
     // auditBudgets returns the covering budget names so the alerting check can
     // scope its per-notification calls to them rather than every budget.
-    const budgets = runBedrock ? auditBudgets(opts.profile, accountId) : null;
+    const budgets = runBedrock ? auditBudgets(target, accountId) : null;
 
     const findings: Finding[] = [
       ...(runIam ? [
-        ...auditRoot(opts.profile),
-        auditPasswordPolicy(opts.profile),
-        ...auditUsers(opts.profile, maxKeyAge, unusedDays),
-        auditUserPolicies(opts.profile),
+        ...auditRoot(target),
+        auditPasswordPolicy(target),
+        ...auditUsers(target, maxKeyAge, unusedDays),
+        auditUserPolicies(target),
       ] : []),
       ...(runBedrock && budgets ? [
         ...budgets.findings,
-        auditBudgetAlerting(opts.profile, accountId, budgets.coveringBudgets),
-        ...auditDetection(opts.profile, region),
-        auditCommitments(opts.profile, region),
-        auditForensics(opts.profile, region),
+        auditBudgetAlerting(target, accountId, budgets.coveringBudgets),
+        ...auditDetection(target, region),
+        auditCommitments(target, region),
+        auditForensics(target, region),
       ] : []),
     ];
 

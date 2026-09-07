@@ -1,4 +1,4 @@
-import { aws } from './aws.js';
+import { aws, AwsTarget } from './aws.js';
 import { Finding } from './audit.js';
 
 /**
@@ -64,10 +64,10 @@ function isCostBudget(budget: any): boolean {
   return budget?.BudgetType === 'COST';
 }
 
-export function auditBudgets(profile: string | undefined, accountId: string): { findings: Finding[]; coveringBudgets: string[] } {
+export function auditBudgets(target: AwsTarget | undefined, accountId: string): { findings: Finding[]; coveringBudgets: string[] } {
   // describe-budgets requires an explicit account id, and returns an EMPTY body
   // -- not {"Budgets": []} -- when no budgets exist.
-  const bud = aws(['budgets', 'describe-budgets', '--account-id', accountId], profile);
+  const bud = aws(['budgets', 'describe-budgets', '--account-id', accountId], target);
 
   if (!bud.ok) {
     return { coveringBudgets: [], findings: [
@@ -140,7 +140,7 @@ export function auditBudgets(profile: string | undefined, accountId: string): { 
  * scoped to the budgets that actually cover Bedrock rather than all of them.
  */
 export function auditBudgetAlerting(
-  profile: string | undefined,
+  target: AwsTarget | undefined,
   accountId: string,
   coveringBudgets: string[],
 ): Finding {
@@ -158,7 +158,7 @@ export function auditBudgetAlerting(
     };
   }
 
-  const all = aws(['budgets', 'describe-budget-notifications-for-account', '--account-id', accountId], profile);
+  const all = aws(['budgets', 'describe-budget-notifications-for-account', '--account-id', accountId], target);
   if (!all.ok) {
     return {
       id, category: 'budget', title,
@@ -184,7 +184,7 @@ export function auditBudgetAlerting(
         'budgets', 'describe-subscribers-for-notification',
         '--account-id', accountId, '--budget-name', name,
         '--notification', JSON.stringify(n),
-      ], profile);
+      ], target);
       if (subs.ok) subscribers += (subs.json?.Subscribers ?? []).length;
     }
     if (subscribers === 0) unsubscribed.push(name); else alerting++;
@@ -216,14 +216,14 @@ export function auditBudgetAlerting(
  */
 const ANOMALY_TITLE = 'Cost anomaly monitor covering Bedrock, with an alert subscription';
 
-export function auditDetection(profile: string | undefined, region: string): Finding[] {  const out: Finding[] = [];
+export function auditDetection(target: AwsTarget | undefined, region: string): Finding[] {  const out: Finding[] = [];
 
   // Cost Explorer is an account-level opt-in that stays OFF until someone
   // enables it -- measured error: AccessDeniedException "User not enabled for
   // cost explorer access". Every CE-backed check must be gated on this, or the
   // audit reports "no anomaly monitor configured" when the truth is that it
   // could not look.
-  const ce = aws(['ce', 'get-anomaly-monitors'], profile);
+  const ce = aws(['ce', 'get-anomaly-monitors'], target);
   const ceDisabled = !ce.ok && /not enabled for cost explorer/i.test(ce.raw);
 
   out.push({
@@ -262,7 +262,7 @@ export function auditDetection(profile: string | undefined, region: string): Fin
     // then auto-creates a "Default-Services-Monitor" (SERVICE dimension) WITH a
     // subscription -- observed live. So this check often passes as a side effect
     // of setting up budgets rather than deliberately.
-    const subs = aws(['ce', 'get-anomaly-subscriptions'], profile);
+    const subs = aws(['ce', 'get-anomaly-subscriptions'], target);
     const coveringArns = new Set(covering.map((m) => m.MonitorArn));
     const subscribed = subs.ok
       ? (subs.json?.AnomalySubscriptions ?? []).some((s: any) =>
@@ -291,7 +291,7 @@ export function auditDetection(profile: string | undefined, region: string): Fin
 
   // CloudWatch is the only fast signal. Cost data lags 12-24h, so a cost-only
   // posture lets a stolen key run for up to a day before anything fires.
-  const alarms = aws(['cloudwatch', 'describe-alarms', '--region', region], profile);
+  const alarms = aws(['cloudwatch', 'describe-alarms', '--region', region], target);
   if (!alarms.ok) {
     out.push({
       id: 'bedrock-invocation-alarm', category: 'detection', title: 'CloudWatch alarm on Bedrock invocation volume',
@@ -313,8 +313,8 @@ export function auditDetection(profile: string | undefined, region: string): Fin
   return out;
 }
 
-export function auditCommitments(profile: string | undefined, region: string): Finding {
-  const pt = aws(['bedrock', 'list-provisioned-model-throughputs', '--region', region], profile);
+export function auditCommitments(target: AwsTarget | undefined, region: string): Finding {
+  const pt = aws(['bedrock', 'list-provisioned-model-throughputs', '--region', region], target);
   if (!pt.ok) {
     return {
       id: 'provisioned-throughput', category: 'commitment', title: 'Provisioned Throughput commitments',
@@ -334,9 +334,9 @@ export function auditCommitments(profile: string | undefined, region: string): F
   };
 }
 
-export function auditForensics(profile: string | undefined, region: string): Finding {
+export function auditForensics(target: AwsTarget | undefined, region: string): Finding {
   // Returns an EMPTY body when logging is off -- same trap as describe-budgets.
-  const log = aws(['bedrock', 'get-model-invocation-logging-configuration', '--region', region], profile);
+  const log = aws(['bedrock', 'get-model-invocation-logging-configuration', '--region', region], target);
   if (!log.ok) {
     return {
       id: 'model-invocation-logging', category: 'forensics', title: 'Bedrock model invocation logging',

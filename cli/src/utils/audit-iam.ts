@@ -1,4 +1,4 @@
-import { aws, daysSince } from './aws.js';
+import { aws, AwsTarget, daysSince } from './aws.js';
 import { Finding, Severity } from './audit.js';
 
 /**
@@ -30,14 +30,14 @@ interface CredRow {
  * This is the only non-read AWS call in the command. It produces a report
  * artifact and modifies no resource.
  */
-function credentialReport(profile?: string): CredRow[] | { error: string } {
-  let got = aws(['iam', 'get-credential-report'], profile);
+function credentialReport(target?: AwsTarget): CredRow[] | { error: string } {
+  let got = aws(['iam', 'get-credential-report'], target);
 
   if (!got.ok && got.errorCode === 'ReportNotPresent') {
-    const gen = aws(['iam', 'generate-credential-report'], profile);
+    const gen = aws(['iam', 'generate-credential-report'], target);
     if (!gen.ok) return { error: gen.errorCode || 'generate-credential-report failed' };
     for (let i = 0; i < 10 && !got.ok; i++) {
-      got = aws(['iam', 'get-credential-report'], profile);
+      got = aws(['iam', 'get-credential-report'], target);
       if (!got.ok && got.errorCode !== 'ReportNotPresent') break;
     }
   }
@@ -71,13 +71,13 @@ function credentialReport(profile?: string): CredRow[] | { error: string } {
   return rows;
 }
 
-export function auditRoot(profile?: string): Finding[] {
+export function auditRoot(target?: AwsTarget): Finding[] {
   const out: Finding[] = [];
 
   // GetAccountSummary answers the two most severe questions in one call and
   // needs no credential report. AccountMFAEnabled and AccountAccessKeysPresent
   // both describe the ROOT user specifically.
-  const summary = aws(['iam', 'get-account-summary'], profile);
+  const summary = aws(['iam', 'get-account-summary'], target);
   const map = summary.ok ? (summary.json?.SummaryMap ?? null) : null;
 
   if (!map) {
@@ -118,8 +118,8 @@ export function auditRoot(profile?: string): Finding[] {
   return out;
 }
 
-export function auditPasswordPolicy(profile?: string): Finding {
-  const pol = aws(['iam', 'get-account-password-policy'], profile);
+export function auditPasswordPolicy(target?: AwsTarget): Finding {
+  const pol = aws(['iam', 'get-account-password-policy'], target);
 
   // NoSuchEntity is the API saying "no policy set", which means AWS defaults
   // apply. That is a finding, not an error -- treating it as an error hides it.
@@ -155,9 +155,9 @@ export function auditPasswordPolicy(profile?: string): Finding {
   };
 }
 
-export function auditUsers(profile: string | undefined, maxKeyAge: number, unusedDays: number): Finding[] {
+export function auditUsers(target: AwsTarget | undefined, maxKeyAge: number, unusedDays: number): Finding[] {
   const out: Finding[] = [];
-  const report = credentialReport(profile);
+  const report = credentialReport(target);
 
   if ('error' in report) {
     for (const [id, title, sev] of [
@@ -232,8 +232,8 @@ export function auditUsers(profile: string | undefined, maxKeyAge: number, unuse
   return out;
 }
 
-export function auditUserPolicies(profile?: string): Finding {
-  const list = aws(['iam', 'list-users', '--query', 'Users[].UserName'], profile);
+export function auditUserPolicies(target?: AwsTarget): Finding {
+  const list = aws(['iam', 'list-users', '--query', 'Users[].UserName'], target);
   if (!list.ok) {
     return {
       id: 'user-admin-policy', category: 'users', title: 'AdministratorAccess on IAM users',
@@ -246,7 +246,7 @@ export function auditUserPolicies(profile?: string): Finding {
   const admins: string[] = [];
   let unchecked = 0;
   for (const name of names) {
-    const att = aws(['iam', 'list-attached-user-policies', '--user-name', name], profile);
+    const att = aws(['iam', 'list-attached-user-policies', '--user-name', name], target);
     if (!att.ok) { unchecked++; continue; }
     const policies = att.json?.AttachedPolicies ?? [];
     if (policies.some((p: any) => p.PolicyName === 'AdministratorAccess')) admins.push(name);

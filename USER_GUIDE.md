@@ -634,6 +634,9 @@ the layered model and the check-by-check reference are in
 # AWS account — IAM credential hygiene + Bedrock spend guardrails (15 checks)
 prism-cli bedrock-protection scan-account --region us-west-2
 
+# AWS Organization or specific OUs — IAM per account, Bedrock once at the payer
+prism-cli bedrock-protection scan-org --ou ou-1234-abcd5678
+
 # Repository — gitleaks over full history, working tree and commit messages (6 checks)
 prism-cli bedrock-protection scan-repo
 ```
@@ -660,6 +663,60 @@ Covers root MFA and root access keys, access key age, console users without MFA,
 **both** Bedrock billing surfaces, budget alert subscribers, Cost Explorer, cost anomaly detection,
 a CloudWatch alarm on `AWS/Bedrock` metrics, Provisioned Throughput commitments, and model
 invocation logging.
+
+### scan-org
+
+Audits an Organization, or specific OUs within it. Run from the management account or a delegated
+admin.
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `--ou <ids>` | entire organization | Comma-separated OU ids to scope to |
+| `--role-name <name>` | `OrganizationAccountAccessRole` | Role to assume in each member account (`AWSControlTowerExecution` in Control Tower orgs) |
+| `--region <region>` | `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
+| `--profile <name>` | ambient credentials | Management-account profile |
+| `--max-accounts <n>` | `50` | Stop after this many accounts (~10 API calls each) |
+| `--session-duration <seconds>` | `3600` | AssumeRole session length (minimum 900) |
+| `--max-key-age <days>` | `90` | Flag active access keys older than this |
+| `--unused-days <days>` | `90` | Flag credentials idle longer than this |
+| `--skip-bedrock` | — | Skip the org-wide Bedrock spend guardrail checks |
+| `--skip-guardrails` | — | Skip the SCP and AWS Config organization guardrail checks |
+| `--json` | — | Machine-readable output |
+| `--fail-on <severity>` | `none` | Exit 1 if any FAIL is at or above this severity |
+
+`scan-org` also runs 9 **organization guardrail** checks that have no single-account equivalent:
+whether SCPs are enabled and attached, whether one denies CloudTrail/Config/GuardDuty teardown,
+whether one restricts Bedrock by region or denies `bedrock:CreateProvisionedModelThroughput`, and
+whether AWS Config organization rules continuously cover the IAM checks this audit only samples.
+Attachment is judged against the audited target **plus every ancestor**, since SCPs inherit downward.
+These detect presence and attachment, **not enforcement** — inheritance, `NotAction` and
+principal-tag exemptions can neutralise a policy that reads correctly, so confirm with a live call.
+Skip them with `--skip-guardrails`.
+
+The two account-side layers run at different scopes, deliberately: **IAM hygiene per account** via an
+assumed role, and **Bedrock spend guardrails once at the management account**, because under
+consolidated billing the payer's budgets bound every linked account. Evaluating budgets per member
+account would report "no budget" for every account in an org that is in fact fully covered by one
+consolidated budget. The trade-off is stated in the output: a member account holding its own budget
+is not detected — run `scan-account --bedrock-only` there if you need that.
+
+Enumeration always recurses into nested OUs, since a non-recursive walk would report on a fraction of
+an OU and look complete. An account whose role cannot be assumed is reported **INDETERMINATE, never
+skipped**, and the rollup prints explicit coverage (`Org coverage is 3/5`). After assuming,
+`sts:GetCallerIdentity` confirms the session landed in the intended account before any finding is
+attributed to it.
+
+Needs these in the management account, plus the IAM read actions in each member account's assumed
+role:
+
+```
+organizations:DescribeOrganization, organizations:ListRoots,
+organizations:ListAccountsForParent, organizations:ListOrganizationalUnitsForParent,
+organizations:DescribeOrganizationalUnit, organizations:ListParents,
+organizations:ListPolicies, organizations:DescribePolicy,
+organizations:ListTargetsForPolicy, config:DescribeOrganizationConfigRules,
+sts:AssumeRole
+```
 
 ### scan-repo
 

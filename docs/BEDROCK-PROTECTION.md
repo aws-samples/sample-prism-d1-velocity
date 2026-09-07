@@ -41,19 +41,105 @@ some other way.
 # Layer 1 — repository
 prism-cli bedrock-protection scan-repo
 
-# Layers 2 and 3 — AWS account
+# Layers 2 and 3 — one AWS account
 prism-cli bedrock-protection scan-account --region us-west-2
+
+# Layers 2 and 3 — a whole Organization, or specific OUs
+prism-cli bedrock-protection scan-org --region us-west-2
+prism-cli bedrock-protection scan-org --ou ou-1234-abcd5678,ou-1234-efgh9012
 
 # Narrow to one layer
 prism-cli bedrock-protection scan-account --iam-only      # layer 2
 prism-cli bedrock-protection scan-account --bedrock-only   # layer 3
 ```
 
-Both commands are **audit-only**. They make no changes to AWS or to the repository. The single
-exception is `iam:GenerateCredentialReport`, which produces a report artifact and modifies no
-resource — IAM has no way to read the report without generating it first.
+All three are **audit-only**. They make no changes to AWS or to the repository. Two calls are not
+pure reads and are documented where they happen: `iam:GenerateCredentialReport`, which produces a
+report artifact IAM has no other way to read, and `sts:AssumeRole` in `scan-org`, which mints a
+temporary session.
 
-21 checks total: 6 repository, 7 IAM, 8 Bedrock.
+30 checks: 6 repository, 7 IAM, 8 Bedrock, 9 organization guardrail. `scan-org` reuses the IAM and
+Bedrock checks across many accounts and adds the organization guardrail family, which has no
+single-account equivalent.
+
+### Scoping across an Organization
+
+`scan-org` splits the two account-side layers by their natural scope, because running both per
+account would be wrong in opposite directions:
+
+| Layer | Scope in `scan-org` | Why |
+|-------|--------------------|-----|
+| **IAM hygiene** (7 checks) | **Per account**, via an assumed role | Every member account has its own users, keys and password policy. One stale key anywhere in the org is a way in |
+| **Bedrock guardrails** (8 checks) | **Once**, at the management account | Under consolidated billing the payer's budgets, Cost Explorer and anomaly monitors bound every linked account. Per-account evaluation would report "no budget" for every account in an org fully covered by one consolidated budget — N false FAILs |
+
+The honest limitation, stated in the command's output too: a member account *can* hold its own
+budget, so a payer-level FAIL does not strictly prove no ceiling exists anywhere in the org.
+
+**Enumeration always recurses.** `organizations:ListAccountsForParent` returns only direct children,
+so a non-recursive walk of an OU containing sub-OUs would report on a fraction of it and look
+complete. That is the dangerous direction for an audit, so recursion is not optional.
+
+**An account that cannot be reached is INDETERMINATE, never skipped.** If the role is missing or an
+SCP denies the assumption, every check for that account is reported indeterminate and the rollup
+prints explicit coverage (`Org coverage is 0/2`). A silently dropped account is how an org audit
+ends up reporting on a subset while looking complete.
+
+**Misattribution is guarded explicitly.** After assuming, `scan-org` calls `sts:GetCallerIdentity`
+and confirms the session landed in the intended account before attributing any finding to it. A
+leftover `AWS_PROFILE` would otherwise take precedence over the injected credentials and report the
+caller's own posture under a member account's name — every number wrong in a way no reader could
+detect. Related and measured: credentials are passed by *removing* `AWS_PROFILE` from the child
+environment, not blanking it. `AWS_PROFILE=''` makes the AWS CLI search for a profile literally
+named `()` and fail outright.
+
+### Organization guardrails — preventive and detective
+
+`scan-org` adds a family with no single-account equivalent, because these controls only exist at
+org level. ARCC frames the pairing directly (SAX-08 Outcome 2, preventative/detective control
+symmetry): the first family refuses the action, the second notices it.
+
+| Check | Severity | Asserts |
+|-------|----------|---------|
+| `scp-enabled` | HIGH | `SERVICE_CONTROL_POLICY` is enabled on the root |
+| `scp-attached` | HIGH | At least one customer-managed SCP applies to the audited scope |
+| `scp-detection-tamper` | HIGH | An SCP denies CloudTrail / Config / GuardDuty teardown |
+| `scp-bedrock-region` | MEDIUM | An SCP restricts which regions Bedrock can be used in |
+| `scp-bedrock-provisioned-throughput` | MEDIUM | An SCP denies `bedrock:CreateProvisionedModelThroughput` |
+| `config-org-rules` | MEDIUM | Organization Config rules are deployed |
+| `config-iam-coverage` | MEDIUM | Each IAM hygiene check has a continuously-evaluating Config rule |
+| `scp-readable` | MEDIUM | Reported only when some SCP could not be read — the SCP findings are then partial |
+| `scp-inheritance-resolved` | MEDIUM | Reported only when an ancestor lookup failed — an inherited SCP could read as absent |
+
+**Why SCPs matter more than any IAM control here.** An SCP refuses the API call, and it binds even a
+compromised administrator — the one thing IAM hygiene cannot promise. For LLMjacking the
+highest-leverage instance is a region restriction: a stolen key can call `InvokeModel` in *every*
+enabled region, so denying Bedrock outside the regions you actually operate in cuts the reachable
+surface by an order of magnitude, for free. It also closes a gap in this audit's own coverage — the
+CloudWatch alarm and Provisioned Throughput checks are region-scoped, so activity in an unused
+region is invisible to them.
+
+**Why Config rules are not redundant with the IAM checks.** `scan-org` is a point-in-time sample. A
+Config rule evaluates on every configuration change, so a key created the day after a run is caught
+immediately rather than at the next audit. `config-iam-coverage` names the gap in the audit's own
+terms — it lists which of the seven IAM checks have no continuous equivalent deployed.
+
+**These checks detect presence and attachment, NOT enforcement.** SCP evaluation involves
+inheritance from every ancestor, implicit deny, `NotAction`, condition keys and principal-tag
+exemptions, so a structural read can be satisfied by a policy that exempts precisely the principals
+that matter. Every finding says "appears to" and points at live verification. Reporting an SCP as
+proof of enforcement would be a worse failure than reporting none, so the output never does.
+
+**Inheritance is resolved, not assumed.** SCPs apply downward, so a policy attached to the root
+constrains every account in every OU beneath it. Attachment is judged against the audited target
+*plus every ancestor* — verified against a live org where two of four customer SCPs sat at the root
+and an OU-only view missed both. `FullAWSAccess` is excluded throughout: it is attached everywhere by
+default and allows everything, so it is never evidence of a guardrail.
+
+Requires management-account or delegated-admin credentials, plus a role assumable in each member
+account — `OrganizationAccountAccessRole` by default, `AWSControlTowerExecution` in Control Tower
+orgs, or anything else via `--role-name`. Cost is roughly 10 AWS API calls per account, run
+sequentially, so `--max-accounts` (default 50) bounds a large org and the output says how many
+accounts it left out.
 
 ---
 
@@ -309,6 +395,19 @@ bedrock:ListProvisionedModelThroughputs,
 bedrock:GetModelInvocationLoggingConfiguration, sts:GetCallerIdentity
 ```
 
+`scan-org` additionally needs, in the management account:
+
+```
+organizations:DescribeOrganization, organizations:ListRoots,
+organizations:ListAccountsForParent, organizations:ListOrganizationalUnitsForParent,
+organizations:DescribeOrganizationalUnit, organizations:ListParents,
+organizations:ListPolicies, organizations:DescribePolicy,
+organizations:ListTargetsForPolicy, config:DescribeOrganizationConfigRules,
+sts:AssumeRole
+```
+
+and the assumed role in each member account needs the IAM read actions above.
+
 `scan-repo` additionally needs a `gitleaks` binary on `PATH`, `$GITLEAKS_PATH`, or via
 `--gitleaks <path>`. It is **not** auto-downloaded: the CI eval gate fetches a version-pinned,
 checksum-verified binary into a disposable container, but a developer CLI silently pulling an
@@ -318,8 +417,9 @@ INDETERMINATE and say the repository is not cleared.
 ## What this does not do
 
 - **No remediation.** Audit only; there is no `--fix`. Nothing is provisioned, rotated or deleted.
-- **No org scope.** Single account per invocation. Auditing an Organization means iterating accounts
-  and assuming a role in each.
+- **Org scope covers IAM per account, Bedrock once at the payer.** A member account holding its own
+  budget is not detected by `scan-org`; run `scan-account --bedrock-only` in that account.
+- **`scan-org` is sequential.** Roughly 10 API calls per account, so a large org takes minutes.
 - **`provisioned-throughput` is region-scoped.** A commitment in another region will not appear. The
   output says so.
 - **Budget limits are not judged for size.** A $1,000,000 Bedrock budget passes `bedrock-budget`.
@@ -341,6 +441,12 @@ INDETERMINATE and say the repository is not cleared.
 | Budget `COST`-type filtering, wrong-type reporting | Verified live by creating a `USAGE` + `BillingEntity` budget |
 | `budget-alerting` — silent budget, mixed, and all-alerting | Verified live across four staged states |
 | `anomaly-monitor` subscription requirement | PASS path verified live; the no-subscription FAIL path is not reachable without deleting an AWS-managed subscription |
+| `scan-org` OU scoping, recursion, per-account assumption | Verified live against a real 4-account org (2 OUs): OU-scoped, whole-org, empty OU, `--max-accounts` truncation, and unreachable-role all exercised |
+| `scan-org` misattribution guard | Verified — with a conflicting `AWS_PROFILE` in the parent environment the audit still targeted the correct member accounts, and per-account findings differ rather than mirroring the caller |
+| SCP checks (enabled, attached, tamper, region, Provisioned Throughput) | Verified live against a real org with 4 customer SCPs: PASS and FAIL paths both observed |
+| SCP inheritance resolution | Verified live — an OU scan correctly picked up 2 root-attached SCPs it had previously missed |
+| SCP matching predicates | 12 assertions over synthetic policy documents, including the region-restriction PASS paths that cannot be produced live without creating an org-wide SCP |
+| Config rule checks | FAIL path verified live (org has zero Config rules); the PASS path is unverified |
 
 ## Related
 

@@ -46,15 +46,34 @@ export interface RunResult {
  * latter would arrive as a single argument and the command would fail, which
  * is a loud failure rather than a silent injection.
  *
+ * `extraEnv` is merged over the inherited environment. It exists so a caller
+ * can hand a child process temporary STS credentials without writing them to
+ * disk or mutating this process's own environment -- the latter would leak the
+ * assumed role into every later call in the same run.
+ *
+ * A key mapped to `undefined` is REMOVED rather than set. Blanking is not
+ * equivalent: `AWS_PROFILE=''` makes the AWS CLI look for a profile literally
+ * named `()` and fail with "The config profile () could not be found", so
+ * injected credentials are ignored and every call errors. Measured, not
+ * theoretical.
+ *
  * Never throws: a non-zero exit, a missing binary, and a signal kill all come
  * back as `ok: false`. Callers branch on `ok` and surface `stderr`.
  */
-export function run(file: string, args: string[]): RunResult {
+export function run(file: string, args: string[], extraEnv?: Record<string, string | undefined>): RunResult {
+  let env: NodeJS.ProcessEnv = process.env;
+  if (extraEnv) {
+    env = { ...process.env };
+    for (const [k, v] of Object.entries(extraEnv)) {
+      if (v === undefined) delete env[k];
+      else env[k] = v;
+    }
+  }
   try {
     const stdout = execFileSync(file, args, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env,
     }).trim();
     return { ok: true, stdout, stderr: '' };
   } catch (err: any) {
