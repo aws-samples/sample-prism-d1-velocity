@@ -205,9 +205,23 @@ export default {
 
     // Attachment is judged against the audited scope, not the org at large: an
     // SCP attached to an unrelated OU does not constrain these accounts.
-    const scopeTargetIds = ous.length
-      ? ous
-      : (aws(['organizations', 'list-roots'], mgmt).json?.Roots ?? []).map((r: any) => r.Id);
+    //
+    // The list-roots result is ok-checked rather than optional-chained. Falling
+    // back to [] on failure would leave every attachment-dependent SCP check
+    // with nothing to match against, turning one permissions error into four
+    // confident FAILs -- the exact laundering this audit exists to prevent.
+    let scopeTargetIds: string[] | null = null;
+    let scopeError: string | undefined;
+    if (ous.length) {
+      scopeTargetIds = ous;
+    } else {
+      const rootsRes = aws(['organizations', 'list-roots'], mgmt);
+      if (rootsRes.ok) {
+        scopeTargetIds = (rootsRes.json?.Roots ?? []).map((r: any) => r.Id);
+      } else {
+        scopeError = rootsRes.errorCode || 'organizations:ListRoots failed';
+      }
+    }
     const active = accounts.filter((a) => a.status === 'ACTIVE');
     const suspended = accounts.filter((a) => a.status !== 'ACTIVE');
     const selected = active.slice(0, maxAccounts);
@@ -287,7 +301,7 @@ export default {
       const budgets = auditBudgets(mgmt, callerAccount);
       orgFindings.push(
         ...budgets.findings,
-        auditBudgetAlerting(mgmt, callerAccount, budgets.coveringBudgets),
+        auditBudgetAlerting(mgmt, callerAccount, budgets.coveringBudgets, budgets.listError),
         ...auditDetection(mgmt, region),
         auditCommitments(mgmt, region),
         auditForensics(mgmt, region),
@@ -296,7 +310,7 @@ export default {
 
     if (!opts.skipGuardrails) {
       orgFindings.push(
-        ...auditServiceControlPolicies(mgmt, scopeTargetIds),
+        ...auditServiceControlPolicies(mgmt, scopeTargetIds, scopeError),
         ...auditConfigRules(mgmt),
       );
     }
@@ -401,6 +415,12 @@ export default {
       console.log(`  ❓ ${unreachableAccounts.length} account(s) could not be audited and are NOT passes:`);
       for (const r of unreachableAccounts) console.log(`    ${r.account.id} ${r.account.name} — ${r.unreachable}`);
       console.log(`     Their IAM posture is unknown. Org coverage is ${selected.length - unreachableAccounts.length}/${selected.length}.\n`);
+    }
+    if (errors.length) {
+      console.log(`  ⚠️  ${errors.length} enumeration error(s) — some accounts or OUs may be missing from this run entirely:`);
+      for (const e of errors) console.log(`    ${e}`);
+      console.log(`     Accounts that were never listed cannot appear as INDETERMINATE, so treat the`);
+      console.log(`     account count above as a lower bound.\n`);
     }
     if (truncated > 0) {
       console.log(`  ⚠️  ${truncated} active account(s) were not audited because of --max-accounts ${maxAccounts}.`);

@@ -779,17 +779,29 @@ prism-cli bedrock-protection scan-repo --json --fail-on CRITICAL
 indistinguishable from a real finding. Assert on the indeterminate count in the JSON separately, so a
 silently degraded audit does not read as a passing one.
 
+Ready-to-attach IAM policy documents — caller, `scan-org` additions, and the member-account role with
+its trust policy — are in
+**[Bedrock Protection → IAM policy required to run the audit](docs/BEDROCK-PROTECTION.md#iam-policy-required-to-run-the-audit)**.
+All were verified by **creating roles that carry them verbatim and running the audit under those
+roles**, not only with the policy simulator: every check reached the same verdict as an admin
+session. That step matters — the simulator had passed a budgets statement that is denied in
+practice. Simulator results are retained as a second signal (24/24 required allowed, 17/17 dangerous
+denied).
+
 Required read-only permissions:
 
 ```
 iam:GetAccountSummary, iam:GetAccountPasswordPolicy, iam:ListUsers,
 iam:ListAttachedUserPolicies, iam:GenerateCredentialReport, iam:GetCredentialReport,
-budgets:DescribeBudgets, budgets:DescribeBudgetNotificationsForAccount,
-budgets:DescribeSubscribersForNotification, ce:GetAnomalyMonitors,
+budgets:ViewBudget, ce:GetAnomalyMonitors,
 ce:GetAnomalySubscriptions, cloudwatch:DescribeAlarms,
 bedrock:ListProvisionedModelThroughputs,
 bedrock:GetModelInvocationLoggingConfiguration, sts:GetCallerIdentity
 ```
+
+`budgets:ViewBudget` covers all three budget read operations the audit calls. Granting the
+operation names (`budgets:DescribeBudgets` and friends) instead denies every one of them --
+verified live, not inferred.
 
 ### Limitations
 

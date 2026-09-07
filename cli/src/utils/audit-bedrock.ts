@@ -13,6 +13,25 @@ import { Finding } from './audit.js';
  */
 
 /**
+ * The IAM action for every budget READ is the single coarse `budgets:ViewBudget`
+ * -- NOT the API operation name. AWS Budgets authorizes DescribeBudgets,
+ * DescribeBudgetNotificationsForAccount and DescribeSubscribersForNotification
+ * all against it, and a policy granting the operation names denies every one:
+ *
+ *   not authorized to perform: budgets:ViewBudget
+ *   on resource: arn:aws:budgets::<account>:budget/*
+ *   because no identity-based policy allows the budgets:ViewBudget action
+ *
+ * Measured live, and worth stating in the remediation because the obvious
+ * correction -- granting the operation name printed in the error code -- does
+ * not work. One constant so the three failure paths cannot drift apart, as the
+ * anomaly-monitor title did.
+ */
+const BUDGET_READ_REMEDIATION =
+  'Grant budgets:ViewBudget (the single IAM action covering all budget reads -- '
+  + 'granting budgets:DescribeBudgets instead does NOT work) and re-run.';
+
+/**
  * Bedrock spend lands on TWO billing surfaces, and a filter scoped to only the
  * first silently misses the second:
  *
@@ -64,20 +83,23 @@ function isCostBudget(budget: any): boolean {
   return budget?.BudgetType === 'COST';
 }
 
-export function auditBudgets(target: AwsTarget | undefined, accountId: string): { findings: Finding[]; coveringBudgets: string[] } {
+export function auditBudgets(target: AwsTarget | undefined, accountId: string): { findings: Finding[]; coveringBudgets: string[]; listError?: string } {
   // describe-budgets requires an explicit account id, and returns an EMPTY body
   // -- not {"Budgets": []} -- when no budgets exist.
   const bud = aws(['budgets', 'describe-budgets', '--account-id', accountId], target);
 
   if (!bud.ok) {
-    return { coveringBudgets: [], findings: [
+    // Propagate the reason. Without it the alerting check below cannot tell
+    // "no budget covers Bedrock" from "the budget list could not be read", and
+    // would report the former -- a confident statement about state we never saw.
+    return { coveringBudgets: [], listError: bud.errorCode || 'the DescribeBudgets call failed', findings: [
       ['bedrock-budget', 'Budget covering Bedrock services'],
       ['marketplace-budget', 'Budget covering Marketplace (Bedrock Edition) models'],
     ].map(([id, title]) => ({
       id, category: 'budget', title,
       status: 'INDETERMINATE' as const, severity: 'HIGH' as const,
       detail: `Could not list budgets (${bud.errorCode || 'unknown error'}).`,
-      remediation: 'Grant budgets:DescribeBudgets and re-run.',
+      remediation: BUDGET_READ_REMEDIATION,
     })) };
   }
 
@@ -143,9 +165,21 @@ export function auditBudgetAlerting(
   target: AwsTarget | undefined,
   accountId: string,
   coveringBudgets: string[],
+  listError?: string,
 ): Finding {
   const id = 'budget-alerting';
   const title = 'Bedrock budgets actually notify someone';
+
+  // The budget list never loaded, so "no covering budget" is not something we
+  // established -- say so rather than describing an absence we cannot see.
+  if (listError) {
+    return {
+      id, category: 'budget', title,
+      status: 'INDETERMINATE', severity: 'HIGH',
+      detail: `Could not list budgets (${listError}), so it is unknown whether any Bedrock budget notifies anyone.`,
+      remediation: BUDGET_READ_REMEDIATION,
+    };
+  }
 
   if (coveringBudgets.length === 0) {
     // Nothing to evaluate. Not a PASS -- no alerting was established -- and not
@@ -164,7 +198,7 @@ export function auditBudgetAlerting(
       id, category: 'budget', title,
       status: 'INDETERMINATE', severity: 'HIGH',
       detail: `Could not read budget notifications (${all.errorCode || 'unknown error'}), so it is unknown whether ${coveringBudgets.join(', ')} alerts anyone.`,
-      remediation: 'Grant budgets:DescribeBudgetNotificationsForAccount and budgets:DescribeSubscribersForNotification, then re-run.',
+      remediation: BUDGET_READ_REMEDIATION,
     };
   }
 

@@ -84,7 +84,7 @@ export default {
       ] : []),
       ...(runBedrock && budgets ? [
         ...budgets.findings,
-        auditBudgetAlerting(target, accountId, budgets.coveringBudgets),
+        auditBudgetAlerting(target, accountId, budgets.coveringBudgets, budgets.listError),
         ...auditDetection(target, region),
         auditCommitments(target, region),
         auditForensics(target, region),

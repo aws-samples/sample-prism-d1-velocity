@@ -1,5 +1,5 @@
 import { aws, AwsTarget } from './aws.js';
-import { Finding } from './audit.js';
+import { Finding, Severity } from './audit.js';
 
 /**
  * Organization-level preventive and detective guardrails.
@@ -158,13 +158,34 @@ const IAM_CONFIG_RULES: Array<[string, string]> = [
   ['IAM_USER_NO_POLICIES_CHECK', 'user-admin-policy'],
 ];
 
+/** The four SCP checks whose verdict depends on knowing the audited scope. */
+const SCOPE_DEPENDENT_SCP_CHECKS: Array<[string, string, Severity]> = [
+  ['scp-attached', 'SCPs attached to the audited scope', 'HIGH'],
+  ['scp-detection-tamper', 'SCP preventing tampering with detection', 'HIGH'],
+  ['scp-bedrock-region', 'SCP restricting which regions Bedrock can be used in', 'MEDIUM'],
+  ['scp-bedrock-provisioned-throughput', 'SCP denying Provisioned Throughput creation', 'MEDIUM'],
+];
+
+function scopeDependentIndeterminate(detail: string, remediation?: string): Finding[] {
+  return SCOPE_DEPENDENT_SCP_CHECKS.map(([id, title, severity]) => ({
+    id, category: 'preventive', title,
+    status: 'INDETERMINATE' as const, severity,
+    detail, remediation,
+  }));
+}
+
 /**
  * @param scopeTargetIds Root and OU ids in scope, so attachment is judged
  *        against what is actually being audited rather than the org at large.
+ *        `null` means the caller could not resolve the scope -- every
+ *        attachment-dependent check is then INDETERMINATE, because an empty
+ *        scope would otherwise make all four FAIL and present a permissions
+ *        problem as four real absences.
  */
 export function auditServiceControlPolicies(
   target: AwsTarget | undefined,
-  scopeTargetIds: string[],
+  scopeTargetIds: string[] | null,
+  scopeError?: string,
 ): Finding[] {
   const out: Finding[] = [];
 
@@ -172,12 +193,18 @@ export function auditServiceControlPolicies(
   // rest, the same way Cost Explorer gates the anomaly check.
   const roots = aws(['organizations', 'list-roots'], target);
   if (!roots.ok) {
-    return [{
-      id: 'scp-enabled', category: 'preventive', title: 'Service Control Policies enabled',
-      status: 'INDETERMINATE', severity: 'HIGH',
-      detail: `Could not read organization roots (${roots.errorCode || 'unknown error'}).`,
-      remediation: 'Grant organizations:ListRoots and re-run.',
-    }];
+    const why = `Could not read organization roots (${roots.errorCode || 'unknown error'}).`;
+    const fix = 'Grant organizations:ListRoots and re-run.';
+    // Emit EVERY SCP check, not just this one. Returning a single finding here
+    // would silently shrink the check count, so a reader comparing runs would
+    // see four checks disappear rather than four checks it could not answer.
+    return [
+      {
+        id: 'scp-enabled', category: 'preventive', title: 'Service Control Policies enabled',
+        status: 'INDETERMINATE', severity: 'HIGH', detail: why, remediation: fix,
+      },
+      ...scopeDependentIndeterminate(why, fix),
+    ];
   }
   const rootList: any[] = roots.json?.Roots ?? [];
   const scpEnabled = rootList.some((r) => (r.PolicyTypes ?? [])
@@ -193,18 +220,16 @@ export function auditServiceControlPolicies(
   });
 
   if (!scpEnabled) {
-    for (const [id, title] of [
-      ['scp-attached', 'SCPs attached to the audited scope'],
-      ['scp-bedrock-region', 'SCP restricting which regions Bedrock can be used in'],
-      ['scp-bedrock-provisioned-throughput', 'SCP denying Provisioned Throughput creation'],
-      ['scp-detection-tamper', 'SCP preventing tampering with detection'],
-    ]) {
-      out.push({
-        id, category: 'preventive', title,
-        status: 'INDETERMINATE', severity: 'MEDIUM',
-        detail: 'Cannot be evaluated while Service Control Policies are disabled.',
-      });
-    }
+    out.push(...scopeDependentIndeterminate('Cannot be evaluated while Service Control Policies are disabled.'));
+    return out;
+  }
+
+  // Scope unknown: an empty target list would make all four attachment-dependent
+  // checks FAIL, dressing a permissions problem up as four real absences.
+  if (scopeTargetIds === null) {
+    out.push(...scopeDependentIndeterminate(
+      `The audited scope could not be resolved${scopeError ? ` (${scopeError})` : ''}, so it is unknown which SCPs apply to it.`,
+      'Grant organizations:ListRoots and re-run.'));
     return out;
   }
 
@@ -213,19 +238,9 @@ export function auditServiceControlPolicies(
 
   const list = aws(['organizations', 'list-policies', '--filter', 'SERVICE_CONTROL_POLICY'], target);
   if (!list.ok) {
-    for (const [id, title] of [
-      ['scp-attached', 'SCPs attached to the audited scope'],
-      ['scp-bedrock-region', 'SCP restricting which regions Bedrock can be used in'],
-      ['scp-bedrock-provisioned-throughput', 'SCP denying Provisioned Throughput creation'],
-      ['scp-detection-tamper', 'SCP preventing tampering with detection'],
-    ]) {
-      out.push({
-        id, category: 'preventive', title,
-        status: 'INDETERMINATE', severity: 'MEDIUM',
-        detail: `Could not list SCPs (${list.errorCode || 'unknown error'}).`,
-        remediation: 'Grant organizations:ListPolicies, DescribePolicy and ListTargetsForPolicy, then re-run.',
-      });
-    }
+    out.push(...scopeDependentIndeterminate(
+      `Could not list SCPs (${list.errorCode || 'unknown error'}).`,
+      'Grant organizations:ListPolicies, DescribePolicy and ListTargetsForPolicy, then re-run.'));
     return out;
   }
 

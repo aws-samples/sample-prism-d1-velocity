@@ -388,12 +388,17 @@ Both commands need read-only AWS access:
 ```
 iam:GetAccountSummary, iam:GetAccountPasswordPolicy, iam:ListUsers,
 iam:ListAttachedUserPolicies, iam:GenerateCredentialReport, iam:GetCredentialReport,
-budgets:DescribeBudgets, budgets:DescribeBudgetNotificationsForAccount,
-budgets:DescribeSubscribersForNotification, ce:GetAnomalyMonitors,
+budgets:ViewBudget, ce:GetAnomalyMonitors,
 ce:GetAnomalySubscriptions, cloudwatch:DescribeAlarms,
 bedrock:ListProvisionedModelThroughputs,
 bedrock:GetModelInvocationLoggingConfiguration, sts:GetCallerIdentity
 ```
+
+`budgets:ViewBudget` is not a typo for an operation name. AWS Budgets authorizes all three of
+its read operations -- `DescribeBudgets`, `DescribeBudgetNotificationsForAccount` and
+`DescribeSubscribersForNotification` -- against the single coarse action `budgets:ViewBudget`.
+Granting the operation names denies all three. See
+[When the simulator is not enough](#when-the-simulator-is-not-enough).
 
 `scan-org` additionally needs, in the management account:
 
@@ -413,6 +418,268 @@ and the assumed role in each member account needs the IAM read actions above.
 checksum-verified binary into a disposable container, but a developer CLI silently pulling an
 executable onto a workstation is a different risk. Without it, the three detection checks report
 INDETERMINATE and say the repository is not cleared.
+
+## IAM policy required to run the audit
+
+Three documents: one for the caller, one extra statement set for `scan-org`, and one for the role
+`scan-org` assumes in each member account. All read-only apart from two calls noted below.
+
+Every policy here was verified with the IAM policy simulator rather than reasoned about — ARCC names
+"not testing policies with IAM Policy Simulator" as a pitfall, and the first draft of the caller
+policy did come back with five denials. Results are in [Verification status](#verification-status).
+
+### 1. Caller — `scan-account` and `scan-repo`
+
+Attach to the role you run the CLI as. `scan-repo` needs no AWS permissions at all.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "IamCredentialHygieneRead",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetAccountSummary",
+        "iam:GetAccountPasswordPolicy",
+        "iam:GenerateCredentialReport",
+        "iam:GetCredentialReport",
+        "iam:ListUsers"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IamPerUserPolicyRead",
+      "Effect": "Allow",
+      "Action": "iam:ListAttachedUserPolicies",
+      "Resource": "arn:aws:iam::*:user/*"
+    },
+    {
+      "Sid": "BedrockSpendCeilings",
+      "Effect": "Allow",
+      "Action": "budgets:ViewBudget",
+      "Resource": "arn:aws:budgets::*:budget/*"
+    },
+    {
+      "Sid": "BedrockDetectionAndForensics",
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetAnomalyMonitors",
+        "ce:GetAnomalySubscriptions",
+        "cloudwatch:DescribeAlarms",
+        "bedrock:ListProvisionedModelThroughputs",
+        "bedrock:GetModelInvocationLoggingConfiguration"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WhoAmI",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+`iam:GenerateCredentialReport` is not a pure read and is deliberately present: IAM has no way to read
+the report without generating it first. It produces a report artifact and modifies no resource.
+
+### 2. Additional statements for `scan-org`
+
+Attach alongside the above, in the management account or a delegated admin.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOrganizationStructure",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:DescribeOrganization",
+        "organizations:ListRoots",
+        "organizations:ListParents",
+        "organizations:ListAccountsForParent",
+        "organizations:ListOrganizationalUnitsForParent",
+        "organizations:DescribeOrganizationalUnit"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadServiceControlPolicies",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:ListPolicies",
+        "organizations:DescribePolicy",
+        "organizations:ListTargetsForPolicy"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadOrganizationConfigRules",
+      "Effect": "Allow",
+      "Action": "config:DescribeOrganizationConfigRules",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AssumeAuditRoleInMemberAccountsOnly",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::*:role/PrismBedrockProtectionAuditRole",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceOrgID": "${aws:PrincipalOrgID}"
+        }
+      }
+    }
+  ]
+}
+```
+
+`sts:AssumeRole` is scoped two ways at once — to one role *name*, and to your own organization via
+`aws:ResourceOrgID`. Both directions are verified: the correct role in the same org is allowed, the
+same role name in a **different** org is denied, and a **different** role in the same org is denied.
+That second condition is what stops this from becoming a general cross-account assume grant if
+someone creates a same-named role in an org you do not control.
+
+### 3. Member-account role — assumed by `scan-org`
+
+Create this role in every member account, named to match `--role-name`. It needs only the IAM reads,
+because Bedrock spend guardrails are evaluated once at the payer and never in a member account.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "IamCredentialHygieneRead",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetAccountSummary",
+        "iam:GetAccountPasswordPolicy",
+        "iam:GenerateCredentialReport",
+        "iam:GetCredentialReport",
+        "iam:ListUsers"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IamPerUserPolicyRead",
+      "Effect": "Allow",
+      "Action": "iam:ListAttachedUserPolicies",
+      "Resource": "arn:aws:iam::*:user/*"
+    },
+    {
+      "Sid": "ConfirmSessionLandedHere",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Trust policy — scoped to the auditing role, not to the whole management account:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowAuditorFromManagementAccountOnly",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::<MANAGEMENT_ACCOUNT_ID>:role/<AUDITOR_ROLE_NAME>"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalOrgID": "<o-xxxxxxxxxx>"
+        }
+      }
+    }
+  ]
+}
+```
+
+`sts:GetCallerIdentity` is required rather than incidental: `scan-org` calls it after assuming to
+confirm the session landed in the intended account before attributing any finding to it.
+
+**Create the caller role first, and let it propagate.** The trust policy above names the caller role
+by ARN, and IAM validates that the principal exists when the role is created. Creating the member
+role immediately after the caller role fails with:
+
+```
+MalformedPolicyDocument: Invalid principal in policy:
+"AWS":"arn:aws:iam::<account>:role/<AUDITOR_ROLE_NAME>"
+```
+
+That is propagation delay, not a malformed document — the message is misleading. Wait ~20 seconds
+after creating the caller role before creating member roles that reference it.
+
+### Where `Resource: "*"` is unavoidable
+
+ARCC requires resources scoped to specific ARNs, and five statements above comply
+(`iam:ListAttachedUserPolicies` to `user/*`, `budgets:ViewBudget` to `budget/*`,
+`sts:AssumeRole` to one role name). The rest cannot be scoped: `iam:GetAccountSummary`,
+`GetAccountPasswordPolicy`, the credential-report pair and `ListUsers` act on the account itself
+rather than a named resource, and the `organizations`, `ce`, `config` and `bedrock` reads used here
+have no resource-level equivalent. Narrowing those is unavailable rather than merely not done.
+
+Actions are enumerated individually throughout — no `iam:*`, no `Get*`.
+
+### When the simulator is not enough
+
+Every policy here passed `iam simulate-custom-policy` — 24/24 required actions allowed, 17/17
+dangerous actions denied. Then the policies were attached to a real role and the audit was run under
+it, and **two checks that the simulator had cleared came back INDETERMINATE**:
+
+```
+bedrock-budget:      Could not list budgets (AccessDeniedException).
+marketplace-budget:  Could not list budgets (AccessDeniedException).
+```
+
+The cause is a gap the simulator cannot close. It evaluates the action *string you hand it* against
+the policy. It has no knowledge of which action a given API call actually authorizes against, so
+`budgets:DescribeBudgets` simulated as **allowed** while the real `DescribeBudgets` call was denied —
+because AWS Budgets authorizes it against `budgets:ViewBudget`. AWS states this plainly in the error,
+which is why it is worth reading rather than just retrying:
+
+```
+not authorized to perform: budgets:ViewBudget
+on resource: arn:aws:budgets::<account>:budget/*
+because no identity-based policy allows the budgets:ViewBudget action
+```
+
+Note the second line: the resource ARN in the original policy was **correct**, and AWS quotes it back
+verbatim. Only the action name was wrong. Three variants were tested to establish that — a wildcard
+account in the ARN, a concrete account id, and `Resource: "*"` — and all three were denied with the
+operation-name actions, which is what ruled resource scoping out as the cause.
+
+The lesson generalizes: a simulator verifies a policy's *logic*, not that its action names correspond
+to what the API checks. Only a live run under the policy can establish that. Every other action in
+these documents was confirmed correct by the same live run, since a wrong name would have produced
+the same INDETERMINATE.
+
+### If a scoped statement turns out too tight
+
+All statements have now been verified by a live run under the policy, not just by the simulator. If a
+future change makes one too tight, the audit surfaces it by design: a permission it lacks produces
+**INDETERMINATE** naming the denied AWS API, never a silent pass, so an over-tight policy appears as
+an unanswered check rather than a clean bill of health.
+
+When that happens, read the AWS error before widening. As the budgets case shows, the fix may be a
+different *action name* rather than a broader `Resource` — widening the resource there would have
+changed nothing while making the policy weaker.
+
+### Managed-policy alternative
+
+AWS's `SecurityAudit` and `ReadOnlyAccess` both cover most of this and are reasonable for a one-off
+run. Neither includes `sts:AssumeRole`, so `scan-org` still needs statement 2, and both grant
+considerably more than the 24 actions this tool calls.
+
+---
 
 ## What this does not do
 
@@ -447,6 +714,8 @@ INDETERMINATE and say the repository is not cleared.
 | SCP inheritance resolution | Verified live — an OU scan correctly picked up 2 root-attached SCPs it had previously missed |
 | SCP matching predicates | 12 assertions over synthetic policy documents, including the region-restriction PASS paths that cannot be produced live without creating an org-wide SCP |
 | Config rule checks | FAIL path verified live (org has zero Config rules); the PASS path is unverified |
+| IAM policies in [IAM policy required to run the audit](#iam-policy-required-to-run-the-audit) | **Verified by a live run under the policy, not only simulated.** Roles were created carrying each document verbatim, the audit was run under them, and every check reached the same verdict as an admin session: `scan-account` 15/15 identical, and the member role's 7 IAM checks identical in both verdict and detail text (ruling out silently truncated results). The simulator alone had passed a policy that fails in practice — see [When the simulator is not enough](#when-the-simulator-is-not-enough). Simulator results retained as a second signal: 24/24 required allowed, 17/17 dangerous denied, member role 6/6 allowed and 5/5 payer-only denied, and the AssumeRole org condition denies both a foreign org and a different role name. Roles were deleted and their absence re-confirmed |
+| `sts:AssumeRole` org condition and member trust policy | Exercised live: assumption into a member account succeeded with `aws:ResourceOrgID` on the caller side and `aws:PrincipalOrgID` on the trust side, and the two member accounts without the role reported INDETERMINATE rather than being skipped |
 
 ## Related
 
