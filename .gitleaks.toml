@@ -1,0 +1,26 @@
+# gitleaks configuration for the PRISM eval gate.
+#
+# The gate scans only the commits a PR introduces, so anything flagged here is
+# something this PR added. Two ways to handle a false positive:
+#
+#   1. Allowlist the path or pattern below (preferred -- reviewable, and it
+#      keeps working as the file changes).
+#   2. Add an inline "gitleaks:allow" comment on the offending line.
+#
+# A real exposure is NOT a false positive: rotate the credential first, because
+# deleting it from the branch does not un-expose what was already pushed.
+
+[extend]
+# Keep gitleaks' built-in ruleset. Removing this line replaces the defaults
+# entirely rather than adding to them, which turns the gate into a no-op for
+# every credential type not restated in this file.
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures and documented examples"
+paths = [
+  '''(^|/)tests?/''',
+  '''(^|/)__fixtures__/''',
+  '''(^|/)__tests__/''',
+  '''\.example($|\.)''',
+]

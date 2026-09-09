@@ -4,6 +4,8 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { platform, tmpdir, homedir } from 'node:os';
+import { awsRun, PROFILE_OPTION } from '../../utils/aws.js';
+import { validateAwsProfile } from '../../utils/validate.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const IS_MAC = platform() === 'darwin';
@@ -171,7 +173,7 @@ async function offerInstall(name: string, installCmd: string): Promise<boolean> 
 // Checks
 // -------------------------------------------------------------------
 
-async function checkAwsCli(verifyOnly = false) {
+async function checkAwsCli(verifyOnly = false, profile?: string) {
   heading('1. AWS CLI & Credentials');
 
   if (commandExists('aws') || commandExists('/usr/local/bin/aws')) {
@@ -215,11 +217,16 @@ async function checkAwsCli(verifyOnly = false) {
     }
   }
 
-  const sts = run('aws sts get-caller-identity --query Account --output text');
+  // Uses awsRun (argv, no shell) rather than the local shell run() above,
+  // because `profile` is user-supplied -- the rule stated in run()'s own doc.
+  const sts = awsRun(['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], profile);
   if (sts.ok) {
     pass(`AWS credentials configured (account: ${sts.stdout})`);
   } else {
-    fail('AWS credentials not configured or expired', "Run 'aws configure' or set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY");
+    fail(
+      `AWS credentials not configured or expired${profile ? ` for profile "${profile}"` : ''}`,
+      sts.stderr || "Run 'aws configure', ada/isengard, or set AWS_PROFILE; check AWS_REGION is a real region",
+    );
   }
 }
 
@@ -529,13 +536,15 @@ export default {
     { flags: '--skip-aws', description: 'Skip AWS credential and Bedrock checks (for offline prep)' },
     { flags: '--skip-kiro', description: 'Skip Kiro IDE check' },
     { flags: '--verify-only', description: 'Only verify, don\'t install anything' },
+    PROFILE_OPTION,
   ],
-  async action(opts: { skipAws?: boolean; skipKiro?: boolean; verifyOnly?: boolean }) {
+  async action(opts: { skipAws?: boolean; skipKiro?: boolean; verifyOnly?: boolean; profile?: string }) {
     await verifySetup(opts);
   },
 };
 
-async function verifySetup(opts: { skipAws?: boolean; skipKiro?: boolean; verifyOnly?: boolean } = {}) {
+async function verifySetup(opts: { skipAws?: boolean; skipKiro?: boolean; verifyOnly?: boolean; profile?: string } = {}) {
+  const profile = opts.profile ? validateAwsProfile(opts.profile) : undefined;
   const VERIFY_ONLY = opts.verifyOnly ?? false;
 
   console.log('');
@@ -554,7 +563,7 @@ async function verifySetup(opts: { skipAws?: boolean; skipKiro?: boolean; verify
   }
 
   if (!opts.skipAws) {
-    await checkAwsCli(VERIFY_ONLY);
+    await checkAwsCli(VERIFY_ONLY, profile);
     await checkBedrock();
   }
   await checkClaudeCode(VERIFY_ONLY);

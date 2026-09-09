@@ -180,6 +180,33 @@ export function validateNumericId(value: string, label = 'ID'): string {
  */
 const AWS_REGION = /^[a-z]{2}(?:-[a-z0-9]+)+-\d{1,2}$/;
 
+/**
+ * AWS CLI profile names, as accepted in `~/.aws/config` section headers:
+ * letters, digits, and `-_.@` (SSO-vended names use `-`; some tooling emits
+ * `@`). Deliberately excludes whitespace and every shell metacharacter.
+ *
+ * Two of the callers -- `workshop deploy-infra` and `workshop verify-setup` --
+ * build shell command strings via execSync, so a profile name is the first
+ * user-supplied value to reach that layer. deploy-infra passes it through the
+ * child environment rather than the command string, and verify-setup's identity
+ * check was moved to argv, so neither interpolates it today; this validator is
+ * the defence-in-depth that keeps a future refactor from turning a profile name
+ * into a shell injection sink. ARCC's input-validation guidance (CWE-20) asks
+ * for conformance to expected structure at the boundary rather than relying on
+ * every downstream call site staying argv-based.
+ */
+const AWS_PROFILE = /^[A-Za-z0-9._@-]+$/;
+
+export function validateAwsProfile(value: string, label = 'AWS profile'): string {
+  if (!AWS_PROFILE.test(value)) {
+    fail([
+      `Error: ${label} "${value}" is not a valid AWS profile name.`,
+      '  Expected letters, digits, and -_.@ only (no spaces or shell metacharacters).',
+    ]);
+  }
+  return value;
+}
+
 export function validateAwsRegion(value: string, label = 'AWS region'): string {
   if (!AWS_REGION.test(value)) {
     fail([

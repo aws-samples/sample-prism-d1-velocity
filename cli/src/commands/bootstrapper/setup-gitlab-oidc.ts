@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { run } from '../../utils/exec.js';
+import { awsRun, PROFILE_OPTION } from '../../utils/aws.js';
 import { DEFAULT_REGION } from '../../utils/region.js';
 import {
   normalizeGitlabUrl,
@@ -49,8 +50,10 @@ export default {
     { flags: '--project-id <id>', description: 'Use numeric project ID instead of path in trust policy (for recycled project paths)' },
     { flags: '--global', description: 'Create a single role for all projects in a group/user (wildcard sub claim)' },
     { flags: '--region <region>', description: 'AWS region holding the PRISM event bus; must match install-gitlab-workflows', default: DEFAULT_REGION },
+    PROFILE_OPTION,
   ],
-  async action(opts: { projectId?: string; global?: boolean; region?: string }) {
+  async action(opts: { projectId?: string; global?: boolean; region?: string; profile?: string }) {
+    const profile = opts.profile;
     // Must agree with the region baked into the installed workflows by
     // install-gitlab-workflows. The permissions policy below scopes
     // events:PutEvents to one region's bus, so a mismatch leaves the workflows
@@ -91,9 +94,12 @@ export default {
     }
 
     // Check AWS credentials
-    const sts = run('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text']);
+    const sts = awsRun(['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], profile);
     if (!sts.ok) {
-      console.error('Error: AWS credentials not configured. Run "aws configure" first.');
+      // Surface what the CLI actually said -- see the note in setup-github-oidc.
+      console.error(`Error: could not resolve AWS identity${profile ? ` for profile "${profile}"` : ''}.`);
+      if (sts.stderr) console.error(`  ${sts.stderr}`);
+      console.error('  Check credentials (ada/isengard/aws configure), AWS_PROFILE, and that AWS_REGION is a real region.');
       process.exit(1);
     }
     const accountId = sts.stdout;
@@ -103,10 +109,10 @@ export default {
 
     // Step 1: Create the OIDC provider
     console.log('Step 1: Creating GitLab OIDC identity provider...');
-    const existingProvider = run('aws', [
+    const existingProvider = awsRun([
       'iam', 'get-open-id-connect-provider',
       '--open-id-connect-provider-arn', providerArn,
-    ]);
+    ], profile);
     if (existingProvider.ok) {
       console.log('  ✓ OIDC provider already exists.');
     } else {
@@ -116,11 +122,11 @@ export default {
       // This previously passed 40 literal zeros, which is not a thumbprint of
       // anything -- it read as a real pinned value while asserting nothing, and
       // would have to be corrected by hand for a self-hosted instance.
-      const createProvider = run('aws', [
+      const createProvider = awsRun([
         'iam', 'create-open-id-connect-provider',
         '--url', gitlabUrl,
         '--client-id-list', gitlabUrl,
-      ]);
+      ], profile);
       if (createProvider.ok) {
         console.log('  ✓ OIDC provider created.');
       } else {
@@ -153,23 +159,23 @@ export default {
       ],
     });
 
-    const existingRole = run('aws', ['iam', 'get-role', '--role-name', roleName]);
+    const existingRole = awsRun(['iam', 'get-role', '--role-name', roleName], profile);
     if (existingRole.ok) {
       console.log(`  ✓ Role "${roleName}" already exists. Updating trust policy...`);
-      const update = run('aws', [
+      const update = awsRun([
         'iam', 'update-assume-role-policy',
         '--role-name', roleName,
         '--policy-document', trustPolicy,
-      ]);
+      ], profile);
       if (update.ok) console.log('  ✓ Trust policy updated.');
       else { console.error(`  ✗ Failed: ${update.stderr}`); process.exit(1); }
     } else {
-      const createRole = run('aws', [
+      const createRole = awsRun([
         'iam', 'create-role',
         '--role-name', roleName,
         '--assume-role-policy-document', trustPolicy,
         '--description', `GitLab CI OIDC role for ${projectPath}`,
-      ]);
+      ], profile);
       if (createRole.ok) console.log(`  ✓ Role "${roleName}" created.`);
       else { console.error(`  ✗ Failed: ${createRole.stderr}`); process.exit(1); }
     }
@@ -193,12 +199,12 @@ export default {
     });
 
     const policyName = 'PrismD1WorkshopPolicy';
-    const putPolicy = run('aws', [
+    const putPolicy = awsRun([
       'iam', 'put-role-policy',
       '--role-name', roleName,
       '--policy-name', policyName,
       '--policy-document', policyDocument,
-    ]);
+    ], profile);
     if (putPolicy.ok) console.log(`  ✓ Inline policy "${policyName}" attached.`);
     else { console.error(`  ✗ Failed: ${putPolicy.stderr}`); process.exit(1); }
 

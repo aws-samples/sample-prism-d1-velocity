@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { run } from '../../utils/exec.js';
+import { awsRun, PROFILE_OPTION } from '../../utils/aws.js';
 import { DEFAULT_REGION } from '../../utils/region.js';
 import { validateAwsRegion, validateGithubOwner, validateGithubRepo, validateNumericId } from '../../utils/validate.js';
 
@@ -44,8 +45,10 @@ export default {
     { flags: '--global', description: 'Create a single role for all repos in the org/user (wildcard sub claim)' },
     { flags: '--pin-ids', description: 'Pin the trust policy to immutable GitHub owner/repo IDs (protects against namespace resurrection; may require gh CLI or GITHUB_TOKEN for private repos)' },
     { flags: '--region <region>', description: 'AWS region holding the PRISM event bus; must match install-github-workflows', default: DEFAULT_REGION },
+    PROFILE_OPTION,
   ],
-  async action(opts: { global?: boolean; pinIds?: boolean; region?: string }) {
+  async action(opts: { global?: boolean; pinIds?: boolean; region?: string; profile?: string }) {
+    const profile = opts.profile;
     // Must agree with the region baked into the installed workflows by
     // install-github-workflows. The permissions policy below scopes
     // events:PutEvents to one region's bus, so a mismatch leaves the workflows
@@ -136,9 +139,16 @@ export default {
         ];
 
     // Check AWS credentials
-    const sts = run('aws', ['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text']);
+    const sts = awsRun(['sts', 'get-caller-identity', '--query', 'Account', '--output', 'text'], profile);
     if (!sts.ok) {
-      console.error('Error: AWS credentials not configured. Run "aws configure" first.');
+      // Surface what the CLI actually said. The previous hardcoded "run aws
+      // configure" text mis-attributed every failure to unconfigured
+      // credentials -- an invalid region reads as
+      // "Could not connect to the endpoint URL: https://sts.<region>.amazonaws.com/",
+      // and `aws configure` is the wrong remedy for a credential_process profile.
+      console.error(`Error: could not resolve AWS identity${profile ? ` for profile "${profile}"` : ''}.`);
+      if (sts.stderr) console.error(`  ${sts.stderr}`);
+      console.error('  Check credentials (ada/isengard/aws configure), AWS_PROFILE, and that AWS_REGION is a real region.');
       process.exit(1);
     }
     const accountId = sts.stdout;
@@ -148,20 +158,20 @@ export default {
     console.log('Step 1: Creating GitHub OIDC identity provider...');
     const providerArn = `arn:aws:iam::${accountId}:oidc-provider/token.actions.githubusercontent.com`;
 
-    const existingProvider = run('aws', [
+    const existingProvider = awsRun([
       'iam', 'get-open-id-connect-provider',
       '--open-id-connect-provider-arn', providerArn,
-    ]);
+    ], profile);
     if (existingProvider.ok) {
       console.log('  ✓ OIDC provider already exists.');
     } else {
       const thumbprint = '6938fd4d98bab03faadb97b34396831e3780aea1';
-      const createProvider = run('aws', [
+      const createProvider = awsRun([
         'iam', 'create-open-id-connect-provider',
         '--url', 'https://token.actions.githubusercontent.com',
         '--client-id-list', 'sts.amazonaws.com',
         '--thumbprint-list', thumbprint,
-      ]);
+      ], profile);
       if (createProvider.ok) {
         console.log('  ✓ OIDC provider created.');
       } else {
@@ -194,14 +204,14 @@ export default {
       ],
     });
 
-    const existingRole = run('aws', ['iam', 'get-role', '--role-name', roleName]);
+    const existingRole = awsRun(['iam', 'get-role', '--role-name', roleName], profile);
     if (existingRole.ok) {
       console.log(`  ✓ Role "${roleName}" already exists. Updating trust policy...`);
-      const update = run('aws', [
+      const update = awsRun([
         'iam', 'update-assume-role-policy',
         '--role-name', roleName,
         '--policy-document', trustPolicy,
-      ]);
+      ], profile);
       if (update.ok) {
         console.log('  ✓ Trust policy updated.');
       } else {
@@ -209,12 +219,12 @@ export default {
         process.exit(1);
       }
     } else {
-      const createRole = run('aws', [
+      const createRole = awsRun([
         'iam', 'create-role',
         '--role-name', roleName,
         '--assume-role-policy-document', trustPolicy,
         '--description', `GitHub Actions OIDC role for ${repoPath}`,
-      ]);
+      ], profile);
       if (createRole.ok) {
         console.log(`  ✓ Role "${roleName}" created.`);
       } else {
@@ -280,12 +290,12 @@ export default {
     });
 
     const policyName = 'PrismD1WorkshopPolicy';
-    const putPolicy = run('aws', [
+    const putPolicy = awsRun([
       'iam', 'put-role-policy',
       '--role-name', roleName,
       '--policy-name', policyName,
       '--policy-document', policyDocument,
-    ]);
+    ], profile);
     if (putPolicy.ok) {
       console.log(`  ✓ Inline policy "${policyName}" attached.`);
     } else {
@@ -295,19 +305,19 @@ export default {
 
     // Step 4: Attach Continuum CI managed policy (if deployed)
     console.log('\nStep 4: Attaching Continuum CI scan policy (if available)...');
-    const continuumPolicy = run('aws', [
+    const continuumPolicy = awsRun([
       'iam', 'list-policies',
       '--scope', 'Local',
       // No shell, so the JMESPath expression needs no outer quoting.
       '--query', "Policies[?PolicyName=='prism-d1-continuum-ci-scan'].Arn",
       '--output', 'text',
-    ]);
+    ], profile);
     if (continuumPolicy.ok && continuumPolicy.stdout) {
-      const attachResult = run('aws', [
+      const attachResult = awsRun([
         'iam', 'attach-role-policy',
         '--role-name', roleName,
         '--policy-arn', continuumPolicy.stdout,
-      ]);
+      ], profile);
       if (attachResult.ok) {
         console.log(`  ✓ Continuum CI policy attached (SSM + S3 + SecurityAgent access).`);
       } else if (attachResult.stderr.includes('already')) {

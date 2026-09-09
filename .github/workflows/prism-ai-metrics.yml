@@ -1,0 +1,247 @@
+# prism-ai-metrics.yml — Per-merge delivery telemetry.
+#
+# Copy this file to .github/workflows/prism-ai-metrics.yml in your repo.
+#
+# DESIGN: this workflow emits immutable per-PR FACTS and computes no rates.
+# Every aggregation (frequency, averages, change-failure rate, MTTR) happens at
+# query time in the dashboard widgets. That means:
+#   - the dashboard's time-range picker applies to every KPI uniformly
+#   - no metric bakes in a fixed window (the old weekly job hardcoded 7 days)
+#   - lead-time distribution survives, so p50/p95 stay computable
+#
+# AI origin is deliberately NOT computed here. It is resolved at render time by
+# joining `pr.commit_shas` against the codeburn attribution store. Origin
+# verdicts computed at merge time are frequently wrong, because attribution
+# syncs on a ~12h schedule and may not yet cover these commits. See
+# docs/DATA-ARCHITECTURE.md → "AI Origin Resolution: Deferred Attribution Join".
+#
+# Replaces the former prism-dora-weekly.yml, which computed a parallel 7-day
+# aggregate from the GitHub API. That duplicated deployment-frequency
+# measurement, disagreed with this workflow on `master`-based repos, and
+# published six CloudWatch metrics no dashboard read.
+#
+# Required setup:
+#   - OIDC provider configured for GitHub Actions in your AWS account
+#   - IAM role with events:PutEvents on the prism-d1-metrics bus
+#   - Repository secret PRISM_METRICS_ROLE_ARN set to the OIDC role ARN
+#   - .prism/config.json committed to the repo (optional; defaults to no_team)
+
+name: PRISM AI Metrics
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main, master]
+
+
+env:
+  PRISM_AWS_REGION: us-east-1
+  PRISM_REPO: github.com/${{ github.repository }}
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  emit-metrics:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Full history is required: `git rev-list BASE..HEAD` below needs the
+          # base commit present to enumerate the PR's commit SHAs.
+          fetch-depth: 0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ secrets.PRISM_METRICS_ROLE_ARN }}
+          aws-region: ${{ env.PRISM_AWS_REGION }}
+
+      - name: Read team ID from .prism/config.json
+        id: prism-config
+        run: |
+          if [[ -f .prism/config.json ]]; then
+            TEAM_ID=$(jq -r '.team_id // ""' .prism/config.json 2>/dev/null || echo "")
+          else
+            TEAM_ID=""
+          fi
+          # Missing config is not fatal — emit under no_team rather than failing
+          # the run and losing this PR's facts permanently.
+          if [[ -z "${TEAM_ID}" ]]; then
+            TEAM_ID="no_team"
+          fi
+          echo "team_id=${TEAM_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect PR facts
+        id: facts
+        env:
+          # PR titles are attacker-controlled. Bind to env and match with
+          # printf rather than interpolating into the shell (script injection).
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          CREATED_AT: ${{ github.event.pull_request.created_at }}
+          MERGED_AT: ${{ github.event.pull_request.merged_at }}
+        run: |
+          set -uo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+
+          # --- Commit SHAs: immutable facts for deferred origin resolution.
+          # Capped at 50 to bound the event size and the render-time join.
+          #
+          # --no-merges matters here. HEAD_SHA is the PR's merge_commit_sha, so the
+          # range BASE..HEAD includes GitHub's own merge commit, authored by
+          # web-flow on GitHub's servers. codeburn attributes commits made on a
+          # developer's machine, so that commit can never appear in the attribution
+          # store. Counting it puts a structural ceiling on Attribution Coverage:
+          # a fully-onboarded team with 3 PRs and 9 authored commits reported
+          # 9 attributed / 12 seen = 75%, when the true coverage was 100%.
+          #
+          # Excluding every merge commit, not just GitHub's, is the right call for
+          # this pair: a merge commit introduces no authored lines, so it is not
+          # attributable content on either side of the ratio.
+          COMMIT_SHAS=$(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | jq -R . | jq -sc . || echo '[]')
+          TOTAL_COMMITS=$(git rev-list --no-merges --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null || echo 0)
+
+          # Per-commit author emails (parallel array to COMMIT_SHAS). Used by
+          # the metrics-processor to seed COMMIT# items with the correct user
+          # field so /v1/productivity can attribute human commits per-developer.
+          COMMIT_AUTHORS=$(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null | head -50 | while read sha; do git log -1 --format='%ae' "$sha"; done | jq -R . | jq -sc . || echo '[]')
+
+          # --- Lead time: PR open → merge. From the event payload, not git, so
+          # it is unaffected by rebases and squashes.
+          CREATED_TS=$(date -d "${CREATED_AT}" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%SZ" "${CREATED_AT}" +%s)
+          MERGED_TS=$(date -d "${MERGED_AT}" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%SZ" "${MERGED_AT}" +%s)
+          LEAD_TIME_SECONDS=$((MERGED_TS - CREATED_TS))
+          [[ "${LEAD_TIME_SECONDS}" -lt 0 ]] && LEAD_TIME_SECONDS=0
+
+          # --- Failure-fix label: the change-failure-rate NUMERATOR, emitted as
+          # a per-PR boolean. The rate itself (and MTTR, the mean lead time of
+          # labelled PRs) is computed at query time over the dashboard's window.
+          # Still a title heuristic — it misses failures that aren't named.
+          if printf '%s' "${PR_TITLE}" | grep -qiE 'revert|hotfix|rollback'; then
+            IS_FAILURE_FIX=true
+          else
+            IS_FAILURE_FIX=false
+          fi
+
+          echo "commit_shas=${COMMIT_SHAS}" >> "$GITHUB_OUTPUT"
+          echo "commit_authors=${COMMIT_AUTHORS}" >> "$GITHUB_OUTPUT"
+          echo "total_commits=${TOTAL_COMMITS}" >> "$GITHUB_OUTPUT"
+          echo "lead_time_seconds=${LEAD_TIME_SECONDS}" >> "$GITHUB_OUTPUT"
+          echo "is_failure_fix=${IS_FAILURE_FIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect review verdicts
+        id: reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+
+          # Raw counts only. The approval RATE is derived at query time, where it
+          # can be compared against the human-origin baseline — an absolute
+          # approval rate answers no useful question on its own.
+          REVIEWS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+            --jq '[.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]' 2>/dev/null || echo "[]")
+
+          APPROVED=$(echo "${REVIEWS}" | jq '[.[] | select(.state == "APPROVED")] | length')
+          CHANGES_REQUESTED=$(echo "${REVIEWS}" | jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length')
+
+          echo "approved=${APPROVED}" >> "$GITHUB_OUTPUT"
+          echo "changes_requested=${CHANGES_REQUESTED}" >> "$GITHUB_OUTPUT"
+
+      - name: Emit prism.d1.pr event
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          PR_EVENT=$(jq -n \
+            --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
+            --arg repo "${PRISM_REPO}" \
+            --arg timestamp "${TIMESTAMP}" \
+            --argjson lead_time_seconds "${{ steps.facts.outputs.lead_time_seconds }}" \
+            --argjson is_failure_fix "${{ steps.facts.outputs.is_failure_fix }}" \
+            --argjson total_commits "${{ steps.facts.outputs.total_commits }}" \
+            --argjson commit_shas '${{ steps.facts.outputs.commit_shas }}' \
+            --argjson commit_authors '${{ steps.facts.outputs.commit_authors }}' \
+            --arg pr_number "${{ github.event.pull_request.number }}" \
+            --arg pr_author "${{ github.event.pull_request.user.login }}" \
+            --argjson approved "${{ steps.reviews.outputs.approved }}" \
+            --argjson changes_requested "${{ steps.reviews.outputs.changes_requested }}" \
+            '{
+              "team_id": $team_id,
+              "repo": $repo,
+              "timestamp": $timestamp,
+              "prism_level": 2,
+              "metric": {
+                "name": "pr_merged",
+                "value": 1,
+                "unit": "count"
+              },
+              "dora": {
+                "lead_time_seconds": $lead_time_seconds,
+                "is_failure_fix": $is_failure_fix
+              },
+              "pr": {
+                "number": ($pr_number | tonumber),
+                "author": $pr_author,
+                "reviews_approved": $approved,
+                "reviews_changes_requested": $changes_requested,
+                "total_commits": $total_commits,
+                "commit_shas": $commit_shas,
+                "commit_authors": $commit_authors
+              }
+            }')
+
+          aws events put-events \
+            --region $PRISM_AWS_REGION \
+            --entries "[{
+              \"Source\": \"prism.d1.velocity\",
+              \"DetailType\": \"prism.d1.pr\",
+              \"EventBusName\": \"prism-d1-metrics\",
+              \"Detail\": $(echo "${PR_EVENT}" | jq -c '.' | jq -Rs '.')
+            }]"
+
+          echo "Emitted prism.d1.pr for #${{ github.event.pull_request.number }}"
+          echo "  lead time: ${{ steps.facts.outputs.lead_time_seconds }}s"
+          echo "  failure fix: ${{ steps.facts.outputs.is_failure_fix }}"
+          echo "  commit SHAs: ${{ steps.facts.outputs.total_commits }} (origin resolved at render time)"
+
+      - name: Emit prism.d1.deploy event
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Sole deployment signal. `dora.deployment_frequency` lives ONLY here
+          # and not on prism.d1.pr — both events fire on the same merge, so
+          # carrying it on both double-counted the DeploymentFrequency metric.
+          DEPLOY_EVENT=$(jq -n \
+            --arg team_id "${{ steps.prism-config.outputs.team_id }}" \
+            --arg repo "${PRISM_REPO}" \
+            --arg timestamp "${TIMESTAMP}" \
+            '{
+              "team_id": $team_id,
+              "repo": $repo,
+              "timestamp": $timestamp,
+              "prism_level": 2,
+              "metric": {
+                "name": "deployment",
+                "value": 1,
+                "unit": "count"
+              },
+              "dora": {
+                "deployment_frequency": 1
+              }
+            }')
+
+          aws events put-events \
+            --region $PRISM_AWS_REGION \
+            --entries "[{
+              \"Source\": \"prism.d1.velocity\",
+              \"DetailType\": \"prism.d1.deploy\",
+              \"EventBusName\": \"prism-d1-metrics\",
+              \"Detail\": $(echo "${DEPLOY_EVENT}" | jq -c '.' | jq -Rs '.')
+            }]"

@@ -6,7 +6,7 @@
  * --profile and --region.
  */
 
-import { run } from './exec.js';
+import { run, type RunResult } from './exec.js';
 
 /**
  * Where an AWS call should be made: a named CLI profile, or temporary
@@ -139,3 +139,19 @@ export const PROFILE_OPTION = {
   flags: '--profile <name>',
   description: 'AWS CLI profile to audit (defaults to the ambient credentials)',
 };
+
+/**
+ * Raw-text AWS CLI call with an optional profile appended.
+ *
+ * `aws()` above is the wrapper for checks that want parsed JSON. The setup
+ * commands instead read `--output text` and branch on `stderr`, so they need
+ * `RunResult` unchanged; this exists so they get profile support without each
+ * one hand-rolling the argv append, which is how `--profile` came to be
+ * honoured by the audit commands but silently ignored by the setup ones.
+ *
+ * Appending rather than prepending matters: `--profile` must not land between a
+ * subcommand and its own flags.
+ */
+export function awsRun(args: string[], profile?: string): RunResult {
+  return run('aws', profile ? [...args, '--profile', profile] : args);
+}

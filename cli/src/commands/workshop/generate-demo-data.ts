@@ -32,7 +32,9 @@
 
 import { randomBytes } from 'node:crypto';
 import { run } from '../../utils/exec.js';
+import { awsRun, PROFILE_OPTION } from '../../utils/aws.js';
 import { withPrivateTemp } from '../../utils/tempfile.js';
+import { validateAwsProfile } from '../../utils/validate.js';
 
 // ---- Shell-free AWS CLI helpers ----
 
@@ -44,24 +46,24 @@ import { withPrivateTemp } from '../../utils/tempfile.js';
  * apostrophe terminated that quoted region and the remainder became shell
  * source. Passing a file path removes both the quoting and the shell.
  */
-function putEvents(region: string, entries: object[]): boolean {
+function putEvents(region: string, entries: object[], profile?: string): boolean {
   return withPrivateTemp('entries.json', JSON.stringify(entries), (file) =>
-    run('aws', ['events', 'put-events', '--region', region, '--entries', `file://${file}`]).ok,
+    awsRun(['events', 'put-events', '--region', region, '--entries', `file://${file}`], profile).ok,
   );
 }
 
 type DdbRequest = { PutRequest: { Item: Record<string, unknown> } } | { DeleteRequest: { Key: Record<string, unknown> } };
 
 /** Write one request with the single-item APIs (PutItem / DeleteItem). */
-function ddbWriteOne(region: string, table: string, req: DdbRequest): { ok: boolean; stderr: string } {
+function ddbWriteOne(region: string, table: string, req: DdbRequest, profile?: string): { ok: boolean; stderr: string } {
   if ('PutRequest' in req) {
     const r = withPrivateTemp('item.json', JSON.stringify(req.PutRequest.Item), (file) =>
-      run('aws', ['dynamodb', 'put-item', '--region', region, '--table-name', table, '--item', `file://${file}`]),
+      awsRun(['dynamodb', 'put-item', '--region', region, '--table-name', table, '--item', `file://${file}`], profile),
     );
     return { ok: r.ok, stderr: r.stderr };
   }
   const r = withPrivateTemp('key.json', JSON.stringify(req.DeleteRequest.Key), (file) =>
-    run('aws', ['dynamodb', 'delete-item', '--region', region, '--table-name', table, '--key', `file://${file}`]),
+    awsRun(['dynamodb', 'delete-item', '--region', region, '--table-name', table, '--key', `file://${file}`], profile),
   );
   return { ok: r.ok, stderr: r.stderr };
 }
@@ -88,7 +90,7 @@ let batchWriteSupported: boolean | null = null;
  *
  * Per-item writes are slower but bounded: a full seed is roughly 150 items.
  */
-function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): { written: number; error: string | null } {
+function ddbBatchWrite(region: string, table: string, requests: DdbRequest[], profile?: string): { written: number; error: string | null } {
   let written = 0;
   let batchError = '';
 
@@ -98,7 +100,7 @@ function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): {
     if (batchWriteSupported !== false) {
       const payload = JSON.stringify({ [table]: chunk });
       const result = withPrivateTemp('batch.json', payload, (file) =>
-        run('aws', ['dynamodb', 'batch-write-item', '--region', region, '--request-items', `file://${file}`]),
+        awsRun(['dynamodb', 'batch-write-item', '--region', region, '--request-items', `file://${file}`], profile),
       );
       if (result.ok) {
         batchWriteSupported = true;
@@ -113,7 +115,7 @@ function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): {
     }
 
     for (const req of chunk) {
-      const one = ddbWriteOne(region, table, req);
+      const one = ddbWriteOne(region, table, req, profile);
       if (!one.ok) {
         return {
           written,
@@ -146,27 +148,27 @@ function ddbBatchWrite(region: string, table: string, requests: DdbRequest[]): {
  * access, and the table is KMS-encrypted, so a role can hold the DynamoDB
  * actions and still fail on kms:GenerateDataKey.
  */
-function preflightAttributionTable(region: string, table: string): string | null {
-  const describe = run('aws', ['dynamodb', 'describe-table', '--region', region, '--table-name', table, '--output', 'json']);
+function preflightAttributionTable(region: string, table: string, profile?: string): string | null {
+  const describe = awsRun(['dynamodb', 'describe-table', '--region', region, '--table-name', table, '--output', 'json'], profile);
   if (!describe.ok) {
     return `cannot describe ${table}: ${describe.stderr}`;
   }
   const probeKey = { pk: { S: 'REPO#__prism_preflight__' }, sk: { S: 'COMMIT#__prism_preflight__' } };
   const probeItem = { ...probeKey, record_type: { S: 'PREFLIGHT' }, demo_seed: { BOOL: true } };
 
-  const put = ddbBatchWrite(region, table, [{ PutRequest: { Item: probeItem } }]);
+  const put = ddbBatchWrite(region, table, [{ PutRequest: { Item: probeItem } }], profile);
   if (put.error) {
     return `cannot batch-write to ${table}: ${put.error}`;
   }
-  ddbBatchWrite(region, table, [{ DeleteRequest: { Key: probeKey } }]);
+  ddbBatchWrite(region, table, [{ DeleteRequest: { Key: probeKey } }], profile);
   return null;
 }
 
 /** True when the table holds attribution commits that this generator did not create. */
-function hasRealAttribution(region: string, table: string): boolean {
+function hasRealAttribution(region: string, table: string, profile?: string): boolean {
   const values = JSON.stringify({ ':rt': { S: 'OTEL_ATTR_COMMIT' } });
   const result = withPrivateTemp('values.json', values, (file) =>
-    run('aws', [
+    awsRun([
       'dynamodb', 'scan',
       '--region', region,
       '--table-name', table,
@@ -174,7 +176,7 @@ function hasRealAttribution(region: string, table: string): boolean {
       '--filter-expression', 'record_type = :rt AND attribute_not_exists(demo_seed)',
       '--expression-attribute-values', `file://${file}`,
       '--output', 'json',
-    ]),
+    ], profile),
   );
   if (!result.ok) return false; // table missing or no access — surfaced by the caller's first write
   try {
@@ -184,10 +186,10 @@ function hasRealAttribution(region: string, table: string): boolean {
   }
 }
 
-function purgeDemoAttribution(region: string, table: string): number {
+function purgeDemoAttribution(region: string, table: string, profile?: string): number {
   const values = JSON.stringify({ ':t': { BOOL: true } });
   const result = withPrivateTemp('values.json', values, (file) =>
-    run('aws', [
+    awsRun([
       'dynamodb', 'scan',
       '--region', region,
       '--table-name', table,
@@ -195,7 +197,7 @@ function purgeDemoAttribution(region: string, table: string): number {
       '--projection-expression', 'pk,sk',
       '--expression-attribute-values', `file://${file}`,
       '--output', 'json',
-    ]),
+    ], profile),
   );
   if (!result.ok) {
     console.error(`Error: could not scan ${table}: ${result.stderr}`);
@@ -209,7 +211,7 @@ function purgeDemoAttribution(region: string, table: string): number {
     return 0;
   }
   if (items.length === 0) return 0;
-  return ddbBatchWrite(region, table, items.map(key => ({ DeleteRequest: { Key: key } }))).written;
+  return ddbBatchWrite(region, table, items.map(key => ({ DeleteRequest: { Key: key } })), profile).written;
 }
 
 // ---- Synthetic fleet ----
@@ -261,6 +263,7 @@ export default {
     { flags: '--no-attribution', description: 'Emit events only; leave the attribution store untouched' },
     { flags: '--purge-demo', description: 'Delete previously seeded attribution items and exit' },
     { flags: '--force', description: 'Seed attribution even when the table already holds real data' },
+    PROFILE_OPTION,
   ],
   action(options: {
     region: string;
@@ -271,20 +274,22 @@ export default {
     attribution: boolean;
     purgeDemo?: boolean;
     force?: boolean;
+    profile?: string;
   }) {
     const { region, bus, team, repo, table } = options;
+    const profile = options.profile ? validateAwsProfile(options.profile) : undefined;
     const seedAttribution = options.attribution !== false;
 
     // No shell here, so `command -v aws` is not available — `command` is a
     // shell builtin, not a binary. Probe the binary directly instead.
-    if (!run('aws', ['--version']).ok) {
+    if (!awsRun(['--version']).ok) {
       console.error('Error: AWS CLI not found. Install from https://aws.amazon.com/cli/');
       process.exit(1);
     }
 
     if (options.purgeDemo) {
       console.log(`Purging seeded attribution items from ${table} (${region})...`);
-      const removed = purgeDemoAttribution(region, table);
+      const removed = purgeDemoAttribution(region, table, profile);
       console.log(`\nRemoved ${removed} seeded item(s). Real attribution data was left untouched.`);
       return;
     }
@@ -295,7 +300,7 @@ export default {
     console.log('');
 
     if (seedAttribution) {
-      const problem = preflightAttributionTable(region, table);
+      const problem = preflightAttributionTable(region, table, profile);
       if (problem) {
         console.error(`Error: ${problem}`);
         console.error('');
@@ -315,7 +320,7 @@ export default {
       }
     }
 
-    if (seedAttribution && !options.force && hasRealAttribution(region, table)) {
+    if (seedAttribution && !options.force && hasRealAttribution(region, table, profile)) {
       console.error(`Error: ${table} already contains real attribution data.`);
       console.error('');
       console.error('Seeding fabricated commits alongside real developer activity corrupts the');
@@ -337,7 +342,7 @@ export default {
 
     function flush() {
       if (batch.length > 0) {
-        if (putEvents(region, batch)) {
+        if (putEvents(region, batch, profile)) {
           total += batch.length;
         } else {
           console.error(`Warning: Failed to emit batch of ${batch.length} events`);
@@ -739,11 +744,11 @@ export default {
       if (totalItems > 0) {
         console.log(`Seeding ${totalItems} attribution items into ${table}...`);
         // Spans and rollups first — see the note on the accumulators above.
-        const spans = ddbBatchWrite(region, table, spanRequests);
+        const spans = ddbBatchWrite(region, table, spanRequests, profile);
         attrWritten += spans.written;
         let failure = spans.error;
         if (!failure) {
-          const commits = ddbBatchWrite(region, table, commitRequests);
+          const commits = ddbBatchWrite(region, table, commitRequests, profile);
           attrWritten += commits.written;
           failure = commits.error;
         }
