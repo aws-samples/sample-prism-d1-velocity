@@ -193,7 +193,7 @@ async function renderDora(fromIso: string, toIso: string, days: number, p: Palet
   ]);
 
   if (deploys.length === 0 && prs.length === 0) {
-    return emptyState('deploy / PR', 'Populated by prism-ai-metrics.yml on PR merge. Install the workflow and set PRISM_METRICS_ROLE_ARN.', p);
+    return emptyState('deploy / PR', 'Populated by prism-ai-metrics.yml on PR merge (and on direct pushes to the default branch, census only). Install the workflow and set PRISM_METRICS_ROLE_ARN.', p);
   }
 
   const mergeFreq = days > 0 ? deploys.length / days : deploys.length;
@@ -246,18 +246,32 @@ function median(values: number[]): number | null {
  * of who authored it and reports pr.total_commits. Attribution gives us the
  * sample. The ratio is the coverage.
  *
+ * `pushes` carries the other half of that census. Commits pushed straight to
+ * the default branch produce no PR event, so before they were counted they
+ * shrank this denominator while codeburn still attributed them -- coverage rose
+ * toward 100% exactly as the census got less complete, and the Math.min below
+ * hid the overshoot that would otherwise have exposed it. Both event types are
+ * summed here; they are kept separate from `prs` everywhere else, because
+ * Change Failure Rate divides by prs.length and a push has no title to test.
+ *
+ * The emitter guarantees these do not overlap: emit-push-census skips any push
+ * whose head commit is associated with a PR, which covers merge, squash and
+ * rebase strategies alike.
+ *
  * Returns null when CI events are absent, since coverage is unknowable then —
  * deliberately not 0%, which would imply "measured and found nothing".
  */
-function attributionCoverage(prs: PrismEvent[], attributedCommits: number | null): {
+function attributionCoverage(prs: PrismEvent[], pushes: PrismEvent[], attributedCommits: number | null): {
   pct: number | null;
   ciCommits: number;
   attributed: number | null;
 } {
-  const ciCommits = prs.reduce((sum, e) => {
-    const n = e.data.pr?.total_commits;
-    return sum + (typeof n === 'number' && n > 0 ? n : 0);
-  }, 0);
+  const countCommits = (events: PrismEvent[], key: 'pr' | 'push') =>
+    events.reduce((sum, e) => {
+      const n = (e.data as any)[key]?.total_commits;
+      return sum + (typeof n === 'number' && n > 0 ? n : 0);
+    }, 0);
+  const ciCommits = countCommits(prs, 'pr') + countCommits(pushes, 'push');
   if (ciCommits === 0 || attributedCommits === null) {
     return { pct: null, ciCommits, attributed: attributedCommits };
   }
@@ -345,17 +359,18 @@ async function renderRepos(fromIso: string, toIso: string, p: Palette): Promise<
 }
 
 async function renderAidora(fromIso: string, toIso: string, p: Palette): Promise<string> {
-  const [report, evals, prs] = await Promise.all([
+  const [report, evals, prs, pushes] = await Promise.all([
     fetchProductivity(fromIso, toIso).catch(() => null),
     queryEvents('prism.d1.eval', fromIso, toIso),
     queryEvents('prism.d1.pr', fromIso, toIso),
+    queryEvents('prism.d1.push', fromIso, toIso),
   ]);
 
   const t = report?.totals;
   const passRate = evals.length > 0
     ? (evals.filter(e => e.data.eval?.result === 'PASS').length / evals.length) * 100
     : null;
-  const cov = attributionCoverage(prs, t?.commits?.total ?? null);
+  const cov = attributionCoverage(prs, pushes, t?.commits?.total ?? null);
 
   const cells = [
     { label: 'AI Share of Commits', value: pct(t?.ratios?.aiSharePct ?? null), note: 'attribution store', color: (t?.ratios?.aiSharePct ?? 0) >= 30 ? p.ok : undefined },
@@ -458,13 +473,14 @@ function computeObservedLevel(input: {
 // ---- View: exec (business KPIs + delivery proxies + observed level) ----
 
 async function renderExec(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
-  const [report, evals, mcp, guardrails, deploys, prs] = await Promise.all([
+  const [report, evals, mcp, guardrails, deploys, prs, pushes] = await Promise.all([
     fetchProductivity(fromIso, toIso).catch(() => null),
     queryEvents('prism.d1.eval', fromIso, toIso),
     queryEvents('prism.d1.mcp.tool_call', fromIso, toIso),
     queryEvents('prism.d1.guardrail', fromIso, toIso),
     queryEvents('prism.d1.deploy', fromIso, toIso),
     queryEvents('prism.d1.pr', fromIso, toIso),
+    queryEvents('prism.d1.push', fromIso, toIso),
   ]);
 
   const t = report?.totals;
@@ -506,7 +522,7 @@ async function renderExec(fromIso: string, toIso: string, days: number, p: Palet
     ]), p, 1);
 
   // --- Business KPIs (attribution store) ---
-  const cov = attributionCoverage(prs, t?.commits?.total ?? null);
+  const cov = attributionCoverage(prs, pushes, t?.commits?.total ?? null);
   const businessKpis = kpiRow([
     { label: 'AI Share of Commits', value: pct(r.aiSharePct ?? null), note: 'L2 >= 30%', color: (r.aiSharePct ?? 0) >= 30 ? p.ok : undefined },
     { label: 'AI Merge Rate', value: pct(r.mergeRatePct ?? null), note: 'L2 >= 20% · L4 >= 45%', color: (r.mergeRatePct ?? 0) >= 45 ? p.ok : (r.mergeRatePct ?? 0) >= 20 ? p.warn : undefined },

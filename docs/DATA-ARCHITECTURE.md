@@ -34,6 +34,7 @@ This is the only source that can distinguish AI-written from human-written code,
 | Workflow | Trigger | Emits |
 |----------|---------|-------|
 | **prism-ai-metrics.yml** | PR merged to main/master | `prism.d1.pr` + `prism.d1.deploy` — per-PR **facts** only: lead time, `is_failure_fix` label, review verdict counts, commit SHAs, `total_commits`. No rates; the dashboard aggregates at query time. |
+| **prism-ai-metrics.yml** (push path) | Direct push to main/master with no associated PR | `prism.d1.push` — commit census only: `total_commits`, `commit_shas`, `commit_authors`. Emits **no** `dora` block and no `prism.d1.deploy`, so no delivery KPI is synthesised from a push. Exists so Attribution Coverage's denominator stays complete; without it a direct push shrank the census while codeburn still attributed the commits, driving coverage toward a false 100%. Skipped when the head commit belongs to a PR, which de-duplicates merge, squash and rebase strategies alike. |
 | **prism-eval-gate-kiro.yml** | PR opened/updated | `prism.d1.eval` + `prism.d1.security.*` — agentic review via kiro-cli headless, gitleaks secret scanning, and AWS Continuum findings. Installs as `.github/workflows/prism-eval-gate.yml`. |
 | **prism-agent-eval.yml** | PR touching agent paths | `prism.d1.agent.eval` — agent quality scores via Bedrock rubric |
 
@@ -123,6 +124,7 @@ Every event follows this base structure on EventBridge:
 | Field | Event Types | Description |
 |-------|------------|-------------|
 | `pr` | `prism.d1.pr` | PR number, author, review verdict counts, `total_commits`, **commit SHAs** |
+| `push` | `prism.d1.push` | Head SHA, pusher, `total_commits`, **commit SHAs**, `commit_authors` |
 | `eval` | `prism.d1.eval` | Eval ID, rubric name, result, score, criterion scores |
 | `guardrail` | `prism.d1.guardrail` | Guardrail ID, trigger category/type, action taken, agent name |
 | `mcp_tool_call` | `prism.d1.mcp.tool_call` | Session ID, client ID, tool name, scopes, authorized flag, risk level |

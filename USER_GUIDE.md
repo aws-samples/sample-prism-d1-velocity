@@ -1589,6 +1589,7 @@ All events flow to the `prism-d1-metrics` EventBridge bus with source `prism.d1.
 | `prism.d1.agent.eval` | `prism-agent-eval.yml` | PR touching agent code |
 | `prism.d1.security.code_review` | `prism-eval-gate.yml` (Continuum scan) | PR security scan |
 | `prism.d1.assessment` | `api-handler` Lambda | `POST /assessment` |
+| `prism.d1.push` | `prism-ai-metrics.yml` | Direct push to main/master (census only, no DORA fields) |
 | `prism.d1.commit` | *no active producer* | — see note below |
 
 `prism.d1.commit` has no shipped emitter. It is still routed by the pipeline and read by

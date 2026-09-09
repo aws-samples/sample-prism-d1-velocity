@@ -288,6 +288,7 @@ export class MetricsPipelineStack extends cdk.Stack {
     const detailTypes = [
       'prism.d1.commit',
       'prism.d1.pr',
+      'prism.d1.push',
       'prism.d1.deploy',
       'prism.d1.eval',
       'prism.d1.incident',

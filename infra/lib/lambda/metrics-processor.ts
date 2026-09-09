@@ -892,15 +892,20 @@ function mapUnit(unit: string): StandardUnit {
  * processor already handles both forms for point lookups.
  */
 async function seedCommitAttribution(detailType: string, detail: any): Promise<void> {
-  // Only process prism.d1.pr events that carry commit SHAs
-  if (detailType !== 'prism.d1.pr') return;
+  // prism.d1.pr and prism.d1.push both report commits that reached the default
+  // branch, so both seed in_main=true. A direct push is as much "shipped" as a
+  // merge; excluding it would undercount shipped commits and inflate the
+  // cost-per-shipped-commit KPI, while still charging the tokens that produced
+  // them. The census fields are identically shaped on the two events, only
+  // nested under a different key.
+  if (detailType !== 'prism.d1.pr' && detailType !== 'prism.d1.push') return;
   if (!AI_USAGE_TABLE) return;
 
-  const pr = detail.pr as PrDetail | undefined;
-  const shas = pr?.commit_shas;
+  const census = (detailType === 'prism.d1.pr' ? detail.pr : detail.push) as PrDetail | undefined;
+  const shas = census?.commit_shas;
   if (!shas || shas.length === 0) return;
 
-  const authors: string[] = (pr as any)?.commit_authors ?? [];
+  const authors: string[] = (census as any)?.commit_authors ?? [];
   const repo = detail.repo as string;
   // CI workflows now emit fully-qualified repo names (github.com/owner/repo
   // or gitlab.com/group/project) matching codeburn's convention. No

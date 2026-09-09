@@ -36,6 +36,7 @@ export const PERSISTED_SECTIONS = [
   'security_agent_finding',
   'security_remediation',
   'pr',
+  'push',
 ] as const;
 
 export type PersistedSection = (typeof PERSISTED_SECTIONS)[number];
@@ -76,7 +77,16 @@ export const SECTION_FIELDS: Record<PersistedSection, readonly string[]> = {
   ],
   pr: [
     'number', 'author', 'reviews_approved', 'reviews_changes_requested',
-    'total_commits', 'commit_shas',
+    'total_commits', 'commit_shas', 'commit_authors',
+  ],
+  // Census-only counterpart to `pr`, emitted by prism-ai-metrics.yml when
+  // commits reach the default branch without a PR. Deliberately carries no
+  // lead-time or failure-fix field: a push has neither a created_at→merged_at
+  // pair nor a title convention, so any such value would be fabricated. Kept a
+  // separate section (rather than reusing `pr`) because Change Failure Rate
+  // divides by the count of prism.d1.pr events.
+  push: [
+    'sha', 'pusher', 'total_commits', 'commit_shas', 'commit_authors',
   ],
 };
 
