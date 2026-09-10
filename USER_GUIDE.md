@@ -208,6 +208,77 @@ npx cdk deploy --all \
 
 Your IdP app must be a **public client with PKCE**, register loopback redirect URIs `http://127.0.0.1:19876/callback` (also ports 19877, 19878), and issue **JWT access tokens** (Okta and Entra ID work; Auth0's opaque access tokens are not supported).
 
+**Federate your IdP *inside* Cognito** instead of replacing it. Developers sign in with corporate credentials, but Cognito stays in the path:
+
+```bash
+npx cdk deploy --all \
+  -c otelIdpName=CorpIdP \
+  -c otelIdpIssuer=https://idp.example.com \
+  -c otelIdpClientId=your-client-id \
+  -c otelIdpClientSecretArn=my-idp-client-secret \
+  -c otelIdentityClaim=email
+```
+
+Which option to pick:
+
+| | Bring your own IdP (`otelIssuer`) | Federated IdP (`otelIdpName`) |
+|---|---|---|
+| Cognito user pool | not created | created, IdP added to it |
+| Corporate sign-in | yes | yes |
+| Machine-to-machine agent client | **not available** | available |
+
+That last row is the deciding factor for most teams. The OAuth resource server and the client-credentials client that the [coding agent](coding-agent/README.md) uses to push its own telemetry are only created on the Cognito path, so `otelIssuer` silently removes the agent's route to the collector. Choose the federated option if you run the coding agent.
+
+Additional flags: `otelIdpClientSecretJsonKey` if the secret holds JSON rather than a plain string, and `otelIdpScopes` (default `openid email`). The first four flags above must be supplied together — the construct throws on a partial set.
+
+**Before deploying**, put the IdP client secret in Secrets Manager. The value never belongs in a context flag or a template:
+
+```bash
+aws secretsmanager create-secret --name my-idp-client-secret --secret-string '<client-secret>'
+```
+
+**At your IdP**, register Cognito's callback URL:
+
+```
+https://prism-d1-otel-<account-id>.auth.<region>.amazoncognito.com/oauth2/idpresponse
+```
+
+#### Why `otelIdentityClaim=email` is required here
+
+Commit attribution keys developers on their **git author email**, so identity resolution has to produce an email or each developer appears twice — once holding their AI token spend, once holding their commits.
+
+Cognito ID tokens carry `email`, but **access tokens do not**, and the HTTP API authorizer validates the access token. Without help, the receiver falls back to `username`, which Cognito prefixes with your provider name (`corpidp_alice`). The deploy therefore also creates a **pre-token-generation trigger** that copies `email` into the access token.
+
+The trigger and the flag are co-dependent, and neither works alone:
+
+| Trigger | `otelIdentityClaim=email` | Resolved identity |
+|---|---|---|
+| yes | no | `corpidp_alice` — trigger is a silent no-op |
+| no | yes | `corpidp_alice` — claim absent, falls through to username |
+| yes | yes | `alice@example.com` |
+
+`cdk synth` emits a warning if you configure an IdP without the flag. Access token customization requires the Cognito **Essentials or Plus** feature plan; it is unavailable on Lite.
+
+#### Backfilling emails for existing users
+
+The IdP attribute mapping populates `email` on **sign-in**, so anyone who signed in before you added the mapping has `email: null` and keeps resolving to the prefixed username. The trigger fails open by design — those users keep working rather than being locked out of sync — so the fleet converges as people sign in again.
+
+To avoid waiting, set the attribute directly. The next hourly token refresh picks it up with no re-login:
+
+```bash
+aws cognito-idp admin-update-user-attributes \
+  --user-pool-id <OtelUserPoolId output> --username CorpIdP_alice \
+  --user-attributes Name=email,Value=alice@example.com
+```
+
+Be aware the mapping **overwrites** `email` on each federated sign-in. If your IdP returns a different address than the one you set, that developer's identity moves again at their next sign-in.
+
+#### Migrating telemetry already stored under the old identity
+
+Switching identities does not move existing data: history stays under `USER#<provider>_<alias>` in `prism-d1-ai-usage` while new spans land under `USER#<email>`, and dashboards show both rows until you reconcile them. `OTEL_SPAN` records expire on their 90-day TTL, but `OTEL_DAY` aggregates persist indefinitely.
+
+If you re-push history instead of copying it, note two things. `codeburn sync push` skips anything already sent, so a genuine re-push needs `codeburn sync reset --confirm` first, and it can only send telemetry still on the developer's disk — older days may no longer exist locally. `OTEL_DAY` counters are also written with DynamoDB `ADD`, so re-pushing into a partition that **already** holds data double-counts it; only re-push into an empty identity.
+
 ### IAM Permissions Required
 
 You do not need to write these policies — Step 2 attaches both. This is a reference for
