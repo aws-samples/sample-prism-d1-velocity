@@ -355,6 +355,13 @@ export class MetricsPipelineStack extends cdk.Stack {
     // OTEL Collector (on by default — server side of `codeburn sync`)
     // Skip with:   npx cdk deploy --context skipOtelCollector=true
     // BYO IdP:     -c otelIssuer=... -c otelClientId=... [-c otelIdentityClaim=email]
+    // Federated IdP behind Cognito (keeps the M2M agent client):
+    //              -c otelIdpName=CorpIdP
+    //              -c otelIdpIssuer=https://idp.example.com
+    //              -c otelIdpClientId=...
+    //              -c otelIdpClientSecretArn=<secretsmanager name or arn>
+    //              [-c otelIdpClientSecretJsonKey=clientSecret]
+    //              [-c otelIdpScopes='openid email']  (default: openid email)
     // Per-user AI usage flows directly from codeburn sync to the
     // ai-usage table (spans + daily aggregates).
     // -------------------------------------------------------
@@ -366,6 +373,12 @@ export class MetricsPipelineStack extends cdk.Stack {
         externalIssuer: this.node.tryGetContext('otelIssuer') as string | undefined,
         externalClientId: this.node.tryGetContext('otelClientId') as string | undefined,
         identityClaim: this.node.tryGetContext('otelIdentityClaim') as string | undefined,
+        idpName: this.node.tryGetContext('otelIdpName') as string | undefined,
+        idpIssuer: this.node.tryGetContext('otelIdpIssuer') as string | undefined,
+        idpClientId: this.node.tryGetContext('otelIdpClientId') as string | undefined,
+        idpClientSecretArn: this.node.tryGetContext('otelIdpClientSecretArn') as string | undefined,
+        idpClientSecretJsonKey: this.node.tryGetContext('otelIdpClientSecretJsonKey') as string | undefined,
+        idpScopes: this.node.tryGetContext('otelIdpScopes') as string | undefined,
       });
 
       // ---------------------------------------------------

@@ -49,6 +49,57 @@ export interface OtelCollectorConstructProps {
   externalClientId?: string;
   /** JWT claim used as the user identity key (default: username for Cognito, sub for BYO). */
   identityClaim?: string;
+
+  // ---------------------------------------------------------------------------
+  // Federated IdP on the Cognito pool (Okta, Entra ID, any OIDC provider).
+  //
+  // Distinct from the BYO-IdP props above. Those REPLACE Cognito as the token
+  // issuer and drop the machine-to-machine client with it. These keep Cognito as
+  // the issuer and add an upstream provider behind it, so the coding agent's
+  // client-credentials path survives.
+  //
+  // All five must be supplied together; a partial set throws rather than
+  // half-configuring an IdP that fails at first login.
+  // ---------------------------------------------------------------------------
+
+  /** Provider name, e.g. 'CorpIdP'. Becomes the `<name>_` username prefix. */
+  idpName?: string;
+  /** OIDC issuer URL, e.g. https://idp.example.com */
+  idpIssuer?: string;
+  /** OAuth client id registered with the IdP for this user pool. */
+  idpClientId?: string;
+  /**
+   * ARN or name of a Secrets Manager secret holding the IdP client secret.
+   *
+   * A REFERENCE, never the value: the secret is resolved by a CloudFormation
+   * dynamic reference at deploy time, so the plaintext is never written to the
+   * template, CloudFormation state, or CI logs. Passing the secret itself
+   * through CDK context would put it in `cdk.context.json` and the synthesized
+   * template, which is the antipattern the reference exists to avoid.
+   *
+   * Provide either a plain-text secret whose whole value is the client secret,
+   * or a JSON secret with a `clientSecret` key (set idpClientSecretJsonKey).
+   *
+   * CAVEAT: CloudFormation resolves a dynamic reference only when the resource
+   * containing it is created or updated. Rotating the secret in Secrets Manager
+   * does NOT reach Cognito on its own — the IdP resource must change too.
+   */
+  idpClientSecretArn?: string;
+  /** JSON key inside the secret holding the client secret. Omit for a plain-text secret. */
+  idpClientSecretJsonKey?: string;
+  /**
+   * Scopes Cognito requests FROM the IdP. Defaults to 'openid email'.
+   *
+   * `email` is load-bearing and the default exists because of it: without it the
+   * IdP returns no email claim, Cognito stores `email: null` on every federated
+   * user, and the identity falls back to the `<provider>_<alias>` username —
+   * which never matches the git author emails the CI census emits, silently
+   * splitting each developer into two identities on the dashboards.
+   *
+   * NOT the same as the app client's AllowedOAuthScopes, which governs
+   * app→Cognito rather than Cognito→IdP.
+   */
+  idpScopes?: string;
 }
 
 export class OtelCollectorConstruct extends Construct {
@@ -117,6 +168,84 @@ export class OtelCollectorConstruct extends Construct {
         cognitoDomain: { domainPrefix },
       });
 
+      // -----------------------------------------------------------------
+      // Optional federated IdP in front of the pool.
+      //
+      // Created BEFORE the app client so the client's
+      // supportedIdentityProviders can reference it; CloudFormation rejects a
+      // client naming a provider that does not exist yet, and addDependency
+      // below makes that ordering explicit rather than incidental.
+      // -----------------------------------------------------------------
+      const idpFields = [props.idpName, props.idpIssuer, props.idpClientId, props.idpClientSecretArn];
+      const idpConfigured = idpFields.some((f) => f !== undefined);
+      if (idpConfigured && idpFields.some((f) => f === undefined)) {
+        throw new Error(
+          'Federated IdP requires idpName, idpIssuer, idpClientId and idpClientSecretArn together '
+          + '(context: -c otelIdpName=... -c otelIdpIssuer=... -c otelIdpClientId=... -c otelIdpClientSecretArn=...)',
+        );
+      }
+
+      let federatedIdp: cognito.CfnUserPoolIdentityProvider | undefined;
+      if (idpConfigured) {
+        // Build the dynamic reference as a LITERAL string.
+        //
+        // The obvious CDK spelling — Secret.fromSecretNameV2(...).secretValueFromJson(k)
+        // .unsafeUnwrap() — composes the ARN with `Ref: AWS::Partition`, so the
+        // property renders as an Fn::Join whose OUTPUT happens to be a
+        // {{resolve:...}} string. CloudFormation resolves dynamic references
+        // during template processing and does not reliably resolve one produced
+        // by an intrinsic; the risk is Cognito storing the literal
+        // "{{resolve:secretsmanager:...}}" as the client secret, which fails at
+        // first federated login with an upstream "invalid_client" and no failed
+        // resource to point at. Verified by synthesizing both forms.
+        //
+        // The secret id comes from CDK context, so it is a plain string and
+        // interpolation yields a literal with no intrinsic. Secrets Manager
+        // accepts either a friendly name (same account and region) or a full ARN.
+        const secretId = props.idpClientSecretArn!;
+        if (!/^(arn:[a-z0-9-]+:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@-]+|[A-Za-z0-9/_+=.@-]+)$/.test(secretId)) {
+          throw new Error(
+            `idpClientSecretArn "${secretId}" is not a valid Secrets Manager secret name or ARN. `
+            + 'Expected a friendly name or a full arn:...:secretsmanager:...:secret:... ARN.',
+          );
+        }
+        const jsonKey = props.idpClientSecretJsonKey ?? '';
+        if (jsonKey && !/^[A-Za-z0-9_.-]+$/.test(jsonKey)) {
+          throw new Error(`idpClientSecretJsonKey "${jsonKey}" must be alphanumeric with . _ - only.`);
+        }
+        // Trailing `::` selects the current version stage (AWSCURRENT), so the
+        // reference tracks rotation without pinning a version id.
+        const clientSecretRef = `{{resolve:secretsmanager:${secretId}:SecretString:${jsonKey}::}}`;
+
+        federatedIdp = new cognito.CfnUserPoolIdentityProvider(this, 'FederatedIdp', {
+          userPoolId: this.userPool.userPoolId,
+          providerName: props.idpName!,
+          providerType: 'OIDC',
+          // A SUPERSET of what the console-created provider had, never a
+          // replacement. `username: sub` is what Cognito uses to derive the
+          // native federated username (`<ProviderName>_<sub>`); dropping it
+          // changes the username shape, which mints a second set of user
+          // records and splits every developer's history a second time. Only
+          // `email` and the name claims are additions.
+          //
+          // `email` is the load-bearing one: it is what lets the identity match
+          // the git author emails the CI census emits.
+          attributeMapping: {
+            username: 'sub',
+            email: 'EMAIL',
+            given_name: 'GIVEN_NAME',
+            family_name: 'FAMILY_NAME',
+          },
+          providerDetails: {
+            oidc_issuer: props.idpIssuer!,
+            client_id: props.idpClientId!,
+            client_secret: clientSecretRef,
+            authorize_scopes: props.idpScopes ?? 'openid email',
+            attributes_request_method: 'GET',
+          },
+        });
+      }
+
       // Public client (no secret) — codeburn does Authorization Code + PKCE
       // with loopback redirects. Cognito allows http:// for localhost, 127.0.0.1,
       // and [::1] (per CreateUserPoolClient API docs). codeburn uses 127.0.0.1.
@@ -132,10 +261,97 @@ export class OtelCollectorConstruct extends Construct {
           scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
           callbackUrls,
         },
+        // Declared here so it cannot drift. Setting this in the console instead
+        // leaves CloudFormation believing the client is Cognito-only, and the
+        // next deploy of this stack silently reverts it — breaking federated
+        // login with no failed resource to point at.
+        supportedIdentityProviders: idpConfigured
+          ? [
+              cognito.UserPoolClientIdentityProvider.COGNITO,
+              cognito.UserPoolClientIdentityProvider.custom(props.idpName!),
+            ]
+          : [cognito.UserPoolClientIdentityProvider.COGNITO],
         preventUserExistenceErrors: true,
         accessTokenValidity: cdk.Duration.hours(1),
         refreshTokenValidity: cdk.Duration.days(30),
       });
+      if (federatedIdp) {
+        this.userPoolClient.node.defaultChild?.node.addDependency(federatedIdp);
+      }
+
+      // -----------------------------------------------------------------
+      // Pre token generation (V2_0) — puts `email` in the ACCESS token.
+      //
+      // Attached only when a federated IdP is configured: for admin-created
+      // users the username IS the email, so the trigger would be a no-op that
+      // still billed an invocation on every token issuance.
+      //
+      // Inert without `identityClaim: 'email'` — see the note in
+      // pre-token-generation.ts. The warning below fires on the one
+      // half-configured combination that looks like it should work.
+      // -----------------------------------------------------------------
+      if (idpConfigured) {
+        // props.identityClaim is not yet folded into `identityClaim` at this
+        // point in the branch, so resolve the same default inline.
+        const claimForWarning = props.identityClaim ?? 'username';
+        if (claimForWarning !== 'email') {
+          cdk.Annotations.of(this).addWarning(
+            'A federated IdP is configured and the pre-token-generation trigger will add an `email` '
+            + 'claim to access tokens, but identityClaim is '
+            + `"${claimForWarning}" — the receiver checks that claim (and then \`username\`, which is `
+            + 'always present) before `email`, so the trigger has no effect. Deploy with '
+            + '-c otelIdentityClaim=email to key identities on email.',
+          );
+        }
+
+        const preTokenGen = new lambda.Function(this, 'PreTokenGeneration', {
+          functionName: 'prism-d1-pre-token-generation',
+          runtime: lambda.Runtime.NODEJS_22_X,
+          handler: 'pre-token-generation.handler',
+          // Deliberately NOT in the VPC: Cognito invokes this synchronously on
+          // the token-issuance path, and it makes no network calls, so a VPC
+          // attachment would add cold-start ENI latency to every sign-in for
+          // nothing.
+          code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda'), {
+            bundling: {
+              image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+              command: [
+                'bash', '-c',
+                [
+                  'npm init -y > /dev/null 2>&1',
+                  'npm install --save esbuild > /dev/null 2>&1',
+                  'npx esbuild pre-token-generation.ts --bundle --platform=node --target=node22 --outfile=/asset-output/pre-token-generation.js --external:@aws-sdk/*',
+                ].join(' && '),
+              ],
+              local: {
+                tryBundle(outputDir: string): boolean {
+                  try {
+                    const { execSync } = require('child_process');
+                    execSync(
+                      `npx esbuild ${path.join(__dirname, '..', 'lambda', 'pre-token-generation.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'pre-token-generation.js')} --external:@aws-sdk/*`,
+                      { stdio: 'pipe' },
+                    );
+                    return true;
+                  } catch {
+                    return false;
+                  }
+                },
+              },
+            },
+          }),
+          // Token issuance blocks on this call, so keep the budget tight: the
+          // function reads one attribute off the event and returns.
+          timeout: cdk.Duration.seconds(5),
+          memorySize: 128,
+          logRetention: logs.RetentionDays.ONE_MONTH,
+        });
+
+        this.userPool.addTrigger(
+          cognito.UserPoolOperation.PRE_TOKEN_GENERATION_CONFIG,
+          preTokenGen,
+          cognito.LambdaVersion.V2_0,
+        );
+      }
 
       issuer = `https://cognito-idp.${cdk.Aws.REGION}.amazonaws.com/${this.userPool.userPoolId}`;
       clientId = this.userPoolClient.userPoolClientId;
