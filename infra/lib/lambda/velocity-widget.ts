@@ -1648,6 +1648,275 @@ async function renderMergeRateKpi(fromIso: string, toIso: string, p: Palette): P
   `;
 }
 
+// ---- View: cost-per-commit-kpi (single big-number KPI for $ / shipped commit) ----
+
+/**
+ * Replaces a CloudWatch `AICostUSD / MergedAICommits` ratio tile.
+ *
+ * Three things were wrong with the metric-math version, and all three are
+ * properties of CloudWatch rather than of the expression:
+ *
+ * 1. CloudWatch rejects datapoints older than two weeks, so a backfill lands
+ *    partially outside the ingestion window. Measured on a live 30-day range,
+ *    the metric path saw $1,387.61 / 141 commits where the store held
+ *    $1,496.24 / 164 — both terms short, in the same direction.
+ * 2. AICostUSD and MergedAICommits carry no user dimension, so the tile stayed
+ *    org-wide while the attribution-backed tile beside it scoped to the
+ *    dashboard's Developer variable. Same screen, near-identical labels, one
+ *    responding to the filter and one not.
+ * 3. The metrics are timestamped at ingest, not at commit time.
+ *
+ * Reading the store fixes all three, and makes this tile agree with the
+ * `$ / Shipped Commit` cells on Team Velocity and the Executive Readout, which
+ * already read the same field.
+ */
+async function renderCostPerCommitKpi(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  let report: any;
+  try {
+    report = await fetchProductivity(fromIso, toIso);
+  } catch {
+    return emptyState('cost per shipped commit', 'Attribution store unreachable.', p);
+  }
+  const costPer = report?.totals?.ratios?.costPerShippedCommit ?? null;
+  const cost = report?.totals?.usage?.costUsd ?? null;
+  const mergedAi = report?.totals?.commits?.mergedAi ?? 0;
+  // Deliberately uncoloured: unit economics has no org-independent "good"
+  // threshold the way merge rate does, and a red/green here would invent one.
+  const sub = mergedAi > 0 && cost !== null
+    ? `$${num(Math.round(cost))} / ${num(mergedAi)} merged AI commits`
+    : cost !== null
+      ? `$${num(Math.round(cost))} spend · no merged AI commits attributed yet`
+      : 'no attribution data in range';
+  return `
+    <div style="text-align:center;padding:12px">
+      <div style="color:${p.mut};font-size:11px">$ / Shipped Commit</div>
+      <div style="color:${p.fg};font-size:36px;font-weight:700;margin:4px 0">${costPer !== null ? `$${costPer.toFixed(2)}` : '—'}</div>
+      <div style="color:${p.mut};font-size:10px">${sub}</div>
+    </div>
+  `;
+}
+
+// ---- View: ai-spend-kpi (single big-number KPI for total AI spend in range) ----
+
+/**
+ * Replaces a CloudWatch `Sum(AICostUSD)` tile, for the same ingestion-window
+ * reason as the ratio above: the metric sum is short by whatever part of the
+ * range predates CloudWatch's two-week cutoff, so a tile labelled "range"
+ * silently reports less than the range holds.
+ */
+async function renderAiSpendKpi(fromIso: string, toIso: string, p: Palette): Promise<string> {
+  let report: any;
+  try {
+    report = await fetchProductivity(fromIso, toIso);
+  } catch {
+    return emptyState('AI spend', 'Attribution store unreachable.', p);
+  }
+  const usage = report?.totals?.usage ?? null;
+  const cost = usage?.costUsd ?? null;
+  const calls = usage?.calls ?? 0;
+  const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+  return `
+    <div style="text-align:center;padding:12px">
+      <div style="color:${p.mut};font-size:11px">AI Spend (range)</div>
+      <div style="color:${p.fg};font-size:36px;font-weight:700;margin:4px 0">${cost !== null ? `$${num(Math.round(cost))}` : '—'}</div>
+      <div style="color:${p.mut};font-size:10px">${cost !== null ? `${num(calls)} calls · ${num(Math.round(tokens / 1000))}k tokens` : 'no usage data in range'}</div>
+    </div>
+  `;
+}
+
+// ---- View: ai-spend-trend (AI spend over time) ----
+
+/**
+ * Replaces the CloudWatch `Sum(AICostUSD)` spend graphs.
+ *
+ * Same reason as the KPI tiles: CloudWatch drops datapoints older than two
+ * weeks, so a graph titled "spend trend" showed a flat or absent left-hand side
+ * for any range longer than that — not because spend was low then, but because
+ * the datapoints were refused at ingest. Reading OTEL_DAY rollups gives the real
+ * curve over full history, and puts this graph on the same source as the
+ * cost-per-commit trend beside it so the two can be read together.
+ */
+async function renderAiSpendTrend(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
+  let data: any;
+  try {
+    data = await invokeReceiver('/v1/commits-daily', `from=${fromIso.slice(0, 10)}&to=${toIso.slice(0, 10)}`);
+  } catch (err) {
+    return emptyState('AI spend trend', `Attribution store unreachable (${(err as Error).message}).`, p);
+  }
+
+  const dayBuckets: Array<{ date: string; costUsd: number }> = data?.days ?? [];
+  if (dayBuckets.length === 0) {
+    return emptyState('AI spend trend', 'No usage data in range.', p);
+  }
+
+  const useWeekly = days > 21;
+  let buckets: Array<{ label: string; costUsd: number }>;
+  if (useWeekly) {
+    const weeks = new Map<string, { label: string; costUsd: number }>();
+    for (const d of dayBuckets) {
+      const dt = new Date(d.date);
+      const weekStart = new Date(dt);
+      weekStart.setDate(dt.getDate() - dt.getDay());
+      const key = weekStart.toISOString().slice(0, 10);
+      let w = weeks.get(key);
+      if (!w) { w = { label: key, costUsd: 0 }; weeks.set(key, w); }
+      w.costUsd += d.costUsd ?? 0;
+    }
+    buckets = [...weeks.values()].sort((a, b) => a.label.localeCompare(b.label));
+  } else {
+    buckets = dayBuckets.map(d => ({ label: d.date, costUsd: d.costUsd ?? 0 }));
+  }
+
+  const total = buckets.reduce((s, b) => s + b.costUsd, 0);
+  const maxC = Math.max(...buckets.map(b => b.costUsd), 0);
+  if (maxC === 0) {
+    return emptyState('AI spend trend', 'No AI spend recorded in range.', p);
+  }
+
+  // Bars rather than a line: spend is a per-bucket quantity, and a line implies
+  // interpolation between buckets that a sum does not have.
+  const chartW = 500;
+  const chartH = 100;
+  const slot = chartW / buckets.length;
+  const barW = Math.max(2, slot * 0.7);
+  const bars = buckets.map((b, i) => {
+    const h = (b.costUsd / maxC) * (chartH - 10);
+    return `<rect x="${i * slot + (slot - barW) / 2}" y="${chartH - h}" width="${barW}" height="${h}" fill="${p.accent}" opacity="0.85" />`;
+  }).join('');
+
+  return `
+    <div style="padding:8px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+        <span style="color:${p.mut};font-size:11px">AI Spend (${useWeekly ? 'weekly' : 'daily'})</span>
+        <span style="color:${p.fg};font-size:13px;font-weight:600">$${num(Math.round(total))} total</span>
+      </div>
+      <svg viewBox="0 0 ${chartW} ${chartH + 16}" style="width:100%;height:auto">
+        ${bars}
+        <text x="2" y="${chartH + 13}" fill="${p.mut}" font-size="9">${esc(buckets[0]!.label)}</text>
+        <text x="${chartW - 2}" y="${chartH + 13}" fill="${p.mut}" font-size="9" text-anchor="end">${esc(buckets[buckets.length - 1]!.label)}</text>
+      </svg>
+      <div style="color:${p.mut};font-size:10px;margin-top:2px">peak $${maxC.toFixed(2)} per ${useWeekly ? 'week' : 'day'} · attribution store, full history</div>
+    </div>
+  `;
+}
+
+// ---- View: cost-per-commit-trend (cost per shipped commit over time) ----
+
+/**
+ * Replaces the CloudWatch "Cost per Shipped Commit (Weekly)" graph.
+ *
+ * That graph divided two ingest-timestamped metrics, which made it report
+ * efficiency changes that never happened. Measured on a live 30-day range the
+ * day attribution was first backfilled: the two earlier weeks plotted as gaps
+ * (spend, zero commits) and the current week read $0.55, because 141 commits
+ * spanning months were all stamped with their ingest time and divided into that
+ * one week's $77.33 of spend. The graph's premise — "spend can rise while this
+ * falls, which means AI is getting more efficient" — inverts under that
+ * artifact, so a reader draws exactly the wrong conclusion.
+ *
+ * Bucketing both terms by when the work happened is what makes the trend mean
+ * what its title says. A bucket with spend but no merged commits renders as a
+ * gap rather than as zero: no commits shipped is not a cost of zero per commit,
+ * and FILL(..., 0) on the metric version drew it as a floor.
+ */
+async function renderCostPerCommitTrend(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
+  let data: any;
+  try {
+    data = await invokeReceiver('/v1/commits-daily', `from=${fromIso.slice(0, 10)}&to=${toIso.slice(0, 10)}`);
+  } catch (err) {
+    return emptyState('cost per commit trend', `Attribution store unreachable (${(err as Error).message}).`, p);
+  }
+
+  const dayBuckets: Array<{ date: string; mergedAi: number; costUsd: number }> = data?.days ?? [];
+  if (dayBuckets.length === 0) {
+    return emptyState('cost per commit trend', 'No commit or usage data in range.', p);
+  }
+
+  // Same weekly/daily threshold as renderMergeRateTrend, so the two trends on a
+  // dashboard share an x-axis granularity.
+  const useWeekly = days > 21;
+  type Bucket = { label: string; mergedAi: number; costUsd: number };
+  let buckets: Bucket[];
+  if (useWeekly) {
+    const weeks = new Map<string, Bucket>();
+    for (const d of dayBuckets) {
+      const dt = new Date(d.date);
+      const weekStart = new Date(dt);
+      weekStart.setDate(dt.getDate() - dt.getDay());
+      const key = weekStart.toISOString().slice(0, 10);
+      let w = weeks.get(key);
+      if (!w) { w = { label: key, mergedAi: 0, costUsd: 0 }; weeks.set(key, w); }
+      w.mergedAi += d.mergedAi ?? 0;
+      w.costUsd += d.costUsd ?? 0;
+    }
+    buckets = [...weeks.values()].sort((a, b) => a.label.localeCompare(b.label));
+  } else {
+    buckets = dayBuckets.map(d => ({ label: d.date, mergedAi: d.mergedAi ?? 0, costUsd: d.costUsd ?? 0 }));
+  }
+
+  const ratios = buckets.map(b => (b.mergedAi > 0 ? b.costUsd / b.mergedAi : null));
+  const present = ratios.filter((r): r is number => r !== null);
+  if (present.length === 0) {
+    const spend = buckets.reduce((s, b) => s + b.costUsd, 0);
+    return emptyState(
+      'cost per commit trend',
+      spend > 0
+        ? `$${num(Math.round(spend))} of AI spend in range with no merged AI commits attributed — run \`codeburn sync push --attribution\`.`
+        : 'No AI spend or merged commits in range.',
+      p,
+    );
+  }
+
+  const chartW = 500;
+  const chartH = 100;
+  const step = buckets.length > 1 ? (chartW - 20) / (buckets.length - 1) : 0;
+  const maxR = Math.max(...present);
+  const yOf = (r: number): number => chartH - (maxR > 0 ? (r / maxR) * (chartH - 10) : 0);
+
+  // Gaps break the polyline into segments instead of interpolating across a
+  // bucket that shipped nothing, which would draw a slope the data does not have.
+  const segments: string[] = [];
+  let current: string[] = [];
+  ratios.forEach((r, i) => {
+    if (r === null) {
+      if (current.length > 1) segments.push(current.join(' '));
+      current = [];
+      return;
+    }
+    current.push(`${10 + i * step},${yOf(r)}`);
+  });
+  if (current.length > 1) segments.push(current.join(' '));
+
+  const dots = ratios.map((r, i) => r === null ? '' :
+    `<circle cx="${10 + i * step}" cy="${yOf(r)}" r="2.5" fill="${p.accent}" />`).join('');
+  const lines = segments.map(s =>
+    `<polyline points="${s}" fill="none" stroke="${p.accent}" stroke-width="2" />`).join('');
+
+  const first = present[0];
+  const last = present[present.length - 1];
+  const delta = first > 0 ? ((last - first) / first) * 100 : null;
+  const gaps = ratios.filter(r => r === null).length;
+
+  return `
+    <div style="padding:8px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+        <span style="color:${p.mut};font-size:11px">Cost per Shipped Commit (${useWeekly ? 'weekly' : 'daily'})</span>
+        <span style="color:${p.fg};font-size:13px;font-weight:600">$${last.toFixed(2)}${
+          delta !== null ? ` <span style="color:${delta <= 0 ? p.ok : p.warn};font-size:11px">${delta <= 0 ? '▼' : '▲'} ${Math.abs(delta).toFixed(0)}%</span>` : ''
+        }</span>
+      </div>
+      <svg viewBox="0 0 ${chartW} ${chartH + 16}" style="width:100%;height:auto">
+        ${lines}${dots}
+        <text x="10" y="${chartH + 13}" fill="${p.mut}" font-size="9">${esc(buckets[0]!.label)}</text>
+        <text x="${chartW - 10}" y="${chartH + 13}" fill="${p.mut}" font-size="9" text-anchor="end">${esc(buckets[buckets.length - 1]!.label)}</text>
+      </svg>
+      <div style="color:${p.mut};font-size:10px;margin-top:2px">
+        peak $${maxR.toFixed(2)} · attribution store, bucketed by commit date${gaps > 0 ? ` · ${gaps} ${useWeekly ? 'week' : 'day'}(s) with spend but no merged AI commits shown as gaps` : ''}
+      </div>
+    </div>
+  `;
+}
+
 // ---- View: merge-rate-trend (line chart of merge rate over time) ----
 
 async function renderMergeRateTrend(fromIso: string, toIso: string, days: number, p: Palette): Promise<string> {
@@ -1754,6 +2023,10 @@ export async function handler(event: WidgetEvent): Promise<string> {
       case 'commits-bar': body = await renderCommitsBar(fromIso, toIso, days, p); break;
       case 'ai-share-kpi': body = await renderAiShareKpi(fromIso, toIso, p); break;
       case 'merge-rate-kpi': body = await renderMergeRateKpi(fromIso, toIso, p); break;
+      case 'cost-per-commit-kpi': body = await renderCostPerCommitKpi(fromIso, toIso, p); break;
+      case 'ai-spend-kpi': body = await renderAiSpendKpi(fromIso, toIso, p); break;
+      case 'cost-per-commit-trend': body = await renderCostPerCommitTrend(fromIso, toIso, days, p); break;
+      case 'ai-spend-trend': body = await renderAiSpendTrend(fromIso, toIso, days, p); break;
       case 'merge-rate-trend': body = await renderMergeRateTrend(fromIso, toIso, days, p); break;
       default: body = `<div style="color:${p.danger}">Unknown view: ${esc(view)}</div>`;
     }

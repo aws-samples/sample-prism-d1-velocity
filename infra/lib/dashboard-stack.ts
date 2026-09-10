@@ -215,31 +215,31 @@ export class DashboardStack extends cdk.Stack {
         updateOnResize: false,
         updateOnTimeRangeChange: true,
       })] : []),
-      new cloudwatch.GraphWidget({
-        title: 'AI Spend Trend (Weekly)',
-        left: [weeklySum('AICostUSD', 'Spend ($)')],
+      new cloudwatch.CustomWidget({
+        functionArn: props?.velocityWidgetArn ?? '',
+        title: 'AI Spend Trend',
         width: 8,
         height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
+        params: { view: 'ai-spend-trend' },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
       }),
-      new cloudwatch.GraphWidget({
-        title: 'Cost per Shipped Commit (Weekly)',
-        left: [
-          // The ROI narrative: spend can rise while this falls, which means AI
-          // is getting more efficient per unit of shipped work.
-          new cloudwatch.MathExpression({
-            expression: 'FILL(IF(FILL(execMerged, 0) > 0, FILL(execCost, 0) / FILL(execMerged, 0)), REPEAT)',
-            usingMetrics: {
-              execCost: weeklySum('AICostUSD'),
-              execMerged: weeklySum('MergedAICommits'),
-            },
-            label: '$ / shipped AI commit',
-            period: cdk.Duration.days(7),
-          }),
-        ],
+      // The ROI narrative: spend can rise while this falls, which means AI is
+      // getting more efficient per unit of shipped work. That reading only holds
+      // if both terms are bucketed by when the work happened — the CloudWatch
+      // version this replaces divided two ingest-timestamped metrics, so a
+      // backfill collapsed the ratio and read as a 94% efficiency gain that
+      // never occurred. See renderCostPerCommitTrend.
+      new cloudwatch.CustomWidget({
+        functionArn: props?.velocityWidgetArn ?? '',
+        title: 'Cost per Shipped Commit',
         width: 8,
         height: 6,
-        leftYAxis: { min: 0, label: 'USD' },
+        params: { view: 'cost-per-commit-trend' },
+        updateOnRefresh: true,
+        updateOnResize: false,
+        updateOnTimeRangeChange: true,
       }),
     );
 
@@ -676,23 +676,6 @@ export class DashboardStack extends cdk.Stack {
       );
 
       // --- Row 1: Org KPIs (NaN-guarded metric math, follow time range) ---
-      const dailyMetric = (metricName: string, id: string): cloudwatch.Metric =>
-        new cloudwatch.Metric({
-          namespace: METRIC_NAMESPACE,
-          metricName,
-          statistic: 'Sum',
-          period: cdk.Duration.days(1),
-          label: id,
-        });
-      const ratioKpi = (title: string, expression: string, using: Record<string, cloudwatch.IMetric>): cloudwatch.SingleValueWidget =>
-        new cloudwatch.SingleValueWidget({
-          title,
-          metrics: [new cloudwatch.MathExpression({ expression, usingMetrics: using, label: title, period: cdk.Duration.days(1) })],
-          setPeriodToTimeRange: true,
-          width: 6,
-          height: 4,
-        });
-
       devDashboard.addWidgets(
         // AI Share and AI Merge Rate are DDB-backed (accurate, no CloudWatch delay)
         new cloudwatch.CustomWidget({
@@ -715,15 +698,31 @@ export class DashboardStack extends cdk.Stack {
           updateOnResize: false,
           updateOnTimeRangeChange: true,
         }),
-        ratioKpi('Cost per Shipped Commit ($)', 'IF(FILL(kMerged2, 0) > 0, FILL(kCost, 0) / FILL(kMerged2, 0))', {
-          kCost: dailyMetric('AICostUSD', 'kCost'), kMerged2: dailyMetric('MergedAICommits', 'kMerged2'),
-        }),
-        new cloudwatch.SingleValueWidget({
-          title: 'AI Spend (range, $)',
-          metrics: [dailyMetric('AICostUSD', 'AI Spend')],
-          setPeriodToTimeRange: true,
+        // Both of these read the attribution store rather than CloudWatch metric
+        // math. The metric versions divided/summed AICostUSD and MergedAICommits,
+        // which are ingest-timestamped and subject to CloudWatch's two-week
+        // datapoint cutoff, and carry no user dimension — so they disagreed with
+        // the store-backed figures in row 3 on both terms AND ignored the
+        // Developer variable. See renderCostPerCommitKpi for the measured gap.
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'Cost per Shipped Commit ($)',
           width: 6,
           height: 4,
+          params: { view: 'cost-per-commit-kpi' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
+        }),
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'AI Spend (range, $)',
+          width: 6,
+          height: 4,
+          params: { view: 'ai-spend-kpi' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
         }),
       );
 
@@ -740,12 +739,15 @@ export class DashboardStack extends cdk.Stack {
           updateOnResize: false,
           updateOnTimeRangeChange: true,
         }),
-        new cloudwatch.GraphWidget({
+        new cloudwatch.CustomWidget({
+          functionArn: props?.velocityWidgetArn ?? '',
           title: 'AI Spend / Day',
-          left: [dailyMetric('AICostUSD', 'Spend ($)')],
           width: 8,
           height: 6,
-          leftYAxis: { min: 0, label: 'USD' },
+          params: { view: 'ai-spend-trend' },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
         }),
         // Merge Rate Trend — DDB-backed line chart replacing CloudWatch AI Merge Ratio Trend
         new cloudwatch.CustomWidget({

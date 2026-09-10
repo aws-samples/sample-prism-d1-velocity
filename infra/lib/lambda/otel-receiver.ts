@@ -1539,7 +1539,7 @@ async function handleCommitsDailyQuery(event: HttpApiEvent): Promise<HttpApiResp
   }
 
   // Scan COMMIT# items in the date range.
-  const days = new Map<string, { ai: number; human: number; mergedAi: number; mergedHuman: number }>();
+  const days = new Map<string, { ai: number; human: number; mergedAi: number; mergedHuman: number; costUsd: number }>();
   let lastKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
   do {
     const result = await dynamoClient.send(new ScanCommand({
@@ -1561,7 +1561,7 @@ async function handleCommitsDailyQuery(event: HttpApiEvent): Promise<HttpApiResp
       const origin = item.ai_origin?.S ?? 'human';
       const inMain = item.in_main?.BOOL ?? false;
       let bucket = days.get(day);
-      if (!bucket) { bucket = { ai: 0, human: 0, mergedAi: 0, mergedHuman: 0 }; days.set(day, bucket); }
+      if (!bucket) { bucket = { ai: 0, human: 0, mergedAi: 0, mergedHuman: 0, costUsd: 0 }; days.set(day, bucket); }
       if (origin === 'ai-generated') {
         bucket.ai++;
         if (inMain) bucket.mergedAi++;
@@ -1573,10 +1573,52 @@ async function handleCommitsDailyQuery(event: HttpApiEvent): Promise<HttpApiResp
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
 
-  // Sort ascending by date and return as an array.
+  // Second pass: fold daily AI spend into the same buckets, so a cost-per-commit
+  // trend can be computed from one source instead of dividing a CloudWatch cost
+  // metric by a CloudWatch commit metric.
+  //
+  // The two passes key on DIFFERENT timestamps by design, and that is the whole
+  // point of serving this from the store. A COMMIT# item is bucketed by its real
+  // commit timestamp and an OTEL_DAY item by the day the usage happened, so both
+  // sides of the ratio land on the day the work actually occurred. The CloudWatch
+  // equivalent buckets by INGEST time, which is why a backfill dumps months of
+  // commits into the week it was pushed and collapses that week's ratio.
+  {
+    let costKey: import('@aws-sdk/client-dynamodb').ScanCommandOutput['LastEvaluatedKey'];
+    do {
+      const result = await dynamoClient.send(new ScanCommand({
+        TableName: AI_USAGE_TABLE,
+        FilterExpression: 'record_type = :rt AND #day BETWEEN :lo AND :hi',
+        ExpressionAttributeNames: { '#day': 'day' },
+        ExpressionAttributeValues: {
+          ':rt': { S: 'OTEL_DAY' },
+          ':lo': { S: from },
+          ':hi': { S: to },
+        },
+        ProjectionExpression: '#day, cost_usd',
+        ...(costKey ? { ExclusiveStartKey: costKey } : {}),
+      }));
+      for (const item of result.Items ?? []) {
+        const day = item.day?.S;
+        if (!day) continue;
+        const cost = Number(item.cost_usd?.N ?? '0');
+        if (!Number.isFinite(cost)) continue;
+        let bucket = days.get(day);
+        // A day with spend but no commits is a real observation — AI work that
+        // shipped nothing — so it gets a bucket rather than being dropped. The
+        // consumer renders its ratio as null, not as zero.
+        if (!bucket) { bucket = { ai: 0, human: 0, mergedAi: 0, mergedHuman: 0, costUsd: 0 }; days.set(day, bucket); }
+        bucket.costUsd += cost;
+      }
+      costKey = result.LastEvaluatedKey;
+    } while (costKey);
+  }
+
+  // Sort ascending by date and return as an array. Cost is rounded once, here,
+  // so every consumer renders the same figure.
   const sorted = [...days.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, counts]) => ({ date, ...counts }));
+    .map(([date, counts]) => ({ ...counts, date, costUsd: Math.round(counts.costUsd * 100) / 100 }));
 
   return jsonResponse(200, {
     range: { from, to },
