@@ -60,7 +60,73 @@ temporary session.
 
 ## What a report looks like
 
-A real `scan-account --bedrock-only` run (layer 3 only, account id and detector id replaced):
+### Repository scan — layer 1
+
+A real `scan-repo` run (paths shortened):
+
+```text
+🔍 Repository credential scan
+   Repo: ~/repos/my-service    gitleaks: /usr/local/bin/gitleaks
+   Suppression in effect: .gitleaks.toml (auto-loaded) — "0 findings" is relative to these.
+   Audit only — this command makes no changes.
+
+── Credential detection (gitleaks) ──
+
+  ✅ [CRITICAL] Credentials in git history (all refs)
+     No credentials found in any commit on any ref.
+
+  ❌ [HIGH] Credentials in the working tree (including ignored files)
+     64 credential(s) present on disk: [generic-api-key] infra/cdk.out/PrismD1Api.assets.json:13,
+     [generic-api-key] infra/cdk.out/PrismD1Api.assets.json:28, [generic-api-key]
+     infra/cdk.out/PrismD1Api.metadata.json:399, … (+54). This scan ignores .gitignore, so some of
+     these may never have been committed — still exposed via backups, archives and build contexts.
+     → Move each value into Secrets Manager or Parameter Store and read it at runtime. If any is
+       also in history, rotate first.
+
+  ✅ [HIGH] Credentials in commit messages
+     No credentials in any commit message. Worth checking separately because gitleaks scans patch
+     content, not message text.
+
+── Repository hygiene — what stops the next one ──
+
+  ✅ [HIGH] Credential-bearing files tracked in git
+     None of 252 tracked file(s) has a credential-bearing filename.
+
+  ❌ [MEDIUM] .gitignore covers credential file patterns
+     .gitignore does not cover: .env, *.pem, *.key, credentials, id_rsa. Each is a pattern a
+     credential commonly arrives under, and an uncovered one gets staged by a routine `git add -A`.
+     → Add the missing patterns: .env, *.pem, *.key, credentials, id_rsa.
+
+  ❌ [LOW] gitleaks wired as a pre-commit hook
+     No pre-commit hook invokes gitleaks (checked ~/repos/my-service/.git/hooks). Without one, the
+     earliest catch is CI — by which point the credential is already in history and, on a push,
+     already off the machine.
+     → Install `gitleaks protect --staged --redact` as a pre-commit hook. Severity is LOW only
+       because a hook is advisory: it is trivially bypassed with --no-verify and is not a control.
+
+── Summary ──
+
+  6 checks: 3 pass, 3 fail, 0 indeterminate
+  Findings by severity: CRITICAL 0, HIGH 1, MEDIUM 1, LOW 1
+```
+
+**That working-tree finding is the documented false positive**, and it is worth walking through
+because it is the one most people meet first. All 64 hits are CDK asset hashes in `infra/cdk.out/`
+matching gitleaks' entropy-based `generic-api-key` rule. History and commit messages are clean, and
+`cdk.out/` is gitignored — but the working-tree scan deliberately ignores `.gitignore`, because a
+credential that was never committed is still on the disk, in the backup, and in the Docker build
+context. The fix is to allowlist the directory in `.gitleaks.toml`, never to disable the rule, which
+would blind the scan to real generic keys everywhere else.
+
+Two other things this run shows: the header names any suppression file in effect, so a reader can
+never mistake a filtered "0 findings" for an unfiltered one; and the header states whether gitleaks
+was found. **Without gitleaks the three detection checks report INDETERMINATE, not PASS** — the same
+run above with no binary installed ends `3 pass, 2 fail, 3 indeterminate` and says "This repository
+is NOT cleared", because a scan that never executed has established nothing.
+
+### Account scan — layers 2 and 3
+
+A real `scan-account --bedrock-only` run (account id and detector id replaced):
 
 ```text
 🛡️  Bedrock protection — account audit
@@ -133,7 +199,7 @@ A real `scan-account --bedrock-only` run (layer 3 only, account id and detector 
      Treat the result as a floor, not a clean bill of health.
 ```
 
-Four things about how to read this:
+### How to read either report
 
 - **Three statuses, not two.** ✅ PASS, ❌ FAIL and ❓ INDETERMINATE. A check that could not run is
   never folded into the pass count, and the summary names every one — because an audit that counts
