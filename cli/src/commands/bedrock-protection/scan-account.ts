@@ -6,7 +6,7 @@ import {
   FAIL_ON_OPTION, JSON_OPTION,
 } from '../../utils/audit.js';
 import { auditRoot, auditPasswordPolicy, auditUsers, auditUserPolicies } from '../../utils/audit-iam.js';
-import { auditBudgets, auditBudgetAlerting, auditDetection, auditCommitments, auditForensics } from '../../utils/audit-bedrock.js';
+import { auditBudgets, auditBudgetAlerting, auditDetection, auditAiProtection, auditCommitments, auditForensics } from '../../utils/audit-bedrock.js';
 
 /**
  * Audit the AWS account side of Bedrock protection.
@@ -86,6 +86,7 @@ export default {
         ...budgets.findings,
         auditBudgetAlerting(target, accountId, budgets.coveringBudgets, budgets.listError),
         ...auditDetection(target, region),
+        auditAiProtection(target, region),
         auditCommitments(target, region),
         auditForensics(target, region),
       ] : []),

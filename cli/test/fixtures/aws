@@ -1,0 +1,73 @@
+#!/usr/bin/env node
+/*
+ * A fake `aws` binary for the audit tests.
+ *
+ * The audit checks reach AWS through utils/aws.ts, which shells out via
+ * execFileSync('aws', ...). Putting this file first on PATH therefore exercises
+ * the REAL wrapper -- its argv construction, its stderr error-code regex, and
+ * its empty-body normalisation -- while the responses are canned. Stubbing
+ * aws() itself would skip exactly the layer that has historically been wrong
+ * (an empty body from describe-budgets, a PascalCase-vs-camelCase key).
+ *
+ * Extensionless on purpose so PATH lookup finds it as `aws`. Note that the
+ * package's "type": "module" applies to an extensionless entry point too, so
+ * this is ESM -- `require` here fails with "require is not defined in ES module
+ * scope".
+ *
+ * Driven by FAKE_AWS_RESPONSES -- a path to a JSON array of rules, first match
+ * winning:
+ *
+ *   { "match": ["guardduty", "list-detectors"], "stdout": { "DetectorIds": ["d-1"] } }
+ *   { "match": ["guardduty", "get-detector"],   "error": "AccessDeniedException" }
+ *   { "match": ["budgets", "describe-budgets"], "raw": "" }
+ *
+ * `match` tokens must ALL appear in argv. `stdout` is JSON-encoded; `raw` is
+ * emitted verbatim (use "" for the exit-0-with-empty-body case); `error` becomes
+ * the stderr shape the real CLI produces so the wrapper's regex is what parses
+ * it.
+ *
+ * An unmatched call exits 2 with the argv it saw. That is deliberate: a test
+ * that forgets to stub a call should fail loudly rather than silently take an
+ * error branch and appear to pass for the wrong reason.
+ */
+
+import { readFileSync } from 'node:fs';
+
+const argv = process.argv.slice(2);
+const responsesPath = process.env.FAKE_AWS_RESPONSES;
+
+if (!responsesPath) {
+  process.stderr.write('fake aws: FAKE_AWS_RESPONSES is not set\n');
+  process.exit(2);
+}
+
+let rules;
+try {
+  rules = JSON.parse(readFileSync(responsesPath, 'utf8'));
+} catch (err) {
+  process.stderr.write(`fake aws: could not read ${responsesPath}: ${err.message}\n`);
+  process.exit(2);
+}
+
+for (const rule of rules) {
+  const tokens = rule.match || [];
+  if (!tokens.every((t) => argv.includes(t))) continue;
+
+  if (rule.error) {
+    // The real CLI's shape, because utils/aws.ts parses the code out of it with
+    // /An error occurred \(([A-Za-z0-9.]+)\)/ rather than from the exit status.
+    process.stderr.write(
+      `\nAn error occurred (${rule.error}) when calling the ${tokens.join(' ')} operation: stubbed\n`,
+    );
+    process.exit(254);
+  }
+  if (typeof rule.raw === 'string') {
+    process.stdout.write(rule.raw);
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify(rule.stdout ?? {}));
+  process.exit(0);
+}
+
+process.stderr.write(`fake aws: no stub matched argv: ${JSON.stringify(argv)}\n`);
+process.exit(2);

@@ -347,6 +347,143 @@ export function auditDetection(target: AwsTarget | undefined, region: string): F
   return out;
 }
 
+/**
+ * GuardDuty AI Protection -- the only detection here that is baselined per
+ * identity rather than against a threshold somebody guessed.
+ *
+ * Its `Impact:IAMUser/CostHarvesting` finding is the managed equivalent of the
+ * `bedrock-invocation-alarm` check above: both watch token volume, but the alarm
+ * fires on an absolute number while GuardDuty learns each IAM identity's normal
+ * input/output token volume and reports deviation from it, correlated with other
+ * unusual signals. `Impact:IAMUser/AnomalousModelInvocation` adds the same
+ * treatment for unseen IPs, user agents, APIs and models.
+ *
+ * MEDIUM, not HIGH, for three reasons worth keeping straight:
+ *
+ *   - It bounds nothing. This is detection with no enforcement, so it belongs
+ *     beside anomaly-monitor and bedrock-invocation-alarm rather than beside the
+ *     budget checks, whose absence means no ceiling exists at all.
+ *   - GuardDuty's own default severity for all three AI Protection findings is
+ *     Low. Emitting HIGH for the absence of a control whose findings arrive as
+ *     Low is incoherent to anyone wiring both into Security Hub.
+ *   - It is the only recommendation in this audit that costs money to satisfy:
+ *     billing is per GB of CloudTrail data events analysed, scaling with
+ *     invocation volume. Budgets, monitors, alarms and invocation logging are
+ *     free or near-free. A HIGH finding is pressure to spend.
+ *
+ * Deliberately NOT folded together with a guardrail prompt-attack check.
+ * `Impact:IAMUser/PromptInjection.Direct` needs a Bedrock guardrail carrying a
+ * prompt-attack content filter, independently of whether AI Protection is on --
+ * two preconditions, two failure modes, and one finding reporting FAIL could not
+ * say which was missing. Same reasoning that keeps bedrock-budget and
+ * marketplace-budget apart.
+ *
+ * Scope: per account, per region. A PASS here says nothing about sibling
+ * accounts, which is why the detail names the region it looked in.
+ */
+const AI_PROTECTION_TITLE = 'GuardDuty AI Protection enabled (CostHarvesting detection)';
+
+/**
+ * `AI_PROTECTION` is absent from `Features` entirely until someone configures
+ * it, which is a different state from configured-and-off. Both are FAIL, but the
+ * remediation differs, so they are not collapsed.
+ *
+ * Key case is normalised because reading it wrong yields a false FAIL rather
+ * than an error -- the failure mode this file exists to avoid. The AWS CLI emits
+ * PascalCase (`Name`/`Status`) for GuardDuty today; accepting either spelling
+ * costs one `??` and removes the chance of a silent regression.
+ */
+function aiProtectionStatus(detector: any): 'ENABLED' | 'DISABLED' | 'ABSENT' {
+  const features: any[] = detector?.Features ?? detector?.features ?? [];
+  for (const f of features) {
+    const name = String(f?.Name ?? f?.name ?? '').toUpperCase();
+    if (name !== 'AI_PROTECTION') continue;
+    return String(f?.Status ?? f?.status ?? '').toUpperCase() === 'ENABLED' ? 'ENABLED' : 'DISABLED';
+  }
+  return 'ABSENT';
+}
+
+export function auditAiProtection(target: AwsTarget | undefined, region: string): Finding {
+  const id = 'guardduty-ai-protection';
+  const base = { id, category: 'detection', title: AI_PROTECTION_TITLE, severity: 'MEDIUM' as const };
+  const enableHint = (detectorId: string) =>
+    `Run: aws guardduty update-detector --detector-id ${detectorId} --region ${region} `
+    + `--features '[{"Name":"AI_PROTECTION","Status":"ENABLED"}]'. `
+    + 'Billing is per GB of CloudTrail data events analysed, so cost tracks invocation volume; '
+    + 'there is a 30-day free trial. In an organization the delegated GuardDuty administrator '
+    + 'sets this for member accounts.';
+
+  const list = aws(['guardduty', 'list-detectors', '--region', region], target);
+  if (!list.ok) {
+    return {
+      ...base, status: 'INDETERMINATE',
+      detail: `Could not list GuardDuty detectors in ${region} (${list.errorCode || 'unknown error'}).`,
+      remediation: 'Grant guardduty:ListDetectors and guardduty:GetDetector, then re-run.',
+    };
+  }
+
+  const detectorIds: string[] = list.json?.DetectorIds ?? list.json?.detectorIds ?? [];
+  if (detectorIds.length === 0) {
+    return {
+      ...base, status: 'FAIL',
+      detail: `GuardDuty is not enabled in ${region} at all, so no detector exists to carry AI Protection. `
+        + 'Note that scp-detection-tamper (scan-org) asserts an SCP protects GuardDuty from teardown — '
+        + 'that guardrail is moot where GuardDuty was never turned on.',
+      remediation: 'Enable GuardDuty in this region, then enable the AI_PROTECTION feature on the detector. '
+        + 'Prefer enabling it org-wide from the delegated administrator so new accounts inherit it.',
+    };
+  }
+
+  const enabled: string[] = [];
+  const disabled: string[] = [];
+  const absent: string[] = [];
+  let unreadable = 0;
+
+  for (const detectorId of detectorIds) {
+    const det = aws(['guardduty', 'get-detector', '--detector-id', detectorId, '--region', region], target);
+    if (!det.ok) { unreadable++; continue; }
+    const status = aiProtectionStatus(det.json);
+    if (status === 'ENABLED') enabled.push(detectorId);
+    else if (status === 'DISABLED') disabled.push(detectorId);
+    else absent.push(detectorId);
+  }
+
+  if (enabled.length) {
+    return {
+      ...base, status: 'PASS',
+      detail: `AI Protection is enabled on ${enabled.join(', ')} in ${region}. `
+        + 'CostHarvesting, AnomalousModelInvocation and (given a guardrail with a prompt-attack filter) '
+        + 'PromptInjection.Direct findings will be generated. All three carry GuardDuty severity Low, '
+        + 'so route them by finding type rather than by a severity threshold. '
+        + `Scoped to this account and ${region} only.`,
+    };
+  }
+
+  // A detector we could not read may be the one carrying the feature, so a
+  // partial read cannot report the absence as established fact.
+  if (unreadable > 0) {
+    return {
+      ...base, status: 'INDETERMINATE',
+      detail: `Read ${detectorIds.length - unreadable}/${detectorIds.length} detector(s) in ${region}; `
+        + `${unreadable} could not be read, and none of the readable ones has AI Protection enabled. `
+        + 'The unreadable detector may be the one carrying it.',
+      remediation: 'Grant guardduty:GetDetector and re-run.',
+    };
+  }
+
+  return {
+    ...base, status: 'FAIL',
+    detail: disabled.length
+      ? `AI Protection is present but DISABLED on ${disabled.join(', ')} in ${region}.`
+      : `AI Protection has never been configured on ${absent.join(', ')} in ${region} `
+        + '(the AI_PROTECTION feature is absent from the detector). '
+        + 'GuardDuty is running and will still report the Foundational management-event detections — '
+        + 'guardrails removed, invocation logging disabled — but not the model-invocation data-event ones, '
+        + 'so a stolen key burning inference on an otherwise untouched account raises nothing here.',
+    remediation: enableHint(disabled[0] ?? absent[0]),
+  };
+}
+
 export function auditCommitments(target: AwsTarget | undefined, region: string): Finding {
   const pt = aws(['bedrock', 'list-provisioned-model-throughputs', '--region', region], target);
   if (!pt.ok) {

@@ -6,8 +6,8 @@ import {
   FAIL_ON_OPTION, JSON_OPTION,
 } from '../../utils/audit.js';
 import { auditRoot, auditPasswordPolicy, auditUsers, auditUserPolicies } from '../../utils/audit-iam.js';
-import { auditBudgets, auditBudgetAlerting, auditDetection, auditCommitments, auditForensics } from '../../utils/audit-bedrock.js';
-import { auditServiceControlPolicies, auditConfigRules } from '../../utils/audit-org.js';
+import { auditBudgets, auditBudgetAlerting, auditDetection, auditAiProtection, auditCommitments, auditForensics } from '../../utils/audit-bedrock.js';
+import { auditServiceControlPolicies, auditConfigRules, auditOrgAiProtection } from '../../utils/audit-org.js';
 
 /**
  * Audit an AWS Organization -- or one or more OUs within it -- for LLMjacking
@@ -303,6 +303,10 @@ export default {
         ...budgets.findings,
         auditBudgetAlerting(mgmt, callerAccount, budgets.coveringBudgets, budgets.listError),
         ...auditDetection(mgmt, region),
+        // Per account, per region — so at the payer this reports the payer's own
+        // detector, not org coverage. Named as such in the finding detail so a
+        // PASS here is not read as every member account being covered.
+        auditAiProtection(mgmt, region),
         auditCommitments(mgmt, region),
         auditForensics(mgmt, region),
       );
@@ -312,6 +316,10 @@ export default {
       orgFindings.push(
         ...auditServiceControlPolicies(mgmt, scopeTargetIds, scopeError),
         ...auditConfigRules(mgmt),
+        // Paired deliberately with guardduty-ai-protection above: that one reads
+        // the caller's own detector, this one asks whether the setting reaches
+        // accounts nobody will revisit.
+        auditOrgAiProtection(mgmt, region),
       );
     }
 
@@ -374,6 +382,11 @@ export default {
       'This audit is a point-in-time sample. Config rules evaluate on every',
       'configuration change, which is what catches drift between runs.',
     ], ['detective']);
+
+    printGroup('Detective guardrails — does detection reach every account?', [
+      'The Bedrock guardrails above are read from one account. Auto-enable is what',
+      'covers member accounts nobody will revisit, including future joiners.',
+    ], ['org-detection']);
 
     // ---- rollup ----
     const fail = allFindings.filter((f) => f.status === 'FAIL');

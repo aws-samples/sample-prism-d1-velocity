@@ -58,6 +58,105 @@ pure reads and are documented where they happen: `iam:GenerateCredentialReport`,
 report artifact IAM has no other way to read, and `sts:AssumeRole` in `scan-org`, which mints a
 temporary session.
 
+## What a report looks like
+
+A real `scan-account --bedrock-only` run (layer 3 only, account id and detector id replaced):
+
+```text
+🛡️  Bedrock protection — account audit
+   Account: 123456789012    Region: us-east-1    Scope: Bedrock only
+   Audit only — this command makes no changes.
+
+── Spend ceilings — both billing surfaces ──
+
+  ❌ [HIGH] Budget covering Bedrock services
+     No budgets exist in this account, so runaway Bedrock spend has no ceiling and raises no alert.
+     → Create a monthly budget filtered on Service contains "Bedrock", alerting at 50/80/100% to SNS.
+
+  ❌ [HIGH] Budget covering Marketplace (Bedrock Edition) models
+     No COST budget filters on AWS Marketplace. Third-party models invoked through Bedrock —
+     Anthropic, Meta, Mistral, Cohere — bill as Marketplace subscription line items named
+     "(Amazon Bedrock Edition)", NOT under Amazon Bedrock. A Bedrock-only budget misses them
+     entirely, which is the most expensive blind spot here because Opus-class models are both the
+     priciest and the likeliest target.
+     → Add a second COST budget filtered on Service = AWS Marketplace, or define a Cost Category
+       grouping both surfaces and budget on that.
+
+  ❓ [HIGH] Bedrock budgets actually notify someone
+     No COST budget covers Bedrock or Marketplace, so there is no budget whose alerting could be
+     checked (see bedrock-budget and marketplace-budget above).
+
+── Detection speed — how fast you find out ──
+
+  ✅ [HIGH] Cost Explorer enabled
+     Cost Explorer is enabled.
+
+  ✅ [MEDIUM] Cost anomaly monitor covering Bedrock, with an alert subscription
+     1 covering monitor(s) (1 SERVICE-dimension, 0 Bedrock-scoped), with an alert subscription
+     attached.
+
+  ❌ [MEDIUM] CloudWatch alarm on Bedrock invocation volume
+     No alarms on AWS/Bedrock metrics in us-east-1. Cost data lags 12–24h, so budgets and anomaly
+     detection cannot catch a stolen key inside the first day. Token-count metrics are near
+     real-time and are the only fast signal available.
+     → Alarm on AWS/Bedrock Invocations and InputTokenCount with a threshold above normal peak;
+       it fires in minutes rather than hours.
+
+  ✅ [MEDIUM] GuardDuty AI Protection enabled (CostHarvesting detection)
+     AI Protection is enabled on 12abc34d567e8fa901bc2d34e56789f0 in us-east-1. CostHarvesting,
+     AnomalousModelInvocation and (given a guardrail with a prompt-attack filter)
+     PromptInjection.Direct findings will be generated. All three carry GuardDuty severity Low, so
+     route them by finding type rather than by a severity threshold. Scoped to this account and
+     us-east-1 only.
+
+── Standing commitments ──
+
+  ✅ [INFO] Provisioned Throughput commitments
+     No Provisioned Throughput commitments in us-east-1. NOTE: region-scoped — a commitment in
+     another region will not appear here.
+
+── Forensics — can you answer "who?" ──
+
+  ❌ [MEDIUM] Bedrock model invocation logging
+     Off in us-east-1. CloudTrail records that InvokeModel was called but not the model, prompt or
+     token counts, so during an incident you can see spend rose without being able to attribute it
+     to a caller or workload.
+     → Enable model invocation logging to CloudWatch Logs or S3. Prompts and completions are
+       captured, so treat the destination as sensitive and scope its access accordingly.
+
+── Summary ──
+
+  9 checks: 4 pass, 4 fail, 1 indeterminate
+  Findings by severity: CRITICAL 0, HIGH 2, MEDIUM 2, LOW 0
+
+  ❓ 1 check(s) could not run and are NOT passes: budget-alerting
+     Treat the result as a floor, not a clean bill of health.
+```
+
+Four things about how to read this:
+
+- **Three statuses, not two.** ✅ PASS, ❌ FAIL and ❓ INDETERMINATE. A check that could not run is
+  never folded into the pass count, and the summary names every one — because an audit that counts
+  "could not look" as "looks fine" is how an account gets certified nobody examined. `budget-alerting`
+  above is INDETERMINATE rather than FAIL for a specific reason: no budget covers Bedrock, so there
+  was no budget whose alerting could be evaluated, and the two checks above it already report that
+  absence.
+- **Severity is not status.** `[HIGH]` describes what the check is worth, so it appears on passes too.
+  Only FAILs count toward `--fail-on` and the severity tally.
+- **Remediation appears only on non-passes**, and states the concrete action rather than the
+  principle.
+- **Region-scoped checks say so.** The CloudWatch alarm, Provisioned Throughput, invocation logging
+  and AI Protection checks all read one region. A clean run in `us-east-1` says nothing about
+  `eu-west-1`, which is exactly why the `scp-bedrock-region` SCP check exists in `scan-org`.
+
+Add `--json` for a machine-readable envelope (`{ account, region, scope, generated_at, findings[] }`)
+and `--fail-on HIGH` to exit non-zero in CI. `--fail-on` counts only FAILs, never INDETERMINATEs —
+a missing IAM permission should not be indistinguishable from a real finding.
+
+The full `scan-account` run adds the layer-2 groups (root user, IAM users and access keys,
+account-wide policy) ahead of these; `scan-org` adds a per-account table plus the org-wide SCP,
+Config and auto-enable groups.
+
 30 checks: 6 repository, 7 IAM, 8 Bedrock, 9 organization guardrail. `scan-org` reuses the IAM and
 Bedrock checks across many accounts and adds the organization guardrail family, which has no
 single-account equivalent.
@@ -107,6 +206,7 @@ symmetry): the first family refuses the action, the second notices it.
 | `scp-bedrock-provisioned-throughput` | MEDIUM | An SCP denies `bedrock:CreateProvisionedModelThroughput` |
 | `config-org-rules` | MEDIUM | Organization Config rules are deployed |
 | `config-iam-coverage` | MEDIUM | Each IAM hygiene check has a continuously-evaluating Config rule |
+| `guardduty-ai-protection-org` | MEDIUM | AI Protection auto-enable is `ALL` for organization members |
 | `scp-readable` | MEDIUM | Reported only when some SCP could not be read — the SCP findings are then partial |
 | `scp-inheritance-resolved` | MEDIUM | Reported only when an ancestor lookup failed — an inherited SCP could read as absent |
 
@@ -254,6 +354,7 @@ unreadable ones may be exactly the admins.
 | `cost-explorer-enabled` | HIGH | Cost Explorer is enabled at all |
 | `anomaly-monitor` | MEDIUM | A cost anomaly monitor covers Bedrock **and has an alert subscription** |
 | `bedrock-invocation-alarm` | MEDIUM | A CloudWatch alarm watches `AWS/Bedrock` metrics |
+| `guardduty-ai-protection` | MEDIUM | GuardDuty **AI Protection** is enabled on this region's detector |
 | `provisioned-throughput` | INFO / MEDIUM | Provisioned Throughput commitments are intentional |
 | `model-invocation-logging` | MEDIUM | Bedrock invocation logging is enabled |
 
@@ -326,6 +427,80 @@ could not look, which is a different statement from "no monitor exists".
 appearing within seconds of the first `CreateBudget`. Two consequences: `cost-explorer-enabled` and
 `anomaly-monitor` often start passing the moment anyone sets up budgets, without a deliberate
 decision; and an account showing all three as absent has almost certainly never had a budget at all.
+
+### GuardDuty AI Protection — managed, identity-baselined detection
+
+`guardduty-ai-protection` asserts the `AI_PROTECTION` feature is `ENABLED` on the region's GuardDuty
+detector. Enabling it produces three finding types from CloudTrail **data** events that GuardDuty
+collects itself through a service-linked channel — no trail to configure and no change to your
+applications:
+
+| Finding | Detects |
+|---------|---------|
+| `Impact:IAMUser/CostHarvesting` | Input/output token volume deviating from the baseline for that IAM identity, correlated with other unusual signals |
+| `Impact:IAMUser/AnomalousModelInvocation` | An unseen IP/ASN, user agent, invocation API or model for that identity |
+| `Impact:IAMUser/PromptInjection.Direct` | A Bedrock **guardrail** intervening on a `PROMPT_ATTACK` filter at `HIGH` confidence |
+
+This is the managed counterpart to `bedrock-invocation-alarm`, not a replacement for it. Both watch
+token volume; the alarm fires on an absolute number you chose, GuardDuty on deviation from what that
+identity normally does. Keep both — a per-identity baseline catches a stolen key whose absolute volume
+still sits under your peak.
+
+**MEDIUM, deliberately.** It bounds nothing, so it sits with the detection checks rather than the
+budget ones, whose absence means no ceiling exists at all. Two further reasons: GuardDuty's own
+default severity for all three findings is **Low**, so emitting HIGH for the absence of a Low-severity
+control is incoherent once both are in Security Hub — and route these by finding type rather than by a
+severity threshold, or they will sit below everything else in triage. It is also the only
+recommendation in this audit that costs money to satisfy: billing is per GB of CloudTrail data events
+analysed, scaling with invocation volume, where budgets, monitors, alarms and invocation logging are
+free or near-free. A HIGH finding is pressure to spend.
+
+**Two states, both FAIL, different fixes.** `AI_PROTECTION` is absent from `Features` entirely until
+someone configures it, which is not the same as configured-and-off. The audit names which one it
+found. No detector at all in the region is a third FAIL, and worth noticing next to
+`scp-detection-tamper` — an SCP protecting GuardDuty from teardown is moot where GuardDuty was never
+turned on.
+
+**Prompt injection is a separate precondition and is not checked here.**
+`Impact:IAMUser/PromptInjection.Direct` requires a Bedrock guardrail carrying a prompt-attack content
+filter, independently of whether AI Protection is enabled. Enabling AI Protection alone buys
+two-thirds of the coverage. Per-request guardrail attachment is the failure mode — enforce one
+account- or org-wide via AWS Organizations Bedrock policies instead. A detect-only prompt-attack
+filter still produces the GuardDuty finding (`action: NONE` rather than `BLOCKED`), so the detection
+signal does not require changing blocking behaviour first.
+
+**Scope is per account, per region.** In `scan-org` this check runs at the payer alongside the other
+Bedrock guardrails, so it reports the payer's own detector — not org coverage. That question is
+`guardduty-ai-protection-org` below.
+
+### Does AI Protection reach every account? (`scan-org` only)
+
+`guardduty-ai-protection` reads one detector. At org scale that is the wrong question: the failure
+mode is an administrator who enabled AI Protection on itself while ten member accounts run Bedrock
+uncovered. `guardduty-ai-protection-org` reads `DescribeOrganizationConfiguration` and reports the
+`AI_PROTECTION` auto-enable setting, which is what covers accounts nobody will revisit.
+
+The three values are not interchangeable:
+
+| `autoEnable` | Status | Meaning |
+|--------------|--------|---------|
+| `ALL` | PASS | Every account — existing members and new joiners, including accounts that were suspended and return |
+| `NEW` | FAIL | New joiners only. Existing members are untouched by this setting and need `update-member-detectors` |
+| `NONE` or absent | FAIL | Nothing is automatic; every account is managed individually and a new account joins uncovered |
+
+`NEW` is a FAIL because the setting does not establish coverage, **not** because existing members are
+known to be uncovered — some may already be enabled. The finding says so, and points at
+`get-member-detectors` for the definitive per-member answer, which this check does not attempt.
+
+**Only the delegated GuardDuty administrator can read this.** `DescribeOrganizationConfiguration` is
+admin-only, so a refusal from the payer is information rather than an error: GuardDuty is
+administered elsewhere. The check reports INDETERMINATE and names the delegated administrator from
+`organizations list-delegated-administrators` so the reader knows where to re-run, instead of getting
+a bare permissions complaint. Same for an account with no detector at all — it cannot be the admin.
+
+One interaction worth catching: if GuardDuty's own `autoEnableOrganizationMembers` is `NONE`, member
+accounts do not get a detector automatically, so a feature-level `ALL` has nothing to attach to. The
+finding flags that even when the AI Protection setting itself is correct.
 
 ### Forensics — answering "who?"
 

@@ -332,6 +332,173 @@ export function auditServiceControlPolicies(
   return out;
 }
 
+/**
+ * Does AI Protection reach every member account, or only the ones somebody
+ * remembered?
+ *
+ * `guardduty-ai-protection` (audit-bedrock.ts) reads ONE account's detector. Run
+ * at the payer during `scan-org` that answers for the payer alone, which is the
+ * wrong question at org scale: the failure mode is an org where the admin
+ * enabled AI Protection on itself, ten member accounts run Bedrock, and none of
+ * them is covered. Auto-enable is the setting that closes that gap for accounts
+ * nobody will revisit.
+ *
+ * Only the delegated GuardDuty administrator can read or set this, and
+ * DescribeOrganizationConfiguration is admin-only, so a refusal from the payer is
+ * information rather than an error: it means GuardDuty is administered
+ * elsewhere. The delegated admin is then named from Organizations so the reader
+ * knows where to re-run, instead of receiving a bare permissions complaint.
+ *
+ * MEDIUM, matching the per-account check: this is detection with no enforcement,
+ * and GuardDuty's own AI Protection findings default to severity Low.
+ *
+ * The three `autoEnable` values are NOT interchangeable:
+ *
+ *   - `ALL`  -- every account, including new joiners and accounts that were
+ *               suspended or removed and come back. The target state.
+ *   - `NEW`  -- new joiners only. Existing members are untouched by this setting
+ *               and must be enabled explicitly via UpdateMemberDetectors, so it
+ *               does not establish org coverage.
+ *   - `NONE` -- nothing is automatic; every account is managed individually and a
+ *               new account joins uncovered.
+ */
+const AI_PROTECTION_ORG_TITLE = 'AI Protection auto-enabled for organization member accounts';
+
+/**
+ * Read `autoEnable` for one feature out of an organization configuration.
+ *
+ * Key case is normalised for the same reason as the detector-level read in
+ * audit-bedrock.ts: the wire model is camelCase, the AWS CLI emits PascalCase,
+ * and matching only one spelling turns a configured feature into a false FAIL
+ * rather than an error anybody would notice.
+ */
+function orgFeatureAutoEnable(config: any, feature: string): string | null {
+  const features: any[] = config?.Features ?? config?.features ?? [];
+  for (const f of features) {
+    const name = String(f?.Name ?? f?.name ?? '').toUpperCase();
+    if (name !== feature) continue;
+    const value = String(f?.AutoEnable ?? f?.autoEnable ?? '').toUpperCase();
+    return value || null;
+  }
+  return null;
+}
+
+/** Who administers GuardDuty for the org, for a reader who asked the wrong account. */
+function guardDutyDelegatedAdmin(target?: AwsTarget): string | null {
+  const res = aws([
+    'organizations', 'list-delegated-administrators',
+    '--service-principal', 'guardduty.amazonaws.com',
+  ], target);
+  if (!res.ok) return null;
+  const admins: any[] = res.json?.DelegatedAdministrators ?? [];
+  if (!admins.length) return null;
+  return admins.map((a) => `${a.Id}${a.Name ? ` (${a.Name})` : ''}`).join(', ');
+}
+
+export function auditOrgAiProtection(target: AwsTarget | undefined, region: string): Finding {
+  const base = {
+    id: 'guardduty-ai-protection-org',
+    category: 'org-detection',
+    title: AI_PROTECTION_ORG_TITLE,
+    severity: 'MEDIUM' as const,
+  };
+  const elsewhere = () => {
+    const admin = guardDutyDelegatedAdmin(target);
+    return admin
+      ? ` GuardDuty's delegated administrator for this organization is ${admin} — re-run scan-org from there to read this setting.`
+      : ' No GuardDuty delegated administrator is registered in Organizations either, which means org-wide GuardDuty management has not been set up at all.';
+  };
+
+  const list = aws(['guardduty', 'list-detectors', '--region', region], target);
+  if (!list.ok) {
+    return {
+      ...base, status: 'INDETERMINATE',
+      detail: `Could not list GuardDuty detectors in ${region} (${list.errorCode || 'unknown error'}), so the organization's auto-enable setting could not be read.`,
+      remediation: 'Grant guardduty:ListDetectors and guardduty:DescribeOrganizationConfiguration, then re-run.',
+    };
+  }
+
+  const detectorIds: string[] = list.json?.DetectorIds ?? list.json?.detectorIds ?? [];
+  if (detectorIds.length === 0) {
+    return {
+      ...base, status: 'INDETERMINATE',
+      detail: `No GuardDuty detector exists in ${region} for this account, so it is not the delegated GuardDuty administrator and cannot report the organization's auto-enable setting.${elsewhere()}`,
+      remediation: 'Re-run from the delegated GuardDuty administrator account, or enable GuardDuty org-wide and delegate an administrator.',
+    };
+  }
+
+  const detectorId = detectorIds[0];
+  const cfg = aws([
+    'guardduty', 'describe-organization-configuration',
+    '--detector-id', detectorId, '--region', region,
+  ], target);
+
+  if (!cfg.ok) {
+    // Admin-only API. BadRequestException here is the service saying "you are
+    // not the delegated administrator" -- a fact about topology, not a failure
+    // to be reported as absent configuration.
+    const notAdmin = /BadRequestException/i.test(cfg.errorCode || '');
+    return {
+      ...base, status: 'INDETERMINATE',
+      detail: notAdmin
+        ? `This account is not the delegated GuardDuty administrator, so it cannot read the organization's AI Protection auto-enable setting.${elsewhere()}`
+        : `Could not read the organization configuration in ${region} (${cfg.errorCode || 'unknown error'}).`,
+      remediation: notAdmin
+        ? 'Re-run scan-org from the delegated GuardDuty administrator account.'
+        : 'Grant guardduty:DescribeOrganizationConfiguration and re-run.',
+    };
+  }
+
+  const autoEnable = orgFeatureAutoEnable(cfg.json, 'AI_PROTECTION');
+  const serviceLevel = String(
+    cfg.json?.AutoEnableOrganizationMembers ?? cfg.json?.autoEnableOrganizationMembers ?? '',
+  ).toUpperCase();
+  // GuardDuty itself not propagating makes the feature setting moot: a member
+  // account with no detector has nothing for AI_PROTECTION to attach to.
+  const serviceCaveat = serviceLevel === 'NONE'
+    ? ' Note that GuardDuty itself has autoEnableOrganizationMembers=NONE, so member accounts do not even get a detector automatically — fix that first or the feature setting has nothing to apply to.'
+    : '';
+  const setAll = 'Run: aws guardduty update-organization-configuration --detector-id '
+    + `${detectorId} --region ${region} --auto-enable --features '[{"Name":"AI_PROTECTION","AutoEnable":"ALL"}]'`
+    + ' from the delegated administrator. ALL also covers existing members; NEW does not.';
+
+  if (autoEnable === 'ALL') {
+    return {
+      ...base, status: 'PASS',
+      detail: `AI Protection auto-enable is ALL in ${region}, so every account in the organization — existing members and new joiners — has it enabled automatically.${serviceCaveat}`,
+      remediation: serviceCaveat ? setAll : undefined,
+    };
+  }
+
+  if (autoEnable === 'NEW') {
+    return {
+      ...base, status: 'FAIL',
+      detail: `AI Protection auto-enable is NEW in ${region}: accounts joining from now on are covered, but existing member accounts are NOT covered by this setting and must be enabled explicitly. This check cannot see per-member state, so some may already be enabled — what it establishes is that nothing guarantees it.${serviceCaveat}`,
+      remediation: `${setAll} To confirm the current per-member state instead, run: aws guardduty get-member-detectors --detector-id ${detectorId} --region ${region} --account-ids <ids>.`,
+    };
+  }
+
+  // Features paginate. Concluding "never configured" from a page that may not
+  // have contained the feature would be the same laundering the rest of this
+  // audit avoids, so an unfinished read is INDETERMINATE.
+  const nextToken = cfg.json?.NextToken ?? cfg.json?.nextToken;
+  if (autoEnable === null && nextToken) {
+    return {
+      ...base, status: 'INDETERMINATE',
+      detail: `The organization feature list in ${region} was returned paginated and AI_PROTECTION did not appear on the first page, so its auto-enable setting is unknown.`,
+      remediation: 'Re-run with a larger --max-results, or read the setting in the GuardDuty console under Protection Plans.',
+    };
+  }
+
+  return {
+    ...base, status: 'FAIL',
+    detail: autoEnable === null
+      ? `AI Protection has never been configured at the organization level in ${region} (AI_PROTECTION is absent from the organization feature list). Every account is therefore managed individually, and an account joining the organization is uncovered by default.${serviceCaveat}`
+      : `AI Protection auto-enable is ${autoEnable} in ${region}, so nothing is automatic: every account must be enabled individually and a new account joins uncovered.${serviceCaveat}`,
+    remediation: setAll,
+  };
+}
+
 export function auditConfigRules(target: AwsTarget | undefined): Finding[] {
   const rules = aws(['configservice', 'describe-organization-config-rules'], target);
 

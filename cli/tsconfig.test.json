@@ -1,0 +1,9 @@
+{
+  "//": "Type-checks the tests, which the build tsconfig deliberately excludes so they never reach dist/. Without this, tsx would strip types from test files without checking them and a broken test signature would pass silently.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "bin/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/commands/assessment/cdk"]
+}
