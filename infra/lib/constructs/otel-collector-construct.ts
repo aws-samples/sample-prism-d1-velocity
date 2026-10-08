@@ -24,6 +24,9 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -32,6 +35,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as path from 'path';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
+import { PRICES_KEY } from '../lambda/pricing/prices-key';
 
 /** codeburn sync fixed loopback callback ports (see codeburn src/sync/auth.ts). */
 const CODEBURN_CALLBACK_PORTS = [19876, 19877, 19878];
@@ -509,8 +513,100 @@ export class OtelCollectorConstruct extends Construct {
 
     props.aiUsageTable.grantReadWriteData(receiver);
     this.archiveBucket.grantPut(receiver);
+    // The LiteLLM price table the refresh Lambda maintains (pricing/price-source.ts).
+    // Exact key, read only. KMS decrypt comes from grantEncryptDecrypt below.
+    const pricesObjectArn = this.archiveBucket.arnForObjects(PRICES_KEY);
+    receiver.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [pricesObjectArn],
+    }));
     props.kmsKey.grantEncryptDecrypt(receiver);
     this.receiverFunction = receiver;
+
+    // -------------------------------------------------------
+    // Price refresh + reprice — daily
+    // Keeps the receiver's LiteLLM fallback table current in S3, then
+    // corrects spans stored at $0 whose model has since been priced.
+    // See lib/lambda/pricing-refresh.ts.
+    //
+    // Deliberately NOT in the VPC: the PRISM VPC has no NAT gateway, and this
+    // function's one job that needs a network path is an HTTPS GET to
+    // raw.githubusercontent.com. It accepts no inbound traffic, and reaches
+    // only S3 and DynamoDB besides, both over their public endpoints with IAM.
+    // -------------------------------------------------------
+    const pricingRefresh = new lambda.Function(this, 'PricingRefresh', {
+      functionName: 'prism-d1-pricing-refresh',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'pricing-refresh.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda'), {
+        bundling: {
+          image: lambda.Runtime.NODEJS_22_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            [
+              'npm init -y > /dev/null 2>&1',
+              'npm install --save @aws-sdk/client-dynamodb @aws-sdk/client-s3 esbuild > /dev/null 2>&1',
+              'npx esbuild pricing-refresh.ts --bundle --platform=node --target=node22 --outfile=/asset-output/pricing-refresh.js --external:@aws-sdk/*',
+            ].join(' && '),
+          ],
+          local: {
+            tryBundle(outputDir: string): boolean {
+              try {
+                const { execSync } = require('child_process');
+                execSync(
+                  `npx esbuild ${path.join(__dirname, '..', 'lambda', 'pricing-refresh.ts')} --bundle --platform=node --target=node22 --outfile=${path.join(outputDir, 'pricing-refresh.js')} --external:@aws-sdk/*`,
+                  { stdio: 'pipe' },
+                );
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          },
+        },
+      }),
+      // A full-table scan plus, on the first run, a read of the raw archive to
+      // recover cache-token counts for spans stored before they were kept.
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 1024,
+      environment: {
+        AI_USAGE_TABLE: props.aiUsageTable.tableName,
+        ARCHIVE_BUCKET: this.archiveBucket.bucketName,
+      },
+      logRetention: logs.RetentionDays.ONE_MONTH,
+      description: 'Daily: refresh the LiteLLM price table in S3, then reprice usage spans stored at $0',
+    });
+    props.aiUsageTable.grantReadWriteData(pricingRefresh);
+    // Read the raw archive (to recover cache-token counts), and read/write the
+    // one price-table object. No delete: an old table is only ever overwritten.
+    this.archiveBucket.grantRead(pricingRefresh, 'otlp/*');
+    pricingRefresh.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject', 's3:PutObject'],
+      resources: [pricesObjectArn],
+    }));
+    props.kmsKey.grantEncryptDecrypt(pricingRefresh);
+
+    new events.Rule(this, 'PricingRefreshSchedule', {
+      ruleName: 'prism-d1-pricing-refresh-daily',
+      description: 'Refresh LiteLLM prices and reprice $0 spans',
+      // 06:17 UTC: off the hour so it is not queued behind other schedules.
+      schedule: events.Schedule.cron({ minute: '17', hour: '6' }),
+      // No retry: a failed run already repriced what it could and the next day's
+      // run starts from the same state. Errors surface on the Lambda metric.
+      targets: [new targets.LambdaFunction(pricingRefresh, { retryAttempts: 0 })],
+    });
+
+    NagSuppressions.addResourceSuppressions(pricingRefresh, [
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'grantRead scopes S3 reads to the otlp/* prefix of the single archive bucket (raw OTLP batches, read to recover cache-token counts); grantReadWriteData adds the AI-usage table GSI index wildcard.',
+        appliesTo: [
+          'Action::s3:GetObject*', 'Action::s3:GetBucket*', 'Action::s3:List*',
+          { regex: '/^Resource::<OtelCollectorArchiveBucket.*\\.Arn>\\/otlp\\/\\*$/g' },
+          { regex: '/^Resource::<AiUsageTable.*\\.Arn>\\/index\\/\\*$/g' },
+        ],
+      },
+    ], true);
 
     // -------------------------------------------------------
     // CloudWatch Custom Widget: Developer Productivity

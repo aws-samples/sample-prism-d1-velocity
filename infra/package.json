@@ -11,7 +11,9 @@
     "diff": "cdk diff",
     "check:metrics": "tsx scripts/check-metric-coverage.ts",
     "check:attribution": "tsx scripts/check-attribution-contract.ts",
-    "check:transitions": "tsx scripts/check-commit-transitions.ts"
+    "check:transitions": "tsx scripts/check-commit-transitions.ts",
+    "check:pricing": "tsx scripts/check-pricing.ts",
+    "pricing:snapshot": "tsx scripts/refresh-pricing-snapshot.ts"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.170.0",

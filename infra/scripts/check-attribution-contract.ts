@@ -215,6 +215,68 @@ console.log('\nAttribution wire-contract guard\n');
   );
 }
 
+// --- Case 7: unpriced usage spans get the receiver's LiteLLM fallback price ---
+// (Prices come from the bundled snapshot, lib/lambda/pricing/litellm-snapshot.json.)
+// codeburn 0.9.24 priced `gpt-6-astra` but not the `openai.gpt-6-astra` id
+// Codex reports, so it sent cost 0 with cost_estimated=false and the dashboard
+// showed $0 for 33.9M input tokens.
+function usageSpan(model: string, cost: number, extra: Attr[] = []) {
+  return {
+    name: 'codeburn.call',
+    spanId: SPAN_ID,
+    traceId: TRACE_ID,
+    startTimeUnixNano: NANOS,
+    attributes: [
+      s('ai.provider', 'codex'),
+      s('ai.model', model),
+      { key: 'ai.input_tokens', value: { intValue: '1000000' } },
+      { key: 'ai.output_tokens', value: { intValue: '100000' } },
+      { key: 'ai.cost_usd', value: { doubleValue: cost } },
+      b('ai.cost_estimated', false),
+      ...extra,
+    ],
+  };
+}
+{
+  // 1M input x $10/M + 100K output x $50/M + 2M cache read x $1/M = $17
+  const r = parseOtlpSpans(payload([usageSpan('openai.gpt-6-astra', 0, [
+    { key: 'ai.cache_read_tokens', value: { intValue: '2000000' } },
+  ])]) as never);
+  const sp = r.spans[0];
+  check(
+    'zero-cost astra span is priced by the receiver (via global. key)',
+    sp?.costUsd === 17 && sp.costEstimated === true && sp.costSource === 'receiver' &&
+    sp.pricedKey === 'global.openai.gpt-6-astra' && r.pricing.repriced === 1,
+    `got cost=${sp?.costUsd} estimated=${sp?.costEstimated} source=${sp?.costSource} pricing=${JSON.stringify(r.pricing)}`,
+  );
+}
+{
+  // LiteLLM lists the us. cross-region id at 1.1x: $11/M in, $55/M out.
+  const r = parseOtlpSpans(payload([usageSpan('us.openai.gpt-6-astra', 0)]) as never);
+  check(
+    'a regional id is priced at its own regional rate',
+    r.spans[0]?.costUsd === 16.5 && r.spans[0].pricedKey === 'us.openai.gpt-6-astra',
+    `got cost=${r.spans[0]?.costUsd} key=${r.spans[0]?.pricedKey}`,
+  );
+}
+{
+  const r = parseOtlpSpans(payload([usageSpan('openai.gpt-6-astra', 4.2)]) as never);
+  check(
+    'a client-supplied cost is never overwritten',
+    r.spans[0]?.costUsd === 4.2 && r.spans[0].costSource === 'client' && r.pricing.repriced === 0,
+    `got cost=${r.spans[0]?.costUsd} source=${r.spans[0]?.costSource}`,
+  );
+}
+{
+  const r = parseOtlpSpans(payload([usageSpan('some-new-model-9', 0)]) as never);
+  check(
+    'an unknown model stays $0, marked unpriced for the reprice job',
+    r.spans[0]?.costUsd === 0 && r.spans[0].costSource === 'unpriced' &&
+    r.pricing.unpriced === 1 && r.pricing.unpricedModels[0] === 'some-new-model-9',
+    `got cost=${r.spans[0]?.costUsd} pricing=${JSON.stringify(r.pricing)}`,
+  );
+}
+
 console.log();
 if (failures > 0) {
   console.error(`✗ ${failures} attribution-contract check(s) failed\n`);
