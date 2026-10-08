@@ -11,7 +11,7 @@
 import {
   PriceTable, slimLiteLLM, validateTable, lookupPrice, computeCost, MIN_ENTRIES,
 } from '../lib/lambda/pricing/price-table.js';
-import { planReprice, aggregateSkFor, SpanItem } from '../lib/lambda/pricing/reprice.js';
+import { planReprice, aggregateSkFor, groupByAggregate, RepricePlan, SpanItem } from '../lib/lambda/pricing/reprice.js';
 import { BUNDLED_PRICES } from '../lib/lambda/pricing/price-source.js';
 
 let failures = 0;
@@ -166,6 +166,24 @@ function span(overrides: SpanItem): SpanItem {
     'a legacy span missing from the archive is priced without cache and says so',
     b?.costUsd === 15 && b.cacheSource === 'absent',
     `got ${JSON.stringify(b)}`,
+  );
+}
+
+{
+  // Spans of one user-day share an OTEL#DAY item; writing them concurrently
+  // made DynamoDB cancel transactions with TransactionConflict.
+  const plan = (pk: string, aggregateSk: string, sk: string) =>
+    ({ pk, aggregateSk, sk } as unknown as RepricePlan);
+  const groups = [...groupByAggregate([
+    plan('USER#a', 'OTEL#DAY#2026-09-11', 's1'),
+    plan('USER#a', 'OTEL#DAY#2026-09-12', 's2'),
+    plan('USER#a', 'OTEL#DAY#2026-09-11', 's3'),
+    plan('USER#b', 'OTEL#DAY#2026-09-11', 's4'),
+  ]).values()].map((g) => g.map((p) => p.sk).join(','));
+  check(
+    'spans sharing an aggregate land in one group, in order',
+    JSON.stringify(groups) === JSON.stringify(['s1,s3', 's2', 's4']),
+    `got ${JSON.stringify(groups)}`,
   );
 }
 

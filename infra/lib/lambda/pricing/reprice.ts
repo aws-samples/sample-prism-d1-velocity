@@ -94,3 +94,15 @@ export function planReprice(
     cacheSource,
   };
 }
+
+/** Plans keyed by the aggregate item they add to, in their original order. */
+export function groupByAggregate(plans: RepricePlan[]): Map<string, RepricePlan[]> {
+  const groups = new Map<string, RepricePlan[]>();
+  for (const p of plans) {
+    const k = `${p.pk}\u0000${p.aggregateSk}`;
+    const g = groups.get(k);
+    if (g) g.push(p);
+    else groups.set(k, [p]);
+  }
+  return groups;
+}

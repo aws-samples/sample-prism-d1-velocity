@@ -41,7 +41,7 @@ import {
   LITELLM_PRICES_URL, slimLiteLLM, validateTable, toDocument, parseDocument, PriceDocument,
 } from './pricing/price-table';
 import { PRICES_KEY, BUNDLED_PRICES } from './pricing/price-source';
-import { planReprice, lacksCacheCounts, RepricePlan, SpanItem } from './pricing/reprice';
+import { planReprice, lacksCacheCounts, groupByAggregate, RepricePlan, SpanItem } from './pricing/reprice';
 
 const dynamo = new DynamoDBClient({});
 const s3 = new S3Client({});
@@ -249,6 +249,26 @@ async function applyPlan(p: RepricePlan, now: string): Promise<WriteOutcome> {
   }
 }
 
+const CONFLICT_RETRIES = 5;
+
+/**
+ * The receiver can still update the same aggregate while a reprice runs, so a
+ * TransactionConflict is retried with backoff. Retrying is safe: the span's
+ * `cost_usd = 0` condition means a write that did land is never applied twice.
+ */
+async function applyPlanWithRetry(p: RepricePlan, now: string): Promise<WriteOutcome> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await applyPlan(p, now);
+    } catch (e) {
+      const conflict = e instanceof TransactionCanceledException
+        && (e.CancellationReasons ?? []).some((r) => r?.Code === 'TransactionConflict');
+      if (!conflict || attempt >= CONFLICT_RETRIES) throw e;
+      await new Promise((r) => setTimeout(r, 100 * 2 ** attempt + Math.random() * 100));
+    }
+  }
+}
+
 /** Step 2. */
 async function reprice(doc: PriceDocument, dryRun: boolean) {
   const items = await scanZeroCostSpans();
@@ -281,21 +301,26 @@ async function reprice(doc: PriceDocument, dryRun: boolean) {
   const cacheSources: Record<string, number> = {};
   const now = new Date().toISOString();
 
-  for (let i = 0; i < plans.length; i += WRITE_CONCURRENCY) {
-    const chunk = plans.slice(i, i + WRITE_CONCURRENCY);
-    const outcomes = dryRun
-      ? chunk.map(() => 'repriced' as const)
-      : await Promise.all(chunk.map((p) => applyPlan(p, now)));
-    outcomes.forEach((o, j) => {
-      counts[o]++;
-      if (o !== 'repriced') return;
-      const p = chunk[j];
-      addedUsd += p.costUsd;
-      const m = (byModel[p.model || 'unknown'] ??= { spans: 0, usd: 0, key: p.pricedKey });
-      m.spans++;
-      m.usd += p.costUsd;
-      cacheSources[p.cacheSource] = (cacheSources[p.cacheSource] ?? 0) + 1;
-    });
+  const record = (p: RepricePlan, o: WriteOutcome) => {
+    counts[o]++;
+    if (o !== 'repriced') return;
+    addedUsd += p.costUsd;
+    const m = (byModel[p.model || 'unknown'] ??= { spans: 0, usd: 0, key: p.pricedKey });
+    m.spans++;
+    m.usd += p.costUsd;
+    cacheSources[p.cacheSource] = (cacheSources[p.cacheSource] ?? 0) + 1;
+  };
+
+  // Every span of one user-day adds to the same OTEL#DAY item, and DynamoDB
+  // cancels concurrent transactions that touch one item (TransactionConflict).
+  // So spans sharing an aggregate are written one after another, while
+  // different aggregates run in parallel.
+  const groups = [...groupByAggregate(plans).values()];
+  for (let i = 0; i < groups.length; i += WRITE_CONCURRENCY) {
+    const chunk = groups.slice(i, i + WRITE_CONCURRENCY);
+    await Promise.all(chunk.map(async (group) => {
+      for (const p of group) record(p, dryRun ? 'repriced' : await applyPlanWithRetry(p, now));
+    }));
   }
   for (const m of Object.values(byModel)) m.usd = Math.round(m.usd * 100) / 100;
 
