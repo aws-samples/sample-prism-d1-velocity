@@ -259,6 +259,18 @@ Alarms: BedrockDailyCostHigh (> $100/day on AICostUSD)
 | Cost per commit | **Not tracked** | Would need the unbuilt token-commit correlator. `CostPerShippedCommit` is a range-level aggregate, not per-commit. |
 | Developer-level cost | **Tracked** | Keyed on the codeburn user, not an IAM-ARN mapping |
 
+### When codeburn sends a $0 cost
+
+codeburn prices each call on the client. When its bundled table has no entry for the exact model id a tool reports, it sends `ai.cost_usd=0` and does **not** flag the span estimated. Codex on Bedrock reports `openai.gpt-6-astra`, an id neither codeburn nor LiteLLM lists (LiteLLM has `global.`, `us.` and `bedrock_mantle/` forms), so one developer's 1,597 astra calls arrived as $0.
+
+The receiver treats "tokens > 0, cost 0" as unpriced, not free:
+
+1. **At ingest** it prices the span from a LiteLLM table (`infra/lib/lambda/pricing/`), sets `cost_estimated=true`, `cost_source=receiver` and records the matched `priced_key`. Lookup tries the reported id, then for a Bedrock id the `global.` cross-region key, the `bedrock_mantle/` key, the unprefixed id, and finally the plain model name (direct-API rate). A client-supplied non-zero cost is never replaced. A span nothing matches is stored with `cost_source=unpriced` and named in the receiver log line (`pricing(...): repriced=N unpriced=N (model,...)`).
+2. **Daily**, `prism-d1-pricing-refresh` (06:17 UTC) fetches LiteLLM's price file, trims it to four rates per model, and writes it to `s3://<archive>/pricing/litellm-prices.json`. The receiver reads that object at most hourly and falls back to the snapshot bundled at build time (`npm run pricing:snapshot` regenerates it). A new table is refused if it has fewer than 1,000 entries, lost more than 10% of the previous one, or moved more than 1% of shared prices by over 10x; the previous table stays in service and the invocation fails, so the Lambda Errors metric shows it.
+3. **The same run reprices** every span still stored at $0 whose model now has a price, in one transaction with its `OTEL#DAY` aggregate (conditional on the span still being $0, so re-runs cannot double-count). The table stream carries the aggregate change to `AICostUSD` for days inside CloudWatch's 14-day window; DynamoDB-backed panels see all of it. Spans stored before the receiver kept cache-token counts get them from the raw OTLP archive, so cached input is billed at the cached rate.
+
+The function runs outside the PRISM VPC because that VPC has no NAT and the function must reach `raw.githubusercontent.com`. Invoke it with `{"dryRun": true}` to see what it would change, or `{"skipRefresh": true}` to reprice without fetching. `npm run check:pricing` guards the lookup chain, validation and reprice planning.
+
 ---
 
 ## Specialized Lambda Processors
@@ -564,6 +576,7 @@ Entry points that are hard to guess. Everything else is discoverable from these.
 | Core event processor (triple-write) | `infra/lib/lambda/metrics-processor.ts` |
 | Event schema + coverage guard | `infra/lib/lambda/event-schema.ts`, `infra/scripts/check-metric-coverage.ts` |
 | Attribution ingest (origin frozen here) | `infra/lib/lambda/otel-receiver.ts` |
+| Server-side pricing fallback + daily reprice | `infra/lib/lambda/pricing/`, `infra/lib/lambda/pricing-refresh.ts` |
 | Dashboard definitions | `infra/lib/dashboard-stack.ts` |
 | Dashboard panel renderers | `infra/lib/lambda/velocity-widget.ts`, `infra/lib/lambda/productivity-widget.ts` |
 | Pipeline + alarms + EventBridge rules | `infra/lib/metrics-pipeline-stack.ts` |

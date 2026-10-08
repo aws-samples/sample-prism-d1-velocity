@@ -26,6 +26,8 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
+import { PriceTable, lookupPrice, computeCost, hasTokens } from './pricing/price-table';
+import { loadPrices, BUNDLED_PRICES } from './pricing/price-source';
 
 const dynamoClient = new DynamoDBClient({});
 const s3Client = new S3Client({});
@@ -115,9 +117,18 @@ interface ParsedSpan {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   costUsd: number;
   project: string;
   costEstimated: boolean;
+  /**
+   * 'client' when codeburn priced the call, 'receiver' when the LiteLLM
+   * fallback did, 'unpriced' when neither could (the reprice job retries these).
+   */
+  costSource: 'client' | 'receiver' | 'unpriced';
+  /** LiteLLM key the receiver priced from, for audit. Empty when client-priced. */
+  pricedKey: string;
   /** True for spans the PRISM coding agent emitted: work no human prompted. */
   autonomous?: boolean;
   /** The issue the agent was handed. 0 when not an agent span. */
@@ -227,7 +238,11 @@ function resolveIdentity(event: HttpApiEvent): string | null {
 }
 
 /** Extract and sanity-check spans from an OTLP payload. Returns usage spans, attribution spans, and rejected count. */
-export function parseOtlpSpans(payload: OtlpPayload): {
+export function parseOtlpSpans(
+  payload: OtlpPayload,
+  /** Fallback rates for spans the client sent unpriced. Defaults to the bundled snapshot. */
+  prices: PriceTable = BUNDLED_PRICES.entries,
+): {
   spans: ParsedSpan[];
   attributionSpans: ParsedAttributionSpan[];
   rejected: number;
@@ -248,6 +263,12 @@ export function parseOtlpSpans(payload: OtlpPayload): {
     noProvider: number;
     badTokens: number;
   };
+  /**
+   * Usage spans that arrived with cost 0 but tokens > 0. `repriced` were priced
+   * from the LiteLLM table; `unpriced` matched no entry and stayed $0.
+   * `unpricedModels` names the models so a table gap is one log line to fix.
+   */
+  pricing: { repriced: number; unpriced: number; unpricedModels: string[] };
 } {
   const spans: ParsedSpan[] = [];
   const attributionSpans: ParsedAttributionSpan[] = [];
@@ -258,6 +279,9 @@ export function parseOtlpSpans(payload: OtlpPayload): {
   let rejectedNoRepo = 0;
   let rejectedNoProvider = 0;
   let rejectedBadTokens = 0;
+  let repriced = 0;
+  let unpriced = 0;
+  const unpricedModels = new Set<string>();
 
   for (const rs of payload.resourceSpans ?? []) {
     const resourceAttrs = attrMap(rs.resource?.attributes);
@@ -364,14 +388,43 @@ export function parseOtlpSpans(payload: OtlpPayload): {
 
         const inputTokens = num(attrs.get('ai.input_tokens'));
         const outputTokens = num(attrs.get('ai.output_tokens'));
-        const costUsd = num(attrs.get('ai.cost_usd'));
+        const cacheReadTokens = num(attrs.get('ai.cache_read_tokens'));
+        const cacheWriteTokens = num(attrs.get('ai.cache_write_tokens'));
+        let costUsd = num(attrs.get('ai.cost_usd'));
         if (
           inputTokens < 0 || outputTokens < 0 || costUsd < 0 ||
-          inputTokens > 100_000_000 || outputTokens > 100_000_000 || costUsd > 10_000
+          cacheReadTokens < 0 || cacheWriteTokens < 0 ||
+          inputTokens > 100_000_000 || outputTokens > 100_000_000 ||
+          cacheReadTokens > 100_000_000 || cacheWriteTokens > 100_000_000 ||
+          costUsd > 10_000
         ) {
           rejectedBadTokens++;
           rejected++;
           continue;
+        }
+
+        const model = str(attrs.get('ai.model')).slice(0, 128);
+        let costEstimated = bool(attrs.get('ai.cost_estimated'));
+        let costSource: ParsedSpan['costSource'] = 'client';
+        let pricedKey = '';
+        // codeburn sends 0 for a model missing from its price table and does not
+        // flag it estimated. Tokens with no cost is that case, not free usage.
+        // A client-supplied non-zero cost is never overwritten.
+        const tokens = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+        if (costUsd === 0 && hasTokens(tokens)) {
+          const match = lookupPrice(prices, model);
+          const priced = match ? computeCost(match.entry, tokens) : 0;
+          if (match && priced > 0) {
+            costUsd = priced;
+            costEstimated = true;
+            costSource = 'receiver';
+            pricedKey = match.key;
+            repriced++;
+          } else {
+            costSource = 'unpriced';
+            unpriced++;
+            if (unpricedModels.size < 20) unpricedModels.add(model || 'unknown');
+          }
         }
 
         spans.push({
@@ -379,12 +432,16 @@ export function parseOtlpSpans(payload: OtlpPayload): {
           traceId: traceId.toLowerCase(),
           timestamp,
           tool: PROVIDER_TO_TOOL[provider] ?? provider.slice(0, 32),
-          model: str(attrs.get('ai.model')).slice(0, 128),
+          model,
           inputTokens,
           outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
           costUsd,
           project: str(attrs.get('ai.project')).slice(0, 256),
-          costEstimated: bool(attrs.get('ai.cost_estimated')),
+          costEstimated,
+          costSource,
+          pricedKey,
           deviceId,
           // Emitted by the PRISM coding agent. `autonomous` separates work no human
           // prompted from human-assisted AI use, which the PRISM levels treat as
@@ -408,6 +465,7 @@ export function parseOtlpSpans(payload: OtlpPayload): {
       noProvider: rejectedNoProvider,
       badTokens: rejectedBadTokens,
     },
+    pricing: { repriced, unpriced, unpricedModels: [...unpricedModels] },
   };
 }
 
@@ -455,10 +513,16 @@ async function writeSpanIfNew(user: string, s: ParsedSpan): Promise<boolean> {
         model: { S: s.model },
         input_tokens: { N: String(s.inputTokens) },
         output_tokens: { N: String(s.outputTokens) },
+        // Stored so a span priced by the fallback can be re-priced later from
+        // the record alone, without the raw archive.
+        cache_read_tokens: { N: String(s.cacheReadTokens) },
+        cache_write_tokens: { N: String(s.cacheWriteTokens) },
         cost_usd: { N: String(s.costUsd) },
         project: { S: s.project },
         device_id: { S: s.deviceId },
         cost_estimated: { BOOL: s.costEstimated },
+        cost_source: { S: s.costSource },
+        ...(s.pricedKey ? { priced_key: { S: s.pricedKey } } : {}),
         timestamp: { S: s.timestamp },
         ttl: { N: String(ttl) },
       },
@@ -783,7 +847,8 @@ async function handleTraces(event: HttpApiEvent): Promise<HttpApiResponse> {
     return jsonResponse(400, { message: 'Body is not valid JSON' });
   }
 
-  const { spans, attributionSpans, rejected, rejectedReasons } = parseOtlpSpans(payload);
+  const prices = await loadPrices(s3Client, ARCHIVE_BUCKET);
+  const { spans, attributionSpans, rejected, rejectedReasons, pricing } = parseOtlpSpans(payload, prices.doc.entries);
   const totalAccepted = spans.length + attributionSpans.length;
 
   if (totalAccepted > MAX_BATCH_SIZE) {
@@ -810,7 +875,12 @@ async function handleTraces(event: HttpApiEvent): Promise<HttpApiResponse> {
     `[otel-receiver] user=${user} ` +
     `usage: received=${spans.length} new=${usageWritten} dupes=${spans.length - usageWritten} | ` +
     `attribution: received=${attributionSpans.length} written=${attrWritten} | ` +
-    `rejected=${rejected}${reasonDetail ? ` (${reasonDetail})` : ''}`,
+    `rejected=${rejected}${reasonDetail ? ` (${reasonDetail})` : ''}` +
+    (pricing.repriced || pricing.unpriced
+      ? ` | pricing(${prices.origin} ${prices.doc.fetchedAt.slice(0, 10)}): ` +
+        `repriced=${pricing.repriced} unpriced=${pricing.unpriced}` +
+        (pricing.unpricedModels.length ? ` (${pricing.unpricedModels.join(',')})` : '')
+      : ''),
   );
 
   if (rejected > 0) {
