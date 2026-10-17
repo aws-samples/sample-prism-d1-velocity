@@ -13,6 +13,7 @@
     "check:attribution": "tsx scripts/check-attribution-contract.ts",
     "check:transitions": "tsx scripts/check-commit-transitions.ts",
     "check:pricing": "tsx scripts/check-pricing.ts",
+    "check:tools": "tsx scripts/check-tool-usage.ts",
     "pricing:snapshot": "tsx scripts/refresh-pricing-snapshot.ts"
   },
   "dependencies": {

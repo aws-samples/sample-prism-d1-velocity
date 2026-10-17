@@ -27,6 +27,8 @@ const RECEIVER_FUNCTION = process.env.RECEIVER_FUNCTION || 'prism-d1-otel-receiv
 interface WidgetEvent {
   describe?: boolean;
   view?: string;
+  /** Developer filter for views that support it; 'all' or unset = organization. */
+  user?: string;
   widgetContext?: { timeRange?: { start: number; end: number }; theme?: string };
 }
 
@@ -37,7 +39,8 @@ the attribution store. Full history, real event timestamps.
 ### Parameters
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| view | string | dora | dora, aidora, repos, eval, governance, agents, security, exec, exec-security, ciso-exposure, ciso-sla, ciso-risk, ciso-shiftleft, ciso-classes |
+| view | string | dora | dora, aidora, repos, eval, governance, agents, security, exec, exec-security, ciso-exposure, ciso-sla, ciso-risk, ciso-shiftleft, ciso-classes, tool-usage-top, tool-usage-trend |
+| user | string | all | Developer identity for tool-usage-* views |
 
 The \`exec\` view additionally computes an **observed** PRISM level from
 outcome metrics (capped at L4 — L5 requires an autonomy signal that no
@@ -1990,6 +1993,124 @@ async function renderMergeRateTrend(fromIso: string, toIso: string, days: number
 
 // ---- Handler ----
 
+// ---- Views: tool-usage-top / tool-usage-trend (tools the model invoked) ----
+
+/** Dashboard PATTERN token left unreplaced, or blank, means org scope. */
+function widgetUser(user: string | undefined): string {
+  const u = (user ?? '').trim();
+  return !u || u === 'PRISM_USER_FILTER_TOKEN' ? 'all' : u;
+}
+
+async function fetchToolUsage(fromIso: string, toIso: string, user: string): Promise<any> {
+  return invokeReceiver('/v1/tool-usage',
+    `user=${encodeURIComponent(user)}&from=${fromIso.slice(0, 10)}&to=${toIso.slice(0, 10)}`);
+}
+
+const TOOL_USAGE_NOTE =
+  'Counts model calls that invoked each tool (codeburn ai.tools), by the day of the call. ' +
+  'Providers that do not report tool calls contribute nothing here.';
+
+/**
+ * Top tools and MCP servers. Reads the receiver's OTEL#TOOLDAY rollups rather
+ * than a CloudWatch metric for the same reasons as the spend tiles: full
+ * history, bucketed by call date, and scoped by the Developer variable.
+ */
+async function renderToolUsageTop(fromIso: string, toIso: string, user: string, p: Palette): Promise<string> {
+  let r: any;
+  try {
+    r = await fetchToolUsage(fromIso, toIso, user);
+  } catch (err) {
+    return emptyState('tool usage', `Attribution store unreachable (${(err as Error).message}).`, p);
+  }
+  const tools: Array<{ name: string; mcpServer: string; calls: number; byAiTool: Record<string, number> }> = r?.tools ?? [];
+  if (tools.length === 0) {
+    return emptyState('tool usage', 'Run `codeburn sync push` with a codeburn version that sends ai.tools.', p);
+  }
+  const servers: Array<{ server: string; calls: number; tools: number }> = r?.mcpServers ?? [];
+  const mcpCalls = servers.reduce((s, x) => s + x.calls, 0);
+  const total = r?.totalToolCalls ?? 0;
+
+  const top = tools.slice(0, 12);
+  const maxT = top[0]?.calls ?? 0;
+  const toolRows = top.map(t => [
+    `${esc(t.name)}${bar(t.calls, maxT, p.accent)}`,
+    esc(Object.entries(t.byAiTool).sort((a, b) => b[1] - a[1]).map(([k]) => k).join(', ')),
+    num(t.calls),
+  ]);
+  const topS = servers.slice(0, 8);
+  const maxS = topS[0]?.calls ?? 0;
+  const serverRows = topS.map(s => [`${esc(s.server)}${bar(s.calls, maxS, p.ok)}`, num(s.tools), num(s.calls)]);
+
+  return `
+    ${kpiRow([
+      { label: 'Tool calls', value: num(total), note: user === 'all' ? 'organization' : user },
+      { label: 'Distinct tools', value: num(tools.length) },
+      { label: 'MCP share', value: pct(total > 0 ? (mcpCalls / total) * 100 : null), note: `${num(servers.length)} MCP servers` },
+    ], p)}
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div style="flex:3;min-width:280px">${table(['Tool', 'AI tools', 'Calls'], toolRows, p, 2)}</div>
+      <div style="flex:2;min-width:220px">${serverRows.length > 0
+        ? table(['MCP server', 'Tools', 'Calls'], serverRows, p, 1)
+        : `<div style="color:${p.mut};font-size:11px;margin-top:14px">No MCP tool calls in range.</div>`}</div>
+    </div>
+    ${footnote(TOOL_USAGE_NOTE, p)}
+  `;
+}
+
+/** Daily (or weekly, past 21 days) tool calls, same bucketing as ai-spend-trend. */
+async function renderToolUsageTrend(fromIso: string, toIso: string, days: number, user: string, p: Palette): Promise<string> {
+  let r: any;
+  try {
+    r = await fetchToolUsage(fromIso, toIso, user);
+  } catch (err) {
+    return emptyState('tool usage', `Attribution store unreachable (${(err as Error).message}).`, p);
+  }
+  const dayBuckets: Array<{ date: string; calls: number }> = r?.days ?? [];
+  if (dayBuckets.length === 0) {
+    return emptyState('tool usage', 'Run `codeburn sync push` with a codeburn version that sends ai.tools.', p);
+  }
+  const useWeekly = days > 21;
+  let buckets: Array<{ label: string; calls: number }>;
+  if (useWeekly) {
+    const weeks = new Map<string, number>();
+    for (const d of dayBuckets) {
+      const dt = new Date(d.date);
+      dt.setDate(dt.getDate() - dt.getDay());
+      const key = dt.toISOString().slice(0, 10);
+      weeks.set(key, (weeks.get(key) ?? 0) + d.calls);
+    }
+    buckets = [...weeks.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([label, calls]) => ({ label, calls }));
+  } else {
+    buckets = dayBuckets.map(d => ({ label: d.date, calls: d.calls }));
+  }
+  const total = buckets.reduce((s, b) => s + b.calls, 0);
+  const maxC = Math.max(...buckets.map(b => b.calls), 0);
+  const chartW = 500;
+  const chartH = 100;
+  const slot = chartW / buckets.length;
+  const barW = Math.max(2, slot * 0.7);
+  const bars = buckets.map((b, i) => {
+    const h = maxC > 0 ? (b.calls / maxC) * (chartH - 10) : 0;
+    return `<rect x="${i * slot + (slot - barW) / 2}" y="${chartH - h}" width="${barW}" height="${h}" fill="${p.accent}" opacity="0.85" />`;
+  }).join('');
+  return `
+    <div style="padding:8px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+        <span style="color:${p.mut};font-size:11px">Tool calls (${useWeekly ? 'weekly' : 'daily'})${user === 'all' ? '' : ` · ${esc(user)}`}</span>
+        <span style="color:${p.fg};font-size:13px;font-weight:600">${num(total)} total</span>
+      </div>
+      <svg viewBox="0 0 ${chartW} ${chartH + 16}" style="width:100%;height:auto">
+        ${bars}
+        <text x="2" y="${chartH + 13}" fill="${p.mut}" font-size="9">${esc(buckets[0]!.label)}</text>
+        <text x="${chartW - 2}" y="${chartH + 13}" fill="${p.mut}" font-size="9" text-anchor="end">${esc(buckets[buckets.length - 1]!.label)}</text>
+      </svg>
+      ${footnote(TOOL_USAGE_NOTE, p)}
+    </div>
+  `;
+}
+
+// ---- Handler ----
+
 export async function handler(event: WidgetEvent): Promise<string> {
   if (event.describe) return DOCS;
 
@@ -2028,6 +2149,8 @@ export async function handler(event: WidgetEvent): Promise<string> {
       case 'cost-per-commit-trend': body = await renderCostPerCommitTrend(fromIso, toIso, days, p); break;
       case 'ai-spend-trend': body = await renderAiSpendTrend(fromIso, toIso, days, p); break;
       case 'merge-rate-trend': body = await renderMergeRateTrend(fromIso, toIso, days, p); break;
+      case 'tool-usage-top': body = await renderToolUsageTop(fromIso, toIso, widgetUser(event.user), p); break;
+      case 'tool-usage-trend': body = await renderToolUsageTrend(fromIso, toIso, days, widgetUser(event.user), p); break;
       default: body = `<div style="color:${p.danger}">Unknown view: ${esc(view)}</div>`;
     }
     return `<div style="font-family:'Amazon Ember',Helvetica,Arial,sans-serif;color:${p.fg};font-size:13px">${body}</div>`;

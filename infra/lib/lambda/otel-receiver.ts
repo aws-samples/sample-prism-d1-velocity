@@ -13,6 +13,12 @@
  * Item shapes in the AI-usage table:
  *   pk=USER#<identity>  sk=SPAN#<timestamp>#<spanId>            raw span, TTL 90d
  *   pk=USER#<identity>  sk=OTEL#DAY#<yyyy-mm-dd>#<tool>#<model> daily aggregate
+ *   pk=USER#<identity>  sk=OTEL#TOOLDAY#<yyyy-mm-dd>#<tool>#<toolName>
+ *                                                   daily tool-call rollup
+ *
+ * "tool" in the first two shapes is the AI tool (claude-code, kiro, ...).
+ * `toolName` is a tool the model invoked inside one call (Bash, Edit,
+ * mcp__<server>__<tool>), taken from codeburn's `ai.tools` attribute.
  */
 
 import {
@@ -134,6 +140,12 @@ interface ParsedSpan {
   /** The issue the agent was handed. 0 when not an agent span. */
   issueNumber?: number;
   deviceId: string;
+  /**
+   * Distinct tool names the model invoked in this call, from `ai.tools`.
+   * Empty when the provider reports none -- which is not the same as "used no
+   * tools" for providers codeburn cannot read tool calls from.
+   */
+  toolNames: string[];
 }
 
 // ---- Attribution span types ----
@@ -204,6 +216,40 @@ function bool(v: OtlpValue | undefined): boolean {
 }
 
 /** Convert OTLP unix-nano string to ISO timestamp; empty string if invalid. */
+const MAX_TOOL_NAMES = 64;
+const MAX_TOOL_NAME_LEN = 128;
+
+/**
+ * Read `ai.tools` into a list of distinct, key-safe tool names.
+ *
+ * Deduplicated because codeburn providers disagree: most send a distinct set
+ * per call, Claude Code sends one entry per tool_use block. Counting distinct
+ * names makes the rollup mean "calls that used tool X" for every provider.
+ *
+ * The attribute is client-supplied, so it is bounded here regardless of what
+ * codeburn already caps: '#' is the sort-key delimiter and is stripped, control
+ * characters are dropped, and anything over the limits is ignored.
+ */
+export function parseToolNames(v: OtlpValue | undefined): string[] {
+  const values = v && 'arrayValue' in v ? v.arrayValue?.values ?? [] : [];
+  const out = new Set<string>();
+  for (const item of values) {
+    if (out.size >= MAX_TOOL_NAMES) break;
+    const raw = typeof item?.stringValue === 'string' ? item.stringValue : '';
+    // eslint-disable-next-line no-control-regex
+    const name = raw.replace(/[#\u0000-\u001f\u007f]/g, '').trim();
+    if (!name || name.length > MAX_TOOL_NAME_LEN) continue;
+    out.add(name);
+  }
+  return [...out];
+}
+
+/** `mcp__<server>__<tool>` -> `<server>`; '' for non-MCP tools. */
+export function mcpServerOf(toolName: string): string {
+  const m = /^mcp__(.+?)__.+$/.exec(toolName);
+  return m ? m[1]! : '';
+}
+
 function nanoToIso(nano: string | undefined): string {
   if (!nano || !/^\d+$/.test(nano)) return '';
   try {
@@ -448,6 +494,7 @@ export function parseOtlpSpans(
           // different things -- L5 is about autonomous deployments, not AI share.
           autonomous: bool(attrs.get('prism.autonomous')),
           issueNumber: num(attrs.get('prism.issue_number')),
+          toolNames: parseToolNames(attrs.get('ai.tools')),
         });
       }
     }
@@ -523,6 +570,9 @@ async function writeSpanIfNew(user: string, s: ParsedSpan): Promise<boolean> {
         cost_estimated: { BOOL: s.costEstimated },
         cost_source: { S: s.costSource },
         ...(s.pricedKey ? { priced_key: { S: s.pricedKey } } : {}),
+        // A DynamoDB string set cannot be empty, so the attribute is omitted
+        // rather than written as [] when the call reported no tools.
+        ...(s.toolNames.length > 0 ? { tool_names: { SS: s.toolNames } } : {}),
         timestamp: { S: s.timestamp },
         ttl: { N: String(ttl) },
       },
@@ -598,6 +648,44 @@ async function bumpDailyAggregate(user: string, s: ParsedSpan): Promise<void> {
       ':day': { S: day },
       ':now': { S: new Date().toISOString() },
     },
+  }));
+}
+
+/**
+ * ADD-increment one daily tool-call rollup per distinct tool in a newly-seen
+ * span. Same dedup contract as bumpDailyAggregate: the caller only reaches
+ * this after writeSpanIfNew succeeded, so a re-pushed span adds nothing.
+ *
+ * Kept under its own sk prefix (OTEL#TOOLDAY#, not OTEL#DAY#) so the existing
+ * OTEL#DAY range queries, the metrics-publisher stream filter and the reprice
+ * job never see these items.
+ */
+async function bumpToolAggregates(user: string, s: ParsedSpan): Promise<void> {
+  if (s.toolNames.length === 0) return;
+  const day = s.timestamp.slice(0, 10);
+  const now = new Date().toISOString();
+  await Promise.all(s.toolNames.map((name) => {
+    const server = mcpServerOf(name);
+    return dynamoClient.send(new UpdateItemCommand({
+      TableName: AI_USAGE_TABLE,
+      Key: {
+        pk: { S: `USER#${user}` },
+        sk: { S: `OTEL#TOOLDAY#${day}#${s.tool}#${name}` },
+      },
+      UpdateExpression:
+        'ADD call_count :one ' +
+        'SET record_type = :rt, tool = :tool, tool_name = :name, mcp_server = :srv, #day = :day, updated_at = :now',
+      ExpressionAttributeNames: { '#day': 'day' },
+      ExpressionAttributeValues: {
+        ':one': { N: '1' },
+        ':rt': { S: 'OTEL_TOOL_DAY' },
+        ':tool': { S: s.tool },
+        ':name': { S: name },
+        ':srv': { S: server },
+        ':day': { S: day },
+        ':now': { S: now },
+      },
+    }));
   }));
 }
 
@@ -822,7 +910,10 @@ async function processSpans(user: string, spans: ParsedSpan[]): Promise<number> 
     const chunk = spans.slice(i, i + CONCURRENCY);
     const results = await Promise.all(chunk.map(async (s) => {
       const isNew = await writeSpanIfNew(user, s);
-      if (isNew) await bumpDailyAggregate(user, s);
+      if (isNew) {
+        await bumpDailyAggregate(user, s);
+        await bumpToolAggregates(user, s);
+      }
       return isNew;
     }));
     written += results.filter(Boolean).length;
@@ -1743,6 +1834,112 @@ function accumulateUsage(u: UserProductivity, item: Record<string, { S?: string;
 
 // ---- Handler ----
 
+// ---- Route: tool usage ----
+
+export interface ToolUsageReport {
+  range: { from: string; to: string };
+  user: string;
+  generatedAt: string;
+  /** Sum of per-tool counts. One model call using three tools counts three. */
+  totalToolCalls: number;
+  tools: Array<{ name: string; mcpServer: string; calls: number; byAiTool: Record<string, number> }>;
+  mcpServers: Array<{ server: string; calls: number; tools: number }>;
+  days: Array<{ date: string; calls: number }>;
+}
+
+type DdbItem = Record<string, { S?: string; N?: string }>;
+
+/** Fold OTEL_TOOL_DAY items into the report shape. Pure, for the contract check. */
+export function aggregateToolUsage(items: DdbItem[], from: string, to: string, user: string): ToolUsageReport {
+  const tools = new Map<string, { name: string; mcpServer: string; calls: number; byAiTool: Record<string, number> }>();
+  const servers = new Map<string, { calls: number; tools: Set<string> }>();
+  const days = new Map<string, number>();
+  let total = 0;
+  for (const item of items) {
+    const name = item.tool_name?.S;
+    const day = item.day?.S;
+    const calls = Number(item.call_count?.N ?? '0');
+    if (!name || !day || !Number.isFinite(calls) || calls <= 0) continue;
+    const aiTool = item.tool?.S ?? 'unknown';
+    const server = item.mcp_server?.S ?? '';
+    let t = tools.get(name);
+    if (!t) { t = { name, mcpServer: server, calls: 0, byAiTool: {} }; tools.set(name, t); }
+    t.calls += calls;
+    t.byAiTool[aiTool] = (t.byAiTool[aiTool] ?? 0) + calls;
+    if (server) {
+      let sv = servers.get(server);
+      if (!sv) { sv = { calls: 0, tools: new Set() }; servers.set(server, sv); }
+      sv.calls += calls;
+      sv.tools.add(name);
+    }
+    days.set(day, (days.get(day) ?? 0) + calls);
+    total += calls;
+  }
+  return {
+    range: { from, to },
+    user,
+    generatedAt: new Date().toISOString(),
+    totalToolCalls: total,
+    tools: [...tools.values()].sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name)),
+    mcpServers: [...servers.entries()]
+      .map(([server, v]) => ({ server, calls: v.calls, tools: v.tools.size }))
+      .sort((a, b) => b.calls - a.calls || a.server.localeCompare(b.server)),
+    days: [...days.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, calls]) => ({ date, calls })),
+  };
+}
+
+/**
+ * GET /v1/tool-usage?from=YYYY-MM-DD&to=YYYY-MM-DD&user=<identity>|all
+ *
+ * Reads the OTEL#TOOLDAY rollups, bucketed by the day the call happened, so a
+ * backfilled `codeburn sync push` lands on the right days and keeps full history.
+ */
+async function handleToolUsageQuery(event: HttpApiEvent): Promise<HttpApiResponse> {
+  const caller = resolveIdentity(event);
+  if (!caller) return jsonResponse(401, { message: 'No resolvable identity claim in token' });
+
+  const url = new URL(event.rawPath + '?' + (event.rawQueryString ?? ''), 'http://localhost');
+  const userParam = url.searchParams.get('user') ?? 'all';
+  const now = new Date();
+  const from = url.searchParams.get('from') ?? new Date(now.getTime() - 30 * 86400_000).toISOString().slice(0, 10);
+  const to = url.searchParams.get('to') ?? now.toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return jsonResponse(400, { message: 'from/to must be YYYY-MM-DD' });
+  }
+
+  const items: DdbItem[] = [];
+  let lastKey: import('@aws-sdk/client-dynamodb').QueryCommandOutput['LastEvaluatedKey'];
+  do {
+    const result = userParam !== 'all'
+      ? await dynamoClient.send(new QueryCommand({
+          TableName: AI_USAGE_TABLE,
+          KeyConditionExpression: 'pk = :pk AND sk BETWEEN :lo AND :hi',
+          ExpressionAttributeValues: {
+            ':pk': { S: `USER#${userParam}` },
+            ':lo': { S: `OTEL#TOOLDAY#${from}` },
+            ':hi': { S: `OTEL#TOOLDAY#${to}\uffff` },
+          },
+          ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+        }))
+      // Fleet scope: same scan-with-filter shape as the OTEL_DAY fleet query.
+      : await dynamoClient.send(new ScanCommand({
+          TableName: AI_USAGE_TABLE,
+          FilterExpression: 'record_type = :rt AND #day BETWEEN :lo AND :hi',
+          ExpressionAttributeNames: { '#day': 'day' },
+          ExpressionAttributeValues: {
+            ':rt': { S: 'OTEL_TOOL_DAY' },
+            ':lo': { S: from },
+            ':hi': { S: to },
+          },
+          ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+        }));
+    for (const item of result.Items ?? []) items.push(item as DdbItem);
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return jsonResponse(200, aggregateToolUsage(items, from, to, userParam));
+}
+
 export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
   const method = event.requestContext.http.method;
   const path = event.rawPath;
@@ -1764,6 +1961,9 @@ export async function handler(event: HttpApiEvent): Promise<HttpApiResponse> {
   }
   if (method === 'GET' && path === '/v1/commits-daily') {
     return handleCommitsDailyQuery(event);
+  }
+  if (method === 'GET' && path === '/v1/tool-usage') {
+    return handleToolUsageQuery(event);
   }
   return jsonResponse(404, { message: 'Not found' });
 }
