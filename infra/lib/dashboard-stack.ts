@@ -808,6 +808,33 @@ export class DashboardStack extends cdk.Stack {
         }),
       );
 
+      // --- Row 5: Tools the model invoked (codeburn ai.tools) ---
+      // Store-backed like the spend tiles: OTEL#TOOLDAY rollups are bucketed by
+      // the call's own day and keep full history, so a backfilled sync push is
+      // not cut off at CloudWatch's two-week window. Follows the Developer filter.
+      devDashboard.addWidgets(
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'Tool Usage: Top Tools & MCP Servers',
+          width: 16,
+          height: 9,
+          params: { view: 'tool-usage-top', user: USER_TOKEN },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
+        }),
+        new cloudwatch.CustomWidget({
+          functionArn: props.velocityWidgetArn ?? '',
+          title: 'Tool Calls / Day',
+          width: 8,
+          height: 9,
+          params: { view: 'tool-usage-trend', user: USER_TOKEN },
+          updateOnRefresh: true,
+          updateOnResize: false,
+          updateOnTimeRangeChange: true,
+        }),
+      );
+
       new cdk.CfnOutput(this, 'DevProductivityDashboardUrl', {
         value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=PRISM-D1-Developer-Productivity`,
         description: 'Developer Productivity Dashboard URL',
