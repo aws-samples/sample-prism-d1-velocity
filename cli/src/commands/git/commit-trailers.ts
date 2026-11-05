@@ -163,7 +163,7 @@ function formatCost(c: number): string {
 }
 
 export default {
-  description: 'Emit AI-origin git commit trailers (used by prepare-commit-msg). Portable: no jq/bc/sed required.',
+  description: '[deprecated] Emit AI-origin commit trailers for the retired prepare-commit-msg hook (kept so already-installed hooks keep working)',
   options: [
     { flags: '--commit-msg-file <path>', description: 'Commit message file to append trailers to (git hook $1). If omitted, prints to stdout' },
     { flags: '--source <source>', description: 'Commit source (git hook $2): merge, squash, message, template, commit' },
