@@ -36,6 +36,9 @@ details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--mut
 details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo > summary { cursor:pointer; padding:4px 0; } details.repo .detail { padding-left:14px; }
 .callout { border:1px solid var(--accent); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:6px 0 10px; background:color-mix(in srgb, var(--accent) 8%, var(--card)); }
 .callout.warn { border-color:var(--warn); background:color-mix(in srgb, var(--warn) 10%, var(--card)); } .callout code { white-space:normal; overflow-wrap:anywhere; }
+.crow { display:grid; grid-template-columns: 6.5em minmax(10em,2.2fr) minmax(5em,0.8fr) 10.5em 7.5em minmax(11em,1.6fr); gap:8px; padding:6px 6px; border-bottom:1px solid var(--line); align-items:start; font-size:13px; overflow-wrap:anywhere; }
+.chead { color:var(--muted); font-weight:600; } summary.crow { cursor:pointer; list-style:none; } summary.crow::-webkit-details-marker { display:none; } details.cdetails[open] > summary.crow { background:var(--bg); } details.cdetails > .tablewrap { padding:4px 0 8px 18px; }
+@media (max-width: 760px) { .crow { grid-template-columns: 1fr 1fr; } .chead { display:none; } }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
@@ -97,6 +100,46 @@ function repoName(r) {
   return el('span', { title: r.path }, r.name, r.current ? el('span', { class: 'tag' }, 'this repo') : null);
 }
 
+const SCAN_LABEL = { ok: ['ok', 'ok'], 'not-scanned': ['warn', 'not scanned'], 'no-verify': ['warn', 'no-verify'], flagged: ['missing', 'secrets found'], none: ['skipped', '-'] };
+
+function reviewCell(rv) {
+  if (rv.state === 'not-reviewed') return el('span', { class: 'fix' }, 'not reviewed');
+  if (rv.state === 'failed') return el('span', { title: txt(rv.reason) }, pill('error', 'review failed'));
+  const who = el('span', { class: 'fix' }, ' ' + txt(rv.tool || '') + (rv.model ? ' / ' + rv.model : '') + (rv.reviewCount > 1 ? ' · reviewed ' + rv.reviewCount + 'x' : ''));
+  if (rv.state === 'clean') return el('span', {}, pill('ok', 'reviewed, clean'), who);
+  const counts = el('span', {},
+    rv.high ? el('b', { class: 'sev-high' }, rv.high + ' high ') : null,
+    rv.medium ? el('b', { class: 'sev-medium' }, rv.medium + ' medium ') : null,
+    rv.low ? el('b', { class: 'sev-low' }, rv.low + ' low') : null);
+  return el('span', {}, counts, who);
+}
+
+/** Commits as rows; a row with findings expands to list them. */
+function commitsList(c) {
+  const wrap = el('div', { class: 'commits' });
+  if (!c || !c.rows.length) { wrap.append(el('p', { class: 'empty' }, 'No commits recorded yet.')); return wrap; }
+  wrap.append(el('div', { class: 'crow chead' }, el('span', {}, 'Commit'), el('span', {}, 'Subject'), el('span', {}, 'Branch'), el('span', {}, 'Date'), el('span', {}, 'Secret scan'), el('span', {}, 'Review')));
+  for (const r of c.rows) {
+    const scan = SCAN_LABEL[r.secretScan.state] || ['skipped', r.secretScan.state];
+    const cells = [
+      el('code', {}, r.short),
+      el('span', { class: r.inHistory ? '' : 'fix' }, r.inHistory ? txt(r.subject) : '(no longer in history)'),
+      el('span', {}, txt(r.branch || '-')),
+      el('span', {}, r.authorDate ? when(r.authorDate) : '-'),
+      r.secretScan.state === 'none' ? el('span', { class: 'fix' }, '-') : el('span', { title: txt(r.secretScan.reason) }, pill(scan[0], scan[1])),
+      reviewCell(r.review),
+    ];
+    if (!r.findings.length) { wrap.append(el('div', { class: 'crow' }, cells)); continue; }
+    const d = el('details', { class: 'cdetails' }, el('summary', { class: 'crow' }, cells));
+    d.append(table(['Severity', 'Category', 'Location', 'Rule', 'Message'], r.findings.map((f) => [
+      sev(f.severity), f.category, el('code', {}, f.file + (f.line ? ':' + f.line : '')), f.rule,
+      el('td', { class: 'msg' }, f.message, f.inPushOf ? el('div', { class: 'fix' }, 'in push of ' + txt(f.inPushOf).slice(0, 8) + ' (blame could not place this line)') : null)])));
+    wrap.append(d);
+  }
+  if (c.truncated) wrap.append(el('p', { class: 'note' }, 'showing ' + c.rows.length + ' of ' + c.total + ' commits'));
+  return wrap;
+}
+
 /** One repo's detail, shown inside its <details>. */
 function codewatchDetail(repo) {
   const cw = repo.codewatch, s = el('div', { class: 'detail' });
@@ -111,20 +154,8 @@ function codewatchDetail(repo) {
     el('div', { class: 'stat' }, el('b', {}, cw.gitleaksBlocks.length), el('span', {}, 'gitleaks blocks')),
     el('div', { class: 'stat' }, el('b', {}, cw.skipped.length), el('span', {}, 'pushed without a scan'))));
 
-  s.append(el('h3', {}, 'Latest run per branch'));
-  s.append(table(['Branch', 'Review', 'Reviewer', 'When', 'Secret scan'], cw.latestByBranch.map((b) => [
-    b.branch,
-    b.review ? pill(b.review.status) : '-',
-    b.review ? b.review.tool + (b.review.model ? ' / ' + b.review.model : '') : '-',
-    b.review ? when(b.review.started_at) : '-',
-    b.secrets ? pill(b.secrets.status) : '-',
-  ])));
-
-  s.append(el('h3', {}, 'Findings (latest review per branch)'));
-  if (!cw.findings.length) s.append(el('p', { class: 'empty' }, 'No findings in the latest reviews.'));
-  else s.append(table(['Severity', 'Category', 'Location', 'Rule', 'Message'], cw.findings.map((f) => [
-    sev(f.severity), f.category, el('code', {}, f.file + (f.line ? ':' + f.line : '')), f.rule, el('td', { class: 'msg' }, f.message)])));
-  if (cw.findingsTruncated) s.append(el('p', { class: 'note' }, 'List truncated.'));
+  s.append(el('h3', {}, 'Commits'));
+  s.append(commitsList(cw.commits));
 
   s.append(el('h3', {}, 'Trend (last ' + cw.trend.length + ' runs)'));
   s.append(trendSvg(cw.trend));

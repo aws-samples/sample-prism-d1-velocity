@@ -4,6 +4,7 @@
 import { readResults, REASON_GITLEAKS_MISSING, type Finding, type PrismResult, type ResultStatus, countBySeverity } from '../codewatch/results.js';
 import { gitleaksInstallHint } from './setup.js';
 import { localDate } from './usage.js';
+import { collectCommits, type CommitsPanel } from './commits.js';
 
 export const DEFAULT_TREND_RUNS = 20;
 /** Cap on findings listed per repo, so one noisy branch cannot flood the page. */
@@ -76,6 +77,8 @@ export interface CodewatchPanel {
   /** Last N runs, oldest first. */
   trend: RunSummary[];
   secretScanning: SecretScanning;
+  /** Results mapped onto commits, newest first. */
+  commits: CommitsPanel;
 }
 
 const isMissingSkip = (r: PrismResult) =>
@@ -175,5 +178,6 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
     skipped: all.filter((r) => r.kind === 'secrets' && r.status === 'skipped' && !isMissingSkip(r)).map(summarize).reverse(),
     trend: all.filter((r) => r.status !== 'skipped').slice(-trendRuns).map(summarize),
     secretScanning: secretScanning(all, gitleaksAvailable),
+    commits: all.length ? collectCommits(repoRoot, all) : { rows: [], total: 0, truncated: false, timing: { logMs: 0, blameMs: 0, blameCalls: 0 } },
   };
 }
