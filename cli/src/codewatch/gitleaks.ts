@@ -52,6 +52,17 @@ paths = [
 ]
 `;
 
+/**
+ * One-line, platform-specific gitleaks install hint. Never a curl-piped-to-shell.
+ * Single source for the installer, the pre-commit warning and the dashboard.
+ */
+export function gitleaksInstallHint(platform: NodeJS.Platform = process.platform): string {
+  const release = 'a release binary from https://github.com/gitleaks/gitleaks/releases';
+  if (platform === 'darwin') return `brew install gitleaks (or ${release})`;
+  if (platform === 'win32') return `scoop install gitleaks (or ${release})`;
+  return `${release} on your PATH, or: go install github.com/zricethezav/gitleaks/v8@latest`;
+}
+
 /** Writes the starter config unless the repo already has one. Returns true when written. */
 export function installGitleaksConfig(gitRoot: string): boolean {
   const dest = resolve(gitRoot, GITLEAKS_CONFIG_PATH);

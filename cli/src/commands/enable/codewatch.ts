@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
 import { run } from '../../utils/exec.js';
 import { GITLEAKS_BASELINE_PATH, readEvalConfig, REVIEWER_GIT_CONFIG_KEY, RULES_PATH, writeEvalConfig } from '../../codewatch/config.js';
-import { installGitleaksConfig } from '../../codewatch/gitleaks.js';
+import { gitleaksInstallHint, installGitleaksConfig } from '../../codewatch/gitleaks.js';
 import { ensureResultsIgnored, installHooks, resolveHooksDir, retireLegacyCommitMsgHook, uninstallHooks } from '../../codewatch/hooks.js';
 import { ADAPTERS, detectReviewers, findOnPath, isReviewerId, REVIEWER_IDS, type ReviewerId } from '../../codewatch/reviewers/index.js';
 import { ensureRulesFile } from '../../codewatch/rules.js';
@@ -92,7 +92,7 @@ export default {
 
     if (!findOnPath('gitleaks')) {
       console.log('\n! gitleaks is not on PATH, so the pre-commit scan cannot run yet (commits are allowed with a warning).');
-      console.log('  Install it: https://github.com/gitleaks/gitleaks#installing');
+      console.log(`  Install it: ${gitleaksInstallHint()}`);
     }
     if (!findOnPath('prism-cli')) {
       console.log('\n! prism-cli is not on PATH. The hooks call it to record results; install with: npm i -g @prism-d1/cli');

@@ -1,5 +1,5 @@
 import { run } from '../../utils/exec.js';
-import { runPreCommit } from '../../codewatch/gitleaks.js';
+import { gitleaksInstallHint, runPreCommit } from '../../codewatch/gitleaks.js';
 import { REASON_GITLEAKS_MISSING } from '../../codewatch/results.js';
 
 /** Called by the pre-commit hook installed by `prism-cli enable codewatch`. */
@@ -17,8 +17,7 @@ export default {
       console.error('       or bypass once with git commit --no-verify (recorded as skipped at push time).');
     } else if (r.status === 'skipped' && r.reason === REASON_GITLEAKS_MISSING) {
       console.error('prism: WARNING: secret scanning is off -- gitleaks is not installed. This commit was NOT scanned.');
-      console.error('prism: install gitleaks (macOS: brew install gitleaks; others: a release binary from');
-      console.error('       https://github.com/gitleaks/gitleaks/releases), then re-run your commit checks.');
+      console.error(`prism: install gitleaks: ${gitleaksInstallHint()}`);
     } else if (r.status === 'error') {
       console.error(`prism: ${r.reason}${out.exitCode ? ' Commit blocked; fix the scan or bypass with --no-verify.' : ''}`);
     }

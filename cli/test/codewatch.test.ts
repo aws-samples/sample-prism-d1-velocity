@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ADAPTERS, detectReviewers, resolveReviewer, extractReviewJson } from '../src/codewatch/reviewers/index.js';
-import { parseGitleaksReport, runPreCommit } from '../src/codewatch/gitleaks.js';
+import { gitleaksInstallHint, parseGitleaksReport, runPreCommit } from '../src/codewatch/gitleaks.js';
 import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR, REASON_GITLEAKS_MISSING } from '../src/codewatch/results.js';
 import { runPrePush, parsePushInput } from '../src/codewatch/prepush.js';
 import { installHooks, uninstallHooks, retireLegacyCommitMsgHook, ensureResultsIgnored, PRE_PUSH_SCRIPT, PRE_COMMIT_SCRIPT } from '../src/codewatch/hooks.js';
@@ -249,6 +249,28 @@ test('pre-push does not re-report a commit already recorded as gitleaks-missing'
   const skipped = readResults(repo.dir).filter((r) => r.status === 'skipped');
   assert.equal(skipped.length, 1);
   assert.equal(skipped[0].hook, 'pre-commit');
+});
+
+test('gitleaks install hint is per platform and never pipes curl into a shell', () => {
+  assert.match(gitleaksInstallHint('darwin'), /^brew install gitleaks/);
+  assert.match(gitleaksInstallHint('win32'), /^scoop install gitleaks/);
+  assert.match(gitleaksInstallHint('linux'), /github\.com\/gitleaks\/gitleaks\/releases/);
+  assert.match(gitleaksInstallHint('linux'), /go install github\.com\/zricethezav\/gitleaks\/v8@latest/);
+  for (const p of ['darwin', 'win32', 'linux'] as const) assert.doesNotMatch(gitleaksInstallHint(p), /curl|\|\s*(ba|z)?sh/);
+});
+
+test('enable codewatch prints the shared install hint when gitleaks is missing', () => {
+  const repo = makeRepo();
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'prism-cli.ts');
+  const bin = tmp('nogl-bin');
+  exe(bin, 'claude', 'exit 0');
+  // tsx resolved from the CLI package, not from the throwaway repo the command runs in.
+  const tsx = import.meta.resolve('tsx');
+  const r = spawnSync(process.execPath, ['--import', tsx, cli, 'enable', 'codewatch', '--reviewer', 'claude'],
+    { cwd: repo.dir, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes(`Install it: ${gitleaksInstallHint()}`), r.stdout);
+  assert.ok(!r.stdout.includes('#installing'), 'generic docs link is gone');
 });
 
 // ---------------------------------------------------------------- pre-push always exits 0
