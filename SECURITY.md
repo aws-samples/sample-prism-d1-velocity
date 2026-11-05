@@ -26,11 +26,11 @@ Good for data protection but means manual cleanup on stack deletion. Document th
 
 ### Open — Medium
 
-**5. `prepare-commit-msg` hook is bypassable**
+**5. Codewatch local hooks are bypassable**
 
-Developers can skip with `--no-verify`, edit the hook file, or commit from machines without it installed. Trailer data is best-effort, not authoritative.
+`prism-cli enable codewatch` installs a gitleaks `pre-commit` hook and a report-only `pre-push` review. Developers can skip them with `--no-verify`, edit or remove the hook files, or commit on machines without them installed. A missing gitleaks allows the commit with a warning. A pushed commit with no recorded pre-commit scan is recorded in `.prism/results/` as skipped, but those results are local to the developer's clone.
 
-**Accepted risk:** The system is designed for honest teams measuring their own productivity. Document this limitation for users.
+**Accepted risk:** The local hooks are an early warning, not a control. The CI eval gate's gitleaks scan, which fails closed, is the enforcing check. (This item replaces the bypassable `prepare-commit-msg` trailer hook, which is retired.)
 
 ---
 
@@ -63,11 +63,11 @@ Session IDs are now generated with a CSPRNG (32 bytes, base64url), which closes 
 
 ## Design Decisions (Accepted)
 
-- **Git trailers are developer-asserted metadata, not cryptographically verified.** The system is designed for internal teams measuring productivity, not adversarial environments.
-- **Token tracker files** (`.prism/tokentracker/`) are already in `.gitignore` — not committed to the repo.
+- **AI attribution is developer-machine data, not cryptographically verified.** codeburn attribution is pushed from each developer's machine. The system is designed for internal teams measuring productivity, not adversarial environments. (Commit trailers and the token tracker that fed them are retired.)
+- **Codewatch results** (`.prism/results/`) are gitignored, or excluded through `.git/info/exclude` with `--global`, so they are never committed. They store gitleaks rule ids and locations, never secret values.
 - **Pinned action SHAs** prevent supply-chain attacks via compromised actions.
 - **OIDC** eliminates long-lived AWS credentials in GitHub secrets.
-- **Hook always exits 0** — never blocks developer workflow on failure.
+- **Codewatch hooks fail open** — the `pre-push` review always exits 0, and `pre-commit` blocks only on a gitleaks finding (or a gitleaks run that errors), never because a tool is missing.
 
 ---
 

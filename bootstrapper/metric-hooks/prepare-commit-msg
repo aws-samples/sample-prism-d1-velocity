@@ -6,7 +6,9 @@
 # (Linux/macOS/Windows Git Bash) with NO dependency on jq, bc, sed, or grep -P.
 # Token tracking powered by codeburn / prism-cli.
 #
-# Installation: prism-cli bootstrapper install-git-hooks
+# RETIRED: no command installs this hook any more. `prism-cli enable codewatch`
+# (and its deprecated alias `bootstrapper install-git-hooks`) removes it when found.
+# Kept for reference only.
 
 set -uo pipefail
 

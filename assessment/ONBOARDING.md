@@ -62,16 +62,16 @@ The onboarding track is determined by the blended PRISM D1 Level and the assessm
 
 - CLAUDE.md deployed to all active repositories
 - Spec templates adopted by the team (feature spec, bug fix spec, refactor spec)
-- First AI-tagged commits flowing (using `AI-Origin` and `AI-Confidence` trailers)
+- First AI-attributed commits flowing (codeburn attribution, from `prism-cli bootstrapper setup-otel-sync` on each developer machine)
 - Team has completed at least one spec-driven feature build
 
-> **⚠️ KNOWN ISSUE — stale scoring:** The deliverable above references `AI-Confidence` trailers. This trailer was **never implemented** — no hook, CLI flag, or spec for it exists in the project. Additionally, git hooks that produce `AI-Origin` trailers are being **deprecated** in favour of OTEL-based attribution via `codeburn sync --attribution`. The deliverable should reference OTEL attribution once the scoring model revision is complete.
+> **Note — scoring source changed:** Earlier versions measured this deliverable with `AI-Origin` and `AI-Confidence` commit trailers. `AI-Confidence` was never implemented, and the hook that wrote `AI-Origin` is retired. AI share now comes from codeburn attribution; read it, with **Attribution Coverage**, on the PRISM-D1-Team-Velocity dashboard.
 
 ### Success Metrics
 
 | Metric | Target | Measure By |
 |--------|--------|------------|
-| AI-origin commit trailers | 30%+ of commits | 2 weeks post-workshop |
+| AI-attributed commits (codeburn attribution) | 30%+ of commits | 2 weeks post-workshop |
 | CLAUDE.md deployment | 100% of active repos | 1 week post-workshop |
 | Spec adoption | 2+ specs written per developer | 2 weeks post-workshop |
 
@@ -81,7 +81,7 @@ The onboarding track is determined by the blended PRISM D1 Level and the assessm
 |------|------|----------|--------|
 | Pre-work kick-off | Video call | 30 min | Walk through pre-work, answer questions |
 | Workshop day | In-person or video | 4 hr | Deliver Modules 00–02 |
-| Week 1 post-workshop | Async check-in | — | Review commit trailer adoption |
+| Week 1 post-workshop | Async check-in | — | Review attribution coverage (codeburn sync on developer machines) |
 | Week 2 post-workshop | Video call | 30 min | Review metrics, troubleshoot |
 | Week 4 | Re-assessment | 1 hr | Re-run scanner, determine if ready for Track B |
 
@@ -112,7 +112,7 @@ Re-assess after 4 weeks. If the team reaches L2.0+, upgrade to Track B for the f
 
 ### Deliverables
 
-- Full bootstrapper deployed (CLAUDE.md, hooks, metrics pipeline)
+- Full bootstrapper deployed (CLAUDE.md, codeburn sync on developer machines, metrics pipeline)
 - Metrics pipeline live (EventBridge → Lambda → DynamoDB + CloudWatch)
 - Dashboards active with real-time data
 - Eval gate integrated into at least one CI/CD pipeline
@@ -391,7 +391,7 @@ Here is what matters most this week:
 
 1. **[PRIORITY_1]** — [DETAILS — e.g., "Verify CLAUDE.md is deployed to all active repos. Run `verify-setup.sh` in each repo and send me a screenshot of the output."]
 2. **[PRIORITY_2]** — [DETAILS — e.g., "Start using spec templates for any new feature work. Your team committed to building the search API and the user profile update via specs — hold that line."]
-3. **[PRIORITY_3]** — [DETAILS — e.g., "Check that git hooks are firing and AI-origin trailers are appearing in commits. If anyone sees the hook failing, check the troubleshooting guide below."]
+3. **[PRIORITY_3]** — [DETAILS — e.g., "Check that every developer has run `prism-cli bootstrapper setup-otel-sync` and that Attribution Coverage on the Team Velocity dashboard is rising. If a sync is failing, check the troubleshooting guide below."]
 
 **Resources**
 
@@ -403,14 +403,14 @@ Here is what matters most this week:
 
 **Troubleshooting**
 
-If the git hooks are not working:
-1. Make sure the hooks are executable: `chmod +x .git/hooks/prepare-commit-msg`
+If a developer's AI-attributed commits are not showing up:
+1. Check their sync schedule: `prism-cli bootstrapper setup-otel-sync --status`
 2. Verify the CLAUDE.md file is in the repo root
-3. Check that Node.js 18+ is installed
+3. Check that Node.js 22+ is installed (codeburn requires it)
 
 **Our Next Check-In**
 
-I have us scheduled for [NEXT_TOUCHPOINT_TYPE] on [DATE]. [DETAILS — e.g., "I will review your commit trailer adoption rates before then, so we can focus our time on any gaps."]
+I have us scheduled for [NEXT_TOUCHPOINT_TYPE] on [DATE]. [DETAILS — e.g., "I will review your attribution coverage before then, so we can focus our time on any gaps."]
 
 Keep the momentum going. The first two weeks are when habits form.
 
@@ -434,7 +434,7 @@ We are coming up on the midpoint of [YOUR_PILOT/YOUR_FOUNDATIONS_ENGAGEMENT], an
 
 Based on the data flowing through your dashboards [OR "based on the metrics I have pulled"]:
 
-- **AI-origin commit percentage**: [CURRENT_%] (target: [TARGET_%])
+- **AI-attributed commit percentage**: [CURRENT_%] (target: [TARGET_%])
 - **[METRIC_2]**: [CURRENT_VALUE] (target: [TARGET_VALUE])
 - **[METRIC_3]**: [CURRENT_VALUE] (target: [TARGET_VALUE])
 
@@ -479,7 +479,7 @@ We are approaching the end of your [8-WEEK PILOT / FOUNDATIONS ENGAGEMENT], and 
 - **Current level**: PRISM D1 Level [CURRENT_LEVEL] (as of [CURRENT_DATE])
 - **Level change**: +[DELTA] levels
 
-[NARRATIVE — e.g., "When we started, your team had no AI metrics and inconsistent tool usage. Today, you have a live dashboard tracking AI acceptance rates across 3 repos, eval gates in your primary CI pipeline, and 45% of commits carrying AI-origin metadata. That is a meaningful transformation in 8 weeks."]
+[NARRATIVE — e.g., "When we started, your team had no AI metrics and inconsistent tool usage. Today, you have a live dashboard tracking AI acceptance rates across 3 repos, eval gates in your primary CI pipeline, and 45% of commits attributed to AI tools. That is a meaningful transformation in 8 weeks."]
 
 **For the Final Readout, I Need**
 

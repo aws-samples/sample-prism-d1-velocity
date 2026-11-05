@@ -1731,7 +1731,9 @@ by `setup-otel-sync` (see [Developer Setup](#developer-setup)), and no CI workfl
 - `prism-cli git commit-trailers` still exists, marked deprecated, so trailer hooks already
   installed in other repos keep working until they are replaced. Running `prism-cli enable codewatch`
   in such a repo removes the old hook.
-- `~/.prism/tokentracker/` is no longer written and can be deleted.
+- Nothing in PRISM reads `~/.prism/tokentracker/` any more, and you can delete it. It is written
+  again only if an old trailer hook still runs `git commit-trailers`, or if you run
+  `prism-cli parse-code-tool kiro-ide`, which keeps a parse cache there.
 
 ### General Issues
 

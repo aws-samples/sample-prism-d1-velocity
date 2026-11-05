@@ -8,7 +8,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
  * sees it, and (b) persist `CLAUDE_CODE_SESSION_ID` to the env file Claude
  * sources, so later `git commit`s detect claude-code and attribute tokens.
  *
- * Registered in ~/.claude/settings.json by `bootstrapper install-git-hooks`.
+ * Was registered in ~/.claude/settings.json by the old `bootstrapper install-git-hooks`;
+ * nothing registers it any more. Kept, like `git commit-trailers`, for hooks already installed.
  */
 
 async function readStdin(): Promise<string> {

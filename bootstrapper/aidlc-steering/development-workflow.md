@@ -81,8 +81,7 @@ Before coding:
 **Part 2 — Execute:** Generate code following the approved plan.
 
 **PRISM requirements for every code generation:**
-- Tag AI origin: `AI-Origin: claude-code` (or `kiro`, `q-developer`)
-- Tag model: `AI-Model: <model-id>`
+- AI origin and model are recorded by codeburn attribution; do not add `AI-Origin` or `AI-Model` trailers
 - Reference spec: `Spec-Ref: specs/<name>.md` (if applicable)
 - Write or update tests alongside code
 - Follow existing code conventions and patterns
@@ -186,17 +185,15 @@ The following security rules apply to ALL code generation:
 
 ## Commit Convention
 
-Every commit must include trailers:
+When a commit implements a spec, reference it with a `Spec-Ref` trailer. The CI eval gate reads it and checks the code against the spec's acceptance criteria:
 
 ```
 feat: implement user search endpoint
 
 Spec-Ref: specs/user-search.md
-AI-Origin: claude-code
-AI-Model: claude-sonnet-4
 ```
 
-These trailers are parsed by PRISM git hooks to emit metrics automatically.
+Do not add `AI-Origin` or `AI-Model` trailers. AI origin comes from codeburn attribution (`prism-cli bootstrapper setup-otel-sync` on each developer machine), and the hook that wrote those trailers is retired.
 
 ---
 
@@ -206,7 +203,7 @@ The AI-DLC workflow generates PRISM metrics at these points:
 
 | Action | Event Type | Metric |
 |---|---|---|
-| Commit with AI trailer | `prism.d1.commit` | AI-to-merge ratio, lines changed |
+| Commit (codeburn attribution, not an event) | attribution store | AI share of commits, AI-to-merge ratio |
 | PR merged | `prism.d1.pr` | Lead time, acceptance rate, spec-to-code hours |
 | Eval gate runs | `prism.d1.eval` | Eval score, pass/fail, rubric name |
 | Agent invocation | `prism.d1.agent` | Steps, tools, tokens, duration |
