@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { run } from '../utils/exec.js';
+import { getAssetPath } from '../utils/root.js';
 import { DEFAULT_REVIEW_TIMEOUT_SECONDS, readEvalConfig, REVIEWER_GIT_CONFIG_KEY, RULES_PATH } from './config.js';
 import { safeWrite } from './gitleaks.js';
 import { countBySeverity, makeResult, readResults, type PrismResult } from './results.js';
@@ -171,9 +172,19 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
   let truncated = false;
   if (diff.length > MAX_DIFF_CHARS) { diff = diff.slice(0, MAX_DIFF_CHARS); truncated = true; }
 
-  const rulesAbs = resolve(repoRoot, RULES_PATH);
-  const rulesText = existsSync(rulesAbs) ? readFileSync(rulesAbs, 'utf8') : '';
-  if (!rulesText) log(`prism: ${RULES_PATH} not found; reviewing without the shared rules (run prism-cli enable codewatch)`);
+  // A repo covered only by the global hooks has no rules file of its own:
+  // fall back to the bundled default, the same rules enable codewatch installs.
+  let rulesPath = RULES_PATH;
+  let rulesText = existsSync(resolve(repoRoot, RULES_PATH)) ? readFileSync(resolve(repoRoot, RULES_PATH), 'utf8') : '';
+  if (!rulesText) {
+    try {
+      rulesPath = getAssetPath(import.meta.url, 'bootstrapper/eval-harness/steering/code-review.md');
+      rulesText = readFileSync(rulesPath, 'utf8');
+    } catch {
+      rulesPath = RULES_PATH;
+      log(`prism: ${RULES_PATH} not found; reviewing without the shared rules`);
+    }
+  }
 
   const tmp = mkdtempSync(join(tmpdir(), 'prism-review-'));
   try {
@@ -181,7 +192,7 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
     writeFileSync(diffPath, diff, { mode: 0o600 });
     const timeoutS = Number(evalCfg.timeout_seconds) > 0 ? Number(evalCfg.timeout_seconds) : DEFAULT_REVIEW_TIMEOUT_SECONDS;
     log(`prism: reviewing ${branch} against ${upstream} with ${adapter.displayName} (report only, up to ${timeoutS}s)...`);
-    const res = runReview(adapter, { repoRoot, rulesPath: RULES_PATH, rulesText, diffPath, diff, model: model || undefined }, timeoutS * 1000, bin);
+    const res = runReview(adapter, { repoRoot, rulesPath, rulesText, diffPath, diff, model: model || undefined }, timeoutS * 1000, bin);
     const finished = new Date().toISOString();
     const version = toolVersion(bin);
     if (!res.ok || !res.review) {

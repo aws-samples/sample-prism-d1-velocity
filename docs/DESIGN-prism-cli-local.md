@@ -223,6 +223,20 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 - Hooks are found with `git rev-parse --git-path hooks`, so `core.hooksPath` and linked worktrees work.
 - Hooks written before the rename (marker `# prism-cli enable security`, calling the removed `prism-cli git pre-commit`/`git pre-push`) are recognised as PRISM hooks: install overwrites them in place and uninstall removes them. There is no compatibility shim for the old command names.
 
+### Global install (`--global`)
+
+`prism-cli enable codewatch --global` covers every existing and future repo with no per-repo step:
+
+- Writes `pre-commit` and `pre-push` (same marker plus `# prism-codewatch-global`) to `~/.prism/hooks/` and runs `git config --global core.hooksPath ~/.prism/hooks`.
+- A global `core.hooksPath` makes git ignore each repo's `.git/hooks`, so the global hooks run the repo-local hook themselves, after codewatch, with the same arguments and (for pre-push) the same buffered stdin, and pass its exit code through. A per-repo codewatch hook is never run twice: the team hook it had backed up (`<hook>.pre-prism`) runs instead.
+- pre-commit: a gitleaks finding blocks before the repo hook runs. pre-push: codewatch's part stays report-only; the repo hook's exit code still counts.
+- An existing global `core.hooksPath` that is not ours is refused unless `--force`; with `--force` it is saved to `~/.prism/hooks/.previous-hookspath`, and its hooks are chained too (`.chain-hookspath`).
+- Opt a repo out with `git config prism.codewatch false` (repo-local hooks still run). A repo that sets its own `core.hooksPath` (husky) overrides the global one and is not covered.
+- Results go to each repo's `.prism/results/`, created on demand and excluded through `.git/info/exclude`, so a repo that never had `.prism/` stays clean. Without a repo rules file, pre-push reviews against the bundled default rules.
+- `--reviewer` with `--global` sets `git config --global prism.reviewer`.
+- `--global --uninstall` restores the saved value (or unsets it), removes only marked files, and never touches repo-local hooks. If `core.hooksPath` was changed to something else since, it is left alone.
+- `bootstrapper install-git-hooks --global` still ignores its old flag; it does not map to this.
+
 ### The old hook
 
 `bootstrapper install-git-hooks` is now a **deprecated alias** for `enable codewatch` (chosen over a deprecation-only error so existing docs and scripts keep working). `enable codewatch` removes a PRISM `prepare-commit-msg` (identified by `AI-Origin`) and restores whatever it had backed up. `git commit-trailers` stays, marked deprecated, because hooks already installed in other repos call it. Not touched automatically: `~/.git-templates/hooks/prepare-commit-msg` (from the old `--global`) and the Claude Code `SessionStart` entry in `~/.claude/settings.json`; the alias prints a note for the template.

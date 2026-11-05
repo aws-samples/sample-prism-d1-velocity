@@ -10,7 +10,9 @@
  * `.prism/results/` to .gitignore.
  */
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { appendFileSync, existsSync as fileExists } from 'node:fs';
+import { run } from '../utils/exec.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 export const RESULTS_DIR = '.prism/results';
@@ -120,8 +122,28 @@ export function resultFileName(r: PrismResult): string {
  * Writes a result atomically (temp file + rename), so a dashboard reading the
  * directory never sees a half-written file. Returns the absolute path.
  */
+/**
+ * Makes sure `.prism/results/` is ignored in this clone. Under the global
+ * hooks a repo may never have had codewatch installed, so it has no .gitignore
+ * entry; `.git/info/exclude` is local to the clone and keeps the working tree
+ * clean without touching any tracked file. Outside a git repo it does nothing.
+ */
+export function ensureResultsExcluded(repoRoot: string): boolean {
+  const probe = run('git', ['-C', repoRoot, 'check-ignore', '-q', `${RESULTS_DIR}/probe.json`]);
+  if (probe.ok) return false;
+  const p = run('git', ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude']);
+  if (!p.ok || !p.stdout) return false;
+  mkdirSync(dirname(p.stdout), { recursive: true });
+  const prefix = fileExists(p.stdout) && !readFileSync(p.stdout, 'utf8').endsWith('\n') ? '\n' : '';
+  appendFileSync(p.stdout, `${prefix}# prism-cli codewatch results (local)\n/${RESULTS_DIR}/\n`);
+  return true;
+}
+
 export function writeResult(repoRoot: string, r: PrismResult): string {
   const dir = resolve(repoRoot, RESULTS_DIR);
+  if (!fileExists(dir)) {
+    try { ensureResultsExcluded(repoRoot); } catch { /* never fail a write over this */ }
+  }
   mkdirSync(dir, { recursive: true });
   const dest = join(dir, resultFileName(r));
   const tmp = `${dest}.${process.pid}.tmp`;

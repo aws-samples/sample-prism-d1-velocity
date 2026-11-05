@@ -40,8 +40,9 @@ if [ -x "$HOOK_DIR/pre-commit${BACKUP_SUFFIX}" ]; then
   "$HOOK_DIR/pre-commit${BACKUP_SUFFIX}" "$@" || exit $?
 fi
 # Probe first: an older prism-cli on PATH has no "codewatch pre-commit" and would
-# fail every commit with "unknown command".
-if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-commit --help >/dev/null 2>&1; then
+# fail every commit with "unknown command". Its --help exits 0 with the root help,
+# so the probe checks that the subcommand's own usage line is printed.
+if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-commit --help 2>/dev/null | grep -q 'codewatch pre-commit'; then
   exec prism-cli codewatch pre-commit
 fi
 if command -v gitleaks >/dev/null 2>&1; then
@@ -71,7 +72,7 @@ PRISM_PUSH_INPUT=$(cat)
 if [ -x "$HOOK_DIR/pre-push${BACKUP_SUFFIX}" ]; then
   printf '%s\\n' "$PRISM_PUSH_INPUT" | "$HOOK_DIR/pre-push${BACKUP_SUFFIX}" "$@" || exit $?
 fi
-if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-push --help >/dev/null 2>&1; then
+if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-push --help 2>/dev/null | grep -q 'codewatch pre-push'; then
   printf '%s\\n' "$PRISM_PUSH_INPUT" | prism-cli codewatch pre-push --remote "\${1:-}" || true
 else
   echo "prism: prism-cli (with 'codewatch pre-push') is not on PATH; local review skipped (report only)." >&2
