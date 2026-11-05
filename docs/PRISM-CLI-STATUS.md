@@ -37,7 +37,7 @@ Installs local git hooks in the current repo:
 - **`pre-commit`:** gitleaks scans the staged changes and **blocks** the commit if it finds a secret. If gitleaks is not installed, the commit is allowed with a warning and recorded as not scanned.
 - **`pre-push`:** an AI code review of the branch diff for quality and security. It **only reports** and never blocks a push. The reviewer is kiro-cli or Claude Code, whichever the developer uses, so a Claude Code user does not need kiro-cli. Both use the same review rules as the CI gate.
 
-Results go to `.prism/results/` in one JSON format. Existing hooks are backed up and still run. `--uninstall` restores them.
+Results go to `.prism/results/` in one JSON format. Existing hooks are backed up and still run. `--uninstall` restores them. `--global` installs the hooks once for every repo (`~/.prism/hooks` plus the global `core.hooksPath`); each repo's own hooks still run after codewatch, and `git config prism.codewatch false` opts a repo out. User docs: [Codewatch (Local Git Hooks)](../USER_GUIDE.md#codewatch-local-git-hooks).
 
 "codewatch" was originally an unknown name on the slide. We decided it is this hook gate. The command was first built as `enable security` and renamed.
 
@@ -46,14 +46,15 @@ A local web page for one developer, started with `prism-cli dashboard` from any 
 
 - **Repos:** it finds them itself by scanning your home directory, 3 levels deep, for every git repo (worktrees included). Repos without codewatch are listed as missing, in a collapsed group. The repo you are in is listed first. `--root <dir>` scans somewhere else. The scan skips hidden and build folders, does not follow symlinks and takes about 50 ms here (34 repos).
 - **Panels:**
-  - Codewatch: one summary row per repo (findings by severity, last run, reviewer, unscanned commits), most high findings first, and each repo's detail in a collapsible section. A warning banner shows when secret scanning is off on this machine.
+  - Codewatch: one summary row per repo (findings by severity, last run, reviewer, unscanned commits), most high findings first, and each repo's detail in a collapsible section. The detail starts with a Commits table: each commit's secret scan and review, with each finding placed on the commit that introduced its line (`git blame`). A warning banner shows when secret scanning is off on this machine.
   - A codeburn usage summary, which points to `codeburn web` for full charts.
-  - A setup checklist: this machine (codeburn, scheduled sync, gitleaks, AWS credentials) and one row per repo saying whether codewatch is installed, with the `cd <repo> && prism-cli enable codewatch` fix.
-  - When two or more repos lack codewatch, a suggestion to cover them all with `prism-cli enable codewatch --global`.
+  - A setup checklist: this machine (codeburn, scheduled sync, gitleaks, AWS credentials, the global codewatch hooks) and one row per repo saying whether codewatch is installed (per repo or "(global)"), with the `cd <repo> && prism-cli enable codewatch` fix.
+  - When the global hooks are not installed and two or more repos lack codewatch, a suggestion to cover them all with `prism-cli enable codewatch --global`.
   - A printable report for each scan (`/report/<id>`, also as Markdown), and `prism-cli codewatch report` to export one without the server.
   - A placeholder for security findings.
 - **Access:** it listens on `127.0.0.1` only and needs a one-time token. It is read-only and reads local files only, with no AWS calls.
-- **Other options:** `--json` prints the same data.
+- **Other options:** `--json` prints the same data. `--port` and `--no-open` suit remote use over `ssh -L`. `--all` is deprecated and does nothing.
+- **User docs:** [Local Dashboard](../USER_GUIDE.md#local-dashboard).
 
 ## Planned
 
