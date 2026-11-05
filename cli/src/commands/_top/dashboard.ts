@@ -28,13 +28,15 @@ export default {
   description: 'Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage and setup checklist. No AWS calls.',
   options: [
     { flags: '--json', description: 'Print the dashboard data as JSON and exit (no server)' },
-    { flags: '--all', description: 'Include every repo with .prism/ under --root' },
-    { flags: '--root <dir>', description: 'Where --all looks for repos (default: parent of the current repo)' },
+    { flags: '--root <dir>', description: 'Where to look for repos with .prism/, 3 levels deep (default: your home directory)' },
+    { flags: '--all', description: '[deprecated, no effect] every repo under --root is now shown by default' },
     { flags: '--port <n>', description: 'Port on 127.0.0.1 (default: a random free port)' },
     { flags: '--no-open', description: 'Do not open a browser' },
   ],
   async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean }) {
-    const build = () => buildPayload({ cwd: process.cwd(), all: !!opts.all, root: opts.root });
+    // stderr, so --json output stays parseable.
+    if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
+    const build = () => buildPayload({ cwd: process.cwd(), root: opts.root });
 
     if (opts.json) {
       process.stdout.write(JSON.stringify(await build(), null, 2) + '\n');

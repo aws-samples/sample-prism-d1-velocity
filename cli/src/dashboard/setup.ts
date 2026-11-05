@@ -89,61 +89,46 @@ function readText(p: string): string | null {
   try { return readFileSync(p, 'utf8'); } catch { return null; }
 }
 
-/** The repo's CI eval workflow files, GitHub or GitLab. */
-function ciWorkflows(repo: string): { github: string | null; gitlab: string | null } {
-  const gh = resolve(repo, '.github/workflows/prism-eval-gate.yml');
-  const glCi = resolve(repo, '.gitlab-ci.yml');
-  const glText = readText(glCi);
-  return { github: existsSync(gh) ? gh : null, gitlab: glText && glText.includes('prism-eval-gate') ? glCi : null };
+export interface CodewatchSetup {
+  /** ok: both PRISM hooks are installed. missing: anything else (including hooks from before the rename). */
+  status: 'ok' | 'missing';
+  /** Reviewer the pre-push review would use here, or null when none is available. */
+  reviewer: string | null;
+  /** Where that choice came from: git-config, prism-config, detected, fallback or none. */
+  reviewerSource: string;
+  detail: string;
+  /** Empty when ok. */
+  fix: string;
 }
 
-export function repoChecks(repo: string, deps: { pathEnv?: string } = {}): CheckItem[] {
-  const out: CheckItem[] = [];
+/** Shell-quotes a path for the copy-paste fix line. */
+function shellPath(p: string): string {
+  return /^[A-Za-z0-9_./~+-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
+}
 
-  // Codewatch hooks
+export function enableCodewatchFix(repo: string): string {
+  return `cd ${shellPath(repo)} && prism-cli enable codewatch`;
+}
+
+/** The only per-repo check: are the codewatch hooks installed, and which reviewer would run. */
+export function codewatchSetup(repo: string, deps: { pathEnv?: string } = {}): CodewatchSetup {
   const hooksDir = git(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']) || resolve(repo, '.git/hooks');
-  const hookState = MANAGED_HOOKS.map((h) => {
+  const state = MANAGED_HOOKS.map((h) => {
     const t = readText(resolve(hooksDir, h));
     return { h, ours: !!t && t.includes(HOOK_MARKER), old: !!t && !t.includes(HOOK_MARKER) && t.includes('# prism-cli enable security') };
   });
-  const cfg = readEvalConfig(repo);
   const choice = resolveReviewer({
     gitConfigValue: git(repo, ['config', '--get', REVIEWER_GIT_CONFIG_KEY]),
-    prismConfigValue: cfg.reviewer,
+    prismConfigValue: readEvalConfig(repo).reviewer,
     available: detectReviewers(deps.pathEnv),
   });
-  const reviewerText = choice.id ? `reviewer ${choice.id} (${choice.source})` : 'no reviewer available';
-  if (hookState.every((s) => s.ours)) {
-    out.push(item('codewatch-hooks', 'Codewatch hooks installed', choice.id ? 'ok' : 'warn',
-      `pre-commit and pre-push; ${reviewerText}`, 'Install kiro-cli or Claude Code for the pre-push review'));
-  } else if (hookState.some((s) => s.old)) {
-    out.push(item('codewatch-hooks', 'Codewatch hooks installed', 'warn', 'hooks from before the codewatch rename', 'prism-cli enable codewatch'));
-  } else {
-    const have = hookState.filter((s) => s.ours).map((s) => s.h);
-    out.push(item('codewatch-hooks', 'Codewatch hooks installed', 'missing',
-      have.length ? `only ${have.join(', ')}` : 'not installed', 'prism-cli enable codewatch'));
+  const reviewer = choice.id;
+  if (state.every((x) => x.ours)) {
+    return { status: 'ok', reviewer, reviewerSource: choice.source, fix: '',
+      detail: reviewer ? 'pre-commit and pre-push installed' : 'hooks installed; no reviewer on PATH (install kiro-cli or Claude Code)' };
   }
-
-  // CI eval workflow
-  const ci = ciWorkflows(repo);
-  const ciFile = ci.github || ci.gitlab;
-  out.push(item('ci-eval', 'CI eval workflow present', ciFile ? 'ok' : 'missing',
-    ciFile ? (ci.github ? '.github/workflows/prism-eval-gate.yml' : '.gitlab-ci.yml includes prism-eval-gate') : 'no prism-eval-gate workflow',
-    'prism-cli bootstrapper install-eval-harness'));
-
-  // OIDC: the role itself lives in AWS and the secret in GitHub/GitLab; locally
-  // we can only see whether the workflow is wired to assume a role.
-  const wfText = [ci.github, ci.gitlab].filter(Boolean).map((p) => readText(p as string) || '').join('\n');
-  const wired = /PRISM_METRICS_ROLE_ARN|role-to-assume/.test(wfText);
-  out.push(item('oidc', 'GitHub/GitLab OIDC role', wired ? 'warn' : 'missing',
-    wired ? 'workflow assumes PRISM_METRICS_ROLE_ARN; role and secret not verifiable locally' : 'no workflow references a CI role',
-    wired ? 'Confirm the PRISM_METRICS_ROLE_ARN secret exists (setup-github-oidc / setup-gitlab-oidc)' : 'prism-cli bootstrapper setup-github-oidc (or setup-gitlab-oidc)'));
-
-  // Security Agent: setup writes nothing locally; the CI Continuum step is the only local trace.
-  const continuum = /securityagent/.test(wfText);
-  out.push(item('security-agent', 'Security Agent set up', continuum ? 'warn' : 'missing',
-    continuum ? 'CI workflow has the Continuum scan step; agent space not verifiable locally' : 'no Security Agent step in CI',
-    continuum ? 'Confirm with: prism-cli securityagent setup' : 'prism-cli securityagent setup, then install-eval-harness'));
-
-  return out;
+  const have = state.filter((x) => x.ours).map((x) => x.h);
+  const detail = state.some((x) => x.old) ? 'hooks from before the codewatch rename'
+    : have.length ? `only ${have.join(', ')} installed` : 'not installed';
+  return { status: 'missing', reviewer, reviewerSource: choice.source, detail, fix: enableCodewatchFix(repo) };
 }

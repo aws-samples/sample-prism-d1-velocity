@@ -58,6 +58,10 @@ export interface SecretScanning {
 export interface CodewatchPanel {
   /** False when there are no results at all: the empty state. */
   hasResults: boolean;
+  /** started_at of the newest result of any kind, or null. */
+  lastRunAt: string | null;
+  /** Tool of the newest pre-push review that had one, or null. */
+  lastReviewer: string | null;
   totalRuns: number;
   latestByBranch: BranchLatest[];
   /** Findings from the latest review of each branch. */
@@ -87,18 +91,29 @@ function day(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso.slice(0, 10) : localDate(d);
 }
 
+function bannerText(gitleaksAvailable: boolean, count: number, since: string | null): string | null {
+  if (gitleaksAvailable) return null;
+  return count
+    ? `Secret scanning is off: gitleaks is not installed. ${count} commit${count === 1 ? '' : 's'} since ${day(since!)} ${count === 1 ? 'was' : 'were'} not scanned.`
+    : 'Secret scanning is off: gitleaks is not installed. No unscanned commits recorded yet.';
+}
+
 export function secretScanning(sorted: PrismResult[], gitleaksAvailable: boolean, hint = gitleaksInstallHint()): SecretScanning {
   let lastRan = -1;
   sorted.forEach((r, i) => { if (ranGitleaks(r)) lastRan = i; });
   const streak = sorted.slice(lastRan + 1).filter(isMissingSkip);
   const since = streak.length ? streak[0].started_at : null;
-  let banner: string | null = null;
-  if (!gitleaksAvailable) {
-    banner = streak.length
-      ? `Secret scanning is off: gitleaks is not installed. ${streak.length} commit${streak.length === 1 ? '' : 's'} since ${day(since!)} ${streak.length === 1 ? 'was' : 'were'} not scanned.`
-      : 'Secret scanning is off: gitleaks is not installed. No unscanned commits recorded yet.';
-  }
-  return { gitleaksAvailable, unscannedCommits: streak.length, unscannedSince: since, installHint: hint, banner };
+  return { gitleaksAvailable, unscannedCommits: streak.length, unscannedSince: since, installHint: hint, banner: bannerText(gitleaksAvailable, streak.length, since) };
+}
+
+/**
+ * gitleaks is a machine tool, so the banner is machine-level: it sums each
+ * repo's unscanned commits and dates them from the earliest.
+ */
+export function combineSecretScanning(perRepo: SecretScanning[], gitleaksAvailable: boolean, hint = gitleaksInstallHint()): SecretScanning {
+  const count = perRepo.reduce((n, s) => n + s.unscannedCommits, 0);
+  const since = perRepo.map((s) => s.unscannedSince).filter((x): x is string => !!x).sort()[0] ?? null;
+  return { gitleaksAvailable, unscannedCommits: count, unscannedSince: since, installHint: hint, banner: bannerText(gitleaksAvailable, count, since) };
 }
 
 function summarize(r: PrismResult): RunSummary {
@@ -144,8 +159,11 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
   const byCategory = { quality: 0, security: 0 };
   for (const f of findings) { bySeverity[f.severity]++; byCategory[f.category]++; }
 
+  const reviews = all.filter((r) => r.kind === 'review' && r.tool && r.tool !== 'none');
   return {
     hasResults: all.length > 0,
+    lastRunAt: all.length ? all[all.length - 1].started_at : null,
+    lastReviewer: reviews.length ? reviews[reviews.length - 1].tool : null,
     totalRuns: all.length,
     latestByBranch: [...latest.values()].sort((a, b) => a.branch.localeCompare(b.branch)),
     findings: findings.slice(0, MAX_FINDINGS),

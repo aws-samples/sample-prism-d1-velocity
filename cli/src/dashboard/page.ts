@@ -24,13 +24,15 @@ h2 { font-size:15px; margin:0 0 10px; } h3 { font-size:13px; margin:14px 0 6px; 
 .empty { color:var(--muted); padding:8px 0; } code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; background:var(--bg); padding:1px 4px; border-radius:4px; }
 .tablewrap { overflow-x:auto; }
 table { width:100%; border-collapse:collapse; font-size:13px; } th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; overflow-wrap:break-word; }
-th { white-space:nowrap; } td.msg { min-width:280px; } td code { white-space:normal; overflow-wrap:anywhere; }
+th { white-space:nowrap; } td.msg { min-width:280px; } td.count { font-variant-numeric:tabular-nums; font-weight:600; } td code { white-space:normal; overflow-wrap:anywhere; }
 th { color:var(--muted); font-weight:600; } td.num { text-align:right; font-variant-numeric: tabular-nums; }
 .pill { white-space:nowrap; display:inline-block; padding:0 7px; border-radius:10px; font-size:12px; font-weight:600; border:1px solid currentColor; }
 .s-ok { color:var(--ok); } .s-warn, .s-findings, .s-skipped { color:var(--warn); } .s-missing, .s-error { color:var(--bad); }
 .sev-high { color:var(--high); } .sev-medium { color:var(--medium); } .sev-low { color:var(--low); }
 .stats { display:flex; gap:18px; flex-wrap:wrap; margin:6px 0; } .stat b { display:block; font-size:20px; } .stat span { color:var(--muted); font-size:12px; }
 .fix { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.tag { margin-left:6px; font-size:11px; padding:0 6px; border-radius:8px; background:var(--bg); border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo > summary { cursor:pointer; padding:4px 0; } details.repo .detail { padding-left:14px; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
@@ -88,22 +90,23 @@ function scanBanner(ss) {
     el('div', { class: 'fix' }, 'Install: ', el('code', {}, ss.installHint)));
 }
 
-function codewatchPanel(repo) {
-  const cw = repo.codewatch, s = el('section', { class: 'card wide' }, el('h2', {}, 'Codewatch'), el('div', { class: 'repo-title' }, repo.path));
-  const banner = scanBanner(cw.secretScanning);
-  if (banner) s.append(banner);
+function repoName(r) {
+  return el('span', { title: r.path }, r.name, r.current ? el('span', { class: 'tag' }, 'this repo') : null);
+}
+
+/** One repo's detail, shown inside its <details>. */
+function codewatchDetail(repo) {
+  const cw = repo.codewatch, s = el('div', { class: 'detail' });
   if (!cw.hasResults) {
-    s.append(el('p', { class: 'empty' }, 'No codewatch results yet. Run ', el('code', {}, 'prism-cli enable codewatch'), ' in this repo, then commit and push.'));
+    const fix = repo.setup && repo.setup.fix ? repo.setup.fix : 'prism-cli enable codewatch';
+    s.append(el('p', { class: 'empty' }, 'No codewatch results yet. Run ', el('code', {}, fix), ', then commit and push.'));
     return s;
   }
   s.append(el('div', { class: 'stats' },
-    el('div', { class: 'stat' }, el('b', { class: 'sev-high' }, cw.bySeverity.high), el('span', {}, 'high')),
-    el('div', { class: 'stat' }, el('b', { class: 'sev-medium' }, cw.bySeverity.medium), el('span', {}, 'medium')),
-    el('div', { class: 'stat' }, el('b', { class: 'sev-low' }, cw.bySeverity.low), el('span', {}, 'low')),
     el('div', { class: 'stat' }, el('b', {}, cw.byCategory.security), el('span', {}, 'security')),
     el('div', { class: 'stat' }, el('b', {}, cw.byCategory.quality), el('span', {}, 'quality')),
     el('div', { class: 'stat' }, el('b', {}, cw.gitleaksBlocks.length), el('span', {}, 'gitleaks blocks')),
-    el('div', { class: 'stat' }, el('b', {}, cw.skipped.length), el('span', {}, 'unscanned commits'))));
+    el('div', { class: 'stat' }, el('b', {}, cw.skipped.length), el('span', {}, 'pushed without a scan'))));
 
   s.append(el('h3', {}, 'Latest run per branch'));
   s.append(table(['Branch', 'Review', 'Reviewer', 'When', 'Secret scan'], cw.latestByBranch.map((b) => [
@@ -136,6 +139,33 @@ function codewatchPanel(repo) {
   return s;
 }
 
+function codewatchPanel(data) {
+  const s = el('section', { class: 'card wide' }, el('h2', {}, 'Codewatch'));
+  const banner = scanBanner(data.machine.secretScanning);
+  if (banner) s.append(banner);
+  const rows = data.overview.codewatch;
+  if (!rows.length) { s.append(el('p', { class: 'empty' }, 'No repositories found.')); return s; }
+  const count = (n, cls) => el('td', { class: 'count' + (n ? ' ' + cls : '') }, n);
+  s.append(table(['Repo', 'High', 'Medium', 'Low', 'Last run', 'Reviewer', 'Unscanned', 'Gitleaks'], rows.map((r) => [
+    repoName(r), count(r.high, 'sev-high'), count(r.medium, 'sev-medium'), count(r.low, 'sev-low'),
+    r.lastRunAt ? when(r.lastRunAt) : 'never', txt(r.reviewer || '-'), count(r.unscannedCommits, 'sev-medium'),
+    r.gitleaksWarning ? pill('warn', 'not scanned') : '-',
+  ])));
+  const byPath = Object.fromEntries(data.repos.map((r) => [r.path, r]));
+  s.append(el('h3', {}, 'Per repo'));
+  for (const row of rows) {
+    const repo = byPath[row.path]; if (!repo) continue;
+    const total = row.high + row.medium + row.low;
+    const d = el('details', repo.current ? { class: 'repo', open: '' } : { class: 'repo' },
+      el('summary', {}, el('b', {}, repo.name), ' ', el('span', { class: 'fix' }, repo.codewatch.hasResults ? total + ' finding' + (total === 1 ? '' : 's') + ' in the latest reviews' : 'no results yet'),
+        repo.current ? el('span', { class: 'tag' }, 'this repo') : null),
+      el('div', { class: 'repo-title' }, repo.path));
+    d.append(codewatchDetail(repo));
+    s.append(d);
+  }
+  return s;
+}
+
 function usagePanel(u) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Usage (codeburn)'));
   if (u.status !== 'ok') {
@@ -153,11 +183,18 @@ function usagePanel(u) {
   return s;
 }
 
-function setupPanel(machine, repos) {
+function setupPanel(data) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Setup checklist'));
   const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail, i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
-  s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(machine.setup)));
-  for (const r of repos) s.append(el('h3', {}, 'Repo: ' + r.name), table(['', 'Check', 'Detail'], rows(r.setup)));
+  s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(data.machine.setup)));
+  const repos = data.overview.setup;
+  const missing = repos.filter((r) => r.status === 'missing').length;
+  s.append(el('h3', {}, 'Codewatch per repo (' + (repos.length - missing) + ' of ' + repos.length + ' installed)'));
+  s.append(table(['Repo', 'Codewatch'], repos.map((r) => [
+    repoName(r),
+    el('div', {}, pill(r.status === 'ok' ? 'ok' : 'missing'), ' ', r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail),
+      r.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, r.fix)) : null),
+  ])));
   return s;
 }
 
@@ -176,10 +213,8 @@ async function load() {
   } catch (e) { meta.textContent = 'failed to load: ' + e.message; return; }
   main.replaceChildren();
   if (data.scope.error) main.append(el('section', { class: 'card wide' }, pill('error'), ' ', data.scope.error));
-  if (!data.repos.length && !data.scope.error) main.append(el('section', { class: 'card wide' }, el('p', { class: 'empty' }, 'No repositories with .prism/ found under ' + txt(data.scope.root) + '.')));
-  for (const r of data.repos) main.append(codewatchPanel(r));
-  main.append(usagePanel(data.usage), setupPanel(data.machine, data.repos), securityPanel(data.security));
-  meta.textContent = (data.scope.all ? data.repos.length + ' repos under ' + txt(data.scope.root) + ' · ' : '') + 'updated ' + when(data.generated_at);
+  main.append(codewatchPanel(data), usagePanel(data.usage), setupPanel(data), securityPanel(data.security));
+  meta.textContent = data.repos.length + ' repos under ' + txt(data.scope.root) + (data.scope.truncated ? ' (scan capped)' : '') + ' · updated ' + when(data.generated_at);
 }
 document.getElementById('refresh').addEventListener('click', load);
 load();

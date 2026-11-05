@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -16,9 +16,9 @@ import { fileURLToPath } from 'node:url';
 import { collectCodewatch, secretScanning } from '../src/dashboard/codewatch.js';
 import { makeResult, REASON_GITLEAKS_MISSING, type PrismResult } from '../src/codewatch/results.js';
 import { collectUsage, type CodeburnExport } from '../src/dashboard/usage.js';
-import { machineChecks, repoChecks, gitleaksInstallHint } from '../src/dashboard/setup.js';
+import { machineChecks, codewatchSetup, gitleaksInstallHint } from '../src/dashboard/setup.js';
 import { discoverRepos, scanForRepos } from '../src/dashboard/repos.js';
-import { buildPayload, PAYLOAD_SCHEMA } from '../src/dashboard/payload.js';
+import { buildPayload, PAYLOAD_SCHEMA, sortCodewatchRows, sortSetupRows } from '../src/dashboard/payload.js';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
 import { renderPage } from '../src/dashboard/page.js';
 import { installHooks } from '../src/codewatch/hooks.js';
@@ -200,80 +200,162 @@ test('setup (machine): missing items each carry a one-line fix; AWS uses presenc
   assert.equal(aws?.status, 'ok');
 });
 
-test('setup (repo): hooks, reviewer, CI workflow, OIDC and Security Agent evidence', () => {
+test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable fix', () => {
   const dir = tmp('srepo');
   git(dir, 'init', '-q', `--template=${tmp('tpl2')}`);
-  let by = Object.fromEntries(repoChecks(dir, { pathEnv: tmp('p0') }).map((i) => [i.id, i]));
-  assert.equal(by['codewatch-hooks'].status, 'missing');
-  assert.equal(by['codewatch-hooks'].fix, 'prism-cli enable codewatch');
-  assert.equal(by['ci-eval'].status, 'missing');
+  const before = codewatchSetup(dir, { pathEnv: tmp('p0') });
+  assert.equal(before.status, 'missing');
+  assert.equal(before.fix, `cd ${dir} && prism-cli enable codewatch`);
+  assert.deepEqual(Object.keys(before).sort(), ['detail', 'fix', 'reviewer', 'reviewerSource', 'status']);
 
   installHooks(join(dir, '.git', 'hooks'));
-  mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
-  writeFileSync(join(dir, '.github', 'workflows', 'prism-eval-gate.yml'),
-    'env:\n  METRICS_ROLE_ARN: ${{ secrets.PRISM_METRICS_ROLE_ARN }}\nsteps:\n  - run: aws securityagent list-findings\n');
   const bin = tmp('p1');
   exe(bin, 'claude', 'exit 0');
-  by = Object.fromEntries(repoChecks(dir, { pathEnv: bin }).map((i) => [i.id, i]));
-  assert.equal(by['codewatch-hooks'].status, 'ok');
-  assert.match(by['codewatch-hooks'].detail, /reviewer claude/);
-  assert.equal(by['ci-eval'].status, 'ok');
-  assert.equal(by.oidc.status, 'warn', 'local evidence only: wired, not verified');
-  assert.equal(by['security-agent'].status, 'warn');
+  const after = codewatchSetup(dir, { pathEnv: bin });
+  assert.equal(after.status, 'ok');
+  assert.equal(after.reviewer, 'claude');
+  assert.equal(after.fix, '');
 });
 
-test('setup (repo): hooks written before the codewatch rename are flagged', () => {
-  const dir = tmp('orepo');
+test('setup (repo): hooks from before the rename count as missing; paths with spaces are quoted', () => {
+  const dir = join(tmp('orepo'), "my repo's");
+  mkdirSync(dir);
   git(dir, 'init', '-q', `--template=${tmp('tpl3')}`);
   exe(join(dir, '.git', 'hooks'), 'pre-commit', '# prism-cli enable security\nexec prism-cli git pre-commit');
-  const hooks = repoChecks(dir, { pathEnv: tmp('p2') }).find((i) => i.id === 'codewatch-hooks');
-  assert.equal(hooks?.status, 'warn');
+  const c = codewatchSetup(dir, { pathEnv: tmp('p2') });
+  assert.equal(c.status, 'missing');
+  assert.match(c.detail, /before the codewatch rename/);
+  assert.equal(c.fix, `cd '${dir.replace(/'/g, `'\\''`)}' && prism-cli enable codewatch`);
 });
 
 // ---------------------------------------------------------------- repo discovery
 
-test('discoverRepos: current repo by default; --all scans a root for .prism repos', () => {
-  const root = tmp('root');
-  const mk = (rel: string, prism: boolean) => {
-    const d = join(root, rel);
+/** A fake home with repos placed at the given relative paths. */
+function fakeHome(spec: Record<string, boolean>): string {
+  const home = tmp('home');
+  for (const [rel, prism] of Object.entries(spec)) {
+    const d = join(home, rel);
     mkdirSync(join(d, '.git'), { recursive: true });
     if (prism) mkdirSync(join(d, '.prism'));
-  };
-  mk('a', true);
-  mk('b', false);
-  mk('group/c', true);
-  mk('node_modules/d', true);
-  mk('x/y/z/too-deep', true);
-  assert.deepEqual(scanForRepos(root).map((r) => r.name), ['a', 'c']);
+  }
+  return home;
+}
 
-  const repo = repoWithResults();
-  const one = discoverRepos({ cwd: repo });
-  assert.equal(one.repos.length, 1);
-  assert.equal(one.error, null);
-  const all = discoverRepos({ cwd: repo, all: true, root });
-  assert.equal(all.scannedRoot, root);
-  assert.equal(all.repos.length, 2);
-  assert.match(discoverRepos({ cwd: root }).error || '', /not inside a git repository/);
+test('discovery: from an unrelated cwd, finds .prism repos under HOME', () => {
+  const home = fakeHome({ 'a': true, 'b-no-prism': false, 'work/c': true, 'work/team/d': true });
+  const d = discoverRepos({ cwd: tmp('elsewhere'), home });
+  assert.equal(d.currentRepo, null);
+  assert.equal(d.error, null);
+  assert.equal(d.scannedRoot, home);
+  assert.deepEqual(d.repos.map((r) => r.name), ['a', 'c', 'd']);
+  assert.ok(d.repos.every((r) => !r.current && r.hasPrism));
+  assert.ok(d.scanMs >= 0);
+});
+
+test('discovery: skips hidden and build dirs, symlinks, nested repos and unreadable dirs', () => {
+  const home = fakeHome({
+    'ok': true,
+    '.hidden/r1': true, '.cache/r2': true, '.venv/r3': true,
+    'node_modules/r4': true, 'Library/r5': true, 'build/r6': true, 'dist/r7': true, 'target/r8': true, 'venv/r9': true,
+    'ok/nested': true,
+  });
+  symlinkSync(join(home, 'ok'), join(home, 'link-to-ok'));
+  mkdirSync(join(home, 'proj'));
+  symlinkSync(join(home, 'ok'), join(home, 'proj', 'linked'));
+  const locked = join(home, 'locked');
+  mkdirSync(join(locked, 'r10', '.git'), { recursive: true });
+  mkdirSync(join(locked, 'r10', '.prism'));
+  chmodSync(locked, 0o000);
+  try {
+    const names = scanForRepos(home).repos.map((r) => r.name);
+    assert.deepEqual(names, ['ok']);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+});
+
+test('discovery: depth 3 is the limit', () => {
+  const home = fakeHome({ 'one': true, 'l1/two': true, 'l1/l2/three': true, 'l1/l2/l3/four': true });
+  // home/one is level 1, l1/two level 2, l1/l2/three level 3; l1/l2/l3/four (level 4) is too deep
+  assert.deepEqual(scanForRepos(home).repos.map((r) => r.name).sort(), ['one', 'three', 'two']);
+});
+
+test('discovery: the current repo is listed first even without .prism, and not twice', () => {
+  const home = fakeHome({ 'a': true, 'z-current': false, 'b': true });
+  const cur = join(home, 'z-current');
+  rmSync(join(cur, '.git'), { recursive: true });
+  git(cur, 'init', '-q', `--template=${tmp('tpl4')}`);
+  mkdirSync(join(cur, 'sub'));
+  const d = discoverRepos({ cwd: join(cur, 'sub'), home });
+  assert.equal(d.repos[0].path, realpathSync(cur));
+  assert.equal(d.repos[0].current, true);
+  assert.equal(d.repos[0].hasPrism, false);
+  assert.deepEqual(d.repos.map((r) => r.name), ['z-current', 'a', 'b']);
+  // with .prism the current repo is also found by the scan; it still appears once, first
+  mkdirSync(join(cur, '.prism'));
+  const again = discoverRepos({ cwd: cur, home });
+  assert.deepEqual(again.repos.map((r) => r.name), ['z-current', 'a', 'b']);
+});
+
+test('discovery: --root overrides HOME; a bad root is reported', () => {
+  const home = fakeHome({ 'a': true });
+  const other = fakeHome({ 'x': true });
+  assert.deepEqual(discoverRepos({ cwd: tmp('c'), home, root: other }).repos.map((r) => r.name), ['x']);
+  assert.match(discoverRepos({ cwd: tmp('c'), home, root: join(home, 'nope') }).error || '', /not a directory/);
+});
+
+// ---------------------------------------------------------------- overview sort order
+
+test('overview: setup rows put missing codewatch first, then the current repo', () => {
+  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, path: '/r/' + name, current, status, reviewer: null, detail: '', fix: '' });
+  const sorted = sortSetupRows([row('a', 'ok'), row('b', 'missing'), row('c', 'ok', true), row('d', 'missing')]);
+  assert.deepEqual(sorted.map((r) => r.name), ['b', 'd', 'c', 'a']);
+});
+
+test('overview: codewatch rows sort by high, then medium, then low', () => {
+  const row = (name: string, high: number, medium: number, low: number) =>
+    ({ name, path: '/r/' + name, current: false, high, medium, low, lastRunAt: null, reviewer: null, unscannedCommits: 0, gitleaksWarning: false });
+  const sorted = sortCodewatchRows([row('quiet', 0, 0, 0), row('med', 0, 3, 0), row('hi1', 1, 0, 0), row('hi2', 2, 0, 9), row('low', 0, 0, 4)]);
+  assert.deepEqual(sorted.map((r) => r.name), ['hi2', 'hi1', 'med', 'low', 'quiet']);
 });
 
 // ---------------------------------------------------------------- --json payload
 
 test('--json payload shape', async () => {
   const repo = repoWithResults();
-  const p = await buildPayload({ cwd: repo, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
+  const home = fakeHome({ 'other': true });
+  const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
-  assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'repos', 'schema', 'scope', 'security', 'usage']);
-  assert.deepEqual(Object.keys(p.repos[0]).sort(), ['codewatch', 'name', 'path', 'setup']);
+  assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'usage']);
+  assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'scan_ms', 'truncated']);
+  assert.deepEqual(Object.keys(p.repos[0]).sort(), ['codewatch', 'current', 'hasPrism', 'name', 'path', 'setup']);
+  assert.equal(p.repos.length, 2);
+  assert.equal(p.repos[0].current, true);
   assert.equal(p.repos[0].codewatch.hasResults, true);
-  const ss = p.repos[0].codewatch.secretScanning;
+  assert.equal(p.repos[0].codewatch.lastRunAt, '2026-11-03T09:00:00.000Z');
+  assert.equal(p.repos[0].codewatch.lastReviewer, 'claude');
+
+  // overview: the repo with a high finding sorts first; both repos lack hooks
+  assert.deepEqual(Object.keys(p.overview.codewatch[0]).sort(),
+    ['current', 'gitleaksWarning', 'high', 'lastRunAt', 'low', 'medium', 'name', 'path', 'reviewer', 'unscannedCommits']);
+  assert.equal(p.overview.codewatch[0].path, p.repos[0].path);
+  assert.equal(p.overview.codewatch[0].high, 1);
+  assert.equal(p.overview.codewatch[0].gitleaksWarning, true);
+  assert.equal(p.overview.codewatch[0].unscannedCommits, 2);
+  assert.ok(p.overview.setup.every((r) => r.status === 'missing' && r.fix.endsWith('&& prism-cli enable codewatch')));
+  assert.equal(p.overview.setup[0].current, true);
+
+  // banner is machine-level and sums the repos
+  const ss = p.machine.secretScanning;
   assert.deepEqual(Object.keys(ss).sort(), ['banner', 'gitleaksAvailable', 'installHint', 'unscannedCommits', 'unscannedSince']);
   assert.equal(ss.gitleaksAvailable, false, 'pathEnv has no gitleaks');
   assert.equal(ss.unscannedCommits, 2);
-  assert.match(ss.banner || '', /Secret scanning is off/);
+  assert.match(ss.banner || '', /Secret scanning is off: gitleaks is not installed\. 2 commits since/);
+
+  // machine checks unchanged
+  assert.deepEqual(p.machine.setup.map((i) => i.id), ['codeburn', 'codeburn-sync', 'gitleaks', 'aws-credentials']);
   assert.equal(p.usage.status, 'ok');
   assert.equal(p.security.status, 'coming-soon');
-  assert.match(p.security.message, /coming with prism-cli security findings/i);
-  assert.ok(p.machine.setup.every((i) => ['ok', 'warn', 'missing'].includes(i.status)));
   JSON.parse(JSON.stringify(p));
 });
 
