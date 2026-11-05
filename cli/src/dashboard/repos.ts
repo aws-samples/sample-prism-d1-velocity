@@ -1,10 +1,11 @@
 /**
  * Which repositories the dashboard shows.
  *
- * Default: every repo under the user's home directory (3 levels deep) that has
- * both `.git` and `.prism/`, wherever the dashboard is started from. The repo
- * containing the working directory, if any, is listed first even without
- * `.prism/`, so its empty state can say what to install. `--root` moves the
+ * Default: every git repo under the user's home directory (3 levels deep),
+ * wherever the dashboard is started from, whether or not codewatch is set up
+ * in it -- a repo without codewatch is shown as missing. A repo is any
+ * directory with `.git`, as a directory or as a file (linked worktrees and
+ * submodules). The repo containing the working directory is listed first. `--root` moves the
  * scan. Everything goes through discoverRepos() so a registry could be added
  * later as one more source.
  */
@@ -19,6 +20,7 @@ export interface RepoRef {
   path: string;
   /** Contains the working directory the dashboard was started in. */
   current: boolean;
+  /** Has a `.prism/` directory (codewatch or another PRISM installer has run here). */
   hasPrism: boolean;
 }
 
@@ -54,8 +56,8 @@ export interface ScanResult {
 }
 
 /**
- * Repos under `root`, at most `depth` levels below it, that have both `.git`
- * and `.prism/`.
+ * Git repos under `root`, at most `depth` levels below it. `.git` may be a
+ * directory or a file (a linked worktree's or submodule's pointer).
  *
  * - The walk stops at any git repo: nothing inside a repo is scanned, so
  *   nested repos and big working trees are skipped.
@@ -72,10 +74,8 @@ export function scanForRepos(root: string, depth = DEFAULT_SCAN_DEPTH): ScanResu
   const walk = (dir: string, level: number) => {
     if (truncated) return;
     if (level > 0 && existsSync(join(dir, '.git'))) {
-      if (isDir(join(dir, '.prism'))) {
-        repos.push({ name: basename(dir), path: real(dir), current: false, hasPrism: true });
-        if (repos.length >= MAX_REPOS) truncated = true;
-      }
+      repos.push({ name: basename(dir), path: real(dir), current: false, hasPrism: isDir(join(dir, '.prism')) });
+      if (repos.length >= MAX_REPOS) truncated = true;
       return;
     }
     if (level >= depth) return;

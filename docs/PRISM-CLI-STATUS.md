@@ -44,7 +44,7 @@ Results go to `.prism/results/` in one JSON format. Existing hooks are backed up
 ### `dashboard`
 A local web page for one developer, started with `prism-cli dashboard` from any directory.
 
-- **Repos:** it finds them itself by scanning your home directory, 3 levels deep, for repos with `.git` and `.prism/`. The repo you are in is listed first, even before codewatch is set up there. `--root <dir>` scans somewhere else. The scan skips hidden and build folders, does not follow symlinks and takes about 50 ms here.
+- **Repos:** it finds them itself by scanning your home directory, 3 levels deep, for every git repo (worktrees included). Repos without codewatch are listed as missing, in a collapsed group. The repo you are in is listed first. `--root <dir>` scans somewhere else. The scan skips hidden and build folders, does not follow symlinks and takes about 50 ms here (34 repos).
 - **Panels:**
   - Codewatch: one summary row per repo (findings by severity, last run, reviewer, unscanned commits), most high findings first, and each repo's detail in a collapsible section. A warning banner shows when secret scanning is off on this machine.
   - A codeburn usage summary, which points to `codeburn web` for full charts.

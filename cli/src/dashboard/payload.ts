@@ -7,6 +7,13 @@ import { collectCodewatch, combineSecretScanning, type CodewatchPanel, type Secr
 import { discoverRepos, type DiscoverOptions } from './repos.js';
 import { codewatchSetup, machineChecks, type CheckItem, type CodewatchSetup, type MachineDeps } from './setup.js';
 import { findOnPath } from '../utils/tool-check.js';
+import { homedir } from 'node:os';
+import { sep } from 'node:path';
+
+export function tildeHome(p: string, home: string): string {
+  if (p === home) return '~';
+  return p.startsWith(home + sep) ? '~' + p.slice(home.length) : p;
+}
 import { collectUsage, type CodeburnExport, type UsagePanel } from './usage.js';
 
 export const PAYLOAD_SCHEMA = 'prism.dashboard.v2';
@@ -29,6 +36,8 @@ export interface SetupRow {
   reviewer: string | null;
   detail: string;
   fix: string;
+  /** Shown inside the collapsed "repos without codewatch" group: missing, and not the current repo. */
+  collapsed: boolean;
 }
 
 /** One row of the codewatch summary table. */
@@ -48,11 +57,12 @@ export interface CodewatchRow {
 }
 
 export interface DashboardPayload {
+  /** repos: every repo found. codewatch: repos with both codewatch hooks installed. */
   schema: typeof PAYLOAD_SCHEMA;
   generated_at: string;
-  scope: { root: string; current_repo: string | null; scan_ms: number; truncated: boolean; error: string | null };
+  scope: { root: string; /** root with the home directory shown as ~ */ root_display: string; current_repo: string | null; scan_ms: number; truncated: boolean; error: string | null };
   repos: RepoPayload[];
-  overview: { setup: SetupRow[]; codewatch: CodewatchRow[] };
+  overview: { counts: { repos: number; codewatch: number }; setup: SetupRow[]; codewatch: CodewatchRow[] };
   machine: { setup: CheckItem[]; secretScanning: SecretScanning };
   usage: UsagePanel;
   security: { status: 'coming-soon'; message: string };
@@ -68,10 +78,10 @@ export interface PayloadOptions extends DiscoverOptions {
 const byName = (a: { name: string; path: string }, b: { name: string; path: string }) =>
   a.name.localeCompare(b.name) || a.path.localeCompare(b.path);
 
-/** Missing codewatch first, then the current repo, then by name. */
+/** The current repo first, then installed repos, then missing ones, each by name. */
 export function sortSetupRows(rows: SetupRow[]): SetupRow[] {
   return [...rows].sort((a, b) =>
-    (a.status === 'missing' ? 0 : 1) - (b.status === 'missing' ? 0 : 1) || Number(b.current) - Number(a.current) || byName(a, b));
+    Number(b.current) - Number(a.current) || (a.status === 'ok' ? 0 : 1) - (b.status === 'ok' ? 0 : 1) || byName(a, b));
 }
 
 /** Most high findings first, then medium, then low, then by name. */
@@ -93,8 +103,12 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   }));
   const setupRows = sortSetupRows(repos.map((r) => ({
     name: r.name, path: r.path, current: r.current, status: r.setup.status, reviewer: r.setup.reviewer, detail: r.setup.detail, fix: r.setup.fix,
+    collapsed: !r.current && r.setup.status !== 'ok',
   })));
-  const cwRows = sortCodewatchRows(repos.map((r) => ({
+  // The summary lists only repos where codewatch is installed or has left
+  // results; the rest have nothing to summarize and appear in the setup list.
+  const active = repos.filter((r) => r.setup.status === 'ok' || r.codewatch.hasResults);
+  const cwRows = sortCodewatchRows(active.map((r) => ({
     name: r.name, path: r.path, current: r.current,
     high: r.codewatch.bySeverity.high, medium: r.codewatch.bySeverity.medium, low: r.codewatch.bySeverity.low,
     lastRunAt: r.codewatch.lastRunAt,
@@ -105,9 +119,9 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   return {
     schema: PAYLOAD_SCHEMA,
     generated_at: new Date().toISOString(),
-    scope: { root: d.scannedRoot, current_repo: d.currentRepo, scan_ms: d.scanMs, truncated: d.truncated, error: d.error },
+    scope: { root: d.scannedRoot, root_display: tildeHome(d.scannedRoot, opts.home || homedir()), current_repo: d.currentRepo, scan_ms: d.scanMs, truncated: d.truncated, error: d.error },
     repos,
-    overview: { setup: setupRows, codewatch: cwRows },
+    overview: { counts: { repos: repos.length, codewatch: setupRows.filter((r) => r.status === 'ok').length }, setup: setupRows, codewatch: cwRows },
     machine: {
       setup: machineChecks({ pathEnv: opts.pathEnv, ...opts.machineDeps }),
       secretScanning: combineSecretScanning(repos.map((r) => r.codewatch.secretScanning), gitleaksAvailable),

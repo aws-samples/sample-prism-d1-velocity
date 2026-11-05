@@ -241,15 +241,26 @@ function fakeHome(spec: Record<string, boolean>): string {
   return home;
 }
 
-test('discovery: from an unrelated cwd, finds .prism repos under HOME', () => {
-  const home = fakeHome({ 'a': true, 'b-no-prism': false, 'work/c': true, 'work/team/d': true });
+test('discovery: from an unrelated cwd, finds every git repo under HOME, with or without .prism', () => {
+  const home = fakeHome({ 'a': true, 'b-no-prism': false, 'work/c': true, 'work/team/d': false });
   const d = discoverRepos({ cwd: tmp('elsewhere'), home });
   assert.equal(d.currentRepo, null);
   assert.equal(d.error, null);
   assert.equal(d.scannedRoot, home);
-  assert.deepEqual(d.repos.map((r) => r.name), ['a', 'c', 'd']);
-  assert.ok(d.repos.every((r) => !r.current && r.hasPrism));
+  assert.deepEqual(d.repos.map((r) => [r.name, r.hasPrism]), [['a', true], ['b-no-prism', false], ['c', true], ['d', false]]);
+  assert.ok(d.repos.every((r) => !r.current));
   assert.ok(d.scanMs >= 0);
+});
+
+test('discovery: a linked worktree (.git is a file) counts as a repo', () => {
+  const home = tmp('home-wt');
+  const main = join(home, 'main');
+  mkdirSync(main);
+  git(main, 'init', '-q', '-b', 'trunk', `--template=${tmp('tplw')}`);
+  git(main, '-c', 'user.email=t@e', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i');
+  git(main, 'worktree', 'add', '-q', join(home, 'wt'), '-b', 'side');
+  const names = scanForRepos(home).repos.map((r) => r.name);
+  assert.deepEqual(names, ['main', 'wt']);
 });
 
 test('discovery: skips hidden and build dirs, symlinks, nested repos and unreadable dirs', () => {
@@ -306,10 +317,10 @@ test('discovery: --root overrides HOME; a bad root is reported', () => {
 
 // ---------------------------------------------------------------- overview sort order
 
-test('overview: setup rows put missing codewatch first, then the current repo', () => {
-  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, path: '/r/' + name, current, status, reviewer: null, detail: '', fix: '' });
-  const sorted = sortSetupRows([row('a', 'ok'), row('b', 'missing'), row('c', 'ok', true), row('d', 'missing')]);
-  assert.deepEqual(sorted.map((r) => r.name), ['b', 'd', 'c', 'a']);
+test('overview: setup rows put the current repo first, then installed, then missing', () => {
+  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, path: '/r/' + name, current, status, reviewer: null, detail: '', fix: '', collapsed: false });
+  const sorted = sortSetupRows([row('a', 'ok'), row('b', 'missing'), row('c', 'missing', true), row('d', 'ok')]);
+  assert.deepEqual(sorted.map((r) => r.name), ['c', 'a', 'd', 'b'], 'current repo, then installed, then missing');
 });
 
 test('overview: codewatch rows sort by high, then medium, then low', () => {
@@ -319,6 +330,26 @@ test('overview: codewatch rows sort by high, then medium, then low', () => {
   assert.deepEqual(sorted.map((r) => r.name), ['hi2', 'hi1', 'med', 'low', 'quiet']);
 });
 
+test('overview: counts, collapsed missing group, and an empty codewatch table', async () => {
+  const home = fakeHome({ 'one': false, 'two': false, 'three': false });
+  installHooks(join(home, 'two', '.git', 'hooks'));
+  const bin = tmp('pk');
+  exe(bin, 'kiro-cli', 'exit 0');
+  const p = await buildPayload({ cwd: tmp('nowhere'), home, exporter: fixtureExporter, pathEnv: bin, machineDeps: { home: tmp('h5'), env: {}, scheduleExists: () => false } });
+  assert.deepEqual(p.overview.counts, { repos: 3, codewatch: 1 });
+  assert.equal(p.repos.length, 3, 'every repo is in --json, codewatch or not');
+  assert.deepEqual(p.overview.setup.map((r) => [r.name, r.status, r.collapsed]), [['two', 'ok', false], ['one', 'missing', true], ['three', 'missing', true]]);
+  assert.ok(p.overview.setup.filter((r) => r.collapsed).every((r) => r.fix.endsWith('&& prism-cli enable codewatch')));
+  assert.deepEqual(p.overview.codewatch.map((r) => r.name), ['two'], 'installed with no results still listed');
+
+  const none = await buildPayload({ cwd: tmp('nowhere2'), home: fakeHome({ 'x': false, 'y': true }), exporter: fixtureExporter, pathEnv: bin, machineDeps: { home: tmp('h6'), env: {}, scheduleExists: () => false } });
+  assert.deepEqual(none.overview.counts, { repos: 2, codewatch: 0 });
+  assert.deepEqual(none.overview.codewatch, [], 'empty table when codewatch is enabled nowhere');
+  const html = renderPage('N');
+  assert.ok(html.includes("Codewatch isn't enabled in any repo yet."));
+  assert.ok(html.includes(" without codewatch'"));
+});
+
 // ---------------------------------------------------------------- --json payload
 
 test('--json payload shape', async () => {
@@ -326,8 +357,10 @@ test('--json payload shape', async () => {
   const home = fakeHome({ 'other': true });
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
+  assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
   assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'usage']);
-  assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'scan_ms', 'truncated']);
+  assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'root_display', 'scan_ms', 'truncated']);
+  assert.equal(p.scope.root_display, '~');
   assert.deepEqual(Object.keys(p.repos[0]).sort(), ['codewatch', 'current', 'hasPrism', 'name', 'path', 'setup']);
   assert.equal(p.repos.length, 2);
   assert.equal(p.repos[0].current, true);
@@ -344,6 +377,9 @@ test('--json payload shape', async () => {
   assert.equal(p.overview.codewatch[0].unscannedCommits, 2);
   assert.ok(p.overview.setup.every((r) => r.status === 'missing' && r.fix.endsWith('&& prism-cli enable codewatch')));
   assert.equal(p.overview.setup[0].current, true);
+  // 'other' has no hooks and no results: in the setup list (collapsed), not in the codewatch summary
+  assert.equal(p.overview.codewatch.length, 1);
+  assert.deepEqual(p.overview.setup.map((r) => [r.current, r.collapsed]), [[true, false], [false, true]]);
 
   // banner is machine-level and sums the repos
   const ss = p.machine.secretScanning;

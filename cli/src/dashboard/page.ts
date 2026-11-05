@@ -32,6 +32,7 @@ th { color:var(--muted); font-weight:600; } td.num { text-align:right; font-vari
 .stats { display:flex; gap:18px; flex-wrap:wrap; margin:6px 0; } .stat b { display:block; font-size:20px; } .stat span { color:var(--muted); font-size:12px; }
 .fix { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .tag { margin-left:6px; font-size:11px; padding:0 6px; border-radius:8px; background:var(--bg); border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--muted); font-weight:600; }
 details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo > summary { cursor:pointer; padding:4px 0; } details.repo .detail { padding-left:14px; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
@@ -144,7 +145,10 @@ function codewatchPanel(data) {
   const banner = scanBanner(data.machine.secretScanning);
   if (banner) s.append(banner);
   const rows = data.overview.codewatch;
-  if (!rows.length) { s.append(el('p', { class: 'empty' }, 'No repositories found.')); return s; }
+  if (!rows.length) {
+    s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.'));
+    return s;
+  }
   const count = (n, cls) => el('td', { class: 'count' + (n ? ' ' + cls : '') }, n);
   s.append(table(['Repo', 'High', 'Medium', 'Low', 'Last run', 'Reviewer', 'Unscanned', 'Gitleaks'], rows.map((r) => [
     repoName(r), count(r.high, 'sev-high'), count(r.medium, 'sev-medium'), count(r.low, 'sev-low'),
@@ -187,14 +191,23 @@ function setupPanel(data) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Setup checklist'));
   const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail, i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
   s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(data.machine.setup)));
-  const repos = data.overview.setup;
-  const missing = repos.filter((r) => r.status === 'missing').length;
-  s.append(el('h3', {}, 'Codewatch per repo (' + (repos.length - missing) + ' of ' + repos.length + ' installed)'));
-  s.append(table(['Repo', 'Codewatch'], repos.map((r) => [
+  const repos = data.overview.setup, c = data.overview.counts;
+  s.append(el('h3', {}, 'Codewatch per repo (' + c.codewatch + ' of ' + c.repos + ' installed)'));
+  const rowOf = (r) => [
     repoName(r),
     el('div', {}, pill(r.status === 'ok' ? 'ok' : 'missing'), ' ', r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail),
       r.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, r.fix)) : null),
-  ])));
+  ];
+  // Always shown: the current repo (installed or not) and every installed repo.
+  const shown = repos.filter((r) => !r.collapsed);
+  const hidden = repos.filter((r) => r.collapsed);
+  if (shown.length) s.append(table(['Repo', 'Codewatch'], shown.map(rowOf)));
+  else if (!hidden.length) s.append(el('p', { class: 'empty' }, 'No git repositories found under ' + txt(data.scope.root_display) + '.'));
+  if (hidden.length) {
+    s.append(el('details', { class: 'missing-group' },
+      el('summary', {}, hidden.length + ' repo' + (hidden.length === 1 ? '' : 's') + ' without codewatch'),
+      table(['Repo', 'Codewatch'], hidden.map(rowOf))));
+  }
   return s;
 }
 
@@ -214,7 +227,8 @@ async function load() {
   main.replaceChildren();
   if (data.scope.error) main.append(el('section', { class: 'card wide' }, pill('error'), ' ', data.scope.error));
   main.append(codewatchPanel(data), usagePanel(data.usage), setupPanel(data), securityPanel(data.security));
-  meta.textContent = data.repos.length + ' repos under ' + txt(data.scope.root) + (data.scope.truncated ? ' (scan capped)' : '') + ' · updated ' + when(data.generated_at);
+  const c = data.overview.counts;
+  meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '') + ' · updated ' + when(data.generated_at);
 }
 document.getElementById('refresh').addEventListener('click', load);
 load();
