@@ -4,6 +4,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const commandsDir = resolve(__dirname, 'commands');
+/** Files here register as top-level commands (`prism-cli <name>`), not as a group. */
+const TOP_LEVEL_DIR = '_top';
 
 function attach(program: any, category: string, command: string, def: any) {
   // Reuse an existing category command if it was already created
@@ -14,6 +16,32 @@ function attach(program: any, category: string, command: string, def: any) {
     for (const opt of def.options) sub.option(opt.flags, opt.description, opt.default);
   }
   sub.action((opts: any) => def.action(opts));
+}
+
+function attachTop(program: any, name: string, def: any) {
+  if (program.commands.find((c: any) => c.name() === name)) return;
+  const cmd = program.command(name).description(def.description || name);
+  if (def.options) {
+    for (const opt of def.options) cmd.option(opt.flags, opt.description, opt.default);
+  }
+  cmd.action((opts: any) => def.action(opts));
+}
+
+function findModule(dir: string, name: string): string {
+  for (const candidate of [`${name}.js`, `${name}.ts`]) {
+    const p = resolve(dir, candidate);
+    if (existsSync(p)) return p;
+  }
+  return '';
+}
+
+/** Fast path for a top-level command (`prism-cli dashboard --json`). */
+async function registerTop(program: any, name: string): Promise<boolean> {
+  const file = findModule(resolve(commandsDir, TOP_LEVEL_DIR), name);
+  if (!file) return false;
+  const mod = await import(pathToFileURL(file).href);
+  attachTop(program, name, mod.default || mod);
+  return true;
 }
 
 /**
@@ -40,8 +68,16 @@ async function registerOne(program: any, category: string, command: string): Pro
 /** Full registration — imports every command module. Used for --help and unmatched invocations. */
 async function registerAll(program: any) {
   const categories = readdirSync(commandsDir).filter((entry) => {
-    return statSync(resolve(commandsDir, entry)).isDirectory();
+    return entry !== TOP_LEVEL_DIR && statSync(resolve(commandsDir, entry)).isDirectory();
   });
+
+  const topDir = resolve(commandsDir, TOP_LEVEL_DIR);
+  if (existsSync(topDir)) {
+    for (const file of readdirSync(topDir).filter((f) => f.endsWith('.js') && !f.endsWith('.d.ts'))) {
+      const mod = await import(pathToFileURL(resolve(topDir, file)).href);
+      attachTop(program, basename(file, '.js'), mod.default || mod);
+    }
+  }
 
   for (const category of categories) {
     const categoryDir = resolve(commandsDir, category);
@@ -61,6 +97,7 @@ async function registerAll(program: any) {
  *
  * Structure:
  *   commands/
+ *     _top/<name>.js       → becomes `prism-cli <name>` (top-level command)
  *     <category>/          → becomes `prism-cli <category>`
  *       <command>.js       → becomes `prism-cli <category> <command>`
  *
@@ -75,6 +112,7 @@ async function registerAll(program: any) {
  */
 export async function registerCommands(program: any) {
   const [category, command] = process.argv.slice(2);
+  if (category && !category.startsWith('-') && (await registerTop(program, category))) return;
   if (category && command && !category.startsWith('-') && !command.startsWith('-')) {
     if (await registerOne(program, category, command)) return;
   }
