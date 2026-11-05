@@ -1,5 +1,5 @@
 /**
- * Local security/eval result schema and writer.
+ * Codewatch result schema and writer (local git-hook gate runs).
  *
  * Every local gate run (the pre-commit secret scan, the pre-push review, and a
  * detected skip of either) is written as one JSON file under `.prism/results/`.

@@ -166,7 +166,7 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
 
   const rulesAbs = resolve(repoRoot, RULES_PATH);
   const rulesText = existsSync(rulesAbs) ? readFileSync(rulesAbs, 'utf8') : '';
-  if (!rulesText) log(`prism: ${RULES_PATH} not found; reviewing without the shared rules (run prism-cli enable security)`);
+  if (!rulesText) log(`prism: ${RULES_PATH} not found; reviewing without the shared rules (run prism-cli enable codewatch)`);
 
   const tmp = mkdtempSync(join(tmpdir(), 'prism-review-'));
   try {

@@ -1,6 +1,6 @@
 # Design: prism-cli as one local tool with three jobs
 
-> Status: draft for review. `enable security` is implemented on branch `feat/enable-security`; everything else here is a proposal.
+> Status: draft for review. `enable codewatch` is implemented on branch `feat/enable-security`; everything else here is a proposal.
 > Source: the roadmap slide "prism-cli: one tool, three jobs".
 
 ## Summary
@@ -19,20 +19,21 @@ The existing groups stay. New top-level groups (`enable`, `security`, `aws`, plu
 
 These were agreed with the user before this doc was written.
 
-1. **Commit trailers and the token tracker are retired.** The `prepare-commit-msg` hook installed by `bootstrapper install-git-hooks` (AI-Origin trailers plus token/cost limits) is obsolete. `enable security` replaces it and removes it when found.
+1. **Commit trailers and the token tracker are retired.** The `prepare-commit-msg` hook installed by `bootstrapper install-git-hooks` (AI-Origin trailers plus token/cost limits) is obsolete. `enable codewatch` replaces it and removes it when found.
 2. **Usage tracking is codeburn.** codeburn already ships a local web UI (`codeburn web`) and JSON export (`codeburn export`). PRISM does not rebuild either.
-3. **`codewatch` is unknown.** It is not in this repo, and the npm package named `codewatch` is an unrelated file watcher. It is an open question for the roadmap owner; nothing is designed or built for it.
+3. **`codewatch` is the local git-hook gate.** It is the blocking gitleaks `pre-commit` plus the report-only reviewer `pre-push` (originally built as `enable security`). It is unrelated to the npm package named `codewatch`.
 4. **`prism-cli dashboard`** is a local web UI:
    - bound to `127.0.0.1` only, on a random port, with a one-time token in the URL;
    - opens the browser; reads local files only, so the panels below need no AWS credentials;
    - a static single-page app bundled in the CLI, following the `assessment/web.ts` pattern (Node `http` server, HTML built in TypeScript, random session token);
    - `--json` prints the same data instead of serving it;
    - shows the current repo by default; `--all` covers every repo with a `.prism/` directory.
-5. **`enable security`** installs a blocking gitleaks `pre-commit` and a report-only reviewer `pre-push` (spec and implementation below).
+5. **`enable codewatch`** installs those hooks (spec and implementation below).
+6. **`enable security` is an open slot.** It is not an alias for codewatch. It will probably wrap the existing Security Agent setup (`securityagent setup`); see [`enable security`](#enable-security-open-slot).
 
 ## How the new commands fit the CLI
 
-Commands are auto-registered: each folder under `cli/src/commands/<group>/` is a command group and each file in it a subcommand (`cli/src/index.ts`). That gives `prism-cli <group> <command>` for free, which fits `enable security`, `security pentest` and `aws check`.
+Commands are auto-registered: each folder under `cli/src/commands/<group>/` is a command group and each file in it a subcommand (`cli/src/index.ts`). That gives `prism-cli <group> <command>` for free, which fits `enable codewatch`, `security pentest` and `aws check`.
 
 Single-word top-level commands (`version`, `dashboard`) and commands with a positional object (`export otel`, `install transformation-center`) do not fit the two-level layout as cleanly:
 
@@ -44,16 +45,16 @@ Proposed layout:
 ```
 commands/
   _top/        version.ts, dashboard.ts          (new: top-level commands)
-  enable/      security.ts (built), codeburn.ts, codewatch.ts (blocked on open question)
+  enable/      codewatch.ts (built), codeburn.ts, security.ts (open slot: likely wraps securityagent setup)
   export/      otel.ts
   install/     transformation-center.ts
   security/    design-review.ts, threat-model.ts, code-review.ts, pentest.ts, findings.ts
   aws/         connect.ts, check.ts, recommend.ts
-  git/         pre-commit.ts, pre-push.ts (built; hook entry points)
+  codewatch/   pre-commit.ts, pre-push.ts (built; hook entry points called by the installed hooks)
   bootstrapper/, workshop/, securityagent/, bedrock-protection/, assessment/, parse-code-tool/  (unchanged)
 ```
 
-Shared logic moves out of command files into `cli/src/<area>/` modules (as done for `cli/src/security/`), so an old command and its new alias call the same function instead of duplicating it.
+Shared logic moves out of command files into `cli/src/<area>/` modules (as done for `cli/src/codewatch/`), so an old command and its new alias call the same function instead of duplicating it.
 
 ### Keeping old commands working
 
@@ -67,7 +68,8 @@ Aliases stay for at least one minor release after the new command ships, and the
 
 | Old | New | Status |
 |---|---|---|
-| `bootstrapper install-git-hooks` | `enable security` | **Done:** deprecated alias. Old trailer flags are ignored. |
+| `bootstrapper install-git-hooks` | `enable codewatch` | **Done:** deprecated alias. Old trailer flags are ignored. |
+| `securityagent setup` | `enable security` | Proposed alias (see the open slot below) |
 | `git commit-trailers` | (none) | Kept, marked `[deprecated]`, because already-installed `prepare-commit-msg` hooks call it. Remove after one release. |
 | `bootstrapper setup-otel-sync` | `enable codeburn` | Proposed alias |
 | `securityagent setup` | `security` setup step (see below) | Proposed alias |
@@ -82,33 +84,34 @@ Aliases stay for at least one minor release after the new command ships, and the
 - **Prints:** CLI version, Node version, codeburn version and sync status, installed PRISM hooks, configured reviewer.
 - **Open questions:** Should it check npm for a newer release (a network call) or stay offline?
 
-### `enable codewatch` (blocked)
-- **Reuses:** nothing. No such component exists in the repo.
-- **Open questions:** What is codewatch? The npm package of that name is an unrelated file watcher. Who owns it, and is it a product, an internal tool, or a placeholder name? Nothing is designed until this is answered.
-
 ### `enable codeburn` (mostly reuse)
 - **Reuses:** `bootstrapper setup-otel-sync` (installs codeburn, runs `codeburn sync setup`, schedules `codeburn sync push --attribution` every 12h via crontab/launchd/Task Scheduler, logs to `~/.prism/logs`). `workshop verify-setup` `checkCodeburn`.
 - **New:** the command name and alias only.
 - **Open questions:** Is "enable" also responsible for installing codeburn itself, or only for wiring sync? Should attribution remain on by default now that commit trailers are gone (what does `--attribution` attribute to without trailers)?
 
-### `enable security` (built)
-See [enable security: implementation](#enable-security-implementation).
+### `enable codewatch` (built)
+The local git-hook gate. See [enable codewatch: implementation](#enable-codewatch-implementation).
 - **Reuses:** `.gitleaks.toml` starter and `.prism/gitleaks-baseline.json` from `install-eval-harness` (the starter config is now a shared module both use); the review rules `install-eval-harness` installs; the hook backup convention of `install-git-hooks` (`<hook>.pre-prism`).
 - **New:** hooks, reviewer adapters, result schema and writer.
 
+### `enable security` (open slot)
+- **Not** codewatch, and deliberately not an alias for it, so the name stays free for the slide's own command.
+- **Likely reuses:** `securityagent setup` (deploys Security Agent infrastructure and creates the web console application) and `bootstrapper/security-agent/setup.sh`. That makes it the setup step for the Secure commands, and `securityagent setup` would become its alias.
+- **Open questions:** Is that the intended meaning? It needs AWS credentials, unlike the rest of Observe; does it belong under Observe or Secure on the slide?
+
 ### `dashboard` (new)
-- **Reuses:** the server pattern of `assessment/web.ts` (Node `http`, generated HTML, `randomBytes` session token); `verify-setup` checks for the setup panel; `setup-otel-sync`'s log location; the result schema in `cli/src/security/results.ts`.
+- **Reuses:** the server pattern of `assessment/web.ts` (Node `http`, generated HTML, `randomBytes` session token); `verify-setup` checks for the setup panel; `setup-otel-sync`'s log location; the result schema in `cli/src/codewatch/results.ts`.
 - **Serving:** `127.0.0.1`, port 0 (random), a 32-byte token required on every request (query string on first load, then a cookie with `HttpOnly; SameSite=Strict`), `Host` header must be `127.0.0.1:<port>` (DNS-rebinding guard). Static HTML, no external resources.
 - **Panels:**
   1. **Usage:** summary from `codeburn export` (JSON), plus a link that starts or points to `codeburn web`. No charts are rebuilt.
   2. **Local eval and gitleaks:** `.prism/results/*.json`, latest per branch; counts of skipped checks (`status: skipped`).
   3. **Security findings:** findings from local results and, once `security findings` exists, its cached output.
-  4. **Setup checklist:** codeburn installed; scheduled sync installed and last sync time (from `~/.prism/logs`); git hooks installed (`enable security` markers); CI eval workflow present (`.github/workflows/prism-eval-gate.yml` or GitLab equivalent); OIDC set up (workflow role ARN configured); Security Agent set up; AWS/Bedrock access. Reuse the `verify-setup` check functions after moving them to a shared module that returns data instead of printing.
+  4. **Setup checklist:** codeburn installed; scheduled sync installed and last sync time (from `~/.prism/logs`); codewatch hooks installed (hook marker) and which reviewer; CI eval workflow present (`.github/workflows/prism-eval-gate.yml` or GitLab equivalent); OIDC set up (workflow role ARN configured); Security Agent set up; AWS/Bedrock access. Reuse the `verify-setup` check functions after moving them to a shared module that returns data instead of printing.
   5. **Advise** (later): output of `aws check`.
 - **`--json`:** the same panel data as one JSON document.
 - **`--all`:** repos found how? See open questions.
 - **Open questions:**
-  - `--all` discovery: scan a configured root (`~/workplace`?), keep a registry in `~/.prism/repos.json` written by `enable security`, or both?
+  - `--all` discovery: scan a configured root (`~/workplace`?), keep a registry in `~/.prism/repos.json` written by `enable codewatch`, or both?
   - The OIDC and Security Agent checks need AWS calls to be exact. Is a local signal (config file present, workflow references a role ARN) enough for the panel, with exact checks behind an explicit button?
   - Does `codeburn export` have a stable schema we can pin, and which version range?
 
@@ -126,8 +129,8 @@ See [enable security: implementation](#enable-security-implementation).
 All of these call AWS and need credentials; none run in hooks.
 
 ### Setup step
-- **Reuses:** `securityagent setup` (deploys Security Agent infrastructure and creates the web console application) and `bootstrapper/security-agent/setup.sh`.
-- **Proposal:** `security` commands detect a missing agent space and print the one command to run; `securityagent setup` becomes `security setup` with an alias.
+- **Reuses:** `securityagent setup`, proposed to move to `enable security` (see the open slot under Observe).
+- **Proposal:** `security` commands detect a missing agent space and print the one command to run (`prism-cli enable security`).
 
 ### `security design-review`, `security threat-model` (new)
 - **Reuses:** the agent-space lookup and SSM parameter convention in the CI gate (`/prism/continuum/code-review-id/<repo>`).
@@ -143,7 +146,7 @@ All of these call AWS and need credentials; none run in hooks.
 - **Open questions:** Beyond domain verification, what evidence of authorization is required (account ownership of the endpoint, a written scope)? Does the workshop variant stay a separate alias that targets sample-app only?
 
 ### `security findings` (new)
-- **Reuses:** `list-findings` handling from the CI gate; the `Finding` type in `cli/src/security/results.ts`.
+- **Reuses:** `list-findings` handling from the CI gate; the `Finding` type in `cli/src/codewatch/results.ts`.
 - **Proposal:** lists Continuum findings and local results in one table; `--json` for the dashboard.
 - **Open questions:** Cache findings locally for the dashboard (so it stays credential-free), and if so, for how long?
 
@@ -162,9 +165,9 @@ All of these call AWS and need credentials; none run in hooks.
 - **Reuses:** findings from `aws check`.
 - **Open questions:** Static mapping from finding to recommendation, or model-generated? If model-generated, does it run through Bedrock in the customer's account?
 
-## enable security: implementation
+## enable codewatch: implementation
 
-Built on `feat/enable-security`.
+Built on `feat/enable-security` (the branch keeps its original name). Entry points: `prism-cli enable codewatch` installs; the hooks call `prism-cli codewatch pre-commit` and `prism-cli codewatch pre-push`.
 
 ### What it installs
 
@@ -178,7 +181,7 @@ Built on `feat/enable-security`.
 
 ### Reviewers
 
-One interface (`cli/src/security/reviewers/types.ts`), one file per tool. An adapter only builds argv and parses output; running, timeouts and error handling are shared.
+One interface (`cli/src/codewatch/reviewers/types.ts`), one file per tool. An adapter only builds argv and parses output; running, timeouts and error handling are shared.
 
 | Tool | Invocation | Rules passed as | Tools allowed |
 |---|---|---|---|
@@ -192,7 +195,7 @@ One interface (`cli/src/security/reviewers/types.ts`), one file per tool. An ada
 
 ### Results
 
-Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind>.json` (mode 0600, written atomically). The schema is `PrismResult` in `cli/src/security/results.ts`:
+Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind>.json` (mode 0600, written atomically). The schema is `PrismResult` in `cli/src/codewatch/results.ts`:
 
 ```ts
 {
@@ -218,14 +221,15 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 - Existing hooks are moved to `<hook>.pre-prism` (the `install-git-hooks` convention) and **called first** by the PRISM hook, so a team's hook keeps running. A second backup never overwrites the first.
 - `--uninstall` removes only hooks carrying the PRISM marker and moves backups back. Rules, config and results are kept.
 - Hooks are found with `git rev-parse --git-path hooks`, so `core.hooksPath` and linked worktrees work.
+- Hooks written before the rename (marker `# prism-cli enable security`, calling the removed `prism-cli git pre-commit`/`git pre-push`) are recognised as PRISM hooks: install overwrites them in place and uninstall removes them. There is no compatibility shim for the old command names.
 
 ### The old hook
 
-`bootstrapper install-git-hooks` is now a **deprecated alias** for `enable security` (chosen over a deprecation-only error so existing docs and scripts keep working). `enable security` removes a PRISM `prepare-commit-msg` (identified by `AI-Origin`) and restores whatever it had backed up. `git commit-trailers` stays, marked deprecated, because hooks already installed in other repos call it. Not touched automatically: `~/.git-templates/hooks/prepare-commit-msg` (from the old `--global`) and the Claude Code `SessionStart` entry in `~/.claude/settings.json`; the alias prints a note for the template.
+`bootstrapper install-git-hooks` is now a **deprecated alias** for `enable codewatch` (chosen over a deprecation-only error so existing docs and scripts keep working). `enable codewatch` removes a PRISM `prepare-commit-msg` (identified by `AI-Origin`) and restores whatever it had backed up. `git commit-trailers` stays, marked deprecated, because hooks already installed in other repos call it. Not touched automatically: `~/.git-templates/hooks/prepare-commit-msg` (from the old `--global`) and the Claude Code `SessionStart` entry in `~/.claude/settings.json`; the alias prints a note for the template.
 
 ## Open questions
 
-1. **codewatch:** what is it, who owns it, and is it in scope? (Blocks `enable codewatch`.)
+1. **`enable security`:** confirm it wraps the Security Agent setup (`securityagent setup`), and whether it sits under Observe or Secure. (Resolved: codewatch is the git-hook gate.)
 2. **transformation-center:** what is it and what does installing it do locally?
 3. **codeburn attribution:** with commit trailers retired, what does `codeburn sync push --attribution` attribute usage to, and should it stay on?
 4. **`dashboard --all`:** discover repos by scanning a root, by a registry written at install, or both?
@@ -238,5 +242,5 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 11. **Startup Advisor:** how are its checks consumed (library, CLI, API), and under what license and versioning?
 12. **`aws recommend`:** static mapping or model-generated, and if model-generated, where does inference run?
 13. **`version`:** offline only, or check npm for updates?
-14. **`enable security` pre-commit without gitleaks:** currently warns and allows. Should a team be able to make it block (for example `eval.require_gitleaks: true`)?
+14. **codewatch pre-commit without gitleaks:** currently warns and allows. Should a team be able to make it block (for example `eval.require_gitleaks: true`)?
 15. **Rebase noise:** the skipped-check heuristic flags rebased commits. Acceptable for v1, or should pre-push skip commits whose patch-id matches a scanned one?

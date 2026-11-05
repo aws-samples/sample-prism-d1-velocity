@@ -1,9 +1,9 @@
 import { run } from '../../utils/exec.js';
-import { runPreCommit } from '../../security/gitleaks.js';
+import { runPreCommit } from '../../codewatch/gitleaks.js';
 
-/** Called by the pre-commit hook installed by `prism-cli enable security`. */
+/** Called by the pre-commit hook installed by `prism-cli enable codewatch`. */
 export default {
-  description: 'pre-commit hook: gitleaks scan of staged changes (blocks on a finding; installed by enable security)',
+  description: 'pre-commit hook: gitleaks scan of staged changes (blocks on a finding; installed by enable codewatch)',
   action() {
     const top = run('git', ['rev-parse', '--show-toplevel']);
     if (!top.ok) process.exit(0);

@@ -5,9 +5,9 @@ import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
 import { run } from '../../utils/exec.js';
 import { applyRegion, DEFAULT_REGION } from '../../utils/region.js';
-import { installGitleaksConfig as installGitleaksConfigShared } from '../../security/gitleaks.js';
-import { ensureRulesFile } from '../../security/rules.js';
-import { RULES_PATH } from '../../security/config.js';
+import { installGitleaksConfig as installGitleaksConfigShared } from '../../codewatch/gitleaks.js';
+import { ensureRulesFile } from '../../codewatch/rules.js';
+import { RULES_PATH } from '../../codewatch/config.js';
 
 /**
  * Copies a workflow asset into the repo with the region templated.
@@ -53,7 +53,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const EVAL_SOURCE = getAssetPath(import.meta.url, 'bootstrapper/eval-harness');
 
 function installGitleaksConfig(gitRoot: string): void {
-  // Config text and write-if-missing logic are shared with `enable security`,
+  // Config text and write-if-missing logic are shared with `enable codewatch`,
   // so the local pre-commit scan and the CI gate use the same allowlist.
   if (installGitleaksConfigShared(gitRoot)) console.log('✓ Installed .gitleaks.toml (allowlist starter)');
   else console.log('✓ Kept existing .gitleaks.toml');
@@ -223,7 +223,7 @@ async function installKiroMode(
 
   // --- Shared, tool-neutral rule set ---
   // The CI gate copies this over .kiro/steering/code-review.md before it runs,
-  // so the local pre-push review (enable security) and CI use the same rules.
+  // so the local pre-push review (enable codewatch) and CI use the same rules.
   // Seeded from the steering file just installed or kept above.
   const rulesOutcome = ensureRulesFile(gitRoot, steeringSrc);
   console.log(`✓ ${rulesOutcome === 'kept' ? 'Kept' : 'Installed'} ${RULES_PATH} (shared by CI and local review)`);

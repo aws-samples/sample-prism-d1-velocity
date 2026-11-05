@@ -1,5 +1,5 @@
 /**
- * `.prism/config.json` access for the local security gate.
+ * `.prism/config.json` access for codewatch (the local git-hook gate).
  *
  * The file is shared with other PRISM installers (team_id etc.) and is usually
  * committed, so reads tolerate any shape and writes merge rather than replace.

@@ -1,5 +1,5 @@
 /**
- * Tests for `prism-cli enable security`: reviewer detection and resolution,
+ * Tests for `prism-cli enable codewatch`: reviewer detection and resolution,
  * adapter output parsing (recorded fixtures, no live model calls), the result
  * writer, hook install/uninstall, and the pre-push gate always exiting 0.
  */
@@ -11,12 +11,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ADAPTERS, detectReviewers, resolveReviewer, extractReviewJson } from '../src/security/reviewers/index.js';
-import { parseGitleaksReport } from '../src/security/gitleaks.js';
-import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR } from '../src/security/results.js';
-import { runPrePush, parsePushInput } from '../src/security/prepush.js';
-import { installHooks, uninstallHooks, retireLegacyCommitMsgHook, ensureResultsIgnored, PRE_PUSH_SCRIPT, PRE_COMMIT_SCRIPT } from '../src/security/hooks.js';
-import { writeEvalConfig, readPrismConfig } from '../src/security/config.js';
+import { ADAPTERS, detectReviewers, resolveReviewer, extractReviewJson } from '../src/codewatch/reviewers/index.js';
+import { parseGitleaksReport } from '../src/codewatch/gitleaks.js';
+import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR } from '../src/codewatch/results.js';
+import { runPrePush, parsePushInput } from '../src/codewatch/prepush.js';
+import { installHooks, uninstallHooks, retireLegacyCommitMsgHook, ensureResultsIgnored, PRE_PUSH_SCRIPT, PRE_COMMIT_SCRIPT } from '../src/codewatch/hooks.js';
+import { writeEvalConfig, readPrismConfig } from '../src/codewatch/config.js';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'review');
 const fixture = (name: string) => readFileSync(join(FIX, name), 'utf8');
@@ -310,7 +310,7 @@ test('pre-commit hook script blocks when gitleaks (no prism-cli) reports a leak'
   const dir = tmp('hook2');
   const hook = exe(dir, 'pre-commit', PRE_COMMIT_SCRIPT.replace(/^#!\/bin\/sh\n/, ''));
   const bin = tmp('glbin');
-  // An older prism-cli without "git pre-commit" must not block the commit.
+  // An older prism-cli without "codewatch pre-commit" must not block the commit.
   exe(bin, 'prism-cli', 'echo "error: unknown command" >&2; exit 1');
   exe(bin, 'gitleaks', 'exit 1');
   const blocked = spawnSync(hook, [], { encoding: 'utf8', cwd: dir, env: { PATH: `${bin}:/usr/bin:/bin` } });
@@ -326,7 +326,7 @@ test('installHooks backs up and chains a foreign hook; uninstall restores it', (
   const hooks = tmp('hooks');
   exe(hooks, 'pre-commit', 'echo team-hook');
   installHooks(hooks);
-  assert.match(readFileSync(join(hooks, 'pre-commit'), 'utf8'), /prism-cli enable security/);
+  assert.match(readFileSync(join(hooks, 'pre-commit'), 'utf8'), /prism-cli enable codewatch/);
   assert.equal(readFileSync(join(hooks, 'pre-commit.pre-prism'), 'utf8'), '#!/bin/sh\necho team-hook\n');
   // reinstall must not back up our own hook over the original
   installHooks(hooks);
@@ -335,6 +335,24 @@ test('installHooks backs up and chains a foreign hook; uninstall restores it', (
   assert.equal(readFileSync(join(hooks, 'pre-commit'), 'utf8'), '#!/bin/sh\necho team-hook\n');
   assert.ok(!existsSync(join(hooks, 'pre-commit.pre-prism')));
   assert.ok(!existsSync(join(hooks, 'pre-push')));
+});
+
+test('hooks written before the rename are replaced in place, not backed up and chained', () => {
+  const hooks = tmp('hooks-old');
+  const old = '# prism-cli enable security -- pre-commit secret scan\nexec prism-cli git pre-commit';
+  exe(hooks, 'pre-commit', old);
+  exe(hooks, 'pre-push', '# prism-cli enable security -- pre-push\nprism-cli git pre-push || true');
+  installHooks(hooks);
+  assert.ok(!existsSync(join(hooks, 'pre-commit.pre-prism')), 'old-name hook must not become a chained backup');
+  assert.ok(!existsSync(join(hooks, 'pre-push.pre-prism')));
+  const now = readFileSync(join(hooks, 'pre-commit'), 'utf8');
+  assert.match(now, /prism-cli codewatch pre-commit/);
+  assert.doesNotMatch(now, /prism-cli git pre-commit/);
+  // and uninstall removes an old-name hook outright
+  exe(hooks, 'pre-push', '# prism-cli enable security -- pre-push\nprism-cli git pre-push || true');
+  uninstallHooks(hooks);
+  assert.ok(!existsSync(join(hooks, 'pre-push')));
+  assert.ok(!existsSync(join(hooks, 'pre-commit')));
 });
 
 test('uninstallHooks leaves a hook it did not install', () => {

@@ -1,11 +1,11 @@
 import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
 import { run } from '../../utils/exec.js';
-import { GITLEAKS_BASELINE_PATH, readEvalConfig, REVIEWER_GIT_CONFIG_KEY, RULES_PATH, writeEvalConfig } from '../../security/config.js';
-import { installGitleaksConfig } from '../../security/gitleaks.js';
-import { ensureResultsIgnored, installHooks, resolveHooksDir, retireLegacyCommitMsgHook, uninstallHooks } from '../../security/hooks.js';
-import { ADAPTERS, detectReviewers, findOnPath, isReviewerId, REVIEWER_IDS, type ReviewerId } from '../../security/reviewers/index.js';
-import { ensureRulesFile } from '../../security/rules.js';
+import { GITLEAKS_BASELINE_PATH, readEvalConfig, REVIEWER_GIT_CONFIG_KEY, RULES_PATH, writeEvalConfig } from '../../codewatch/config.js';
+import { installGitleaksConfig } from '../../codewatch/gitleaks.js';
+import { ensureResultsIgnored, installHooks, resolveHooksDir, retireLegacyCommitMsgHook, uninstallHooks } from '../../codewatch/hooks.js';
+import { ADAPTERS, detectReviewers, findOnPath, isReviewerId, REVIEWER_IDS, type ReviewerId } from '../../codewatch/reviewers/index.js';
+import { ensureRulesFile } from '../../codewatch/rules.js';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -41,7 +41,7 @@ async function chooseReviewer(flag: string | undefined, existing: string | undef
 }
 
 export default {
-  description: 'Install local security git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code)',
+  description: 'Install codewatch git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code)',
   options: [
     { flags: '--reviewer <tool>', description: `Team default reviewer: ${REVIEWER_IDS.join(' | ')} (skips detection)` },
     { flags: '--uninstall', description: 'Remove the hooks and restore any hooks they replaced' },
@@ -102,6 +102,6 @@ export default {
     console.log('  pre-push    reviews the branch diff against its upstream. Report only; never blocks.');
     console.log(`  Results     .prism/results/*.json (gitignored)`);
     console.log(`  Override    git config ${REVIEWER_GIT_CONFIG_KEY} <kiro|claude>   (this clone only)`);
-    console.log('  Remove      prism-cli enable security --uninstall');
+    console.log('  Remove      prism-cli enable codewatch --uninstall');
   },
 };

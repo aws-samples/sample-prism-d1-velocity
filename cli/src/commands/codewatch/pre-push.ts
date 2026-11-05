@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { run } from '../../utils/exec.js';
-import { runPrePush } from '../../security/prepush.js';
+import { runPrePush } from '../../codewatch/prepush.js';
 
 /**
- * Called by the pre-push hook installed by `prism-cli enable security`.
+ * Called by the pre-push hook installed by `prism-cli enable codewatch`.
  * Report only: exits 0 whatever happens.
  */
 export default {
-  description: 'pre-push hook: report-only code review of the branch diff (never blocks; installed by enable security)',
+  description: 'pre-push hook: report-only code review of the branch diff (never blocks; installed by enable codewatch)',
   options: [{ flags: '--remote <name>', description: 'Remote being pushed to (git passes it to the hook)' }],
   action(opts: { remote?: string }) {
     try {

@@ -1,5 +1,5 @@
 /**
- * Git hook install/uninstall for `prism-cli enable security`.
+ * Git hook install/uninstall for `prism-cli enable codewatch`.
  *
  * Backup convention matches the old install-git-hooks: a foreign hook at
  * `<hook>` is moved aside to `<hook>.pre-prism`. Unlike the old installer, the
@@ -10,7 +10,15 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSyn
 import { isAbsolute, resolve } from 'node:path';
 import { run } from '../utils/exec.js';
 
-export const HOOK_MARKER = '# prism-cli enable security';
+export const HOOK_MARKER = '# prism-cli enable codewatch';
+/**
+ * Markers of earlier hook generations that are still OURS: hook files written
+ * before the rename to codewatch carry the old marker and call the removed
+ * `prism-cli git pre-commit` / `git pre-push`. Recognising them means install
+ * overwrites them in place (rather than backing them up and chaining a hook
+ * that can no longer run) and uninstall removes them.
+ */
+const OWN_MARKERS = [HOOK_MARKER, '# prism-cli enable security'];
 /** The retired trailer hook is identified the way install-git-hooks identified it. */
 const LEGACY_MARKER = 'AI-Origin';
 export const BACKUP_SUFFIX = '.pre-prism';
@@ -20,21 +28,21 @@ export type ManagedHook = typeof MANAGED_HOOKS[number];
 /**
  * pre-commit: blocks on a gitleaks finding.
  *
- * Prefers `prism-cli git pre-commit` (writes a result file). Without prism-cli
+ * Prefers `prism-cli codewatch pre-commit` (writes a result file). Without prism-cli
  * on PATH it still runs gitleaks directly, so the block does not depend on the
  * CLI being installed globally.
  */
 export const PRE_COMMIT_SCRIPT = `#!/bin/sh
 ${HOOK_MARKER} -- pre-commit secret scan (blocks on a finding).
-# Managed file. Remove with: prism-cli enable security --uninstall
+# Managed file. Remove with: prism-cli enable codewatch --uninstall
 HOOK_DIR=$(dirname "$0")
 if [ -x "$HOOK_DIR/pre-commit${BACKUP_SUFFIX}" ]; then
   "$HOOK_DIR/pre-commit${BACKUP_SUFFIX}" "$@" || exit $?
 fi
-# Probe first: an older prism-cli on PATH has no "git pre-commit" and would
+# Probe first: an older prism-cli on PATH has no "codewatch pre-commit" and would
 # fail every commit with "unknown command".
-if command -v prism-cli >/dev/null 2>&1 && prism-cli git pre-commit --help >/dev/null 2>&1; then
-  exec prism-cli git pre-commit
+if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-commit --help >/dev/null 2>&1; then
+  exec prism-cli codewatch pre-commit
 fi
 if command -v gitleaks >/dev/null 2>&1; then
   set -- protect --staged --redact --no-banner --exit-code=1
@@ -57,16 +65,16 @@ exit 0
  */
 export const PRE_PUSH_SCRIPT = `#!/bin/sh
 ${HOOK_MARKER} -- pre-push local eval review (report only, never blocks).
-# Managed file. Remove with: prism-cli enable security --uninstall
+# Managed file. Remove with: prism-cli enable codewatch --uninstall
 HOOK_DIR=$(dirname "$0")
 PRISM_PUSH_INPUT=$(cat)
 if [ -x "$HOOK_DIR/pre-push${BACKUP_SUFFIX}" ]; then
   printf '%s\\n' "$PRISM_PUSH_INPUT" | "$HOOK_DIR/pre-push${BACKUP_SUFFIX}" "$@" || exit $?
 fi
-if command -v prism-cli >/dev/null 2>&1 && prism-cli git pre-push --help >/dev/null 2>&1; then
-  printf '%s\\n' "$PRISM_PUSH_INPUT" | prism-cli git pre-push --remote "\${1:-}" || true
+if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-push --help >/dev/null 2>&1; then
+  printf '%s\\n' "$PRISM_PUSH_INPUT" | prism-cli codewatch pre-push --remote "\${1:-}" || true
 else
-  echo "prism: prism-cli (with 'git pre-push') is not on PATH; local review skipped (report only)." >&2
+  echo "prism: prism-cli (with 'codewatch pre-push') is not on PATH; local review skipped (report only)." >&2
 fi
 exit 0
 `;
@@ -87,8 +95,13 @@ export function resolveHooksDir(gitRoot: string): string {
   return rel.ok && rel.stdout ? resolve(process.cwd(), rel.stdout) : resolve(gitRoot, '.git/hooks');
 }
 
-function isOurs(path: string, marker = HOOK_MARKER): boolean {
-  try { return readFileSync(path, 'utf8').includes(marker); } catch { return false; }
+function isOurs(path: string, markers: string[] = OWN_MARKERS): boolean {
+  try {
+    const text = readFileSync(path, 'utf8');
+    return markers.some((m) => text.includes(m));
+  } catch {
+    return false;
+  }
 }
 
 export interface HookChange { hook: string; action: string }
@@ -144,7 +157,7 @@ export function uninstallHooks(hooksDir: string): HookChange[] {
  */
 export function retireLegacyCommitMsgHook(hooksDir: string): string | null {
   const target = resolve(hooksDir, 'prepare-commit-msg');
-  if (!existsSync(target) || !isOurs(target, LEGACY_MARKER)) return null;
+  if (!existsSync(target) || !isOurs(target, [LEGACY_MARKER])) return null;
   const backup = target + BACKUP_SUFFIX;
   rmSync(target, { force: true });
   if (existsSync(backup)) {
