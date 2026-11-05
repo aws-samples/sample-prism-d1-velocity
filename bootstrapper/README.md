@@ -161,6 +161,6 @@ This is a lightweight adaptation focused on PRISM metric emission at each workfl
 
 ## A note on commit trailers
 
-Older revisions of these templates instructed you to add `AI-Origin:`, `AI-Model:`, and token/cost trailers to every commit, injected by the `metric-hooks/prepare-commit-msg` hook. **AI attribution no longer depends on trailers** — codeburn correlates commits to LLM API calls directly, which is both more accurate and hook-free. See [git hooks](../USER_GUIDE.md#git-hooks-deprecated) in the User Guide.
+Older revisions of these templates instructed you to add `AI-Origin:`, `AI-Model:`, and token/cost trailers to every commit, injected by the `metric-hooks/prepare-commit-msg` hook. **AI attribution no longer depends on trailers** — codeburn correlates commits to LLM API calls directly, which is both more accurate and hook-free. See [Commit Trailers and Token Tracker (retired)](../USER_GUIDE.md#commit-trailers-and-token-tracker-retired) in the User Guide.
 
 `Spec-Ref:` remains useful as a human-readable pointer from a commit to the spec that motivated it, which is why the example above keeps it.

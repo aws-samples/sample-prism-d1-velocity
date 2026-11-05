@@ -9,6 +9,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Prerequisites](#prerequisites)
 - [Administrator Setup](#administrator-setup)
 - [Developer Setup](#developer-setup)
+- [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)
 - [CI-CD Workflows (GitHub and GitLab)](#ci-cd-workflows-github-and-gitlab)
 - [Eval Gates](#eval-gates)
 - [Bedrock Protection Audit](#bedrock-protection-audit)
@@ -379,8 +380,9 @@ Monthly cost depends on team size and configuration. All resources are serverles
 
 ## Developer Setup
 
-One command per machine. There is nothing else for a developer to install — no git hooks, no
-per-repo configuration, no CI changes.
+One command per machine. There is nothing else a developer must install for telemetry — no git
+hooks, no per-repo configuration, no CI changes. The optional local checks are covered separately in
+[Codewatch (Local Git Hooks)](#codewatch-local-git-hooks).
 
 ```bash
 npm install -g @prism-d1/cli codeburn
@@ -416,9 +418,148 @@ Verify with `prism-cli bootstrapper setup-otel-sync --status`. Within one sync c
 **PRISM-D1-Team-Velocity** dashboard should show AI-vs-human commit counts and a coverage
 percentage.
 
-> Git hooks and commit trailers are deprecated and are not part of developer setup. AI origin now
-> comes from codeburn attribution, which is why these metrics survive hook removal. If you are
-> migrating off hooks, see [Git Hooks (deprecated)](#git-hooks-deprecated) in Troubleshooting.
+> The commit-trailer hook (`prepare-commit-msg`) and its token tracker are retired and are not part
+> of developer setup. AI origin now comes from codeburn attribution, which is why these metrics
+> survive the hook's removal. If you are migrating off it, see
+> [Commit Trailers and Token Tracker (retired)](#commit-trailers-and-token-tracker-retired) in
+> Troubleshooting.
+
+---
+
+## Codewatch (Local Git Hooks)
+
+Codewatch is an optional pair of git hooks that check your changes on your own machine, before CI
+sees them. Telemetry does not depend on it, and the CI eval gate runs with or without it.
+
+| Hook | What it does | Blocks? |
+|---|---|---|
+| `pre-commit` | gitleaks scan of the staged changes | Yes, on a finding |
+| `pre-push` | AI code review of the pushed changes with kiro-cli or Claude Code | No, report only |
+
+Every run writes a result file to `.prism/results/`, so you can see later what was checked and what
+was bypassed.
+
+### Prerequisites
+
+- **prism-cli** on PATH (`npm install -g @prism-d1/cli`). The hooks call it to scan, review and
+  record results.
+- **gitleaks** for the pre-commit scan: `brew install gitleaks` on macOS, `scoop install gitleaks`
+  on Windows, or a release binary from
+  [github.com/gitleaks/gitleaks/releases](https://github.com/gitleaks/gitleaks/releases) on your
+  PATH. Without it, commits still go through with a warning (see
+  [What the Hooks Do](#what-the-hooks-do)).
+- **A reviewer** for the pre-push review: kiro-cli or Claude Code (`claude`). One is enough.
+  Claude Code users do not need kiro-cli.
+
+### Install
+
+Per repo, from inside the clone:
+
+```bash
+prism-cli enable codewatch                     # detects kiro-cli / claude on PATH
+prism-cli enable codewatch --reviewer claude   # or set the team default explicitly
+```
+
+This installs the two hooks into the repo's hooks directory and adds these files:
+
+| File | Purpose | Commit it? |
+|---|---|---|
+| `.prism/review/rules.md` | Review rules. Copied from `.kiro/steering/code-review.md` when that exists, otherwise the bundled default. An existing file is kept | Yes |
+| `.prism/config.json` | `eval.reviewer` is the team default reviewer. Other keys in the file are kept | Yes |
+| `.gitleaks.toml` | Starter allowlist for gitleaks false positives. An existing file is kept | Yes |
+| `.gitignore` | Gains a `.prism/results/` entry | Yes |
+
+If the repo already has a `pre-commit` or `pre-push` hook, it is renamed to `<hook>.pre-prism` and
+runs first; if it fails, its exit code stops the hook as before. A `.prism/gitleaks-baseline.json`,
+if present, is passed to gitleaks as a baseline of accepted findings.
+
+For every repo on the machine at once:
+
+```bash
+prism-cli enable codewatch --global
+prism-cli enable codewatch --global --reviewer kiro   # also sets git config --global prism.reviewer
+```
+
+`--global` writes the hooks to `~/.prism/hooks` and sets `git config --global core.hooksPath` to
+that directory. In each repo, codewatch runs first and then the repo's own `.git/hooks/<hook>`, whose
+exit code passes through. Results are excluded locally through `.git/info/exclude` instead of
+`.gitignore`, and a repo with no `.prism/review/rules.md` is reviewed against the bundled rules.
+
+| Option | Effect |
+|---|---|
+| `--force` | With `--global` only. If another tool already set a global `core.hooksPath`, the install is refused; `--force` saves that value, replaces it, and runs that directory's hooks after codewatch. `--global --uninstall` restores it |
+| `git config prism.codewatch false` | Run in a repo to opt it out of the global hooks. Its own `.git/hooks` still run. Applies to `--global` only; for a per-repo install, uninstall instead |
+
+Running `enable codewatch` in a repo that the global hooks already cover installs the per-repo hooks
+into `.git/hooks`. git does not run them while the global `core.hooksPath` is set, so nothing runs
+twice.
+
+### Choosing the Reviewer
+
+The pre-push hook picks a reviewer in this order:
+
+1. `git config prism.reviewer <kiro|claude>`: a per-clone override for one developer. It is never
+   committed. With `--global --reviewer`, the same key is set in your global git config.
+2. `eval.reviewer` in `.prism/config.json`: the team default, set by `enable codewatch`.
+3. Whichever of kiro-cli and claude is on PATH.
+
+If the chosen tool is not installed, the other one is used and the substitution is printed and
+recorded. With neither installed, the push goes through and the result records "no reviewer".
+`enable codewatch` asks which to use when both are installed and no `--reviewer` was given (without a
+terminal it keeps the existing setting, or picks claude).
+
+`.prism/config.json` also accepts `eval.model` (passed to the reviewer) and `eval.timeout_seconds`
+(default 300).
+
+### What the Hooks Do
+
+**pre-commit** runs `gitleaks protect --staged` on the staged changes, using `.gitleaks.toml` and
+the baseline when present. A finding blocks the commit and lists the rule and file. To proceed:
+remove the secret (and rotate it if it is real), allowlist a false positive in `.gitleaks.toml`, or
+bypass once with `git commit --no-verify`.
+
+If gitleaks is not installed, the commit is **not** blocked. The hook prints a warning that the
+commit was not scanned and records the run as `skipped` with reason `gitleaks-missing`.
+
+**pre-push** reviews what the push adds. For each pushed branch it diffs `base...tip`, where `base`
+is the branch's upstream, else what the remote already has for that branch, else the remote's
+default branch (a first push). Lock files are left out of the diff. A diff over 200,000 characters
+is cut to that length before review, and the result says so. The reviewer reads the diff against
+`.prism/review/rules.md` and the hook prints a short summary.
+
+The pre-push hook never blocks a push: findings, a missing reviewer, a crash or a timeout all exit
+0. It also checks each pushed commit for a matching pre-commit scan, and records any commit without
+one as skipped (a `--no-verify` commit, or a rebase, cherry-pick or merge that runs no commit hook).
+
+### Results
+
+Each run writes one JSON file to `.prism/results/` in the repo: the kind (`secrets` or `review`), the
+hook, a status (`ok`, `findings`, `error`, `skipped`), the tool and model, the commit and branch, and
+the findings. The directory is gitignored (per repo) or excluded locally (with `--global`): results
+are per-developer evidence and are never committed.
+
+### CI
+
+CI keeps using kiro-cli, whichever reviewer developers use locally. When `.prism/review/rules.md`
+exists, the eval gate copies it over `.kiro/steering/code-review.md` before reviewing, so local and
+CI reviews use the same rules. See [Eval Gates](#eval-gates).
+
+### Uninstall
+
+```bash
+prism-cli enable codewatch --uninstall           # this repo
+prism-cli enable codewatch --global --uninstall  # the global hooks
+```
+
+The per-repo uninstall removes the hooks and restores any `<hook>.pre-prism` they replaced. It keeps
+`.prism/review/rules.md`, `.prism/config.json` and `.prism/results/`; delete them by hand if
+unwanted. The global uninstall restores the previous global `core.hooksPath` (or unsets it) and
+removes the scripts from `~/.prism/hooks`. It never touches repo-local hooks.
+
+`prism-cli bootstrapper install-git-hooks` is a deprecated alias for `enable codewatch`. Its old
+flags (`--team-id`, `--max-tokens`, `--max-cost`, `--global`) are accepted and ignored; `--reviewer`
+and `--uninstall` are passed through. Installing over the retired `prepare-commit-msg` trailer hook
+removes it.
 
 ---
 
@@ -1566,55 +1707,31 @@ Options:
 
 ## Troubleshooting
 
-### Git Hooks (deprecated)
+### Codewatch
 
-> **Note:** Git hooks for AI-origin tagging are being deprecated. The `setup-otel-sync` command provides codeburn-based attribution telemetry that supersedes this approach. Keep hooks installed during migration to maintain backwards compatibility with CI workflows that read trailers.
+| Issue | Solution |
+|---|---|
+| Every commit fails with `unknown command 'codewatch'`, or the hooks say prism-cli is not on PATH | An older prism-cli is first on PATH (`which -a prism-cli`). The hooks probe for `codewatch pre-commit` and fall back to running gitleaks directly, so commits are still scanned, but nothing is recorded and pushes are not reviewed. Upgrade with `npm install -g @prism-d1/cli` or fix the PATH order |
+| Hooks never run in a repo that uses husky (or sets its own `core.hooksPath`) | A repo-local `core.hooksPath` overrides both the global hooks and `.git/hooks`. Check with `git config --show-origin core.hooksPath`. Either call `prism-cli codewatch pre-commit` and `prism-cli codewatch pre-push --remote "$1"` (with the pushed refs on stdin) from that tool's hooks, or remove the override |
+| `enable codewatch --global` refuses to install | Another tool owns the global `core.hooksPath`. Re-run with `--force` to chain its hooks after codewatch; `--global --uninstall` restores it |
+| A pushed commit is recorded as skipped with no pre-commit scan | It was committed with `--no-verify`, or created by a rebase, cherry-pick or merge, which run no commit hook. This is recorded on purpose so bypasses stay visible |
+| A warning says gitleaks is not installed and the commit was not scanned | Install gitleaks (see the codewatch [Prerequisites](#prerequisites-1)). Until then commits are allowed and recorded as `gitleaks-missing` |
+| The review reports "no reviewer" | Neither kiro-cli nor claude is on PATH in the shell that runs the push |
 
-#### What the Hook Does
+### Commit Trailers and Token Tracker (retired)
 
-Every commit gets trailers appended to the message:
+The `prepare-commit-msg` hook that appended `AI-Origin`, `AI-Tool`, `AI-Model`, token, cost and
+`Spec-Ref` trailers to commit messages is retired, along with the token tracker that kept per-repo
+snapshots in `~/.prism/tokentracker/`. AI origin and usage now come from codeburn attribution, pushed
+by `setup-otel-sync` (see [Developer Setup](#developer-setup)), and no CI workflow reads trailers.
 
-```
-feat: add order creation endpoint
-
-AI-Origin: ai-generated
-AI-Tool: claude-code
-AI-Model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
-AI-Input-Tokens: 12450
-AI-Output-Tokens: 3200
-AI-Cost: $0.08
-Spec-Ref: specs/create-order-endpoint.md
-```
-
-#### How AI Detection Works
-
-The hook (via `prism-cli git commit-trailers`) checks, in order:
-
-1. **Claude Code**: `CLAUDE_CODE` or `CLAUDE_CODE_SESSION_ID` environment variable
-2. **Kiro**: `KIRO_SESSION_ID` / `KIRO_SESSION` env var, `TERM_PROGRAM=kiro` (IDE terminal), or a `kiro` path in `VSCODE_GIT_ASKPASS_NODE` / `GIT_ASKPASS`
-3. **Q Developer**: `Q_DEVELOPER_SESSION` environment variable
-4. **Cursor**: `CURSOR_AGENT=1` or `CURSOR_TRACE_ID`, or a `cursor` path in `VSCODE_GIT_ASKPASS_NODE` / `VSCODE_GIT_ASKPASS_MAIN` / `GIT_ASKPASS`. `TERM_PROGRAM` is not usable here — Cursor inherits VS Code's value
-5. **Default**: No indicators → `AI-Origin: human`
-
-#### Token Tracking
-
-When an AI tool is detected, the hook computes a per-commit delta:
-
-1. Collects lifetime token totals — Kiro sessions are parsed directly by prism-cli; other tools use `codeburn report -p all --format json`
-2. Compares against a snapshot from the previous commit (`~/.prism/tokentracker/<project-basename>.json`)
-3. Writes the delta as `AI-Input-Tokens` and `AI-Output-Tokens` trailers
-4. Saves the new snapshot for next time
-
-If no usage data is available or no AI tool is detected, token trailers are omitted.
-
-#### Safety
-
-- Never blocks a commit — exits 0 even if prism-cli or codeburn is missing or errors
-- Only appends trailers — never modifies code
-- Skips merge and squash commits
-- Won't duplicate trailers if already present
-
-> The hook is a thin bash delegator to prism-cli. It requires only `git` and `bash` (with `prism-cli` on PATH) — **no `jq`, `bc`, or `sed`** — so it works on Linux, macOS, and Windows Git Bash.
+- `prism-cli bootstrapper install-git-hooks` now installs codewatch (see
+  [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)) and removes the trailer hook if it
+  finds it, restoring any hook the trailer hook had backed up.
+- `prism-cli git commit-trailers` still exists, marked deprecated, so trailer hooks already
+  installed in other repos keep working until they are replaced. Running `prism-cli enable codewatch`
+  in such a repo removes the old hook.
+- `~/.prism/tokentracker/` is no longer written and can be deleted.
 
 ### General Issues
 
@@ -1681,7 +1798,7 @@ Usage instructions for the copy-me artifacts live in [`bootstrapper/README.md`](
 | `bootstrapper/github-workflows/` | Reusable GitHub Actions for metric collection and eval gating |
 | `bootstrapper/gitlab-workflows/` | GitLab CI templates for metric collection and eval gating |
 | `bootstrapper/eval-harness/` | Agent eval rubric (`agent-quality.json`), runner script with `--spec` flag, and the `code-review.md` Kiro steering file |
-| `bootstrapper/metric-hooks/` | Git hooks for automatic AI-origin tagging (deprecated — use `setup-otel-sync`) |
+| `bootstrapper/metric-hooks/` | Retired commit-trailer hook, kept for reference (AI origin comes from `setup-otel-sync`; local hooks are [codewatch](#codewatch-local-git-hooks)) |
 
 **Copy-me artifacts** — present only in a clone of this repo; copy them into your own project by hand:
 

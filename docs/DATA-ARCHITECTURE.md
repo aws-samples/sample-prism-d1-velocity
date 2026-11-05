@@ -70,7 +70,7 @@ CDK resources: `CfnAgentSpace` (scope + KMS), `CfnTargetDomain` (pen test scope)
 
 | Source | Status | What replaced it |
 |---|---|---|
-| **Git hooks** (`bootstrapper/metric-hooks/`) | ⚠️ Deprecated, being removed | codeburn attribution. Hooks inferred AI origin from env vars (`CLAUDE_CODE`, `KIRO_SESSION`, `Q_DEVELOPER_SESSION`) and wrote `AI-Origin` / `AI-Tool` / `AI-Model` trailers — "you were inside an AI tool's terminal", not "an LLM wrote this". `post-commit` / `post-merge` wrote JSON to `.prism/metrics/` and never emitted events. |
+| **Git hooks** (`bootstrapper/metric-hooks/`) | ⚠️ Retired (`install-git-hooks` now installs codewatch, which records no metrics) | codeburn attribution. Hooks inferred AI origin from env vars (`CLAUDE_CODE`, `KIRO_SESSION`, `Q_DEVELOPER_SESSION`) and wrote `AI-Origin` / `AI-Tool` / `AI-Model` trailers — "you were inside an AI tool's terminal", not "an LLM wrote this". `post-commit` / `post-merge` wrote JSON to `.prism/metrics/` and never emitted events. |
 | **GitHub webhooks** | ⚠️ Never implemented | `prism-ai-metrics.yml` emits `prism.d1.pr` and `prism.d1.deploy` from CI with OIDC — no self-hosted endpoint or shared secret. A reference handler once lived at `docs/reference/github-webhook-handler/`, was never deployed by CDK, and has been removed. |
 | **Bedrock CloudTrail** | ⚠️ Never implemented | codeburn usage spans. The design called for a `token-processor` Lambda, a DynamoDB pricing table with a deploy-time seeder, and an IAM-ARN-to-email identity table. None was built, and none is needed: spans already carry model, token counts, and developer identity. |
 
@@ -341,7 +341,7 @@ Published to namespace `PRISM/D1/Velocity`. Dimensions: **TeamId** and **Reposit
 | `AIToMergeRatio` | Percent | ⚠️ **Removed** — had no consumer, and its CI line was trailer-derived. See the note in `infra/lib/lambda/metrics-processor.ts`. AI merge rate is now computed at query time from attribution (`MergedAICommits` / `AICommits`). |
 | `EvalGatePassRate` | Percent | `prism-agent-eval.yml`. The agent-eval workflow also emits `EvalGatePassRateByRubric` and `EvalScore`; the kiro eval gate emits `prism.d1.eval` events but not rubric-level metrics. |
 | `PostMergeDefectRate` | Percent | ⚠️ **Removed** — the defect-correlator Lambda that emitted it was deleted as a permanent no-op. The working defect signal is `RevertedAICommits / MergedAICommits` from attribution. |
-| `SpecToCodeHours` | Hours | ⚠️ **Not emitted** — needs `Spec-Ref` on commits; the `prepare-commit-msg` hook does not inject it, and attribution spans carry no spec reference. |
+| `SpecToCodeHours` | Hours | ⚠️ **Not emitted** — needs `Spec-Ref` on commits; the retired `prepare-commit-msg` trailer hook never injected it, and attribution spans carry no spec reference. |
 | `AITestCoverageDelta` | Percent | ⚠️ **Not emitted** — no workflow computes coverage delta by AI origin. Demo-generator only. |
 
 ### Attribution Metrics (codeburn spans — no git hooks required)

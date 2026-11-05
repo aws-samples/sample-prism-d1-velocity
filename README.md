@@ -74,11 +74,24 @@ prism-cli bootstrapper install-github-workflows --region us-west-2
 
 Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum security agent, VPC options, and cost tuning are in the **[User Guide](USER_GUIDE.md)**.
 
+### Optional: check changes locally (codewatch)
+
+Codewatch adds two git hooks on a developer's machine. `pre-commit` runs gitleaks on the staged changes and **blocks** a commit that contains a secret. `pre-push` has kiro-cli or Claude Code review the changes being pushed and **only reports**; it never blocks a push. Results go to `.prism/results/` (gitignored).
+
+```bash
+prism-cli enable codewatch                     # this repo
+prism-cli enable codewatch --global            # every repo on this machine
+prism-cli enable codewatch --reviewer claude   # pick the reviewer: kiro | claude
+prism-cli enable codewatch --uninstall         # remove (add --global for the global hooks)
+```
+
+It needs gitleaks plus kiro-cli or Claude Code; telemetry does not depend on it. It replaces the retired commit-trailer hook, and `bootstrapper install-git-hooks` is now an alias for it. Details: [Codewatch (Local Git Hooks)](USER_GUIDE.md#codewatch-local-git-hooks).
+
 ## Documentation
 
 | Guide | For | Contents |
 |-------|-----|----------|
-| **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
+| **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, codewatch git hooks, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
 | **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the attribution pipeline, metrics catalog with known gaps, alarms, dashboard design decisions |
 | **[Bedrock Protection](docs/BEDROCK-PROTECTION.md)** | Engineers and security leaders | Layered defence against LLMjacking: gitleaks in CI and full-history repo scans, IAM credential hygiene, Bedrock spend guardrails across both billing surfaces |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
@@ -142,7 +155,7 @@ The four classic DORA metrics plus three AI-specific dimensions. **Source** is w
 | **Post-Merge Defect Rate** | Reverted / merged AI commits (attribution) | ✅ Works, hook-free | <= 1.2x human | <= 0.9x |
 | **Eval Gate Pass Rate** | kiro-cli headless review in CI | ✅ Works | >= 80% | >= 95% |
 
-All four delivery proxies aggregate over the dashboard's selected time range. The ✅ rows come from codeburn attribution rather than git commit trailers, so they survive [git-hook removal](USER_GUIDE.md#git-hooks-deprecated).
+All four delivery proxies aggregate over the dashboard's selected time range. The ✅ rows come from codeburn attribution rather than git commit trailers, so they survive [the commit-trailer hook's retirement](USER_GUIDE.md#commit-trailers-and-token-tracker-retired).
 
 ## PRISM Maturity Levels (D1 Velocity)
 

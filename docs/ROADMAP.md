@@ -188,7 +188,7 @@ We welcome contributions from the community! Here's how to get involved:
 ### Contribution Guidelines
 
 - **Start with a spec** — For M/L/XL items, write a spec in `specs/` before coding (see CLAUDE.md).
-- **Tag AI origin** — Use `ai-origin: claude-code` or `ai-origin: kiro` in commit trailers.
+- **AI origin is automatic** — codeburn attribution records it; commit trailers are retired, so do not add `ai-origin` trailers by hand.
 - **Emit metrics** — Any new component must emit structured events per the [metrics schema](../CLAUDE.md#metrics-schema).
 - **AWS-native only** — No third-party observability dependencies. CloudWatch, DynamoDB, EventBridge, Bedrock.
 - **Test with sample data** — Use `scripts/` generators to validate dashboard changes.
