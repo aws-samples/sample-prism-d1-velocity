@@ -30,7 +30,9 @@ th { color:var(--muted); font-weight:600; } td.num { text-align:right; font-vari
 .s-ok { color:var(--ok); } .s-warn, .s-findings, .s-skipped { color:var(--warn); } .s-missing, .s-error { color:var(--bad); }
 .sev-high { color:var(--high); } .sev-medium { color:var(--medium); } .sev-low { color:var(--low); }
 .stats { display:flex; gap:18px; flex-wrap:wrap; margin:6px 0; } .stat b { display:block; font-size:20px; } .stat span { color:var(--muted); font-size:12px; }
-.fix { color:var(--muted); font-size:12px; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
+.fix { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
+.banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
 svg.trend line { stroke:var(--line); }
 .repo-title { font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-all; }
@@ -79,8 +81,17 @@ function trendSvg(trend) {
   return svg;
 }
 
+function scanBanner(ss) {
+  if (!ss || !ss.banner) return null;
+  return el('div', { class: 'banner', role: 'alert' },
+    el('strong', {}, ss.banner),
+    el('div', { class: 'fix' }, 'Install: ', el('code', {}, ss.installHint)));
+}
+
 function codewatchPanel(repo) {
   const cw = repo.codewatch, s = el('section', { class: 'card wide' }, el('h2', {}, 'Codewatch'), el('div', { class: 'repo-title' }, repo.path));
+  const banner = scanBanner(cw.secretScanning);
+  if (banner) s.append(banner);
   if (!cw.hasResults) {
     s.append(el('p', { class: 'empty' }, 'No codewatch results yet. Run ', el('code', {}, 'prism-cli enable codewatch'), ' in this repo, then commit and push.'));
     return s;
@@ -136,7 +147,7 @@ function usagePanel(u) {
     s.append(el('h3', {}, 'Top models this month'));
     s.append(table(['Model', 'Cost', 'Calls'], u.topModels.map((m) => [m.name, num(money(m.cost, u.currency)), num(m.calls)])));
     s.append(el('h3', {}, 'Top projects this month'));
-    s.append(table(['Project', 'Cost', 'Sessions'], u.topProjects.map((p) => [el('code', {}, p.name), num(money(p.cost, u.currency)), num(p.sessions)])));
+    s.append(table(['Project', 'Cost', 'Sessions'], u.topProjects.map((p) => [el('span', { title: p.path }, p.name), num(money(p.cost, u.currency)), num(p.sessions)])));
   }
   s.append(el('p', { class: 'note' }, 'Full charts: run ', el('code', {}, txt(u.fullView)), ' in a terminal.'));
   return s;

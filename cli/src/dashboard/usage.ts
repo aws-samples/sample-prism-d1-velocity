@@ -9,7 +9,7 @@
 import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { findOnPath } from '../utils/tool-check.js';
 
@@ -25,7 +25,8 @@ export interface UsagePanel {
   today: Totals | null;
   month: (Totals & { from: string; to: string }) | null;
   topModels: { name: string; cost: number; calls: number }[];
-  topProjects: { name: string; cost: number; sessions: number }[];
+  /** `name` is the folder name; `path` is codeburn's full project path, for a tooltip. */
+  topProjects: { name: string; path: string; cost: number; sessions: number }[];
   generated: string | null;
   /** Shown as a note, never a link: codeburn web is a CLI command. */
   fullView: string;
@@ -98,7 +99,7 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
       .map((m) => ({ name: String(m?.Model || 'unknown'), cost: num(m?.['Cost (USD)']), calls: num(m?.['API Calls']) }))
       .sort((a, b) => b.cost - a.cost).slice(0, TOP_N),
     topProjects: monthProjects
-      .map((p) => ({ name: String(p?.Project || 'unknown'), cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) }))
+      .map((p) => { const path = String(p?.Project || 'unknown'); return { name: basename(path.replace(/[\\/]+$/, '')) || path, path, cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) }; })
       .sort((a, b) => b.cost - a.cost).slice(0, TOP_N),
     generated: typeof base?.generated === 'string' ? base.generated : null,
     fullView: 'codeburn web',

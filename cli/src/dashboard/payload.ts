@@ -5,6 +5,7 @@
 import { collectCodewatch, type CodewatchPanel } from './codewatch.js';
 import { discoverRepos, type DiscoverOptions } from './repos.js';
 import { machineChecks, repoChecks, type CheckItem, type MachineDeps } from './setup.js';
+import { findOnPath } from '../utils/tool-check.js';
 import { collectUsage, type CodeburnExport, type UsagePanel } from './usage.js';
 
 export const PAYLOAD_SCHEMA = 'prism.dashboard.v1';
@@ -36,6 +37,7 @@ export interface PayloadOptions extends DiscoverOptions {
 export async function buildPayload(opts: PayloadOptions): Promise<DashboardPayload> {
   const d = discoverRepos(opts);
   const usage = await collectUsage({ exporter: opts.exporter, pathEnv: opts.pathEnv });
+  const gitleaksAvailable = findOnPath('gitleaks', opts.pathEnv) !== null;
   return {
     schema: PAYLOAD_SCHEMA,
     generated_at: new Date().toISOString(),
@@ -43,7 +45,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     repos: d.repos.map((r) => ({
       name: r.name,
       path: r.path,
-      codewatch: collectCodewatch(r.path, opts.trendRuns),
+      codewatch: collectCodewatch(r.path, opts.trendRuns, gitleaksAvailable),
       setup: repoChecks(r.path, { pathEnv: opts.pathEnv }),
     })),
     machine: { setup: machineChecks({ pathEnv: opts.pathEnv, ...opts.machineDeps }) },

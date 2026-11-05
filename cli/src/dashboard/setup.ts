@@ -30,6 +30,14 @@ export interface MachineDeps {
   schedulerName?: () => string;
 }
 
+/** One-line, platform-specific gitleaks install hint. Never a curl-piped-to-shell. */
+export function gitleaksInstallHint(platform: NodeJS.Platform = process.platform): string {
+  const release = 'a release binary from https://github.com/gitleaks/gitleaks/releases';
+  if (platform === 'darwin') return `brew install gitleaks (or ${release})`;
+  if (platform === 'win32') return `scoop install gitleaks (or ${release})`;
+  return `${release} on your PATH, or: go install github.com/zricethezav/gitleaks/v8@latest`;
+}
+
 const item = (id: string, label: string, status: CheckStatus, detail: string, fix = ''): CheckItem => ({ id, label, status, detail, fix: status === 'ok' ? '' : fix });
 
 const AWS_ENV_VARS = ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
@@ -57,9 +65,10 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   }
 
   const gl = checkTool('gitleaks', { pathEnv: deps.pathEnv, versionArgs: ['version'] });
-  out.push(item('gitleaks', 'gitleaks available', gl.installed ? 'ok' : 'missing',
-    gl.installed ? (gl.version || 'version unknown') : 'not on PATH; codewatch pre-commit cannot scan',
-    'Install gitleaks: https://github.com/gitleaks/gitleaks#installing'));
+  // warn, not missing: commits are still allowed, just not secret-scanned (decided).
+  out.push(item('gitleaks', 'gitleaks available', gl.installed ? 'ok' : 'warn',
+    gl.installed ? (gl.version || 'version unknown') : 'not on PATH; secret scanning is off and commits are not scanned',
+    gitleaksInstallHint()));
 
   // Presence only. STS is never called and no credential or config file is read.
   const envVar = AWS_ENV_VARS.find((k) => env[k]);

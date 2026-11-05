@@ -1,7 +1,9 @@
 /**
  * Codewatch panel data, from `.prism/results/` (see codewatch/results.ts).
  */
-import { readResults, type Finding, type PrismResult, type ResultStatus, countBySeverity } from '../codewatch/results.js';
+import { readResults, REASON_GITLEAKS_MISSING, type Finding, type PrismResult, type ResultStatus, countBySeverity } from '../codewatch/results.js';
+import { gitleaksInstallHint } from './setup.js';
+import { localDate } from './usage.js';
 
 export const DEFAULT_TREND_RUNS = 20;
 /** Cap on findings listed per repo, so one noisy branch cannot flood the page. */
@@ -37,6 +39,22 @@ export interface FindingRow extends Finding {
   started_at: string;
 }
 
+export interface SecretScanning {
+  /** gitleaks on PATH on this machine right now. */
+  gitleaksAvailable: boolean;
+  /**
+   * Commits allowed without a secret scan because gitleaks was missing, in the
+   * current run of such commits: since the last pre-commit that did run
+   * gitleaks, or since the first record if it never ran.
+   */
+  unscannedCommits: number;
+  /** started_at of the first commit in that run; null when there is none. */
+  unscannedSince: string | null;
+  installHint: string;
+  /** Banner text when gitleaks is unavailable, else null. Same words in the page and --json. */
+  banner: string | null;
+}
+
 export interface CodewatchPanel {
   /** False when there are no results at all: the empty state. */
   hasResults: boolean;
@@ -53,6 +71,34 @@ export interface CodewatchPanel {
   skipped: RunSummary[];
   /** Last N runs, oldest first. */
   trend: RunSummary[];
+  secretScanning: SecretScanning;
+}
+
+const isMissingSkip = (r: PrismResult) =>
+  r.kind === 'secrets' && r.hook === 'pre-commit' && r.status === 'skipped' && r.reason === REASON_GITLEAKS_MISSING;
+
+/** A pre-commit that actually ran gitleaks (any verdict). */
+const ranGitleaks = (r: PrismResult) =>
+  r.kind === 'secrets' && r.hook === 'pre-commit' && (r.status === 'ok' || r.status === 'findings' || (r.status === 'error' && !/not on PATH/.test(r.reason || '')));
+
+/** Local calendar day, so the banner reads "since 2026-11-03". */
+function day(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso.slice(0, 10) : localDate(d);
+}
+
+export function secretScanning(sorted: PrismResult[], gitleaksAvailable: boolean, hint = gitleaksInstallHint()): SecretScanning {
+  let lastRan = -1;
+  sorted.forEach((r, i) => { if (ranGitleaks(r)) lastRan = i; });
+  const streak = sorted.slice(lastRan + 1).filter(isMissingSkip);
+  const since = streak.length ? streak[0].started_at : null;
+  let banner: string | null = null;
+  if (!gitleaksAvailable) {
+    banner = streak.length
+      ? `Secret scanning is off: gitleaks is not installed. ${streak.length} commit${streak.length === 1 ? '' : 's'} since ${day(since!)} ${streak.length === 1 ? 'was' : 'were'} not scanned.`
+      : 'Secret scanning is off: gitleaks is not installed. No unscanned commits recorded yet.';
+  }
+  return { gitleaksAvailable, unscannedCommits: streak.length, unscannedSince: since, installHint: hint, banner };
 }
 
 function summarize(r: PrismResult): RunSummary {
@@ -75,7 +121,7 @@ function isBlock(r: PrismResult): boolean {
 
 const byTime = (a: PrismResult, b: PrismResult) => String(a.started_at).localeCompare(String(b.started_at));
 
-export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS): CodewatchPanel {
+export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS, gitleaksAvailable = true): CodewatchPanel {
   const all = readResults(repoRoot).filter((r) => r && typeof r.started_at === 'string').sort(byTime);
   const latest = new Map<string, BranchLatest>();
   const latestReview = new Map<string, PrismResult>();
@@ -107,7 +153,9 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
     bySeverity,
     byCategory,
     gitleaksBlocks: all.filter(isBlock).map(summarize).reverse(),
-    skipped: all.filter((r) => r.kind === 'secrets' && r.status === 'skipped').map(summarize).reverse(),
+    // --no-verify and other unhooked commits; gitleaks-missing ones are counted in secretScanning.
+    skipped: all.filter((r) => r.kind === 'secrets' && r.status === 'skipped' && !isMissingSkip(r)).map(summarize).reverse(),
     trend: all.filter((r) => r.status !== 'skipped').slice(-trendRuns).map(summarize),
+    secretScanning: secretScanning(all, gitleaksAvailable),
   };
 }

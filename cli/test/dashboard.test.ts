@@ -13,9 +13,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { collectCodewatch } from '../src/dashboard/codewatch.js';
+import { collectCodewatch, secretScanning } from '../src/dashboard/codewatch.js';
+import { makeResult, REASON_GITLEAKS_MISSING, type PrismResult } from '../src/codewatch/results.js';
 import { collectUsage, type CodeburnExport } from '../src/dashboard/usage.js';
-import { machineChecks, repoChecks } from '../src/dashboard/setup.js';
+import { machineChecks, repoChecks, gitleaksInstallHint } from '../src/dashboard/setup.js';
 import { discoverRepos, scanForRepos } from '../src/dashboard/repos.js';
 import { buildPayload, PAYLOAD_SCHEMA } from '../src/dashboard/payload.js';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
@@ -54,11 +55,11 @@ const fixtureExporter: CodeburnExport = async (args) =>
 test('codewatch: latest run per branch, with the reviewer that ran it', () => {
   const cw = collectCodewatch(repoWithResults());
   assert.equal(cw.hasResults, true);
-  assert.equal(cw.totalRuns, 7, 'garbage.json is ignored');
+  assert.equal(cw.totalRuns, 8, 'garbage.json is ignored');
   const byBranch = Object.fromEntries(cw.latestByBranch.map((b) => [b.branch, b]));
   assert.equal(byBranch['main-work'].review?.tool, 'claude');
   assert.equal(byBranch['main-work'].review?.model, 'claude-sonnet-4-5');
-  assert.equal(byBranch['main-work'].secrets?.status, 'error');
+  assert.equal(byBranch['main-work'].secrets?.status, 'skipped');
   assert.equal(byBranch['feature-x'].review?.status, 'error');
 });
 
@@ -72,7 +73,7 @@ test('codewatch: findings come from the latest review only, sorted by severity',
   assert.deepEqual(cw.byCategory, { quality: 1, security: 1 });
 });
 
-test('codewatch: gitleaks blocks exclude a missing-gitleaks error; skipped runs listed', () => {
+test('codewatch: gitleaks blocks exclude missing-gitleaks skips; --no-verify skips listed separately', () => {
   const cw = collectCodewatch(repoWithResults());
   assert.equal(cw.gitleaksBlocks.length, 1);
   assert.equal(cw.gitleaksBlocks[0].status, 'findings');
@@ -90,6 +91,51 @@ test('codewatch: empty state when there are no results', () => {
   assert.deepEqual(cw.findings, []);
 });
 
+test('secret scanning banner: counts commits since the last real scan when gitleaks is missing', () => {
+  const cw = collectCodewatch(repoWithResults(), 20, false);
+  const ss = cw.secretScanning;
+  assert.equal(ss.gitleaksAvailable, false);
+  // aaa ran (ok), bbb ran (findings), then ccc and eee were committed without gitleaks
+  assert.equal(ss.unscannedCommits, 2);
+  assert.equal(ss.unscannedSince, '2026-11-01T11:30:00.000Z');
+  assert.match(ss.banner || '', /^Secret scanning is off: gitleaks is not installed\. 2 commits since 2026-11-0[12] were not scanned\.$/);
+  assert.equal(ss.installHint, gitleaksInstallHint());
+  // gitleaks-missing skips are not reported again as --no-verify
+  assert.ok(!cw.skipped.some((r) => r.reason === REASON_GITLEAKS_MISSING));
+});
+
+test('secret scanning banner: hidden when gitleaks is available; counts kept', () => {
+  const ss = collectCodewatch(repoWithResults(), 20, true).secretScanning;
+  assert.equal(ss.banner, null);
+  assert.equal(ss.unscannedCommits, 2);
+});
+
+test('secret scanning banner: streak resets after a real scan; never-ran counts from the first', () => {
+  const r = (t: string, status: PrismResult['status'], reason: string | null = null) =>
+    makeResult({ kind: 'secrets', hook: 'pre-commit', tool: 'gitleaks', status, reason, started_at: t, finished_at: t });
+  const missing = (t: string) => r(t, 'skipped', REASON_GITLEAKS_MISSING);
+  assert.equal(secretScanning([missing('2026-01-01T00:00:00Z'), r('2026-01-02T00:00:00Z', 'ok')], false).unscannedCommits, 0);
+  const once = secretScanning([missing('2026-01-05T12:00:00Z')], false);
+  assert.equal(once.unscannedCommits, 1);
+  assert.match(once.banner || '', /1 commit since 2026-01-0[56] was not scanned\./);
+  const none = secretScanning([], false);
+  assert.equal(none.banner, 'Secret scanning is off: gitleaks is not installed. No unscanned commits recorded yet.');
+});
+
+test('gitleaks install hint is per platform and never pipes curl into a shell', () => {
+  assert.match(gitleaksInstallHint('darwin'), /^brew install gitleaks/);
+  assert.match(gitleaksInstallHint('win32'), /^scoop install gitleaks/);
+  assert.match(gitleaksInstallHint('linux'), /github\.com\/gitleaks\/gitleaks\/releases/);
+  for (const p of ['darwin', 'win32', 'linux'] as const) assert.doesNotMatch(gitleaksInstallHint(p), /curl|\|\s*(ba|z)?sh/);
+});
+
+test('setup (machine): gitleaks row is a warning with the install hint', () => {
+  const g = machineChecks({ pathEnv: tmp('nogl'), home: tmp('hg'), env: {}, scheduleExists: () => false }).find((i) => i.id === 'gitleaks');
+  assert.equal(g?.status, 'warn');
+  assert.equal(g?.fix, gitleaksInstallHint());
+  assert.match(g?.detail || '', /secret scanning is off/);
+});
+
 // ---------------------------------------------------------------- usage collector
 
 test('usage: today, this month, top models and projects from codeburn export', async () => {
@@ -104,6 +150,10 @@ test('usage: today, this month, top models and projects from codeburn export', a
   assert.ok(u.topProjects.length <= 5);
   for (let i = 1; i < u.topProjects.length; i++) assert.ok(u.topProjects[i - 1].cost >= u.topProjects[i].cost);
   assert.equal(u.fullView, 'codeburn web');
+  for (const p of u.topProjects) {
+    assert.ok(!p.name.includes('/'), `folder name only: ${p.name}`);
+    assert.ok(p.path.endsWith('/' + p.name), 'full path kept for the tooltip');
+  }
 });
 
 test('usage: asks codeburn for this calendar month', async () => {
@@ -140,7 +190,7 @@ test('setup (machine): ok when tools, schedule, sync log and AWS profile are pre
 
 test('setup (machine): missing items each carry a one-line fix; AWS uses presence only', () => {
   const items = machineChecks({ pathEnv: tmp('none'), home: tmp('home2'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab' });
-  assert.deepEqual(items.map((i) => i.status), ['missing', 'missing', 'missing', 'missing']);
+  assert.deepEqual(items.map((i) => i.status), ['missing', 'missing', 'warn', 'missing'], 'gitleaks absent is a warning, not missing');
   for (const i of items) { assert.ok(i.fix.length > 0); assert.ok(!i.fix.includes('\n')); }
   // an existing config file counts, without its contents being needed
   const home = tmp('home3');
@@ -215,6 +265,11 @@ test('--json payload shape', async () => {
   assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'repos', 'schema', 'scope', 'security', 'usage']);
   assert.deepEqual(Object.keys(p.repos[0]).sort(), ['codewatch', 'name', 'path', 'setup']);
   assert.equal(p.repos[0].codewatch.hasResults, true);
+  const ss = p.repos[0].codewatch.secretScanning;
+  assert.deepEqual(Object.keys(ss).sort(), ['banner', 'gitleaksAvailable', 'installHint', 'unscannedCommits', 'unscannedSince']);
+  assert.equal(ss.gitleaksAvailable, false, 'pathEnv has no gitleaks');
+  assert.equal(ss.unscannedCommits, 2);
+  assert.match(ss.banner || '', /Secret scanning is off/);
   assert.equal(p.usage.status, 'ok');
   assert.equal(p.security.status, 'coming-soon');
   assert.match(p.security.message, /coming with prism-cli security findings/i);
@@ -326,6 +381,9 @@ test('page uses textContent for data and loads nothing from the network', () => 
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(html));
   assert.ok(!/https?:\/\/(?!www\.w3\.org\/2000\/svg)/.test(html), 'no external URLs');
   assert.match(html, /<script nonce="NONCE">/);
+  assert.match(html, /function scanBanner\(ss\)/);
+  assert.match(html, /role: 'alert'/);
+  assert.match(html, /title: p\.path/);
 });
 
 test('parsePort validates --port', () => {
