@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { checkTool } from '../utils/tool-check.js';
 import { lastSync, scheduleExists, schedulerName } from '../utils/otel-sync-schedule.js';
 import { HOOK_MARKER, MANAGED_HOOKS } from '../codewatch/hooks.js';
+import { gitleaksInstallHint } from '../codewatch/gitleaks.js';
 import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
 
@@ -30,13 +31,8 @@ export interface MachineDeps {
   schedulerName?: () => string;
 }
 
-/** One-line, platform-specific gitleaks install hint. Never a curl-piped-to-shell. */
-export function gitleaksInstallHint(platform: NodeJS.Platform = process.platform): string {
-  const release = 'a release binary from https://github.com/gitleaks/gitleaks/releases';
-  if (platform === 'darwin') return `brew install gitleaks (or ${release})`;
-  if (platform === 'win32') return `scoop install gitleaks (or ${release})`;
-  return `${release} on your PATH, or: go install github.com/zricethezav/gitleaks/v8@latest`;
-}
+// Shared with enable codewatch and the pre-commit warning so the three cannot drift.
+export { gitleaksInstallHint };
 
 const item = (id: string, label: string, status: CheckStatus, detail: string, fix = ''): CheckItem => ({ id, label, status, detail, fix: status === 'ok' ? '' : fix });
 
