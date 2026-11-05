@@ -15,6 +15,9 @@ import { join, resolve } from 'node:path';
 export const RESULT_SCHEMA_VERSION = 1;
 export const RESULTS_DIR = '.prism/results';
 
+/** Pre-commit ran with no gitleaks on PATH: the commit was allowed but not secret-scanned. */
+export const REASON_GITLEAKS_MISSING = 'gitleaks-missing';
+
 export type Severity = 'high' | 'medium' | 'low';
 export type FindingCategory = 'quality' | 'security';
 
@@ -66,7 +69,10 @@ export interface PrismResult {
   findings: Finding[];
   summary: string | null;
   score: number | null;
-  /** Why the run errored or was skipped. */
+  /**
+   * Why the run errored or was skipped. Free text, except these codes, which
+   * consumers (the dashboard, CI) match on exactly: see REASON_*.
+   */
   reason: string | null;
 }
 

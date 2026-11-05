@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { GITLEAKS_BASELINE_PATH, GITLEAKS_CONFIG_PATH } from './config.js';
-import { makeResult, writeResult, type Finding, type PrismResult } from './results.js';
+import { makeResult, REASON_GITLEAKS_MISSING, writeResult, type Finding, type PrismResult } from './results.js';
 import { run } from '../utils/exec.js';
 import { toolVersion } from './reviewers/index.js';
 
@@ -97,7 +97,8 @@ function currentBranch(): string | null {
  * Blocks (exit 1) on a finding and when gitleaks runs but cannot produce a
  * verdict (bad config, unreadable report): a broken secret scan should be
  * fixed, not silently passed. A MISSING gitleaks does not block -- it warns and
- * records an error result; CI's gitleaks step remains the backstop.
+ * records a `skipped` result with reason `gitleaks-missing`; CI's gitleaks
+ * step remains the backstop.
  */
 export function runPreCommit(repoRoot: string, gitleaksBin = 'gitleaks'): PreCommitOutcome {
   const started = new Date().toISOString();
@@ -108,7 +109,9 @@ export function runPreCommit(repoRoot: string, gitleaksBin = 'gitleaks'): PreCom
 
   const version = toolVersion(gitleaksBin);
   if (!version) {
-    const result = makeResult({ ...base, status: 'error', finished_at: new Date().toISOString(), reason: 'gitleaks is not on PATH; secret scan did not run' });
+    // Allowed, not blocked (decided): recorded as skipped so the dashboard can
+    // count commits that were never secret-scanned.
+    const result = makeResult({ ...base, status: 'skipped', finished_at: new Date().toISOString(), reason: REASON_GITLEAKS_MISSING });
     return { exitCode: 0, result, resultPath: safeWrite(repoRoot, result) };
   }
 

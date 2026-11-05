@@ -12,8 +12,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ADAPTERS, detectReviewers, resolveReviewer, extractReviewJson } from '../src/codewatch/reviewers/index.js';
-import { parseGitleaksReport } from '../src/codewatch/gitleaks.js';
-import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR } from '../src/codewatch/results.js';
+import { parseGitleaksReport, runPreCommit } from '../src/codewatch/gitleaks.js';
+import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR, REASON_GITLEAKS_MISSING } from '../src/codewatch/results.js';
 import { runPrePush, parsePushInput } from '../src/codewatch/prepush.js';
 import { installHooks, uninstallHooks, retireLegacyCommitMsgHook, ensureResultsIgnored, PRE_PUSH_SCRIPT, PRE_COMMIT_SCRIPT } from '../src/codewatch/hooks.js';
 import { writeEvalConfig, readPrismConfig } from '../src/codewatch/config.js';
@@ -222,6 +222,33 @@ test('readResults ignores unparseable and foreign files', () => {
   writeFileSync(join(dir, RESULTS_DIR, 'bad.json'), '{');
   writeFileSync(join(dir, RESULTS_DIR, 'other.json'), '{"schema_version":99}');
   assert.deepEqual(readResults(dir), []);
+});
+
+test('pre-commit allows the commit and records skipped/gitleaks-missing when gitleaks is absent', () => {
+  const repo = makeRepo();
+  writeFileSync(join(repo.dir, 'src', 'b.ts'), 'export const b = 2;\n');
+  git(repo.dir, 'add', '.');
+  const staged = git(repo.dir, 'write-tree');
+  const out = inDir(repo.dir, () => runPreCommit(repo.dir, join(tmp('nogl'), 'gitleaks')));
+  assert.equal(out.exitCode, 0, 'a missing gitleaks must not block the commit');
+  assert.equal(out.result.status, 'skipped');
+  assert.equal(out.result.reason, REASON_GITLEAKS_MISSING);
+  assert.equal(out.result.tree, staged);
+  assert.equal(out.result.branch, 'work');
+  const saved = readResults(repo.dir);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].reason, 'gitleaks-missing');
+  assert.ok(out.resultPath && out.resultPath.includes('-pre-commit-secrets.json'));
+});
+
+test('pre-push does not re-report a commit already recorded as gitleaks-missing', () => {
+  const repo = makeRepo();
+  const tree = git(repo.dir, 'rev-parse', `${repo.head}^{tree}`);
+  writeResult(repo.dir, makeResult({ kind: 'secrets', hook: 'pre-commit', status: 'skipped', reason: REASON_GITLEAKS_MISSING, tool: 'gitleaks', tree, started_at: new Date().toISOString(), finished_at: '' }));
+  inDir(repo.dir, () => runPrePush({ repoRoot: repo.dir, stdin: pushLine(repo), remote: 'origin', pathEnv: tmp('empty'), log: () => {} }));
+  const skipped = readResults(repo.dir).filter((r) => r.status === 'skipped');
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].hook, 'pre-commit');
 });
 
 // ---------------------------------------------------------------- pre-push always exits 0

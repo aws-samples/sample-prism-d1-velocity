@@ -91,6 +91,13 @@ export function recordUnscannedCommits(repoRoot: string, base: string | null, sh
       .filter((r) => r.kind === 'secrets' && r.hook === 'pre-commit' && r.status !== 'skipped' && r.tree)
       .map((r) => r.tree as string),
   );
+  // Trees committed while gitleaks was missing already have their own skipped
+  // record (reason gitleaks-missing); do not report them a second time as --no-verify.
+  const knownSkips = new Set(
+    readResults(repoRoot)
+      .filter((r) => r.kind === 'secrets' && r.hook === 'pre-commit' && r.status === 'skipped' && r.tree)
+      .map((r) => r.tree as string),
+  );
   const already = new Set(
     readResults(repoRoot).filter((r) => r.kind === 'secrets' && r.status === 'skipped' && r.commit).map((r) => r.commit as string),
   );
@@ -98,7 +105,7 @@ export function recordUnscannedCommits(repoRoot: string, base: string | null, sh
   for (const c of list.split('\n').filter(Boolean)) {
     if (already.has(c)) continue;
     const tree = git(['rev-parse', `${c}^{tree}`]);
-    if (!tree || scanned.has(tree)) continue;
+    if (!tree || scanned.has(tree) || knownSkips.has(tree)) continue;
     const now = new Date().toISOString();
     safeWrite(repoRoot, makeResult({
       kind: 'secrets', hook: 'pre-push', status: 'skipped', tool: 'gitleaks', commit: c, tree, branch, upstream, base,

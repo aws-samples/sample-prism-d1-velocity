@@ -173,7 +173,7 @@ Built on `feat/enable-security` (the branch keeps its original name). Entry poin
 
 | Piece | Behaviour |
 |---|---|
-| `pre-commit` hook | `gitleaks protect --staged --redact` with `.gitleaks.toml` and `.prism/gitleaks-baseline.json` when present. **Blocks** on a finding. Also blocks when gitleaks runs but cannot produce a verdict. A missing gitleaks warns and allows (CI's gitleaks step is the backstop). Works without prism-cli: the hook falls back to calling gitleaks directly. |
+| `pre-commit` hook | `gitleaks protect --staged --redact` with `.gitleaks.toml` and `.prism/gitleaks-baseline.json` when present. **Blocks** on a finding. Also blocks when gitleaks runs but cannot produce a verdict. A missing gitleaks never blocks (decided): it warns, allows the commit and records `status: skipped`, `reason: gitleaks-missing` (CI's gitleaks step is the backstop). Works without prism-cli: the hook falls back to calling gitleaks directly. |
 | `pre-push` hook | Reviews the branch diff (`git diff <upstream>...<head>`, lock files excluded, capped at 200,000 characters) with the configured reviewer. **Report only:** always exits 0, including when the reviewer is missing, crashes, times out (default 300s) or returns unparseable output. Prints a short summary. |
 | `.prism/review/rules.md` | The one tool-neutral rule set. Seeded from `.kiro/steering/code-review.md` if the repo has one (keeps team edits), else from the bundled rules `install-eval-harness` ships. |
 | `.prism/config.json` `eval.reviewer` | Team default reviewer, merged into the existing file. Optional `eval.model` and `eval.timeout_seconds`. |
@@ -242,5 +242,5 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 11. **Startup Advisor:** how are its checks consumed (library, CLI, API), and under what license and versioning?
 12. **`aws recommend`:** static mapping or model-generated, and if model-generated, where does inference run?
 13. **`version`:** offline only, or check npm for updates?
-14. **codewatch pre-commit without gitleaks:** currently warns and allows. Should a team be able to make it block (for example `eval.require_gitleaks: true`)?
+14. **Decided: codewatch pre-commit without gitleaks never blocks.** The hook warns, allows the commit, and records a `secrets` result with `status: skipped` and `reason: gitleaks-missing`. The dashboard shows a warning banner counting those commits, and its gitleaks checklist row is a warning.
 15. **Rebase noise:** the skipped-check heuristic flags rebased commits. Acceptable for v1, or should pre-push skip commits whose patch-id matches a scanned one?
