@@ -4,7 +4,8 @@
 #
 # Required setup:
 #   - Kiro API key stored as repository secret: KIRO_API_KEY
-#   - .kiro/steering/code-review.md in your repo (review rules)
+#   - .prism/review/rules.md (shared with the local pre-push review) or
+#     .kiro/steering/code-review.md in your repo (review rules)
 #   - (Optional) PRISM_METRICS_ROLE_ARN for EventBridge metrics emission
 #   - (Optional) AWS Continuum configured for security scanning
 #
@@ -234,6 +235,15 @@ jobs:
             echo "::warning::KIRO_API_KEY unavailable (fork PR or missing secret) -- review skipped"
             echo "result=SKIPPED" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          # Shared rule set: .prism/review/rules.md is the one source for this
+          # gate and the local pre-push review (prism-cli enable security).
+          # kiro-cli loads rules from .kiro/steering/, so sync it in for this run.
+          if [ -f .prism/review/rules.md ]; then
+            mkdir -p .kiro/steering
+            cp .prism/review/rules.md .kiro/steering/code-review.md
+            echo "Review rules: .prism/review/rules.md"
           fi
 
           # Get all changed source files in this PR
