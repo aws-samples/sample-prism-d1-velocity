@@ -27,7 +27,7 @@ These were agreed with the user before this doc was written.
    - opens the browser; reads local files only, so the panels below need no AWS credentials;
    - a static single-page app bundled in the CLI, following the `assessment/web.ts` pattern (Node `http` server, HTML built in TypeScript, random session token);
    - `--json` prints the same data instead of serving it;
-   - shows the current repo by default; `--all` covers every repo with a `.prism/` directory.
+   - finds repos on its own: it scans the home directory (3 levels) for repos with `.git` and `.prism/`, wherever it is run from, and lists the current repo first.
 5. **`enable codewatch`** installs those hooks (spec and implementation below).
 6. **`enable security` is an open slot.** It is not an alias for codewatch. It will probably wrap the existing Security Agent setup (`securityagent setup`); see [`enable security`](#enable-security-open-slot).
 
@@ -103,16 +103,15 @@ The local git-hook gate. See [enable codewatch: implementation](#enable-codewatc
 - **Code:** `cli/src/commands/_top/dashboard.ts` (top-level commands now live in `commands/_top/`), data collectors and server in `cli/src/dashboard/`.
 - **Reuses:** the `assessment/web.ts` pattern (Node `http`, HTML generated in TypeScript, random token); the codewatch result schema; schedule detection moved out of `setup-otel-sync` into `utils/otel-sync-schedule.ts`; the tool probe in `utils/tool-check.ts`, now shared with `verify-setup` and codewatch.
 - **Serving:** `127.0.0.1` only (a constant, no flag), random free port unless `--port`. A per-run 256-bit token is accepted once from `/?token=`, exchanged for an `HttpOnly; SameSite=Strict` cookie named per port, and required on every request. `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS-rebinding guard). GET only, no CORS headers, strict CSP with a per-response nonce, no external resources. Ctrl-C stops it.
-- **Data:** local files only, no AWS calls. `--json` prints the same payload (`prism.dashboard.v1`) and exits. `--all` scans `--root` (default: the parent of the current repo, depth 3) for repos with `.git` and `.prism/`; discovery is one function (`discoverRepos`) so a registry can be added later.
+- **Data:** local files only, no AWS calls. `--json` prints the same payload (`prism.dashboard.v2`) and exits.
+- **Repo discovery** (`discoverRepos()` in `cli/src/dashboard/repos.ts`): scans the home directory, or `--root <dir>`, up to 3 levels deep for repos with both `.git` and `.prism/`, from any working directory. It never enters hidden directories (`.git`, `.cache`, `.venv`, ...), `node_modules`, `Library`, `build`, `dist`, `target` or `venv`; does not follow symlinks; stops at any git repo, so nested repos are skipped; treats unreadable directories as skips; and is capped at 200 repos and 20,000 listed directories. The repo containing the working directory is listed first even without `.prism/`. Measured on the author's home directory: about 50 ms, 57 directories listed. `--all` is kept as a no-op that prints a deprecation note.
 - **Panels:**
-  1. **Codewatch** (`.prism/results/`): latest run per branch and its reviewer, findings from the latest review per branch by severity and category, gitleaks blocks, commits pushed without a pre-commit scan, a trend of the last 20 runs, and an empty state pointing at `prism-cli enable codewatch`.
+  1. **Codewatch** (`.prism/results/`): the machine-level secret-scanning banner, then one summary row per repo (high/medium/low from the latest reviews, last run, reviewer, unscanned commits, gitleaks warning), most high findings first. Below it, each repo's detail sits in a collapsed `<details>`: latest run per branch, findings, gitleaks blocks, commits pushed without a scan and a 20-run trend. The current repo starts expanded; a repo with no results says to run `cd <repo> && prism-cli enable codewatch`.
   2. **Usage** (`codeburn export -f json`, two runs: default for Today, `--from <1st> --to <today>` for this month): today and month totals, top 5 models and projects. "codeburn not installed", "no data" and error states. Points at `codeburn web` as a command, not a link.
-  3. **Setup checklist**, ok/warn/missing plus a one-line fix: codeburn installed; scheduled sync and last sync-log write; codewatch hooks and reviewer; gitleaks; CI eval workflow; OIDC (workflow wiring only); Security Agent (CI Continuum step only); AWS credentials (env var or config file presence only, no STS, file contents never read).
+  3. **Setup checklist**: the machine section (codeburn installed; scheduled sync and last sync-log write; gitleaks; AWS credentials by presence only, no STS) and one row per repo for codewatch only (both PRISM hooks plus the reviewer), repos missing codewatch first, each with the fix `cd <repo> && prism-cli enable codewatch`. The CI eval workflow, OIDC and Security Agent rows were removed: they could only ever show local guesses.
   4. **Security findings:** placeholder until `prism-cli security findings`.
   5. **Advise** (later): output of `aws check`.
 - **Open questions:**
-  - Should `enable codewatch` write a repo registry (`~/.prism/repos.json`) for `--all`, instead of or alongside the directory scan?
-  - OIDC and Security Agent can only be "warn" from local evidence. Should `setup-github-oidc` / `securityagent setup` write a local marker (for example `.prism/setup.json`) so the checklist can say ok?
   - codeburn's export schema (`codeburn.export.v2`, checked against 0.9.24): which versions do we support?
 
 ### `export otel --endpoint` (new, thin)
@@ -246,8 +245,8 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 1. **`enable security`:** confirm it wraps the Security Agent setup (`securityagent setup`), and whether it sits under Observe or Secure. (Resolved: codewatch is the git-hook gate.)
 2. **transformation-center:** what is it and what does installing it do locally?
 3. **codeburn attribution:** with commit trailers retired, what does `codeburn sync push --attribution` attribute usage to, and should it stay on?
-4. **`dashboard --all`:** the directory scan is built; should `enable codewatch` also write a registry?
-5. **`dashboard` setup panel:** OIDC and Security Agent show warn from local evidence; should their setup commands write a local marker?
+4. **Decided: repo discovery is a home-directory scan.** The dashboard scans `~` (or `--root`) 3 levels deep from any working directory; a registry is not needed for now.
+5. **`dashboard` setup panel:** decided to show codewatch only per repo; CI workflow, OIDC and Security Agent rows are gone.
 6. **codeburn export schema:** which codeburn versions do we support, and is `codeburn export` JSON stable?
 7. **`export otel`:** does codeburn accept a custom endpoint, and should local gate results be exported?
 8. **Security Agent APIs:** which APIs back `design-review` and `threat-model`, and what input do they take?
