@@ -38,7 +38,7 @@ Commands are auto-registered: each folder under `cli/src/commands/<group>/` is a
 Single-word top-level commands (`version`, `dashboard`) and commands with a positional object (`export otel`, `install transformation-center`) do not fit the two-level layout as cleanly:
 
 - `export otel` and `install transformation-center` are two-level already (`export/otel.ts`, `install/transformation-center.ts`).
-- `version` and `dashboard` need a small extension to `index.ts`: a `commands/_top/` folder whose files register as top-level commands. Proposed rule: files in `_top/` attach to `program` directly; everything else is unchanged. `--version` keeps working; `version` adds more detail (CLI version, installed hooks, codeburn version, reviewer tool).
+- `version` and `dashboard` need a small extension to `index.ts`: a `commands/_top/` folder whose files register as top-level commands (built on `feat/dashboard`: files in `_top/` attach to `program` directly; everything else is unchanged). `--version` keeps working; `version` adds more detail (CLI version, installed hooks, codeburn version, reviewer tool).
 
 Proposed layout:
 
@@ -99,21 +99,21 @@ The local git-hook gate. See [enable codewatch: implementation](#enable-codewatc
 - **Likely reuses:** `securityagent setup` (deploys Security Agent infrastructure and creates the web console application) and `bootstrapper/security-agent/setup.sh`. That makes it the setup step for the Secure commands, and `securityagent setup` would become its alias.
 - **Open questions:** Is that the intended meaning? It needs AWS credentials, unlike the rest of Observe; does it belong under Observe or Secure on the slide?
 
-### `dashboard` (new)
-- **Reuses:** the server pattern of `assessment/web.ts` (Node `http`, generated HTML, `randomBytes` session token); `verify-setup` checks for the setup panel; `setup-otel-sync`'s log location; the result schema in `cli/src/codewatch/results.ts`.
-- **Serving:** `127.0.0.1`, port 0 (random), a 32-byte token required on every request (query string on first load, then a cookie with `HttpOnly; SameSite=Strict`), `Host` header must be `127.0.0.1:<port>` (DNS-rebinding guard). Static HTML, no external resources.
+### `dashboard` (built on `feat/dashboard`)
+- **Code:** `cli/src/commands/_top/dashboard.ts` (top-level commands now live in `commands/_top/`), data collectors and server in `cli/src/dashboard/`.
+- **Reuses:** the `assessment/web.ts` pattern (Node `http`, HTML generated in TypeScript, random token); the codewatch result schema; schedule detection moved out of `setup-otel-sync` into `utils/otel-sync-schedule.ts`; the tool probe in `utils/tool-check.ts`, now shared with `verify-setup` and codewatch.
+- **Serving:** `127.0.0.1` only (a constant, no flag), random free port unless `--port`. A per-run 256-bit token is accepted once from `/?token=`, exchanged for an `HttpOnly; SameSite=Strict` cookie named per port, and required on every request. `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS-rebinding guard). GET only, no CORS headers, strict CSP with a per-response nonce, no external resources. Ctrl-C stops it.
+- **Data:** local files only, no AWS calls. `--json` prints the same payload (`prism.dashboard.v1`) and exits. `--all` scans `--root` (default: the parent of the current repo, depth 3) for repos with `.git` and `.prism/`; discovery is one function (`discoverRepos`) so a registry can be added later.
 - **Panels:**
-  1. **Usage:** summary from `codeburn export` (JSON), plus a link that starts or points to `codeburn web`. No charts are rebuilt.
-  2. **Local eval and gitleaks:** `.prism/results/*.json`, latest per branch; counts of skipped checks (`status: skipped`).
-  3. **Security findings:** findings from local results and, once `security findings` exists, its cached output.
-  4. **Setup checklist:** codeburn installed; scheduled sync installed and last sync time (from `~/.prism/logs`); codewatch hooks installed (hook marker) and which reviewer; CI eval workflow present (`.github/workflows/prism-eval-gate.yml` or GitLab equivalent); OIDC set up (workflow role ARN configured); Security Agent set up; AWS/Bedrock access. Reuse the `verify-setup` check functions after moving them to a shared module that returns data instead of printing.
+  1. **Codewatch** (`.prism/results/`): latest run per branch and its reviewer, findings from the latest review per branch by severity and category, gitleaks blocks, commits pushed without a pre-commit scan, a trend of the last 20 runs, and an empty state pointing at `prism-cli enable codewatch`.
+  2. **Usage** (`codeburn export -f json`, two runs: default for Today, `--from <1st> --to <today>` for this month): today and month totals, top 5 models and projects. "codeburn not installed", "no data" and error states. Points at `codeburn web` as a command, not a link.
+  3. **Setup checklist**, ok/warn/missing plus a one-line fix: codeburn installed; scheduled sync and last sync-log write; codewatch hooks and reviewer; gitleaks; CI eval workflow; OIDC (workflow wiring only); Security Agent (CI Continuum step only); AWS credentials (env var or config file presence only, no STS, file contents never read).
+  4. **Security findings:** placeholder until `prism-cli security findings`.
   5. **Advise** (later): output of `aws check`.
-- **`--json`:** the same panel data as one JSON document.
-- **`--all`:** repos found how? See open questions.
 - **Open questions:**
-  - `--all` discovery: scan a configured root (`~/workplace`?), keep a registry in `~/.prism/repos.json` written by `enable codewatch`, or both?
-  - The OIDC and Security Agent checks need AWS calls to be exact. Is a local signal (config file present, workflow references a role ARN) enough for the panel, with exact checks behind an explicit button?
-  - Does `codeburn export` have a stable schema we can pin, and which version range?
+  - Should `enable codewatch` write a repo registry (`~/.prism/repos.json`) for `--all`, instead of or alongside the directory scan?
+  - OIDC and Security Agent can only be "warn" from local evidence. Should `setup-github-oidc` / `securityagent setup` write a local marker (for example `.prism/setup.json`) so the checklist can say ok?
+  - codeburn's export schema (`codeburn.export.v2`, checked against 0.9.24): which versions do we support?
 
 ### `export otel --endpoint` (new, thin)
 - **Reuses:** codeburn's OTEL push (`codeburn sync push`), which `setup-otel-sync` schedules.
@@ -246,8 +246,8 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 1. **`enable security`:** confirm it wraps the Security Agent setup (`securityagent setup`), and whether it sits under Observe or Secure. (Resolved: codewatch is the git-hook gate.)
 2. **transformation-center:** what is it and what does installing it do locally?
 3. **codeburn attribution:** with commit trailers retired, what does `codeburn sync push --attribution` attribute usage to, and should it stay on?
-4. **`dashboard --all`:** discover repos by scanning a root, by a registry written at install, or both?
-5. **`dashboard` setup panel:** are local signals enough for the OIDC and Security Agent checks, or must the panel call AWS?
+4. **`dashboard --all`:** the directory scan is built; should `enable codewatch` also write a registry?
+5. **`dashboard` setup panel:** OIDC and Security Agent show warn from local evidence; should their setup commands write a local marker?
 6. **codeburn export schema:** which codeburn versions do we support, and is `codeburn export` JSON stable?
 7. **`export otel`:** does codeburn accept a custom endpoint, and should local gate results be exported?
 8. **Security Agent APIs:** which APIs back `design-review` and `threat-model`, and what input do they take?
