@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import { platform, tmpdir, homedir } from 'node:os';
 import { awsRun, PROFILE_OPTION } from '../../utils/aws.js';
 import { validateAwsProfile } from '../../utils/validate.js';
+import { checkTool } from '../../utils/tool-check.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const IS_MAC = platform() === 'darwin';
@@ -498,9 +499,10 @@ async function checkUtilities(verifyOnly = false) {
 async function checkCodeburn(verifyOnly = false) {
   heading('9. codeburn (AI code attribution tracker)');
 
-  if (commandExists('codeburn')) {
-    const { stdout } = run('codeburn --version');
-    pass(`codeburn installed (${stdout || 'version unknown'})`);
+  // Same probe the dashboard setup checklist uses (utils/tool-check).
+  const codeburn = checkTool('codeburn');
+  if (codeburn.installed) {
+    pass(`codeburn installed (${codeburn.version || 'version unknown'})`);
   } else {
     const isMac = process.platform === 'darwin';
     const installCmd = isMac ? 'npm install -g codeburn' : 'npm install -g codeburn';
