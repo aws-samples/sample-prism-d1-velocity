@@ -34,6 +34,8 @@ th { color:var(--muted); font-weight:600; } td.num { text-align:right; font-vari
 .tag { margin-left:6px; font-size:11px; padding:0 6px; border-radius:8px; background:var(--bg); border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
 details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--muted); font-weight:600; }
 details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo > summary { cursor:pointer; padding:4px 0; } details.repo .detail { padding-left:14px; }
+.callout { border:1px solid var(--accent); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:6px 0 10px; background:color-mix(in srgb, var(--accent) 8%, var(--card)); }
+.callout.warn { border-color:var(--warn); background:color-mix(in srgb, var(--warn) 10%, var(--card)); } .callout code { white-space:normal; overflow-wrap:anywhere; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
@@ -146,7 +148,9 @@ function codewatchPanel(data) {
   if (banner) s.append(banner);
   const rows = data.overview.codewatch;
   if (!rows.length) {
-    s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.'));
+    const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
+    if (sg) s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Cover every repo at once: ", el('code', {}, sg.command), ', or run ', el('code', {}, 'prism-cli enable codewatch'), ' inside one repo.'));
+    else s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.'));
     return s;
   }
   const count = (n, cls) => el('td', { class: 'count' + (n ? ' ' + cls : '') }, n);
@@ -187,17 +191,35 @@ function usagePanel(u) {
   return s;
 }
 
+/** Info (or warn) callout for the global install. Text only: the page never runs anything. */
+function suggestionCallout(sg) {
+  if (sg.style === 'warn') {
+    return el('div', { class: 'callout warn', role: 'note' },
+      el('strong', {}, sg.missing + " repos don't have codewatch."),
+      el('div', {}, 'Your global core.hooksPath is set to ', el('code', {}, txt(sg.currentHooksPath)), ', so the plain global install would refuse. Use ',
+        el('code', {}, sg.command), ': it saves that value and still runs its hooks after codewatch.'));
+  }
+  return el('div', { class: 'callout info', role: 'note' },
+    el('strong', {}, sg.missing + " repos don't have codewatch. Cover all of them at once: "), el('code', {}, sg.command),
+    el('div', { class: 'fix' }, 'Applies to every repo on this machine, including new clones. Repos can opt out with ', el('code', {}, 'git config prism.codewatch false'), '.'));
+}
+
 function setupPanel(data) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Setup checklist'));
   const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail, i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
   s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(data.machine.setup)));
   const repos = data.overview.setup, c = data.overview.counts;
   s.append(el('h3', {}, 'Codewatch per repo (' + c.codewatch + ' of ' + c.repos + ' installed)'));
+  const label = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'opted out' };
+  const pillClass = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'skipped' };
   const rowOf = (r) => [
     repoName(r),
-    el('div', {}, pill(r.status === 'ok' ? 'ok' : 'missing'), ' ', r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail),
+    el('div', {}, pill(pillClass[r.status] || 'missing', (label[r.status] || r.status) + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
+      r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail),
       r.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, r.fix)) : null),
   ];
+  const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
+  if (sg) s.append(suggestionCallout(sg));
   // Always shown: the current repo (installed or not) and every installed repo.
   const shown = repos.filter((r) => !r.collapsed);
   const hidden = repos.filter((r) => r.collapsed);

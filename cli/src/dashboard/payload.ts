@@ -5,7 +5,8 @@
  */
 import { collectCodewatch, combineSecretScanning, type CodewatchPanel, type SecretScanning } from './codewatch.js';
 import { discoverRepos, type DiscoverOptions } from './repos.js';
-import { codewatchSetup, machineChecks, type CheckItem, type CodewatchSetup, type MachineDeps } from './setup.js';
+import { codewatchSetup, GLOBAL_FORCE_CMD, GLOBAL_INSTALL_CMD, machineChecks, type CheckItem, type CodewatchSetup, type MachineDeps } from './setup.js';
+import { globalStatus, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { homedir } from 'node:os';
 import { sep } from 'node:path';
@@ -36,7 +37,9 @@ export interface SetupRow {
   reviewer: string | null;
   detail: string;
   fix: string;
-  /** Shown inside the collapsed "repos without codewatch" group: missing, and not the current repo. */
+  /** Global hooks cover this repo. */
+  global: boolean;
+  /** Shown inside the collapsed "repos without codewatch" group: missing or opted out, and not the current repo. */
   collapsed: boolean;
 }
 
@@ -56,6 +59,36 @@ export interface CodewatchRow {
   gitleaksWarning: boolean;
 }
 
+/** A next step the page suggests. Read-only: the page shows the command, it never runs it. */
+export interface Suggestion {
+  id: 'codewatch-global';
+  /** info: a suggestion. warn: a foreign global core.hooksPath is in the way. */
+  style: 'info' | 'warn';
+  command: string;
+  reason: string;
+  /** Repos without codewatch (status missing; opted-out repos are not counted). */
+  missing: number;
+  /** The foreign global core.hooksPath, for the warn variant. */
+  currentHooksPath: string | null;
+}
+
+/** Minimum missing repos before the global install is suggested; one repo is served by its own fix line. */
+export const SUGGEST_GLOBAL_MIN_MISSING = 2;
+
+export function globalSuggestion(g: GlobalStatus, missing: number): Suggestion | null {
+  if (g.state === 'installed' || missing < SUGGEST_GLOBAL_MIN_MISSING) return null;
+  if (g.state === 'elsewhere') {
+    return {
+      id: 'codewatch-global', style: 'warn', command: GLOBAL_FORCE_CMD, missing, currentHooksPath: g.hooksPath,
+      reason: `${missing} repos don't have codewatch. Your global core.hooksPath is set to ${g.hooksPath}, so --global alone would refuse; --force saves that value and still runs its hooks after codewatch.`,
+    };
+  }
+  return {
+    id: 'codewatch-global', style: 'info', command: GLOBAL_INSTALL_CMD, missing, currentHooksPath: null,
+    reason: `${missing} repos don't have codewatch. Cover all of them at once.`,
+  };
+}
+
 export interface DashboardPayload {
   /** repos: every repo found. codewatch: repos with both codewatch hooks installed. */
   schema: typeof PAYLOAD_SCHEMA;
@@ -63,7 +96,8 @@ export interface DashboardPayload {
   scope: { root: string; /** root with the home directory shown as ~ */ root_display: string; current_repo: string | null; scan_ms: number; truncated: boolean; error: string | null };
   repos: RepoPayload[];
   overview: { counts: { repos: number; codewatch: number }; setup: SetupRow[]; codewatch: CodewatchRow[] };
-  machine: { setup: CheckItem[]; secretScanning: SecretScanning };
+  machine: { setup: CheckItem[]; secretScanning: SecretScanning; globalHooks: GlobalStatus };
+  suggestions: Suggestion[];
   usage: UsagePanel;
   security: { status: 'coming-soon'; message: string };
 }
@@ -78,10 +112,12 @@ export interface PayloadOptions extends DiscoverOptions {
 const byName = (a: { name: string; path: string }, b: { name: string; path: string }) =>
   a.name.localeCompare(b.name) || a.path.localeCompare(b.path);
 
-/** The current repo first, then installed repos, then missing ones, each by name. */
+const STATUS_ORDER: Record<SetupRow['status'], number> = { ok: 0, warn: 1, missing: 2, 'opted-out': 3 };
+
+/** The current repo first, then installed, bypassed (warn), missing and opted-out repos, each by name. */
 export function sortSetupRows(rows: SetupRow[]): SetupRow[] {
   return [...rows].sort((a, b) =>
-    Number(b.current) - Number(a.current) || (a.status === 'ok' ? 0 : 1) - (b.status === 'ok' ? 0 : 1) || byName(a, b));
+    Number(b.current) - Number(a.current) || STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || byName(a, b));
 }
 
 /** Most high findings first, then medium, then low, then by name. */
@@ -93,17 +129,20 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   const d = discoverRepos(opts);
   const usage = await collectUsage({ exporter: opts.exporter, pathEnv: opts.pathEnv });
   const gitleaksAvailable = findOnPath('gitleaks', opts.pathEnv) !== null;
+  const g = globalStatus(opts.home || homedir());
   const repos: RepoPayload[] = d.repos.map((r) => ({
     name: r.name,
     path: r.path,
     current: r.current,
     hasPrism: r.hasPrism,
     codewatch: collectCodewatch(r.path, opts.trendRuns, gitleaksAvailable),
-    setup: codewatchSetup(r.path, { pathEnv: opts.pathEnv }),
+    setup: codewatchSetup(r.path, { pathEnv: opts.pathEnv, global: g }),
   }));
   const setupRows = sortSetupRows(repos.map((r) => ({
     name: r.name, path: r.path, current: r.current, status: r.setup.status, reviewer: r.setup.reviewer, detail: r.setup.detail, fix: r.setup.fix,
-    collapsed: !r.current && r.setup.status !== 'ok',
+    global: r.setup.global,
+    // Bypassed repos (warn) need attention, so they stay visible.
+    collapsed: !r.current && (r.setup.status === 'missing' || r.setup.status === 'opted-out'),
   })));
   // The summary lists only repos where codewatch is installed or has left
   // results; the rest have nothing to summarize and appear in the setup list.
@@ -123,9 +162,11 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     repos,
     overview: { counts: { repos: repos.length, codewatch: setupRows.filter((r) => r.status === 'ok').length }, setup: setupRows, codewatch: cwRows },
     machine: {
-      setup: machineChecks({ pathEnv: opts.pathEnv, ...opts.machineDeps }),
+      setup: machineChecks({ pathEnv: opts.pathEnv, global: g, ...opts.machineDeps }),
+      globalHooks: g,
       secretScanning: combineSecretScanning(repos.map((r) => r.codewatch.secretScanning), gitleaksAvailable),
     },
+    suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),
     usage,
     security: { status: 'coming-soon', message: 'Coming with prism-cli security findings.' },
   };

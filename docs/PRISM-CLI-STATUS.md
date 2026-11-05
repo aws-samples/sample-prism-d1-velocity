@@ -49,6 +49,7 @@ A local web page for one developer, started with `prism-cli dashboard` from any 
   - Codewatch: one summary row per repo (findings by severity, last run, reviewer, unscanned commits), most high findings first, and each repo's detail in a collapsible section. A warning banner shows when secret scanning is off on this machine.
   - A codeburn usage summary, which points to `codeburn web` for full charts.
   - A setup checklist: this machine (codeburn, scheduled sync, gitleaks, AWS credentials) and one row per repo saying whether codewatch is installed, with the `cd <repo> && prism-cli enable codewatch` fix.
+  - When two or more repos lack codewatch, a suggestion to cover them all with `prism-cli enable codewatch --global`.
   - A placeholder for security findings.
 - **Access:** it listens on `127.0.0.1` only and needs a one-time token. It is read-only and reads local files only, with no AWS calls.
 - **Other options:** `--json` prints the same data.

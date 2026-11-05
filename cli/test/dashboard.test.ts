@@ -16,15 +16,21 @@ import { fileURLToPath } from 'node:url';
 import { collectCodewatch, secretScanning } from '../src/dashboard/codewatch.js';
 import { makeResult, REASON_GITLEAKS_MISSING, type PrismResult } from '../src/codewatch/results.js';
 import { collectUsage, type CodeburnExport } from '../src/dashboard/usage.js';
-import { machineChecks, codewatchSetup, gitleaksInstallHint } from '../src/dashboard/setup.js';
+import { machineChecks, codewatchSetup, gitleaksInstallHint, globalHooksCheck, GLOBAL_INSTALL_CMD, GLOBAL_FORCE_CMD } from '../src/dashboard/setup.js';
 import { discoverRepos, scanForRepos } from '../src/dashboard/repos.js';
-import { buildPayload, PAYLOAD_SCHEMA, sortCodewatchRows, sortSetupRows } from '../src/dashboard/payload.js';
+import { buildPayload, globalSuggestion, PAYLOAD_SCHEMA, sortCodewatchRows, sortSetupRows } from '../src/dashboard/payload.js';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
 import { renderPage } from '../src/dashboard/page.js';
+import { globalHooksDir, installGlobal, type GlobalStatus } from '../src/codewatch/globalHooks.js';
 import { installHooks } from '../src/codewatch/hooks.js';
 import { parsePort } from '../src/commands/_top/dashboard.js';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'dashboard');
+
+// Every git --global read in this file sees an empty scratch config, never ~/.gitconfig.
+process.env.GIT_CONFIG_GLOBAL = join(mkdtempSync(join(tmpdir(), 'prism-dash-gcfg-')), 'gitconfig');
+
+const NOT_INSTALLED: GlobalStatus = { state: 'not-installed', hooksPath: null, dir: '/x/.prism/hooks' };
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), `prism-dash-${p}-`));
 
 function exe(dir: string, name: string, body: string) {
@@ -179,9 +185,9 @@ test('setup (machine): ok when tools, schedule, sync log and AWS profile are pre
   const home = tmp('home');
   mkdirSync(join(home, '.prism', 'logs'), { recursive: true });
   writeFileSync(join(home, '.prism', 'logs', 'otel-sync.log'), 'pushed 12 records\n');
-  const items = machineChecks({ pathEnv: bin, home, env: { AWS_PROFILE: 'dev' }, scheduleExists: () => true, schedulerName: () => 'crontab' });
+  const items = machineChecks({ pathEnv: bin, home, env: { AWS_PROFILE: 'dev' }, scheduleExists: () => true, schedulerName: () => 'crontab', global: { state: 'installed', hooksPath: '~/.prism/hooks', dir: '' } });
   const by = Object.fromEntries(items.map((i) => [i.id, i]));
-  assert.deepEqual(items.map((i) => i.status), ['ok', 'ok', 'ok', 'ok']);
+  assert.deepEqual(items.map((i) => i.status), ['ok', 'ok', 'ok', 'ok', 'ok']);
   assert.equal(by.codeburn.detail, '0.9.24');
   assert.match(by['codeburn-sync'].detail, /last sync log write/);
   assert.match(by['aws-credentials'].detail, /AWS_PROFILE is set \(dev\) \(not validated\)/);
@@ -189,8 +195,8 @@ test('setup (machine): ok when tools, schedule, sync log and AWS profile are pre
 });
 
 test('setup (machine): missing items each carry a one-line fix; AWS uses presence only', () => {
-  const items = machineChecks({ pathEnv: tmp('none'), home: tmp('home2'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab' });
-  assert.deepEqual(items.map((i) => i.status), ['missing', 'missing', 'warn', 'missing'], 'gitleaks absent is a warning, not missing');
+  const items = machineChecks({ pathEnv: tmp('none'), home: tmp('home2'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', global: NOT_INSTALLED });
+  assert.deepEqual(items.map((i) => i.status), ['missing', 'missing', 'warn', 'missing', 'missing'], 'gitleaks absent is a warning, not missing');
   for (const i of items) { assert.ok(i.fix.length > 0); assert.ok(!i.fix.includes('\n')); }
   // an existing config file counts, without its contents being needed
   const home = tmp('home3');
@@ -206,7 +212,7 @@ test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable f
   const before = codewatchSetup(dir, { pathEnv: tmp('p0') });
   assert.equal(before.status, 'missing');
   assert.equal(before.fix, `cd ${dir} && prism-cli enable codewatch`);
-  assert.deepEqual(Object.keys(before).sort(), ['detail', 'fix', 'reviewer', 'reviewerSource', 'status']);
+  assert.deepEqual(Object.keys(before).sort(), ['detail', 'fix', 'global', 'reviewer', 'reviewerSource', 'status']);
 
   installHooks(join(dir, '.git', 'hooks'));
   const bin = tmp('p1');
@@ -318,7 +324,7 @@ test('discovery: --root overrides HOME; a bad root is reported', () => {
 // ---------------------------------------------------------------- overview sort order
 
 test('overview: setup rows put the current repo first, then installed, then missing', () => {
-  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, path: '/r/' + name, current, status, reviewer: null, detail: '', fix: '', collapsed: false });
+  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, path: '/r/' + name, current, status, reviewer: null, detail: '', fix: '', collapsed: false, global: false });
   const sorted = sortSetupRows([row('a', 'ok'), row('b', 'missing'), row('c', 'missing', true), row('d', 'ok')]);
   assert.deepEqual(sorted.map((r) => r.name), ['c', 'a', 'd', 'b'], 'current repo, then installed, then missing');
 });
@@ -350,6 +356,96 @@ test('overview: counts, collapsed missing group, and an empty codewatch table', 
   assert.ok(html.includes(" without codewatch'"));
 });
 
+// ---------------------------------------------------------------- global hooks
+
+/** HOME and GIT_CONFIG_GLOBAL in a scratch dir for the duration of fn. */
+async function withFakeGlobal<T>(fn: (home: string) => Promise<T> | T): Promise<T> {
+  const home = tmp('ghome');
+  const saved = { HOME: process.env.HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL };
+  process.env.HOME = home;
+  process.env.GIT_CONFIG_GLOBAL = join(home, '.gitconfig');
+  assert.ok(process.env.GIT_CONFIG_GLOBAL.startsWith(tmpdir()));
+  try { return await fn(home); } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+}
+
+test('machine row for the global hooks: ok, not installed, pointing elsewhere', () => {
+  assert.equal(globalHooksCheck({ state: 'installed', hooksPath: '/h/.prism/hooks', dir: '' }).status, 'ok');
+  const none = globalHooksCheck(NOT_INSTALLED);
+  assert.equal(none.status, 'missing');
+  assert.equal(none.fix, GLOBAL_INSTALL_CMD);
+  const other = globalHooksCheck({ state: 'elsewhere', hooksPath: '/opt/team', dir: '' });
+  assert.equal(other.status, 'warn');
+  assert.match(other.detail, /\/opt\/team/);
+  assert.match(other.fix, /--global --force/);
+});
+
+test('repo status under the global hooks: ok (global), husky bypass warns, opt-out', () => withFakeGlobal(async (home) => {
+  assert.ok(installGlobal().ok);
+  const g: GlobalStatus = { state: 'installed', hooksPath: globalHooksDir(home), dir: globalHooksDir(home) };
+  const plain = join(home, 'plain');
+  mkdirSync(plain);
+  git(plain, 'init', '-q', `--template=${tmp('t1')}`);
+  const ok = codewatchSetup(plain, { pathEnv: tmp('pp'), global: g });
+  assert.equal(ok.status, 'ok');
+  assert.equal(ok.global, true);
+  assert.match(ok.detail, /\(global\)/);
+
+  const husky = join(home, 'husky');
+  mkdirSync(husky);
+  git(husky, 'init', '-q', `--template=${tmp('t2')}`);
+  git(husky, 'config', 'core.hooksPath', '.husky');
+  const w = codewatchSetup(husky, { pathEnv: tmp('pp'), global: g });
+  assert.equal(w.status, 'warn');
+  assert.match(w.detail, /core\.hooksPath \(\.husky\) bypasses the global hooks/);
+  assert.equal(w.fix, `cd ${husky} && prism-cli enable codewatch`);
+
+  git(plain, 'config', 'prism.codewatch', 'false');
+  const out = codewatchSetup(plain, { pathEnv: tmp('pp'), global: g });
+  assert.equal(out.status, 'opted-out');
+  assert.match(out.detail, /opted out/);
+}));
+
+test('payload: globally covered repos count as having codewatch; no suggestion once installed', () => withFakeGlobal(async (home) => {
+  installGlobal();
+  for (const n of ['a', 'b', 'c']) { const d = join(home, 'src', n); mkdirSync(d, { recursive: true }); git(d, 'init', '-q', `--template=${tmp('t' + n)}`); }
+  const p = await buildPayload({ cwd: tmp('nowhere'), home, exporter: fixtureExporter, pathEnv: tmp('pb'), machineDeps: { home, env: {}, scheduleExists: () => false } });
+  assert.deepEqual(p.overview.counts, { repos: 3, codewatch: 3 });
+  assert.ok(p.overview.setup.every((r) => r.status === 'ok' && r.global && !r.collapsed));
+  assert.equal(p.machine.globalHooks.state, 'installed');
+  assert.equal(p.machine.setup.find((i) => i.id === 'codewatch-global')?.status, 'ok');
+  assert.deepEqual(p.suggestions, []);
+}));
+
+test('global suggestion: shown at 2+ missing repos, hidden at 1 or when installed; warn variant for a foreign hooksPath', () => {
+  const info = globalSuggestion(NOT_INSTALLED, 2);
+  assert.deepEqual(info && [info.id, info.style, info.command, info.missing], ['codewatch-global', 'info', GLOBAL_INSTALL_CMD, 2]);
+  assert.match(info!.reason, /^2 repos don't have codewatch\. Cover all of them at once\.$/);
+  assert.equal(globalSuggestion(NOT_INSTALLED, 1), null);
+  assert.equal(globalSuggestion({ state: 'installed', hooksPath: 'x', dir: '' }, 30), null);
+  const warn = globalSuggestion({ state: 'elsewhere', hooksPath: '/opt/team-hooks', dir: '' }, 5);
+  assert.equal(warn?.style, 'warn');
+  assert.equal(warn?.command, GLOBAL_FORCE_CMD);
+  assert.equal(warn?.currentHooksPath, '/opt/team-hooks');
+  assert.match(warn!.reason, /\/opt\/team-hooks.*still runs its hooks/);
+  // an incomplete install is suggested like a fresh one
+  assert.equal(globalSuggestion({ state: 'incomplete', hooksPath: 'x', dir: '' }, 3)?.command, GLOBAL_INSTALL_CMD);
+});
+
+test('payload carries the suggestion; opted-out repos are not counted as missing', () => withFakeGlobal(async (home) => {
+  for (const n of ['a', 'b', 'c']) { const d = join(home, n); mkdirSync(d); git(d, 'init', '-q', `--template=${tmp('u' + n)}`); }
+  git(join(home, 'c'), 'config', 'prism.codewatch', 'false');
+  const p = await buildPayload({ cwd: tmp('nw'), home, exporter: fixtureExporter, pathEnv: tmp('pc'), machineDeps: { home, env: {}, scheduleExists: () => false } });
+  assert.equal(p.suggestions.length, 1);
+  assert.equal(p.suggestions[0].missing, 2);
+  assert.equal(p.overview.setup.find((r) => r.name === 'c')?.status, 'opted-out');
+  const html = renderPage('N');
+  assert.ok(html.includes("Applies to every repo on this machine, including new clones."));
+  assert.ok(html.includes('Cover every repo at once: '));
+  assert.ok(!/<button[^>]*(install|enable)/i.test(html), 'no action buttons');
+}));
+
 // ---------------------------------------------------------------- --json payload
 
 test('--json payload shape', async () => {
@@ -358,7 +454,7 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'usage']);
+  assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'usage']);
   assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'root_display', 'scan_ms', 'truncated']);
   assert.equal(p.scope.root_display, '~');
   assert.deepEqual(Object.keys(p.repos[0]).sort(), ['codewatch', 'current', 'hasPrism', 'name', 'path', 'setup']);
@@ -389,7 +485,7 @@ test('--json payload shape', async () => {
   assert.match(ss.banner || '', /Secret scanning is off: gitleaks is not installed\. 2 commits since/);
 
   // machine checks unchanged
-  assert.deepEqual(p.machine.setup.map((i) => i.id), ['codeburn', 'codeburn-sync', 'gitleaks', 'aws-credentials']);
+  assert.deepEqual(p.machine.setup.map((i) => i.id), ['codeburn', 'codeburn-sync', 'gitleaks', 'aws-credentials', 'codewatch-global']);
   assert.equal(p.usage.status, 'ok');
   assert.equal(p.security.status, 'coming-soon');
   JSON.parse(JSON.stringify(p));
