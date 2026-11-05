@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { buildPayload } from '../../dashboard/payload.js';
 import { cachedPayload, startServer, BIND_HOST } from '../../dashboard/server.js';
+import { reportFromRepos } from '../../dashboard/report.js';
+import type { DashboardPayload } from '../../dashboard/payload.js';
 
 /** Opens the URL in the default browser. argv only, detached; failure is non-fatal. */
 function openBrowser(url: string): void {
@@ -48,7 +50,10 @@ export default {
 
     let srv;
     try {
-      srv = await startServer({ port, getPayload: cachedPayload(build) });
+      const payload = cachedPayload(build);
+      // Reports are looked up only in the repos the dashboard itself discovered.
+      const getReport = async (id: string) => reportFromRepos(((await payload()) as DashboardPayload).repos.map((r) => r.path), id);
+      srv = await startServer({ port, getPayload: payload, getReport });
     } catch (e: any) {
       console.error(`Error: could not start the dashboard on ${BIND_HOST}${port ? `:${port}` : ''}: ${e.message}`);
       process.exit(1);

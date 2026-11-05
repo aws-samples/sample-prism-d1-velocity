@@ -1,7 +1,7 @@
 /**
  * Codewatch panel data, from `.prism/results/` (see codewatch/results.ts).
  */
-import { readResults, REASON_GITLEAKS_MISSING, type Finding, type PrismResult, type ResultStatus, countBySeverity } from '../codewatch/results.js';
+import { readResultEntries, REASON_GITLEAKS_MISSING, type Finding, type PrismResult, type ResultStatus, countBySeverity } from '../codewatch/results.js';
 import { gitleaksInstallHint } from './setup.js';
 import { localDate } from './usage.js';
 import { collectCommits, type CommitsPanel } from './commits.js';
@@ -79,6 +79,25 @@ export interface CodewatchPanel {
   secretScanning: SecretScanning;
   /** Results mapped onto commits, newest first. */
   commits: CommitsPanel;
+  /** Result id of the newest pre-push review, for the report link. */
+  lastReviewId: string | null;
+  /** Newest pre-push reviews (at most MAX_SCANS), each linking to its report. */
+  scans: ScanRow[];
+}
+
+export const MAX_SCANS = 20;
+
+export interface ScanRow {
+  id: string;
+  started_at: string;
+  branch: string | null;
+  tool: string;
+  model: string | null;
+  status: ResultStatus;
+  high: number;
+  medium: number;
+  low: number;
+  reason: string | null;
 }
 
 const isMissingSkip = (r: PrismResult) =>
@@ -140,7 +159,9 @@ function isBlock(r: PrismResult): boolean {
 const byTime = (a: PrismResult, b: PrismResult) => String(a.started_at).localeCompare(String(b.started_at));
 
 export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS, gitleaksAvailable = true): CodewatchPanel {
-  const all = readResults(repoRoot).filter((r) => r && typeof r.started_at === 'string').sort(byTime);
+  const entries = readResultEntries(repoRoot).filter((e) => e.result && typeof e.result.started_at === 'string');
+  const idOf = new Map(entries.map((e) => [e.result, e.id]));
+  const all = entries.map((e) => e.result).sort(byTime);
   const latest = new Map<string, BranchLatest>();
   const latestReview = new Map<string, PrismResult>();
   for (const r of all) {
@@ -163,10 +184,17 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
   for (const f of findings) { bySeverity[f.severity]++; byCategory[f.category]++; }
 
   const reviews = all.filter((r) => r.kind === 'review' && r.tool && r.tool !== 'none');
+  const allReviews = all.filter((r) => r.kind === 'review' && r.hook === 'pre-push');
+  const lastReview = allReviews.length ? allReviews[allReviews.length - 1] : null;
   return {
     hasResults: all.length > 0,
     lastRunAt: all.length ? all[all.length - 1].started_at : null,
     lastReviewer: reviews.length ? reviews[reviews.length - 1].tool : null,
+    lastReviewId: lastReview ? idOf.get(lastReview) ?? null : null,
+    scans: allReviews.slice(-MAX_SCANS).reverse().map((r) => {
+      const c = countBySeverity(r.findings || []);
+      return { id: idOf.get(r) as string, started_at: r.started_at, branch: r.branch ?? null, tool: r.tool, model: r.model ?? null, status: r.status, high: c.high, medium: c.medium, low: c.low, reason: r.reason ?? null };
+    }),
     totalRuns: all.length,
     latestByBranch: [...latest.values()].sort((a, b) => a.branch.localeCompare(b.branch)),
     findings: findings.slice(0, MAX_FINDINGS),
@@ -178,6 +206,6 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
     skipped: all.filter((r) => r.kind === 'secrets' && r.status === 'skipped' && !isMissingSkip(r)).map(summarize).reverse(),
     trend: all.filter((r) => r.status !== 'skipped').slice(-trendRuns).map(summarize),
     secretScanning: secretScanning(all, gitleaksAvailable),
-    commits: all.length ? collectCommits(repoRoot, all) : { rows: [], total: 0, truncated: false, timing: { logMs: 0, blameMs: 0, blameCalls: 0 } },
+    commits: all.length ? collectCommits(repoRoot, all, { idOf: (r) => idOf.get(r) ?? null }) : { rows: [], total: 0, truncated: false, timing: { logMs: 0, blameMs: 0, blameCalls: 0 } },
   };
 }

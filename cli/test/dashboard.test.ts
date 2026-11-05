@@ -331,7 +331,7 @@ test('overview: setup rows put the current repo first, then installed, then miss
 
 test('overview: codewatch rows sort by high, then medium, then low', () => {
   const row = (name: string, high: number, medium: number, low: number) =>
-    ({ name, path: '/r/' + name, current: false, high, medium, low, lastRunAt: null, reviewer: null, unscannedCommits: 0, gitleaksWarning: false });
+    ({ name, path: '/r/' + name, current: false, high, medium, low, lastRunAt: null, lastReviewId: null, reviewer: null, unscannedCommits: 0, gitleaksWarning: false });
   const sorted = sortCodewatchRows([row('quiet', 0, 0, 0), row('med', 0, 3, 0), row('hi1', 1, 0, 0), row('hi2', 2, 0, 9), row('low', 0, 0, 4)]);
   assert.deepEqual(sorted.map((r) => r.name), ['hi2', 'hi1', 'med', 'low', 'quiet']);
 });
@@ -466,7 +466,7 @@ test('--json payload shape', async () => {
 
   // overview: the repo with a high finding sorts first; both repos lack hooks
   assert.deepEqual(Object.keys(p.overview.codewatch[0]).sort(),
-    ['current', 'gitleaksWarning', 'high', 'lastRunAt', 'low', 'medium', 'name', 'path', 'reviewer', 'unscannedCommits']);
+    ['current', 'gitleaksWarning', 'high', 'lastReviewId', 'lastRunAt', 'low', 'medium', 'name', 'path', 'reviewer', 'unscannedCommits']);
   assert.equal(p.overview.codewatch[0].path, p.repos[0].path);
   assert.equal(p.overview.codewatch[0].high, 1);
   assert.equal(p.overview.codewatch[0].gitleaksWarning, true);

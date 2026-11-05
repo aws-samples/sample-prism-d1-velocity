@@ -152,8 +152,14 @@ export function writeResult(repoRoot: string, r: PrismResult): string {
   return dest;
 }
 
-/** Reads every parseable result file. Unparseable files are ignored, not fatal. */
-export function readResults(repoRoot: string): PrismResult[] {
+export interface ResultEntry {
+  /** File name without `.json`: the result's stable id (used by report links). */
+  id: string;
+  result: PrismResult;
+}
+
+/** Every parseable result with its id. Ids come from the directory listing, never from input. */
+export function readResultEntries(repoRoot: string): ResultEntry[] {
   const dir = resolve(repoRoot, RESULTS_DIR);
   let files: string[];
   try {
@@ -161,14 +167,19 @@ export function readResults(repoRoot: string): PrismResult[] {
   } catch {
     return [];
   }
-  const out: PrismResult[] = [];
+  const out: ResultEntry[] = [];
   for (const f of files) {
     try {
       const r = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      if (r && r.schema_version === RESULT_SCHEMA_VERSION) out.push(r);
+      if (r && r.schema_version === RESULT_SCHEMA_VERSION) out.push({ id: f.slice(0, -'.json'.length), result: r });
     } catch { /* skip */ }
   }
   return out;
+}
+
+/** Reads every parseable result file. Unparseable files are ignored, not fatal. */
+export function readResults(repoRoot: string): PrismResult[] {
+  return readResultEntries(repoRoot).map((e) => e.result);
 }
 
 export function countBySeverity(findings: Finding[]): Record<Severity, number> {

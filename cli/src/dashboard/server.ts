@@ -19,6 +19,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { renderPage } from './page.js';
+import { renderReportHtml, renderReportMarkdown, type ScanReport } from './report.js';
 
 export const BIND_HOST = '127.0.0.1';
 
@@ -72,7 +73,15 @@ export interface HandlerOptions {
   /** Read at request time: the real port is known only after listen(). */
   getPort: () => number;
   getPayload: () => Promise<unknown>;
+  /**
+   * Looks a report up by result id among the dashboard's repos. The id is
+   * matched against directory listings only; it is never turned into a path.
+   */
+  getReport?: (id: string) => Promise<ScanReport | null>;
 }
+
+/** /report/<id> or /report/<id>.md; anything else (slashes, dots, %-escapes) does not match. */
+const REPORT_ROUTE = /^\/report\/([A-Za-z0-9_-]{1,120})(\.md)?$/;
 
 export function createHandler(opts: HandlerOptions) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -111,6 +120,19 @@ export function createHandler(opts: HandlerOptions) {
         const payload = await opts.getPayload();
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(payload));
       }
+      const m = REPORT_ROUTE.exec(url.pathname);
+      if (m && opts.getReport) {
+        const report = await opts.getReport(m[1]);
+        if (!report) return send(res, 404, 'text/plain; charset=utf-8', 'Report not found\n');
+        if (m[2]) {
+          return send(res, 200, 'text/markdown; charset=utf-8', renderReportMarkdown(report), {
+            'Content-Disposition': `attachment; filename="codewatch-report-${m[1]}.md"`,
+          });
+        }
+        const nonce = randomBytes(16).toString('base64');
+        return send(res, 200, 'text/html; charset=utf-8',
+          renderReportHtml(report, { nonce, links: { back: '/', markdown: `/report/${m[1]}.md` } }), {}, nonce);
+      }
       return send(res, 404, 'text/plain; charset=utf-8', 'Not Found\n');
     } catch (e: any) {
       if (!res.headersSent) send(res, 500, 'text/plain; charset=utf-8', 'Internal Server Error\n');
@@ -129,10 +151,10 @@ export interface RunningServer {
 }
 
 /** Starts the server on 127.0.0.1. `port` 0 (default) picks a free port. */
-export function startServer(opts: { port?: number; token?: string; getPayload: () => Promise<unknown> }): Promise<RunningServer> {
+export function startServer(opts: { port?: number; token?: string; getPayload: () => Promise<unknown>; getReport?: (id: string) => Promise<ScanReport | null> }): Promise<RunningServer> {
   const token = opts.token || newToken();
   let port = 0;
-  const server = createServer(createHandler({ token, getPort: () => port, getPayload: opts.getPayload }));
+  const server = createServer(createHandler({ token, getPort: () => port, getPayload: opts.getPayload, getReport: opts.getReport }));
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(opts.port ?? 0, BIND_HOST, () => {

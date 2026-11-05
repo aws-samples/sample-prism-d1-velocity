@@ -52,6 +52,8 @@ export interface CodewatchRow {
   medium: number;
   low: number;
   lastRunAt: string | null;
+  /** Report id of the newest review, linked from the Last run cell. */
+  lastReviewId: string | null;
   /** Reviewer of the last review, else the one that would run now. */
   reviewer: string | null;
   unscannedCommits: number;
@@ -151,6 +153,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     name: r.name, path: r.path, current: r.current,
     high: r.codewatch.bySeverity.high, medium: r.codewatch.bySeverity.medium, low: r.codewatch.bySeverity.low,
     lastRunAt: r.codewatch.lastRunAt,
+    lastReviewId: r.codewatch.lastReviewId,
     reviewer: r.codewatch.lastReviewer ?? r.setup.reviewer,
     unscannedCommits: r.codewatch.secretScanning.unscannedCommits,
     gitleaksWarning: r.codewatch.secretScanning.unscannedCommits > 0,

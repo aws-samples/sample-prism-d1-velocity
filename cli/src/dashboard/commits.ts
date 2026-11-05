@@ -57,6 +57,8 @@ export interface CommitRow {
     reviewCount: number;
     reviewedAt: string | null;
     tip: string | null;
+    /** Result id of the review shown, for the report link. */
+    reportId: string | null;
     high: number;
     medium: number;
     low: number;
@@ -145,7 +147,7 @@ function emptyRow(sha: string, log: Map<string, LogEntry>): CommitRow {
   return {
     sha, short: sha.slice(0, 8), subject: e ? e.subject : null, inHistory: !!e, branch: null, authorDate: e ? e.authorDate : null,
     secretScan: { state: 'none', reason: null },
-    review: { state: 'not-reviewed', tool: null, model: null, reviewCount: 0, reviewedAt: null, tip: null, high: 0, medium: 0, low: 0, reason: null },
+    review: { state: 'not-reviewed', tool: null, model: null, reviewCount: 0, reviewedAt: null, tip: null, reportId: null, high: 0, medium: 0, low: 0, reason: null },
     findings: [],
   };
 }
@@ -154,6 +156,35 @@ export interface CollectCommitsOptions {
   log?: Map<string, LogEntry>;
   blamer?: Blamer;
   maxRows?: number;
+  /** Result id lookup, for report links. */
+  idOf?: (r: PrismResult) => string | null;
+}
+
+export interface Attribution {
+  /** All commits the push introduced. */
+  range: string[];
+  /** Findings per commit they were attributed to. */
+  byCommit: Map<string, CommitFinding[]>;
+}
+
+/**
+ * Attributes one review's findings to commits: the commit `git blame` names at
+ * the review's tip, when it is inside the pushed range; otherwise the tip,
+ * marked "in push of <tip>". Shared by the Commits table and the scan report.
+ */
+export function attributeFindings(rev: PrismResult, log: Map<string, LogEntry>, blamer: Blamer): Attribution {
+  const tip = rev.commit as string;
+  const range = expandRange(log, rev.base, tip);
+  const inRange = new Set(range);
+  const byCommit = new Map<string, CommitFinding[]>();
+  for (const f of rev.findings || []) {
+    const who = blamer.blame(tip, f.file, f.line);
+    const target = who && inRange.has(who) ? who : tip;
+    const cf: CommitFinding = { ...f, attributed: target === who ? 'blame' : 'tip', inPushOf: target === who ? null : tip };
+    if (!byCommit.has(target)) byCommit.set(target, []);
+    byCommit.get(target)!.push(cf);
+  }
+  return { range, byCommit };
 }
 
 export function collectCommits(repo: string, results: PrismResult[], opts: CollectCommitsOptions = {}): CommitsPanel {
@@ -173,17 +204,7 @@ export function collectCommits(repo: string, results: PrismResult[], opts: Colle
   for (const rev of sorted.filter((r) => r.kind === 'review' && r.hook === 'pre-push' && r.commit)) {
     if (rev.status === 'skipped') continue; // nothing was pushed to review
     const tip = rev.commit as string;
-    const range = expandRange(log, rev.base, tip);
-    const inRange = new Set(range);
-    // Attribute this review's findings to commits.
-    const byCommit = new Map<string, CommitFinding[]>();
-    for (const f of rev.findings || []) {
-      const who = blamer.blame(tip, f.file, f.line);
-      const target = who && inRange.has(who) ? who : tip;
-      const cf: CommitFinding = { ...f, attributed: target === who ? 'blame' : 'tip', inPushOf: target === who ? null : tip };
-      if (!byCommit.has(target)) byCommit.set(target, []);
-      byCommit.get(target)!.push(cf);
-    }
+    const { range, byCommit } = attributeFindings(rev, log, blamer);
     for (const sha of range) {
       const r = row(sha);
       const fs = byCommit.get(sha) || [];
@@ -198,6 +219,7 @@ export function collectCommits(repo: string, results: PrismResult[], opts: Colle
         tip,
         high: count('high'), medium: count('medium'), low: count('low'),
         reason: rev.status === 'error' ? rev.reason : null,
+        reportId: opts.idOf ? opts.idOf(rev) : null,
       };
       r.findings = fs;
     }

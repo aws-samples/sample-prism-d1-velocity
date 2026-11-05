@@ -39,6 +39,7 @@ details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo >
 .crow { display:grid; grid-template-columns: 6.5em minmax(10em,2.2fr) minmax(5em,0.8fr) 10.5em 7.5em minmax(11em,1.6fr); gap:8px; padding:6px 6px; border-bottom:1px solid var(--line); align-items:start; font-size:13px; overflow-wrap:anywhere; }
 .chead { color:var(--muted); font-weight:600; } summary.crow { cursor:pointer; list-style:none; } summary.crow::-webkit-details-marker { display:none; } details.cdetails[open] > summary.crow { background:var(--bg); } details.cdetails > .tablewrap { padding:4px 0 8px 18px; }
 @media (max-width: 760px) { .crow { grid-template-columns: 1fr 1fr; } .chead { display:none; } }
+a.rlink { color:var(--accent); } a.rlink:hover { text-decoration:underline; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
@@ -102,16 +103,31 @@ function repoName(r) {
 
 const SCAN_LABEL = { ok: ['ok', 'ok'], 'not-scanned': ['warn', 'not scanned'], 'no-verify': ['warn', 'no-verify'], flagged: ['missing', 'secrets found'], none: ['skipped', '-'] };
 
+/** Link to a scan report. Ids come from the server's own listing; encodeURIComponent keeps them literal. */
+const reportLink = (id, label) => el('a', { href: '/report/' + encodeURIComponent(id), class: 'rlink' }, label);
+
 function reviewCell(rv) {
   if (rv.state === 'not-reviewed') return el('span', { class: 'fix' }, 'not reviewed');
-  if (rv.state === 'failed') return el('span', { title: txt(rv.reason) }, pill('error', 'review failed'));
+  const link = rv.reportId ? [' ', reportLink(rv.reportId, 'report')] : [];
+  if (rv.state === 'failed') return el('span', { title: txt(rv.reason) }, pill('error', 'review failed'), link);
   const who = el('span', { class: 'fix' }, ' ' + txt(rv.tool || '') + (rv.model ? ' / ' + rv.model : '') + (rv.reviewCount > 1 ? ' · reviewed ' + rv.reviewCount + 'x' : ''));
-  if (rv.state === 'clean') return el('span', {}, pill('ok', 'reviewed, clean'), who);
+  if (rv.state === 'clean') return el('span', {}, pill('ok', 'reviewed, clean'), who, link);
   const counts = el('span', {},
     rv.high ? el('b', { class: 'sev-high' }, rv.high + ' high ') : null,
     rv.medium ? el('b', { class: 'sev-medium' }, rv.medium + ' medium ') : null,
     rv.low ? el('b', { class: 'sev-low' }, rv.low + ' low') : null);
-  return el('span', {}, counts, who);
+  return el('span', {}, counts, who, link);
+}
+
+/** The newest reviews, each linking to its report. */
+function scansList(scans) {
+  if (!scans || !scans.length) return el('p', { class: 'empty' }, 'No pre-push reviews yet.');
+  return table(['When', 'Branch', 'Reviewer', 'Result', 'Findings', ''], scans.map((s) => [
+    when(s.started_at), txt(s.branch || '-'), txt(s.tool) + (s.model ? ' / ' + s.model : ''),
+    pill(s.status === 'ok' ? 'ok' : s.status === 'findings' ? 'findings' : s.status === 'error' ? 'error' : 'skipped', s.status === 'ok' ? 'clean' : s.status),
+    el('span', {}, s.high ? el('b', { class: 'sev-high' }, s.high + ' high ') : null, s.medium ? el('b', { class: 'sev-medium' }, s.medium + ' medium ') : null, s.low ? el('b', { class: 'sev-low' }, s.low + ' low') : null, (s.high + s.medium + s.low) ? null : '-'),
+    reportLink(s.id, 'Report'),
+  ]));
 }
 
 /** Commits as rows; a row with findings expands to list them. */
@@ -157,6 +173,9 @@ function codewatchDetail(repo) {
   s.append(el('h3', {}, 'Commits'));
   s.append(commitsList(cw.commits));
 
+  s.append(el('h3', {}, 'Scans (last ' + cw.scans.length + ')'));
+  s.append(scansList(cw.scans));
+
   s.append(el('h3', {}, 'Trend (last ' + cw.trend.length + ' runs)'));
   s.append(trendSvg(cw.trend));
 
@@ -187,7 +206,7 @@ function codewatchPanel(data) {
   const count = (n, cls) => el('td', { class: 'count' + (n ? ' ' + cls : '') }, n);
   s.append(table(['Repo', 'High', 'Medium', 'Low', 'Last run', 'Reviewer', 'Unscanned', 'Gitleaks'], rows.map((r) => [
     repoName(r), count(r.high, 'sev-high'), count(r.medium, 'sev-medium'), count(r.low, 'sev-low'),
-    r.lastRunAt ? when(r.lastRunAt) : 'never', txt(r.reviewer || '-'), count(r.unscannedCommits, 'sev-medium'),
+    r.lastRunAt ? (r.lastReviewId ? reportLink(r.lastReviewId, when(r.lastRunAt)) : when(r.lastRunAt)) : 'never', txt(r.reviewer || '-'), count(r.unscannedCommits, 'sev-medium'),
     r.gitleaksWarning ? pill('warn', 'not scanned') : '-',
   ])));
   const byPath = Object.fromEntries(data.repos.map((r) => [r.path, r]));
