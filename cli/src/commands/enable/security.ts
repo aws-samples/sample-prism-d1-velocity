@@ -111,12 +111,23 @@ export interface RunHooks {
  * unhandled rejection. PRISM_DEBUG=1 adds the redacted stack.
  */
 export async function runEnableSecurity(opts: SecurityOptions, hooks: RunHooks = {}): Promise<void> {
+  await runGuarded(() => {
+    const o: SecurityOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
+    return enableSecurity(o, (hooks.deps ?? defaultDeps)(o));
+  }, hooks);
+}
+
+/**
+ * Shared by every Security Agent command (enable security, its alias,
+ * security code-review, security findings): runs `body`, turns any error that
+ * is not an Abort into one redacted line plus a hint, and exits non-zero.
+ */
+export async function runGuarded(body: () => Promise<number>, hooks: Pick<RunHooks, 'error' | 'exit' | 'env'> = {}): Promise<void> {
   const exit = hooks.exit ?? ((c: number) => process.exit(c));
   const error = hooks.error ?? ((l: string) => console.error(l));
   let code: number;
   try {
-    const o: SecurityOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
-    code = await enableSecurity(o, (hooks.deps ?? defaultDeps)(o));
+    code = await body();
   } catch (e) {
     for (const l of describeUnexpectedError(e, hooks.env ?? process.env)) error(l);
     code = 1;

@@ -31,10 +31,28 @@ export interface Finding {
   file: string;
   line: number | null;
   message: string;
+  /** security-review only: the Security Agent risk level (CRITICAL ... UNKNOWN), finding title, CWE and id. */
+  risk_level?: string;
+  title?: string;
+  cwe?: string | null;
+  finding_id?: string;
 }
 
-/** `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code). */
-export type ResultKind = 'secrets' | 'review';
+/** `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code); `security-review` = an AWS Security Agent code review job. */
+export type ResultKind = 'secrets' | 'review' | 'security-review';
+
+/** security-review only: the job behind the result. */
+export interface SecurityReviewInfo {
+  job_id: string;
+  code_review_id: string;
+  agent_space_id: string;
+  region: string;
+  /** diff: the branch diff base...tip. full: the whole repo at tip. unknown: fetched later by `security findings`. */
+  scope: 'diff' | 'full' | 'unknown';
+  job_status: string;
+  /** Findings per Security Agent risk level. */
+  counts: Record<string, number>;
+}
 export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual';
 /**
  * ok        ran, nothing found
@@ -76,6 +94,8 @@ export interface PrismResult {
    * consumers (the dashboard, CI) match on exactly: see REASON_*.
    */
   reason: string | null;
+  /** Present on kind security-review. */
+  security?: SecurityReviewInfo;
 }
 
 export type ResultInit = Omit<PrismResult, 'schema_version' | 'tool_version' | 'model' | 'commit' | 'tree' | 'branch' | 'upstream' | 'base' | 'summary' | 'score' | 'reason' | 'findings'>

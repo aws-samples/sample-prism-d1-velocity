@@ -489,7 +489,7 @@ test('--json payload shape', async () => {
   // machine checks unchanged
   assert.deepEqual(p.machine.setup.map((i) => i.id), ['codeburn', 'codeburn-sync', 'gitleaks', 'aws-credentials', 'codewatch-global']);
   assert.equal(p.usage.status, 'ok');
-  assert.equal(p.security.status, 'coming-soon');
+  assert.deepEqual(p.security, { repos: [], hint: 'prism-cli security code-review' });
   JSON.parse(JSON.stringify(p));
 });
 

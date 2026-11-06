@@ -291,8 +291,38 @@ function securityCell(sec) {
     sec.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, sec.fix)) : null);
 }
 
+/** Cached Security Agent code review results; the page only reads them. */
+const RISKS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFORMATIONAL', 'UNKNOWN'];
+const RISK_CLASS = { CRITICAL: 'sev-high', HIGH: 'sev-high', MEDIUM: 'sev-medium', LOW: 'sev-low' };
 function securityPanel(sec) {
-  return el('section', { class: 'card' }, el('h2', {}, 'Security findings'), el('p', { class: 'empty' }, sec.status === 'coming-soon' ? ['Coming with ', el('code', {}, 'prism-cli security findings'), '.'] : txt(sec.message)));
+  const s = el('section', { class: 'card wide' }, el('h2', {}, 'Security findings'));
+  const rows = (sec && sec.repos) || [];
+  if (!rows.length) {
+    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
+    return s;
+  }
+  s.append(table(['Repo', 'Job', 'Scope', 'Critical', 'High', 'Medium', 'Low'], rows.map((r) => [
+    repoName(r),
+    el('span', {}, r.status === 'error' ? pill('error', txt(r.job_status).toLowerCase()) : pill(r.status === 'ok' ? 'ok' : 'findings', r.status === 'ok' ? 'clean' : 'findings'), ' ', when(r.finished_at)),
+    txt(r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched'),
+    num((r.counts || {}).CRITICAL || 0), num((r.counts || {}).HIGH || 0), num((r.counts || {}).MEDIUM || 0), num((r.counts || {}).LOW || 0),
+  ])));
+  for (const r of rows) {
+    const total = RISKS.reduce((a, k) => a + ((r.counts || {})[k] || 0), 0);
+    const d = el('details', r.current ? { class: 'repo', open: '' } : { class: 'repo' },
+      el('summary', {}, el('b', {}, txt(r.name)), ' ', el('span', { class: 'fix' }, total + ' finding' + (total === 1 ? '' : 's') + ' · job ' + txt(r.job_id).slice(0, 12))));
+    if (r.reason) d.append(el('p', { class: 'note' }, txt(r.reason)));
+    if (!r.findings.length) d.append(el('p', { class: 'empty' }, r.status === 'error' ? 'The job did not complete.' : 'No findings.'));
+    else d.append(table(['Risk', 'Finding', 'Location', 'CWE'], r.findings.map((f) => [
+      el('span', { class: RISK_CLASS[f.risk_level] || 'fix' }, txt(f.risk_level).toLowerCase()),
+      el('td', { class: 'msg' }, txt(f.title)),
+      el('code', {}, f.file ? f.file + (f.line ? ':' + f.line : '') : '-'),
+      txt(f.cwe || '-'),
+    ])));
+    if (r.truncated) d.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings for all'));
+    s.append(d);
+  }
+  return s;
 }
 
 async function load() {
