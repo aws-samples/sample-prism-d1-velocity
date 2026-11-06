@@ -653,7 +653,11 @@ When the global hooks are not installed and at least two repos are missing codew
 suggests covering them all with `prism-cli enable codewatch --global` (see
 [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)).
 
-**Security findings.** A placeholder for the planned `prism-cli security findings`.
+**Security findings.** The latest AWS Security Agent code review per repo, from the results
+`prism-cli security code-review` and `security findings` cache in `.prism/results/`: the job time, the
+scope (branch diff, whole repo, or fetched later), counts by risk level, and the findings with their
+file, line and CWE. With none cached, it points to `prism-cli security code-review`. The page reads
+only those files; it makes no AWS calls.
 
 Data is read when the page loads; the **Refresh** button reads it again.
 
@@ -1380,6 +1384,57 @@ After running, verify SSM parameters are populated:
 ```bash
 aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text
 ```
+
+### Running a Review from the CLI
+
+After `prism-cli enable security`, you can run the same Security Agent code review the eval gate
+runs, from your machine:
+
+```bash
+prism-cli security code-review                    # this branch's diff against its upstream
+prism-cli security code-review --full             # the whole repo at HEAD
+prism-cli security code-review --fail-on high     # exit 1 on a high or critical finding
+prism-cli security code-review --no-wait          # start it and come back later
+prism-cli security findings                       # the latest job's findings
+prism-cli security findings --job <id> --wait     # a specific job, waiting if it is still running
+```
+
+`security code-review`:
+
+1. Prints a notice, then the same account, caller, region and credential block as `enable
+   security`, with the same credential chain and region rules.
+2. Finds the agent space and this repo's code review in `.prism/security.local.json`, or in SSM
+   (`/prism/continuum/code-review-id/<repo-slug>`). With neither, it says to run
+   `prism-cli enable security` first and exits 1.
+3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
+   upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
+   changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
+4. Uploads the snapshot to the scan bucket, skipping the upload when the object's ETag already
+   matches. A diff goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`; `--full` refreshes the code
+   review's own source, `repo/<repo-slug>/latest.zip`.
+5. Starts the job and waits. It polls every 10 seconds, doubling up to 60, with a one-line ticker on
+   a terminal and plain lines otherwise.
+   - `--timeout <minutes>` (default 30): on timeout it prints the job ID and the `security findings
+     --job` command, and exits 2.
+   - Ctrl-C stops waiting but leaves the job running, prints the same hint, and exits 130.
+6. Prints the findings, grouped by risk level and then file: title, file:line, CWE when present,
+   and a short description. Then totals.
+7. Saves the result in `.prism/results/`, in the codewatch result format with `kind:
+   security-review`, `tool: security-agent`, the job ID, base, tip and scope.
+
+The snapshot upload and starting the job are its only AWS writes. It exits 0 (report only, like
+codewatch) unless `--fail-on <critical|high|medium|low>` finds a finding at or above that level,
+which exits 1. A failed or stopped job exits 1 with its reason. `--json` prints only the result JSON
+on stdout, with progress on stderr.
+
+`security findings` is read-only. It shows the latest job for this repo's code review, or `--job
+<id>`, and caches the result for the dashboard. `--severity <level>` hides lower levels. A job
+still running exits 2 with a note; `--wait` waits for it with the same poller.
+
+Both take `--profile`, `--region` and `--repo`, as `enable security` does. Besides the
+`enable security` read permissions, they need `securityagent:StartCodeReviewJob`,
+`BatchGetCodeReviewJobs`, `ListCodeReviewJobsForCodeReview`, `ListFindings` and `BatchGetFindings`,
+`s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
 
 ### Setup Script (Alternative)
 

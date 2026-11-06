@@ -122,7 +122,7 @@ The local git-hook gate. See [enable codewatch: implementation](#enable-codewatc
      - **Print:** `@media print` gives a one-column layout, so the browser's Print, then Save as PDF, produces the report.
      - **Links:** each commit row's Review cell, the Last run time in the repo summary, and a per-repo "Scans" list of the last 20 reviews.
      - **CLI:** `prism-cli codewatch report [--repo <path>] [--id <result-id> | --commit <sha>] [--format md|html|json] [--output <file>]`, defaulting to the current repo, its latest review, Markdown and stdout. `html` is self-contained (inline CSS, no script).
-  4. **Security findings:** placeholder until `prism-cli security findings`.
+  4. **Security findings:** the cached `kind: security-review` results per repo (`cli/src/dashboard/security.ts`): the latest job, with a copy that knows its scope preferred over one `security findings` fetched; severity counts, up to 50 findings, job time and scope; an empty state pointing to `prism-cli security code-review`. The codewatch panel ignores these results.
   5. **Advise** (later): output of `aws check`.
 - **Open questions:**
   - codeburn's export schema (`codeburn.export.v2`, checked against 0.9.24): which versions do we support?
@@ -148,19 +148,24 @@ All of these call AWS and need credentials; none run in hooks.
 - **Reuses:** the agent-space lookup and SSM parameter convention in the CI gate (`/prism/continuum/code-review-id/<repo>`).
 - **Open questions:** Which Security Agent APIs back these (design review and threat model are not used anywhere in the repo yet)? What is the input: a spec under `specs/`, a design doc path, or a repo? Where do results go: `.prism/results/` with `kind: design-review`, or only the Security Agent console?
 
-### `security code-review` (reuse from CI)
-- **Reuses:** the Continuum steps in `prism-eval-gate-kiro.yml` (`create-code-review`, `start-code-review-job`, `batch-get-code-review-jobs`, `list-findings`), moved into TypeScript.
-- **Open questions:** Should it review the working branch diff (like pre-push) or the whole repo? Same fail-closed semantics as CI?
+### `security code-review` (built)
+- **Code:** `cli/src/security/review.ts`, `cli/src/commands/security/code-review.ts`.
+- **Reuses:** the CI gate's calls (`start-code-review-job` with `--diff-source {"s3Uri": ...}`, `batch-get-code-review-jobs`, `list-findings --code-review-job-id`), plus `batch-get-findings` for descriptions and code locations. It also reuses `enable security`'s region and credential resolution, identity block, redaction, error handler and `.prism/security.local.json` (SSM fallback).
+- **Decided: synchronous.** It waits with backoff (10 s, doubling, 60 s cap) until `COMPLETED`, `FAILED` or `STOPPED`. `--timeout` (30 min) exits 2 and Ctrl-C exits 130, both with a `security findings --job <id>` hint; the job is never cancelled. `--no-wait` is the async escape hatch.
+- **Decided: scope.** The default is the branch diff `base...HEAD`, with the codewatch pre-push base (upstream, else `origin/HEAD`). `--full` uploads `git archive HEAD` to the code review's source asset and starts the job without a diff source.
+- **Decided: exit codes.** It reports only (exit 0) by default; `--fail-on <level>` gives CI-style fail-closed use; a failed job exits 1.
+- **Writes:** the S3 snapshot (skipped when the ETag equals the MD5), starting the job, and the local result. Nothing else.
 
 ### `security pentest` (reuse, guarded)
 - **Reuses:** `workshop perform-pen-test` (deploys sample-app, sets up Lambda + API Gateway, domain verification).
 - **Guard:** runs only against targets the customer owns and authorizes. The command requires the target to pass Security Agent domain verification and asks for explicit confirmation naming the target; there is no flag that skips verification.
 - **Open questions:** Beyond domain verification, what evidence of authorization is required (account ownership of the endpoint, a written scope)? Does the workshop variant stay a separate alias that targets sample-app only?
 
-### `security findings` (new)
-- **Reuses:** `list-findings` handling from the CI gate; the `Finding` type in `cli/src/codewatch/results.ts`.
-- **Proposal:** lists Continuum findings and local results in one table; `--json` for the dashboard.
-- **Open questions:** Cache findings locally for the dashboard (so it stays credential-free), and if so, for how long?
+### `security findings` (built)
+- **Code:** `cli/src/commands/security/findings.ts` (same module as `code-review`).
+- **Read-only.** It shows the latest job (`list-code-review-jobs-for-code-review`, newest `createdAt`) or `--job <id>`, with `--severity` and `--json`. A job still running exits 2; `--wait` reuses the poller.
+- **Decided: cache locally.** Each fetch writes a `security-review` result to `.prism/results/`, the file the dashboard reads, so the dashboard stays credential-free. It does not merge in codewatch results; those keep their own panel.
+- **Result shape:** the codewatch schema, with `kind: security-review`, `hook: manual` and `tool: security-agent`. Each finding's `severity` maps the risk level onto high/medium/low (critical and high -> high), and the finding also carries `risk_level`, `title`, `cwe` and `finding_id`. A `security` block holds the job ID, code review, agent space, region, scope (`diff`, `full`, or `unknown` when fetched later), job status and counts per risk level.
 
 ## Advise (AWS account)
 
