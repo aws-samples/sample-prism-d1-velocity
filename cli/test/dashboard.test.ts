@@ -602,6 +602,21 @@ test('page uses textContent for data and loads nothing from the network', () => 
   assert.match(html, /title: p\.path/);
 });
 
+test('the Security findings panel is a one-column card: compact blocks and wrapping rows, no wide table', () => {
+  const html = renderPage('NONCE');
+  const panel = html.slice(html.indexOf('function securityPanel(sec) {'), html.indexOf('async function load() {'));
+  assert.ok(panel.length > 0);
+  assert.match(panel, /el\('section', \{ class: 'card' \}, el\('h2', \{\}, 'Security findings'\)\)/);
+  assert.doesNotMatch(panel, /card wide|table\(/, 'not full-width and no table');
+  assert.match(panel, /'no findings'/, 'all-zero state');
+  assert.match(panel, /filter\(\(k\) => \(counts\[k\] \|\| 0\) > 0\)/, 'zero counts hidden');
+  assert.match(panel, /showing the first/, 'cap note kept');
+  assert.match(panel, /No Security Agent code reviews yet/, 'empty state kept');
+  assert.match(html, /ul\.sec-findings li \{[^}]*overflow-wrap:anywhere/, 'rows wrap');
+  // Order in the grid: Codewatch (full width), then Usage, Setup and Security side by side.
+  assert.match(html, /main\.append\(codewatchPanel\(data\), usagePanel\(data\.usage\), setupPanel\(data\), securityPanel\(data\.security\)\)/);
+});
+
 test('parsePort validates --port', () => {
   assert.equal(parsePort(undefined), 0);
   assert.equal(parsePort('8123'), 8123);
