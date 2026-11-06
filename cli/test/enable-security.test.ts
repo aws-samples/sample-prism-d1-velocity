@@ -15,7 +15,8 @@ import { explainAwsError, NO_CREDENTIALS_MESSAGE, redact } from '../src/security
 import { MARKER_PATH, readSecurityMarker, readSecurityMarkerWithSource, removeLegacyBlock } from '../src/security/marker.js';
 import { securitySetup } from '../src/dashboard/setup.js';
 import alias, { DEPRECATION } from '../src/commands/securityagent/setup.js';
-import { SECURITY_OPTIONS } from '../src/commands/enable/security.js';
+import { runEnableSecurity, SECURITY_OPTIONS, type RunHooks } from '../src/commands/enable/security.js';
+import { describeUnexpectedError } from '../src/security/errors.js';
 
 // ---------------------------------------------------------------------------
 // A fake AWS account. Each `aws` call is answered from in-memory state, and
@@ -799,4 +800,101 @@ test('dashboard Security Agent row reads the new file', () => {
     writeFileSync(join(repo, MARKER_PATH), JSON.stringify(LEGACY));
     assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ${ACCOUNT} (us-west-2), set up 2026-11-06`, fix: '' });
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+// --------------------------------------------------------------- unexpected (non-Abort) errors
+
+/** Runs the real entry point with a harness whose step `where` throws `err`. */
+async function runThrowing(where: 'synth' | 'deploy', err: Error, env: NodeJS.ProcessEnv = {}, viaAlias = false) {
+  const h = harness(emptyAccount());
+  if (where === 'synth') h.deps.cdk.synth = () => { throw err; };
+  else h.deps.cdk.deploy = () => { throw err; };
+  const errors: string[] = []; const exits: number[] = [];
+  const hooks: RunHooks = { deps: () => h.deps, error: (l) => errors.push(l), exit: (c) => exits.push(c), env };
+  const warn = console.warn; console.warn = () => {};
+  try {
+    if (viaAlias) await alias.action(opts({ yes: true }), hooks);
+    else await runEnableSecurity(opts({ yes: true }), hooks);
+  } finally { console.warn = warn; h.cleanup(); }
+  return { errors, exits };
+}
+
+/** Shaped like an execFileSync failure: the message names the command, and cmd/envPairs carry more. */
+function childError(message: string): Error {
+  return Object.assign(new Error(message), {
+    status: 1, cmd: 'npm install AWS_SECRET_ACCESS_KEY=leak', envPairs: ['AWS_SECRET_ACCESS_KEY=leak'],
+    stderr: 'aws_secret_access_key = leak', spawnargs: ['npm', 'install'],
+  });
+}
+
+test('a thrown npm failure: exit 1, one redacted Error line plus a hint, no stack, no child-process fields', async () => {
+  const { errors, exits } = await runThrowing('synth', childError('Command failed: npm install --no-audit --no-fund\nnpm ERR! network AKIAABCDEFGHIJKLMNOP'));
+  assert.deepEqual(exits, [1]);
+  assert.equal(errors[0], 'Error: Command failed: npm install --no-audit --no-fund');
+  assert.match(errors[1], /Installing the CDK app dependencies failed/);
+  assert.equal(errors.length, 2);
+  const all = errors.join('\n');
+  assert.doesNotMatch(all, /leak|AKIA|\n\s+at /);
+});
+
+test('a thrown deploy error and a JSON parse error: exit 1, Error line, matching hint, no stack', async () => {
+  const d = await runThrowing('deploy', new Error('spawnSync cdk ENOENT'));
+  assert.deepEqual(d.exits, [1]);
+  assert.equal(d.errors[0], 'Error: spawnSync cdk ENOENT');
+  assert.match(d.errors[1], /The CDK step failed/);
+  assert.ok(!d.errors.join('\n').includes('    at '));
+  let parseErr: Error;
+  try { JSON.parse('{nope'); throw new Error('unreachable'); } catch (e) { parseErr = e as Error; }
+  const j = await runThrowing('synth', parseErr!);
+  assert.deepEqual(j.exits, [1]);
+  assert.match(j.errors[0], /^Error: /);
+  assert.match(j.errors[1], /not valid JSON/);
+  assert.equal(j.errors.length, 2);
+});
+
+test('PRISM_DEBUG=1 adds the redacted stack', async () => {
+  const err = new Error('boom with AKIAABCDEFGHIJKLMNOP');
+  const { errors, exits } = await runThrowing('synth', err, { PRISM_DEBUG: '1' });
+  assert.deepEqual(exits, [1]);
+  assert.equal(errors[0], 'Error: boom with [redacted access key]');
+  assert.match(errors.join('\n'), /\n\s+at /, 'stack shown');
+  assert.doesNotMatch(errors.join('\n'), /AKIAABCDEFGHIJKLMNOP/, 'stack redacted');
+});
+
+test('the deprecated alias gets the same handling', async () => {
+  const { errors, exits } = await runThrowing('deploy', new Error('fatal: not a git repository'), {}, true);
+  assert.deepEqual(exits, [1]);
+  assert.equal(errors[0], 'Error: fatal: not a git repository');
+  assert.match(errors[1], /git command failed/);
+  assert.equal(errors.length, 2);
+});
+
+test('Abort errors keep their own message and exit code; the wrapper adds nothing', async () => {
+  const h = harness(fullySetUp());
+  const errors: string[] = []; const exits: number[] = [];
+  try {
+    await runEnableSecurity({ dryRun: true }, { deps: () => h.deps, error: (l) => errors.push(l), exit: (c) => exits.push(c), env: {} });
+    assert.deepEqual(exits, [1]);
+    assert.deepEqual(errors, []);
+    assert.match(h.out(), /Error: No AWS region is set/);
+  } finally { h.cleanup(); }
+});
+
+test('file-system errors get a code and syscall hint; a non-Error value still prints one line', () => {
+  const fsErr = Object.assign(new Error("EACCES: permission denied, open '/x/.prism/security.local.json'"), { code: 'EACCES', syscall: 'open' });
+  assert.match(describeUnexpectedError(fsErr, {})[1], /EACCES during open/);
+  assert.deepEqual(describeUnexpectedError('plain string', {}), ['Error: plain string']);
+});
+
+test('paths containing cdk or .git do not pick the cdk or git hint', () => {
+  const gitPath = Object.assign(new Error("EACCES: permission denied, open '/repo/.git/config'"), { code: 'EACCES', syscall: 'open' });
+  assert.match(describeUnexpectedError(gitPath, {})[1], /File system error \(EACCES during open\)/);
+  let parse: Error;
+  try { JSON.parse('{x'); throw new Error('unreachable'); } catch (e) { parse = e as Error; }
+  parse!.message += ' in /tmp/cdk.out/PrismD1SecurityAgent.template.json (aws-cdk-lib)';
+  assert.match(describeUnexpectedError(parse!, {})[1], /not valid JSON/);
+  const noCdk = Object.assign(new Error('spawn /infra/node_modules/.bin/cdk ENOENT'), { code: 'ENOENT', syscall: 'spawn /infra/node_modules/.bin/cdk' });
+  assert.match(describeUnexpectedError(noCdk, {})[1], /Could not start a program \(ENOENT/);
+  assert.match(describeUnexpectedError(new Error('cdk deploy exited 1'), {})[1], /The CDK step failed/);
+  assert.match(describeUnexpectedError(new Error('fatal: not a git repository'), {})[1], /git command failed/);
 });

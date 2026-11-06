@@ -6,7 +6,11 @@ import { createInterface } from 'node:readline';
 import { aws } from '../../utils/aws.js';
 import { run } from '../../utils/exec.js';
 import { getAssetPath } from '../../utils/root.js';
+import { describeUnexpectedError } from '../../security/errors.js';
 import { enableSecurity, type CdkEnv, type CdkRunner, type Deps, type SecurityOptions } from '../../security/setup.js';
+
+/** Room for the full synth and diff output of the whole app. */
+const CDK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 
 /** Resolved on first use, so importing this module (tests, --help) needs no built assets. */
 let infraDir: string | null = null;
@@ -37,12 +41,12 @@ function cdkRunner(opts: SecurityOptions): CdkRunner {
     synth(outDir, context, e) {
       ensureInfraDeps();
       const ctx = Object.entries(context).flatMap(([k, v]) => ['-c', `${k}=${v}`]);
-      const r = spawnSync(bin(), ['synth', '--quiet', '-o', outDir, ...ctx, ...profile], { cwd: INFRA(), env: env(e), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      const r = spawnSync(bin(), ['synth', '--quiet', '-o', outDir, ...ctx, ...profile], { cwd: INFRA(), env: env(e), encoding: 'utf8', maxBuffer: CDK_OUTPUT_MAX_BUFFER });
       return { ok: r.status === 0, stdout: r.stdout || '', stderr: `${r.stderr || ''}${r.error ? r.error.message : ''}` };
     },
     diff(outDir, stack, e) {
       // cdk diff prints to stderr; keep both streams.
-      const r = spawnSync(bin(), ['diff', '--app', outDir, stack, '--exclusively', '--no-color', ...profile], { cwd: INFRA(), env: env(e), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      const r = spawnSync(bin(), ['diff', '--app', outDir, stack, '--exclusively', '--no-color', ...profile], { cwd: INFRA(), env: env(e), encoding: 'utf8', maxBuffer: CDK_OUTPUT_MAX_BUFFER });
       return { ok: r.status === 0, output: `${r.stdout || ''}${r.stderr || ''}` };
     },
     deploy(outDir, stack, e, { approveAll }) {
@@ -91,10 +95,33 @@ export const SECURITY_OPTIONS: { flags: string; description: string; default?: s
   { flags: '--context <key=value>', description: 'Extra cdk context, repeatable (match how the stack was deployed, e.g. skipVpc=true)', parser: collect },
 ];
 
-export async function runEnableSecurity(opts: SecurityOptions): Promise<void> {
-  const o: SecurityOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
-  const code = await enableSecurity(o, defaultDeps(o));
-  if (code !== 0) process.exit(code);
+/** Test seams: everything else uses the real runners, console and process. */
+export interface RunHooks {
+  deps?: (opts: SecurityOptions) => Deps;
+  error?: (line: string) => void;
+  exit?: (code: number) => void;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * The one entry point for `enable security` and its `securityagent setup`
+ * alias. Abort errors are already printed by enableSecurity; anything else
+ * (a failed npm or cdk run, a JSON parse, git or fs) is caught here and
+ * printed as one redacted line plus a hint, never as a raw stack or an
+ * unhandled rejection. PRISM_DEBUG=1 adds the redacted stack.
+ */
+export async function runEnableSecurity(opts: SecurityOptions, hooks: RunHooks = {}): Promise<void> {
+  const exit = hooks.exit ?? ((c: number) => process.exit(c));
+  const error = hooks.error ?? ((l: string) => console.error(l));
+  let code: number;
+  try {
+    const o: SecurityOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
+    code = await enableSecurity(o, (hooks.deps ?? defaultDeps)(o));
+  } catch (e) {
+    for (const l of describeUnexpectedError(e, hooks.env ?? process.env)) error(l);
+    code = 1;
+  }
+  if (code !== 0) exit(code);
 }
 
 export default {

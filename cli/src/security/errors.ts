@@ -81,6 +81,38 @@ export function explainAwsError(args: string[], stderr: string, cliVersion?: str
   return { kind: 'other', message: `aws ${args.slice(0, 2).join(' ')} failed: ${lastLine}` };
 }
 
+/**
+ * Lines for an error that is not one of ours (not an Abort): a failed npm or
+ * cdk run, a JSON parse, a git or file-system error. One redacted `Error:`
+ * line, at most one hint, and the redacted stack only with PRISM_DEBUG=1.
+ *
+ * Only `message`, `code`, `syscall` and `stack` are read. A child-process
+ * error also carries `cmd`, `spawnargs`, `envPairs`, `stdout` and `stderr`,
+ * which can hold full command lines and the environment; those are never read.
+ */
+export function describeUnexpectedError(e: unknown, env: NodeJS.ProcessEnv = process.env): string[] {
+  const err = e instanceof Error ? e : new Error(String(e));
+  const extra = err as Error & { code?: unknown; syscall?: unknown };
+  const code = typeof extra.code === 'string' ? extra.code : '';
+  const syscall = typeof extra.syscall === 'string' ? extra.syscall : '';
+  const firstLine = redact(err.message || String(e)).split('\n').map((l) => l.trim()).find(Boolean) || 'unknown error';
+  const lines = [`Error: ${firstLine}`];
+  const msg = err.message || '';
+  let hint = '';
+  // Most specific first: a parse or fs error whose message merely contains a
+  // path like cdk.out/... or .git/... must not get the cdk or git hint.
+  const spawned = syscall.startsWith('spawn');
+  if (/Command failed: npm\b|\bnpm (ERR|error)\b/.test(msg)) hint = 'Installing the CDK app dependencies failed: check network access to the npm registry and that Node.js 22 is installed, then re-run.';
+  else if (err instanceof SyntaxError || /\bJSON\b/.test(msg)) hint = 'A CDK template or an AWS response was not valid JSON; re-run, and report it if it repeats.';
+  else if (syscall && code && !spawned) hint = `File system error (${code} during ${syscall}): check the path exists and is writable.`;
+  else if (/(^|[\s:'"])cdk\b(?![.-])/.test(msg)) hint = 'The CDK step failed: re-run with --dry-run to see the synth output, and check that the account is CDK-bootstrapped.';
+  else if (/(^|[\s:'"])git\b(?![.-])/.test(msg)) hint = 'A git command failed: run prism-cli enable security from inside the repository.';
+  else if (syscall && code) hint = `Could not start a program (${code} during ${syscall}): check it is installed and on PATH.`;
+  if (hint) lines.push(`  ${hint}`);
+  if (env.PRISM_DEBUG === '1' && err.stack) lines.push(redact(err.stack));
+  return lines;
+}
+
 /** Parses `aws --version` ("aws-cli/2.36.19 Python/...") and checks it against MIN_AWS_CLI. */
 export function cliVersionOk(versionText: string | null): { ok: boolean; version: string | null } {
   const m = /aws-cli\/(\d+)\.(\d+)\.(\d+)/.exec(versionText || '');
