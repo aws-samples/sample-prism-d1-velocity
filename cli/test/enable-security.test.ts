@@ -576,7 +576,7 @@ test('no region anywhere: refuses with no AWS call', async () => {
   const h = harness(fullySetUp());
   try {
     assert.equal(await enableSecurity({ dryRun: true }, h.deps), 1);
-    assert.match(h.out(), new RegExp(`Error: ${NO_REGION_MESSAGE.replace(/[.()]/g, '\\$&')}`));
+    assert.match(h.out(), new RegExp(`Error: ${NO_REGION_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     assert.equal(h.calls.length, 0);
   } finally { h.cleanup(); }
 });
