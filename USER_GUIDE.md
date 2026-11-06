@@ -11,6 +11,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Developer Setup](#developer-setup)
 - [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)
 - [Local Dashboard](#local-dashboard)
+- [Security Agent Setup (enable security)](#security-agent-setup-enable-security)
 - [CI-CD Workflows (GitHub and GitLab)](#ci-cd-workflows-github-and-gitlab)
 - [Eval Gates](#eval-gates)
 - [Bedrock Protection Audit](#bedrock-protection-audit)
@@ -54,19 +55,20 @@ npx cdk deploy --all --context enableSecurityAgent=true
 
 Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 5, and developers need the URL for `setup-otel-sync`.
 
-**Or use the security-agent wrapper.** `prism-cli securityagent setup` runs the same deploy and then performs the Continuum onboarding that would otherwise follow it:
+**Or let prism-cli set up Security Agent.** `prism-cli enable security` deploys only the `PrismD1MetricsPipeline` stack with `enableSecurityAgent=true` (after showing a diff and asking), then does the Continuum onboarding that would otherwise follow it:
 
 ```bash
-prism-cli securityagent setup --profile your-profile --region us-west-2
+prism-cli enable security --dry-run --profile your-profile --region us-west-2   # see the plan first
+prism-cli enable security --profile your-profile --region us-west-2
 ```
 
-Beyond `cdk deploy --all --context enableSecurityAgent=true`, it:
+Beyond the deploy, it:
 
 1. Looks up your Continuum agent space
 2. Creates the Continuum application if it does not exist, and attaches its execution role
 3. Archives the repository to the scan bucket, creates a Code Review resource, and stores its id at `/prism/continuum/code-review-id/<repo-slug>` in SSM
 
-Item 3 is a convenience rather than a requirement — the eval-gate workflow reads that SSM parameter and creates the Code Review itself on its first run if the parameter is missing.
+Item 3 is a convenience rather than a requirement — the eval-gate workflow reads that SSM parameter and creates the Code Review itself on its first run if the parameter is missing. See [Security Agent Setup](#security-agent-setup-enable-security) for the details; `prism-cli securityagent setup` is its deprecated alias.
 
 ### Step 2: Set Up OIDC (CI/CD → AWS Authentication)
 
@@ -641,7 +643,10 @@ codewatch installed (ok); warn, when the global hooks are installed but the repo
 `core.hooksPath` (husky and similar) bypasses them; missing, including only one hook installed or
 hooks from before the codewatch rename; or opted out with `git config prism.codewatch false`. Repos covered by the global hooks are
 marked "(global)". Repos missing codewatch are collapsed into one group. Each problem row shows the
-command that fixes it.
+command that fixes it. A **Security Agent** column shows ok when `prism-cli enable security` has
+finished in that repo (from the `security` block it writes to `.prism/config.json`), or missing with
+the fix `cd <repo> && prism-cli enable security`. That is local evidence only; `enable security
+--status` checks the AWS side (see [Security Agent Setup](#security-agent-setup-enable-security)).
 
 When the global hooks are not installed and at least two repos are missing codewatch, the page
 suggests covering them all with `prism-cli enable codewatch --global` (see
@@ -681,6 +686,141 @@ ssh -L 8765:127.0.0.1:8765 <remote-host>
 ```
 
 Then open the printed URL (`http://127.0.0.1:8765/?token=...`) in your laptop's browser.
+
+---
+
+## Security Agent Setup (enable security)
+
+`prism-cli enable security` sets up AWS Security Agent (Continuum) for PRISM in one account and
+region, and the code review the CI eval gate uses for the repo you run it in. Unlike codewatch, it
+calls AWS and can create resources, so it always shows what it will do and asks first.
+
+```bash
+prism-cli enable security --dry-run    # every read, then the plan; changes nothing
+prism-cli enable security              # the same plan, then asks before any change
+prism-cli enable security --status     # read-only report
+```
+
+Run it from the repo whose pull requests the eval gate should scan.
+
+### Prerequisites
+
+- AWS credentials for the target account (`aws sts get-caller-identity` must work; use `--profile`
+  to pick one). The account must be CDK-bootstrapped (`npx cdk bootstrap`).
+- AWS CLI v2.36 or later, for the `securityagent` commands.
+- Node.js 22 (the CDK app is synthesized locally; its dependencies are installed on first use).
+
+### What It Does
+
+1. Checks the AWS CLI version and your identity, and looks up the account alias.
+2. Synthesizes the CDK app with `enableSecurityAgent=true` and compares the result with what is
+   deployed in the `PrismD1MetricsPipeline` stack.
+3. Prints a summary: resources to add, change and remove, with every IAM and resource-policy,
+   security group and network, and public endpoint change named. The full `cdk diff` output is
+   written to a file and its path printed.
+4. Looks up the agent space, the Security Agent application and its role, the code review for this
+   repo, the repo snapshot in the scan bucket, and the SSM parameter the eval gate reads.
+5. Prints each item as ok, create, update, conflict or skip, with the exact AWS command for every
+   change.
+6. Asks once, naming the account ID, its alias and the region. Then it deploys the stack if needed,
+   creates the application and attaches the `prism-d1-security-agent-prism-d1-security` role,
+   uploads `git archive HEAD` to `s3://<scan bucket>/repo/<repo-slug>/latest.zip`, creates the code
+   review, and sets `/prism/continuum/code-review-id/<repo-slug>`.
+7. Writes a `security` block to `.prism/config.json` (agent space, application and code review ids,
+   account, region, setup time; no secrets). The [Local Dashboard](#local-dashboard) reads it.
+
+`<repo-slug>` is computed exactly as the eval gate does: the `origin` remote as `host/owner/name`
+with `/` replaced by `-`, for example `github.com-acme-widgets`. Use `--repo host/owner/name` when
+the remote does not match what CI sees.
+
+### Which Stack It Deploys
+
+Only `PrismD1MetricsPipeline`, with `--exclusively`; never `--all`. That stack holds every Security
+Agent resource. The API and Dashboard stacks synthesize identically with and without
+`enableSecurityAgent`, and the flag only adds outputs to the pipeline stack, so the stacks that
+depend on it are not affected.
+
+It deploys only when needed: the stack is missing, it has no Security Agent resources yet, or those
+resources differ from the local code. When the only differences are elsewhere in the stack (for
+example, your installed prism-cli is newer than what you deployed), it lists them and does not deploy.
+
+If the stack was deployed with extra context, pass the same values with `--context`, for example
+`--context skipVpc=true`. Without them the diff shows resources being removed, and the summary
+warns about it.
+
+### What the Stack Adds
+
+With `enableSecurityAgent=true` the pipeline stack gains:
+
+| Resource | Exposure |
+|---|---|
+| Agent space `prism-d1-security` | Managed by the Security Agent service; no endpoint of its own |
+| IAM role `prism-d1-security-agent-prism-d1-security` | Assumable only by `securityagent.amazonaws.com`. Allows `securityagent:*` on this account's agent spaces, CloudWatch Logs under `/aws/securityagent/*`, encrypt and decrypt with the PRISM KMS key, and read of the scan bucket |
+| S3 scan bucket `security-agent-scans-<account>-<region>` | Private: Block Public Access on, SSL required, SSE-S3, 30-day expiry. Its bucket policy denies every request without TLS, allows `s3:PutObject` and `s3:GetObject` only to this account's roles named `prism-d1-github-oidc-*`, and lets the auto-delete helper's role list and delete objects |
+| Managed policy `prism-d1-continuum-ci-scan` | Not attached by the stack; `setup-github-oidc` attaches it to the CI role |
+| SSM parameters `/prism/continuum/agent-space-id`, `scan-bucket`, `service-role-arn` | Plain ids and names |
+| Auto-delete custom resource (Lambda and role) | CDK's standard helper that empties the bucket when the stack is deleted; not invoked from outside |
+
+None of these is a public endpoint, and none changes a security group. The application the command
+creates is the Security Agent web console; you reach it through the AWS console ("Admin access") with
+your AWS sign-in. If the pipeline stack is not deployed yet, the first deploy also creates the rest of
+the metrics pipeline, including the OTEL collector's HTTP API (public, behind a JWT authorizer); the
+summary lists it under public endpoints.
+
+### Confirmation and --yes
+
+- In a terminal, the command asks before the first change. CDK then also asks before any IAM or
+  security-group broadening, as it does by default.
+- `--yes` approves without a prompt, for CI and other non-interactive use. CDK is not asked again.
+- With no terminal and no `--yes`, it refuses and changes nothing.
+- An SSM parameter that already holds a different value (a code review that no longer exists) is
+  shown as a conflict and needs a second yes (or `--yes`) before it is overwritten.
+
+### Re-running
+
+Re-running is safe. Everything that exists is reused: agent space, application, code review (found
+by the SSM id, or by the title the eval gate uses), S3 object (skipped when its ETag equals the MD5 of
+the new archive) and SSM parameter. When nothing has changed it prints "Already set up: nothing to
+change." and makes no AWS writes. Drift, such as a different role on the application, is shown before
+it is fixed.
+
+### --status
+
+Read-only. Reports, per item: credentials and account, the stack and whether it has the Security
+Agent resources, the agent space, the application and its role, the three SSM parameters, the code
+review for this repo, the CI workflow step (the eval gate's `start-code-review-job`), and the local
+marker. It also flags the unused `/prism/continuum/code-review-id` parameter left by the old
+`securityagent setup`.
+
+### Options
+
+| Flag | Purpose |
+|---|---|
+| `--profile <name>` | AWS CLI profile (default: `$AWS_PROFILE`) |
+| `--region <region>` | AWS region (default: `us-west-2`) |
+| `--dry-run` | Run every read-only step and print the plan; change nothing |
+| `--status` | Read-only report |
+| `--yes` | Approve without a prompt |
+| `--repo <host/owner/name>` | Repo id for the code review (default: from `origin`) |
+| `--context <key=value>` | Extra CDK context, repeatable |
+
+### Permissions
+
+Besides what `cdk deploy` needs (the CDK bootstrap roles), the caller needs `sts:GetCallerIdentity`,
+`cloudformation:DescribeStacks` and `GetTemplate`, `ssm:GetParameter` and `PutParameter` on
+`/prism/continuum/*`, `s3:GetObject` and `PutObject` on the scan bucket, `iam:PassRole` on the
+service role, and `securityagent:ListAgentSpaces`, `ListApplications`, `GetApplication`,
+`CreateApplication`, `UpdateApplication`, `ListCodeReviews` and `CreateCodeReview`.
+`iam:ListAccountAliases` is optional. On an AccessDenied the command names the API that failed and
+the permission it needed.
+
+### Removing It
+
+There is no uninstall. Deleting the agent space, code reviews or scan bucket is a separate decision
+that needs its own design; until then, remove them in the console or with CloudFormation.
+
+`prism-cli securityagent setup` is a deprecated alias for `enable security` with the same flags. It
+now asks before deploying, so scripts that ran it unattended need `--yes`.
 
 ---
 
@@ -1166,14 +1306,14 @@ Findings flow into the PRISM pipeline where they're:
 ### Setup (CLI — Recommended)
 
 ```bash
-prism-cli securityagent setup --profile your-profile --region us-west-2
+prism-cli enable security --profile your-profile --region us-west-2
 ```
 
-This:
-1. Runs `cdk deploy --all --context enableSecurityAgent=true`
-2. Creates a Security Agent application (or finds existing)
-3. Attaches the `prism-d1-security-agent-prism-d1-security` IAM role
-4. Prints the web console URL
+This deploys only the `PrismD1MetricsPipeline` stack with `enableSecurityAgent=true` (after a diff
+and your confirmation), creates or reuses the Security Agent application and attaches the
+`prism-d1-security-agent-prism-d1-security` role, creates this repo's code review and its SSM
+pointer, and prints the web console URL. `--dry-run` shows the plan and `--status` checks an existing
+setup. See [Security Agent Setup](#security-agent-setup-enable-security).
 
 **Verify:**
 
@@ -1390,7 +1530,7 @@ aws securityagent list-pentest-jobs-for-pentest \
 ### Important Limitations
 
 - **Code reviews require the `securityagent` CLI subcommands** — AWS CLI v2.36+ needed
-- **Code Review resources are per-repo** — the eval gate creates one on its first run and stores the id in SSM, so pre-provisioning via `prism-cli securityagent setup` is a convenience rather than a prerequisite
+- **Code Review resources are per-repo** — the eval gate creates one on its first run and stores the id in SSM, so pre-provisioning via `prism-cli enable security` is a convenience rather than a prerequisite
 - **Design reviews are web-console-only** — not automatable via CLI or GitHub Actions
 - **Pen tests take hours** — not suitable for blocking CI pipelines
 - **Scans typically take 5-15 minutes** — the workflow polls every 30s for up to 60 attempts, a 30-minute ceiling before it gives up
@@ -1398,8 +1538,8 @@ aws securityagent list-pentest-jobs-for-pentest \
 ### Quick Reference: All Continuum Commands
 
 ```bash
-# Deploy Security Agent
-prism-cli securityagent setup --profile your-profile --region us-west-2
+# Deploy Security Agent (plan first with --dry-run; check later with --status)
+prism-cli enable security --profile your-profile --region us-west-2
 
 # List agent spaces
 aws securityagent list-agent-spaces --region us-west-2
@@ -1871,7 +2011,7 @@ by `setup-otel-sync` (see [Developer Setup](#developer-setup)), and no CI workfl
 | Problem | Likely Cause | Fix |
 |---|---|---|
 | `aws securityagent` command not found | AWS CLI too old | Install from [official installer](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) — not package managers |
-| Agent space not found | CDK not deployed with Security Agent | Run `prism-cli securityagent setup` |
+| Agent space not found | CDK not deployed with Security Agent | Run `prism-cli enable security` (`--status` shows what is missing) |
 | KMS 403 on agent space creation | `securityagent.amazonaws.com` lacks KMS grants | Add `kms:Encrypt/Decrypt` grant for the service principal |
 | Pen test fails at PREFLIGHT | `logs.amazonaws.com` lacks KMS permissions | Grant `kms:Encrypt/Decrypt/GenerateDataKey*/DescribeKey` with log group ARN condition |
 | Domain verification stuck (DNS) | DNS not propagated | Wait 5 min; verify with `dig TXT _securityagent.yourdomain.com` |

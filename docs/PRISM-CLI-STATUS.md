@@ -1,11 +1,8 @@
 # prism-cli: status of the "one tool, three jobs" commands
 
-Status as of 2026-11-05. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md).
+Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md).
 
-Nothing below is merged yet. The built commands are on two unpushed branches:
-
-- `feat/enable-security`: `enable codewatch`
-- `feat/dashboard`: `dashboard`, stacked on `feat/enable-security`
+`enable codewatch` and `dashboard` are on `main` (release 1.2.0). `enable security` is on the unpushed branch `feat/enable-security-agent`.
 
 ## Summary
 
@@ -14,7 +11,7 @@ Nothing below is merged yet. The built commands are on two unpushed branches:
 | Observe | `prism-cli version` | Planned |
 | Observe | `prism-cli enable codewatch` | **Built** |
 | Observe | `prism-cli enable codeburn` | Planned (mostly reuse) |
-| Observe | `prism-cli enable security` | Planned, scope to confirm |
+| Observe | `prism-cli enable security` | **Built** (not merged) |
 | Observe | `prism-cli dashboard` | **Built** |
 | Observe | `prism-cli export otel --endpoint` | Planned |
 | Observe | `prism-cli install transformation-center` | Blocked: scope unknown |
@@ -27,7 +24,7 @@ Nothing below is merged yet. The built commands are on two unpushed branches:
 | Advise | `prism-cli aws check` | Planned (reuse) |
 | Advise | `prism-cli aws recommend` | Planned |
 
-So far 2 of the 15 are built, 12 are planned, and 1 is blocked until we know what it is. None of the slide's commands were dropped.
+So far 3 of the 15 are built, 11 are planned, and 1 is blocked until we know what it is. None of the slide's commands were dropped.
 
 ## Built
 
@@ -56,12 +53,23 @@ A local web page for one developer, started with `prism-cli dashboard` from any 
 - **Other options:** `--json` prints the same data. `--port` and `--no-open` suit remote use over `ssh -L`. `--all` is deprecated and does nothing.
 - **User docs:** [Local Dashboard](../USER_GUIDE.md#local-dashboard).
 
+### `enable security`
+Sets up AWS Security Agent (Continuum) for one account and region, plus the code review the CI eval gate uses for the current repo. It replaces `securityagent setup`, which stays as a deprecated alias.
+
+- **Scoped deploy:** only the `PrismD1MetricsPipeline` stack (`--exclusively`), which holds every Security Agent resource. The old command deployed `--all`.
+- **Asks first:** prints a resource diff with IAM, network and public endpoint changes named (the full `cdk diff` goes to a file), then asks with the account ID, alias and region named. `--yes` approves for CI; with no terminal and no `--yes` it refuses. `--require-approval never` is gone.
+- **`--dry-run`:** runs every read and prints the exact create and update calls. **`--status`:** a read-only report.
+- **Idempotent:** reuses the agent space, application, code review, S3 snapshot (skipped when its ETag matches) and SSM parameter. A different value already in SSM is a conflict that needs a second yes.
+- **Fixes:** writes `/prism/continuum/code-review-id/<repo-slug>`, the parameter the eval gate reads (the old command wrote an unslugged one nothing read), and reads the `codeReviewSummaries` the API returns.
+- **Marker:** `.prism/config.json` gets a `security` block (ids only); the dashboard's setup checklist shows a Security Agent column from it.
+- **No uninstall** yet: deleting AWS resources needs its own design.
+- **User docs:** [Security Agent Setup](../USER_GUIDE.md#security-agent-setup-enable-security).
+
 ## Planned
 
 ### Observe
 - **`version`:** prints the CLI version plus installed hooks, the reviewer and the codeburn status. Open: offline only, or check npm for updates?
 - **`enable codeburn`:** a new name for `bootstrapper setup-otel-sync`, which schedules `codeburn sync push`. Open: should `--attribution` stay on now that commit trailers are gone?
-- **`enable security`:** expected to wrap the existing Security Agent setup (`securityagent setup`). Open: confirm that meaning, and whether it belongs under Observe or Secure. Unlike the rest of Observe, it needs AWS credentials.
 - **`export otel --endpoint`:** sends usage to a team's own OTLP collector. Open: whether codeburn accepts a custom endpoint, and whether local codewatch results should be exported too.
 
 ### Secure (AWS Continuum)
@@ -93,6 +101,7 @@ None of the slide's commands. These ideas came up during design and were dropped
 | Running CI reviews on the developer's own tool | CI stays on kiro-cli because it is shared by the whole team. Only the local hook follows the developer's tool. |
 | Codex, Copilot CLI and Cursor reviewers in v1 | We started with Kiro and Claude Code. Each new tool is one adapter file. |
 | Keeping `enable security` as an alias for codewatch | That name is kept free for the slide's own `enable security`. |
+| An `enable security --uninstall` that deletes AWS resources | Deleting an agent space, code reviews or the scan bucket needs its own design and explicit sign-off. |
 
 ## Made obsolete
 
@@ -110,14 +119,14 @@ These existing commands get new names. The old names stay as deprecated aliases 
 | Old | New |
 |---|---|
 | `bootstrapper setup-otel-sync` | `enable codeburn` |
-| `securityagent setup` | `enable security` |
+| `securityagent setup` | `enable security` (done) |
 | `workshop perform-pen-test` | `security pentest` (workshop target only) |
 | `bedrock-protection scan-account` | `aws check` (Bedrock section) |
 
 ## Questions for the roadmap owner
 
 1. What is `install transformation-center`?
-2. Should `enable security` wrap the Security Agent setup, and does it belong under Observe or Secure?
+2. `enable security` now wraps the Security Agent setup (decided). Does it belong under Observe or Secure on the slide? It is the only Observe command that needs AWS credentials.
 3. Which Security Agent APIs back `design-review` and `threat-model`?
 4. How do we consume Startup Advisor's checks, and under what license?
 5. Should `aws recommend` be a fixed mapping or model-generated?

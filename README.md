@@ -95,6 +95,16 @@ prism-cli dashboard
 
 Starts a local web page with codewatch results for every repo it finds under your home directory (3 levels deep), per-commit results and a report for each scan, a codeburn usage summary, and a setup checklist. It listens on `127.0.0.1` only, behind a per-run token in the printed URL, is read-only, and makes no AWS calls. On a remote host, forward the port with `ssh -L <port>:127.0.0.1:<port>`. `prism-cli codewatch report` exports a scan report without the server. Details: [Local Dashboard](USER_GUIDE.md#local-dashboard).
 
+### Optional: AWS Security Agent scans in CI (enable security)
+
+```bash
+prism-cli enable security --dry-run    # the plan: every read, no changes
+prism-cli enable security              # shows the diff, asks, then sets it up
+prism-cli enable security --status     # read-only check
+```
+
+Sets up AWS Security Agent (Continuum) so the eval gate can scan each pull request. It deploys only the `PrismD1MetricsPipeline` stack with `enableSecurityAgent=true`, never `--all`, and only after printing a resource diff (IAM, network and public endpoint changes called out) and asking with the account and region named. It then creates or reuses the application, this repo's code review and the SSM parameter the gate reads. Re-running changes nothing when everything is in place. `--yes` approves for CI. `prism-cli securityagent setup` is now its deprecated alias. Details: [Security Agent Setup](USER_GUIDE.md#security-agent-setup-enable-security).
+
 ## Documentation
 
 | Guide | For | Contents |
