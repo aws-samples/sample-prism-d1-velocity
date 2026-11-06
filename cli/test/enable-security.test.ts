@@ -885,3 +885,16 @@ test('file-system errors get a code and syscall hint; a non-Error value still pr
   assert.match(describeUnexpectedError(fsErr, {})[1], /EACCES during open/);
   assert.deepEqual(describeUnexpectedError('plain string', {}), ['Error: plain string']);
 });
+
+test('paths containing cdk or .git do not pick the cdk or git hint', () => {
+  const gitPath = Object.assign(new Error("EACCES: permission denied, open '/repo/.git/config'"), { code: 'EACCES', syscall: 'open' });
+  assert.match(describeUnexpectedError(gitPath, {})[1], /File system error \(EACCES during open\)/);
+  let parse: Error;
+  try { JSON.parse('{x'); throw new Error('unreachable'); } catch (e) { parse = e as Error; }
+  parse!.message += ' in /tmp/cdk.out/PrismD1SecurityAgent.template.json (aws-cdk-lib)';
+  assert.match(describeUnexpectedError(parse!, {})[1], /not valid JSON/);
+  const noCdk = Object.assign(new Error('spawn /infra/node_modules/.bin/cdk ENOENT'), { code: 'ENOENT', syscall: 'spawn /infra/node_modules/.bin/cdk' });
+  assert.match(describeUnexpectedError(noCdk, {})[1], /Could not start a program \(ENOENT/);
+  assert.match(describeUnexpectedError(new Error('cdk deploy exited 1'), {})[1], /The CDK step failed/);
+  assert.match(describeUnexpectedError(new Error('fatal: not a git repository'), {})[1], /git command failed/);
+});

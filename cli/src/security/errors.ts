@@ -99,11 +99,15 @@ export function describeUnexpectedError(e: unknown, env: NodeJS.ProcessEnv = pro
   const lines = [`Error: ${firstLine}`];
   const msg = err.message || '';
   let hint = '';
+  // Most specific first: a parse or fs error whose message merely contains a
+  // path like cdk.out/... or .git/... must not get the cdk or git hint.
+  const spawned = syscall.startsWith('spawn');
   if (/Command failed: npm\b|\bnpm (ERR|error)\b/.test(msg)) hint = 'Installing the CDK app dependencies failed: check network access to the npm registry and that Node.js 22 is installed, then re-run.';
-  else if (/\bcdk\b/.test(msg)) hint = 'The CDK step failed: re-run with --dry-run to see the synth output, and check that the account is CDK-bootstrapped.';
-  else if (err instanceof SyntaxError || /JSON/.test(msg)) hint = 'A CDK template or an AWS response was not valid JSON; re-run, and report it if it repeats.';
-  else if (/\bgit\b/.test(msg)) hint = 'A git command failed: run prism-cli enable security from inside the repository.';
-  else if (syscall && code) hint = `File system or process error (${code} during ${syscall}): check the path exists and is writable.`;
+  else if (err instanceof SyntaxError || /\bJSON\b/.test(msg)) hint = 'A CDK template or an AWS response was not valid JSON; re-run, and report it if it repeats.';
+  else if (syscall && code && !spawned) hint = `File system error (${code} during ${syscall}): check the path exists and is writable.`;
+  else if (/(^|[\s:'"])cdk\b(?![.-])/.test(msg)) hint = 'The CDK step failed: re-run with --dry-run to see the synth output, and check that the account is CDK-bootstrapped.';
+  else if (/(^|[\s:'"])git\b(?![.-])/.test(msg)) hint = 'A git command failed: run prism-cli enable security from inside the repository.';
+  else if (syscall && code) hint = `Could not start a program (${code} during ${syscall}): check it is installed and on PATH.`;
   if (hint) lines.push(`  ${hint}`);
   if (env.PRISM_DEBUG === '1' && err.stack) lines.push(redact(err.stack));
   return lines;
