@@ -20,6 +20,8 @@ button { font:inherit; padding:4px 10px; border:1px solid var(--line); border-ra
 main { padding:16px 20px; display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
 section.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; min-width:0; }
 section.wide { grid-column: 1 / -1; }
+.sec-repo { border-top:1px solid var(--line); padding:10px 0; } .sec-repo:first-of-type { border-top:none; padding-top:0; } .sec-head { display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; overflow-wrap:anywhere; }
+.sec-pills { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; } ul.sec-findings { list-style:none; margin:4px 0 0; padding:0; } ul.sec-findings li { padding:6px 0; border-top:1px dashed var(--line); font-size:13px; overflow-wrap:anywhere; } .sec-title { font-weight:600; } ul.sec-findings code { white-space:normal; overflow-wrap:anywhere; }
 h2 { font-size:15px; margin:0 0 10px; } h3 { font-size:13px; margin:14px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
 .empty { color:var(--muted); padding:8px 0; } code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; background:var(--bg); padding:1px 4px; border-radius:4px; }
 .tablewrap { overflow-x:auto; }
@@ -291,8 +293,58 @@ function securityCell(sec) {
     sec.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, sec.fix)) : null);
 }
 
+/** Cached Security Agent code review results; the page only reads them. */
+const RISKS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFORMATIONAL', 'UNKNOWN'];
+const RISK_CLASS = { CRITICAL: 'sev-high', HIGH: 'sev-high', MEDIUM: 'sev-medium', LOW: 'sev-low' };
+/** A risk-level pill; colour follows the codewatch severity colours. */
+const riskPill = (level, label) => el('span', { class: 'pill ' + (RISK_CLASS[level] || 'fix') }, label);
+
+/** One column wide (fits beside Usage and Setup): a compact block per repo, findings as wrapping rows. */
 function securityPanel(sec) {
-  return el('section', { class: 'card' }, el('h2', {}, 'Security findings'), el('p', { class: 'empty' }, sec.status === 'coming-soon' ? ['Coming with ', el('code', {}, 'prism-cli security findings'), '.'] : txt(sec.message)));
+  const s = el('section', { class: 'card' }, el('h2', {}, 'Security findings'));
+  const rows = (sec && sec.repos) || [];
+  if (!rows.length) {
+    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
+    return s;
+  }
+  for (const r of rows) {
+    const counts = r.counts || {};
+    const b = el('div', { class: 'sec-repo' });
+    b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(r.name)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
+    b.append(el('div', { class: 'fix' },
+      (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + (r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched') + ' · job ' + txt(r.job_id).slice(0, 12)));
+    const pills = el('div', { class: 'sec-pills' });
+    if (r.pending) {
+      // Results are local: the page only knows the job was started, not whether it has finished since.
+      pills.append(pill('warn', 'review running'));
+      if (r.stale) pills.append(pill('skipped', 'stale?'));
+      b.append(pills, el('p', { class: 'note' }, r.stale ? 'Started over 2 h ago and not fetched yet; it has most likely finished. ' : '', 'Fetch the results with ', el('code', {}, (sec && sec.pending_hint) || 'prism-cli security findings'), '.'));
+      s.append(b);
+      continue;
+    }
+    if (r.status === 'error') pills.append(pill('error', txt(r.job_status).toLowerCase()));
+    else {
+      const shown = RISKS.filter((k) => (counts[k] || 0) > 0);
+      if (!shown.length) pills.append(pill('ok', 'no findings'));
+      for (const k of shown) pills.append(riskPill(k, counts[k] + ' ' + k.toLowerCase()));
+    }
+    b.append(pills);
+    if (r.reason) b.append(el('p', { class: 'note' }, txt(r.reason)));
+    if (r.status === 'error' && !r.findings.length) b.append(el('p', { class: 'empty' }, 'The job did not complete.'));
+    if (r.findings.length) {
+      const list = el('ul', { class: 'sec-findings' });
+      for (const f of r.findings) {
+        list.append(el('li', {},
+          riskPill(f.risk_level, txt(f.risk_level).toLowerCase()), ' ',
+          el('span', { class: 'sec-title' }, txt(f.title)),
+          el('div', { class: 'fix' }, el('code', {}, f.file ? f.file + (f.line ? ':' + f.line : '') : 'no location'), f.cwe ? ' · ' + txt(f.cwe) : '')));
+      }
+      b.append(list);
+    }
+    if (r.truncated) b.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings for all'));
+    s.append(b);
+  }
+  return s;
 }
 
 async function load() {

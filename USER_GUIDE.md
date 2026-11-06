@@ -653,7 +653,13 @@ When the global hooks are not installed and at least two repos are missing codew
 suggests covering them all with `prism-cli enable codewatch --global` (see
 [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)).
 
-**Security findings.** A placeholder for the planned `prism-cli security findings`.
+**Security findings.** The latest AWS Security Agent code review per repo, from the results
+`prism-cli security code-review` and `security findings` cache in `.prism/results/`: the job time, the
+scope (branch diff, whole repo, or fetched later), counts by risk level, and the findings with their
+file, line and CWE. A job that was started but not fetched yet shows `review running`, the time it
+started and the `prism-cli security findings` command. After 2 hours it is also marked `stale?`:
+the page cannot tell whether the job has finished since. With none cached, it points to `prism-cli
+security code-review`. The page reads only those files; it makes no AWS calls.
 
 Data is read when the page loads; the **Refresh** button reads it again.
 
@@ -1380,6 +1386,82 @@ After running, verify SSM parameters are populated:
 ```bash
 aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text
 ```
+
+### Running a Review from the CLI
+
+After `prism-cli enable security`, you can run the same Security Agent code review the eval gate
+runs, from your machine:
+
+```bash
+prism-cli security code-review                    # this branch's diff against its upstream
+prism-cli security code-review --full             # the whole repo at HEAD
+prism-cli security code-review --fail-on high     # exit 1 on a high or critical finding
+prism-cli security code-review --no-wait          # start it and come back later
+prism-cli security findings                       # the pending job's findings, else the latest job's
+prism-cli security findings --job <id> --wait     # a specific job, waiting if it is still running
+```
+
+`security code-review`:
+
+1. Prints a notice, then the same account, caller, region and credential block as `enable
+   security`, with the same credential chain and region rules.
+2. Finds the agent space and this repo's code review in SSM (`/prism/continuum/agent-space-id` and
+   `/prism/continuum/code-review-id/<repo-slug>`), the source of truth, because a file in the repo
+   could be committed by anyone. `.prism/security.local.json` is used only when SSM has no value,
+   only if git does not track it, and it says so; when the two disagree, SSM wins with a warning.
+   The legacy `security` block in `.prism/config.json` is never read here. With no IDs, it says to
+   run `prism-cli enable security` first and exits 1.
+3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
+   upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
+   changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
+4. Uploads to the scan bucket, skipping any upload whose object's ETag already matches. Both scopes
+   first refresh the code review's own source, `repo/<repo-slug>/latest.zip`, to `git archive
+   HEAD` and print `Review context: updated ... to HEAD <sha>`. A diff job reads that zip as the
+   code around the patch, so a stale zip would make it report code that no longer exists. The
+   Security Agent has no per-job source, so this is the zip CI diff jobs read too. A diff then
+   goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`. The result records the zip's commit as
+   `security.context_commit`.
+5. Starts the job and at once saves a **pending** result in `.prism/results/` with the job ID, the
+   scope and the commits. When the job ends, that same file is completed, so a wait that does not
+   finish loses nothing. Then it waits. It polls every 10 seconds, doubling up to 60, with a
+   one-line ticker on a terminal and plain lines otherwise. A failed poll (throttling, a network
+   error) is retried 3 times, after 2, 4 and 8 seconds.
+   - `--timeout <minutes>` (default 30): on timeout it prints the job ID and the `security findings
+     --job` command, and exits 2.
+   - Ctrl-C stops waiting but leaves the job running, prints the same hint, and exits 130.
+   - A poll that still fails, or fails on credentials or permissions, prints the error and the same
+     hint, and exits 1.
+   - In all three cases, and with `--no-wait`, the pending result stays for `security findings`.
+6. Prints the findings, grouped by risk level and then file: title, file:line, CWE when present,
+   and a short description. Then totals, our wall time and the service's own job duration.
+   Paths are repo-relative: the service's sandbox prefix (`.../source_code/code_sc-<id>/`) is
+   removed, and the result keeps the original as `raw_file`.
+7. Saves the result in `.prism/results/`, in the codewatch result format with `kind:
+   security-review`, `tool: security-agent`, the job ID, base, tip and scope.
+
+The uploads and starting the job are its only AWS writes. It exits 0 (report only, like
+codewatch) unless `--fail-on <critical|high|medium|low>` finds a finding at or above that level,
+which exits 1. A failed or stopped job exits 1 with its reason. `--json` prints only the result JSON
+on stdout, with progress on stderr.
+
+`security findings` is read-only. Without `--job`, it first looks for pending results in this repo
+for the current account, region and code review. It takes the newest and names any older ones.
+When that job has finished, it fetches the findings and completes the pending result, keeping its
+scope and commits. Only when nothing is pending does it ask the API for the latest job (saved with
+scope `unknown`). `--job <id>` fetches that job, and completes its pending result if there is
+one. `--severity <level>` hides lower levels. A job still running exits 2 with a note; `--wait`
+waits for it with the same poller.
+
+Both work on one repository: run them from its top level, or pass `--path <repo>`. A subdirectory
+is refused (the message names the top level), and so is a directory that is not a repository; they
+never walk up to an enclosing repo. Results are written under that top level. `--repo
+<host/owner/name>` is the repo id (not a path) the code review is named after, as in `enable
+security`.
+
+Both take `--profile`, `--region` and `--repo`, as `enable security` does. Besides the
+`enable security` read permissions, they need `securityagent:StartCodeReviewJob`,
+`BatchGetCodeReviewJobs`, `ListCodeReviewJobsForCodeReview`, `ListFindings` and `BatchGetFindings`,
+`s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
 
 ### Setup Script (Alternative)
 

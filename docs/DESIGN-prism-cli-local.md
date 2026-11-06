@@ -122,7 +122,7 @@ The local git-hook gate. See [enable codewatch: implementation](#enable-codewatc
      - **Print:** `@media print` gives a one-column layout, so the browser's Print, then Save as PDF, produces the report.
      - **Links:** each commit row's Review cell, the Last run time in the repo summary, and a per-repo "Scans" list of the last 20 reviews.
      - **CLI:** `prism-cli codewatch report [--repo <path>] [--id <result-id> | --commit <sha>] [--format md|html|json] [--output <file>]`, defaulting to the current repo, its latest review, Markdown and stdout. `html` is self-contained (inline CSS, no script).
-  4. **Security findings:** placeholder until `prism-cli security findings`.
+  4. **Security findings:** the cached `kind: security-review` results per repo (`cli/src/dashboard/security.ts`): the latest job, with a copy that knows its scope preferred over one `security findings` fetched; severity counts, up to 50 findings, job time and scope; an empty state pointing to `prism-cli security code-review`. A pending record shows `review running`, `started <time>` and the `prism-cli security findings` hint, plus `stale?` after 2 h (results are local, so the page cannot know the job's real state); a verdict for the same job beats a pending copy. The codewatch panel ignores these results.
   5. **Advise** (later): output of `aws check`.
 - **Open questions:**
   - codeburn's export schema (`codeburn.export.v2`, checked against 0.9.24): which versions do we support?
@@ -148,19 +148,27 @@ All of these call AWS and need credentials; none run in hooks.
 - **Reuses:** the agent-space lookup and SSM parameter convention in the CI gate (`/prism/continuum/code-review-id/<repo>`).
 - **Open questions:** Which Security Agent APIs back these (design review and threat model are not used anywhere in the repo yet)? What is the input: a spec under `specs/`, a design doc path, or a repo? Where do results go: `.prism/results/` with `kind: design-review`, or only the Security Agent console?
 
-### `security code-review` (reuse from CI)
-- **Reuses:** the Continuum steps in `prism-eval-gate-kiro.yml` (`create-code-review`, `start-code-review-job`, `batch-get-code-review-jobs`, `list-findings`), moved into TypeScript.
-- **Open questions:** Should it review the working branch diff (like pre-push) or the whole repo? Same fail-closed semantics as CI?
+### `security code-review` (built)
+- **Code:** `cli/src/security/review.ts`, `cli/src/commands/security/code-review.ts`.
+- **Reuses:** the CI gate's calls (`start-code-review-job` with `--diff-source {"s3Uri": ...}`, `batch-get-code-review-jobs`, `list-findings --code-review-job-id`), plus `batch-get-findings` for descriptions and code locations. It also reuses `enable security`'s region and credential resolution, identity block, redaction and error handler. **Which code review:** SSM (`agent-space-id` plus `code-review-id/<repo-slug>`) is the source of truth, since a repo file can be committed by anyone and would otherwise choose where code is uploaded and reviewed; an untracked `.prism/security.local.json` is a fallback only when SSM is empty (a tracked one is ignored, a mismatch warns and SSM wins), and the legacy `config.json` block is never read. The result records the service's job duration (`updatedAt - createdAt`) next to our wall time, and finding paths are repo-relative with the service's sandbox prefix stripped (`raw_file` keeps the original).
+- **Decided: synchronous.** It waits with backoff (10 s, doubling, 60 s cap) until `COMPLETED`, `FAILED` or `STOPPED`. `--timeout` (30 min) exits 2 and Ctrl-C exits 130, both with a `security findings --job <id>` hint; the job is never cancelled. `--no-wait` is the async escape hatch.
+- **Decided: a pending record first.** Right after `start-code-review-job` it writes a result with `status: pending` (job, code review, agent space, region, account, scope, base/tip/branch/upstream, start time). The end of the wait rewrites that same file, never a second one, so dashboard dedupe stays one file per job. Timeout, Ctrl-C, a failed poll or a closed terminal leave it pending for `security findings`.
+- **Decided: poll retries.** A failed `batch-get-code-review-jobs` is retried 3 times (2, 4, 8 s) unless it is about credentials, permissions, an old CLI or a missing job. The final failure prints the error and the fetch-later hint.
+- **Decided: scope.** The default is the branch diff `base...HEAD`, with the codewatch pre-push base (upstream, else `origin/HEAD`). `--full` starts the job without a diff source.
+- **Decided: refresh the review context.** A diff job reviews the patch with the code review's source asset (`repo/<slug>/latest.zip`) as context. `start-code-review-job` takes only `--diff-source` (AWS CLI 2.36: no per-job source), so both scopes upload `git archive HEAD` there before starting the job (skipped when the MD5 matches), and the result records `security.context_commit`. Without this, a live diff job reported a finding in code that existed only in an older zip. Trade-off: the asset is shared with CI, so it holds whichever HEAD reviewed last. The CI gate has the same stale-context gap for existing code reviews (it uploads the zip only when it first creates the code review); not changed here.
+- **Decided: exit codes.** It reports only (exit 0) by default; `--fail-on <level>` gives CI-style fail-closed use; a failed job exits 1.
+- **Writes:** the S3 uploads (the context zip and, for a diff, the patch; each skipped when the ETag equals the MD5), starting the job, and the local result. Nothing else.
 
 ### `security pentest` (reuse, guarded)
 - **Reuses:** `workshop perform-pen-test` (deploys sample-app, sets up Lambda + API Gateway, domain verification).
 - **Guard:** runs only against targets the customer owns and authorizes. The command requires the target to pass Security Agent domain verification and asks for explicit confirmation naming the target; there is no flag that skips verification.
 - **Open questions:** Beyond domain verification, what evidence of authorization is required (account ownership of the endpoint, a written scope)? Does the workshop variant stay a separate alias that targets sample-app only?
 
-### `security findings` (new)
-- **Reuses:** `list-findings` handling from the CI gate; the `Finding` type in `cli/src/codewatch/results.ts`.
-- **Proposal:** lists Continuum findings and local results in one table; `--json` for the dashboard.
-- **Open questions:** Cache findings locally for the dashboard (so it stays credential-free), and if so, for how long?
+### `security findings` (built)
+- **Code:** `cli/src/commands/security/findings.ts` (same module as `code-review`).
+- **Read-only.** Without `--job` it first completes the newest pending record for this account, region and code review (naming older ones), keeping its scope and commits; only with none pending does it take the latest job from the API (`list-code-review-jobs-for-code-review`, newest `createdAt`). `--job <id>` also completes that job's pending record if one exists. `--severity` and `--json` as before. A job still running exits 2; `--wait` reuses the poller.
+- **Decided: cache locally.** Each fetch writes a `security-review` result to `.prism/results/`, the file the dashboard reads, so the dashboard stays credential-free. It does not merge in codewatch results; those keep their own panel.
+- **Result shape:** the codewatch schema, with `kind: security-review`, `hook: manual` and `tool: security-agent`. Each finding's `severity` maps the risk level onto high/medium/low (critical and high -> high), and the finding also carries `risk_level`, `title`, `cwe` and `finding_id`. A `security` block holds the job ID, code review, agent space, region, account, context commit, scope (`diff`, `full`, or `unknown` when fetched later with no pending record), job status and counts per risk level. `status: pending` (security-review only) means started, no verdict yet; its `finished_at` equals `started_at` until completed.
 
 ## Advise (AWS account)
 

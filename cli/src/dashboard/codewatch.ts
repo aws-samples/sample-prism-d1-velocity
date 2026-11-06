@@ -159,7 +159,8 @@ function isBlock(r: PrismResult): boolean {
 const byTime = (a: PrismResult, b: PrismResult) => String(a.started_at).localeCompare(String(b.started_at));
 
 export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS, gitleaksAvailable = true): CodewatchPanel {
-  const entries = readResultEntries(repoRoot).filter((e) => e.result && typeof e.result.started_at === 'string');
+  // Security Agent reviews have their own panel; the codewatch panel is the git-hook gate only.
+  const entries = readResultEntries(repoRoot).filter((e) => e.result && typeof e.result.started_at === 'string' && e.result.kind !== 'security-review');
   const idOf = new Map(entries.map((e) => [e.result, e.id]));
   const all = entries.map((e) => e.result).sort(byTime);
   const latest = new Map<string, BranchLatest>();

@@ -37,6 +37,11 @@ function parseMarker(s: any): SecurityMarker | null {
   };
 }
 
+/** Only `.prism/security.local.json`, never the legacy config.json block. */
+export function readLocalMarker(repoRoot: string): SecurityMarker | null {
+  return readLocal(repoRoot);
+}
+
 function readLocal(repoRoot: string): SecurityMarker | null {
   try { return parseMarker(JSON.parse(readFileSync(resolve(repoRoot, MARKER_PATH), 'utf8'))); } catch { return null; }
 }

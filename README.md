@@ -105,6 +105,16 @@ prism-cli enable security --status     # read-only check
 
 Sets up AWS Security Agent (Continuum) so the eval gate can scan each pull request. It first says it will deploy AWS resources (a Security Agent space, an IAM service role and policies, an encrypted S3 scan bucket, SSM parameters) into the account your credentials point to, which may incur cost, and shows the account, caller, region and credential source. It uses the standard AWS credential chain and region unless you pass `--profile` or `--region`, and refuses when no region is set. It deploys only the Security Agent resources, in the standalone `PrismD1SecurityAgent` stack (or in the pipeline stack where an account already hosts them there), never `--all`, and only after printing a resource diff (IAM, network and public endpoint changes called out) and asking with the account and region named. It then creates or reuses the application, this repo's code review and the SSM parameter the gate reads. Re-running changes nothing when everything is in place. `--yes` approves for CI. `prism-cli securityagent setup` is now its deprecated alias. Details: [Security Agent Setup](USER_GUIDE.md#security-agent-setup-enable-security).
 
+Once it is set up, run a review from your machine without opening a PR:
+
+```bash
+prism-cli security code-review               # review this branch's diff, wait, print the findings
+prism-cli security code-review --full        # the whole repo at HEAD
+prism-cli security findings                  # the latest job's findings (read-only)
+```
+
+`code-review` uploads the snapshot (skipped when unchanged) and starts the job; those are its only AWS writes. It exits 0 unless you pass `--fail-on <level>`. Results are cached in `.prism/results/`, and the dashboard's Security findings panel shows them. Details: [Running a Review from the CLI](USER_GUIDE.md#running-a-review-from-the-cli).
+
 ## Documentation
 
 | Guide | For | Contents |

@@ -16,6 +16,7 @@ export function tildeHome(p: string, home: string): string {
   return p.startsWith(home + sep) ? '~' + p.slice(home.length) : p;
 }
 import { collectUsage, type CodeburnExport, type UsagePanel } from './usage.js';
+import { collectSecurity, type SecurityPanel } from './security.js';
 
 export const PAYLOAD_SCHEMA = 'prism.dashboard.v2';
 
@@ -105,7 +106,8 @@ export interface DashboardPayload {
   machine: { setup: CheckItem[]; secretScanning: SecretScanning; globalHooks: GlobalStatus };
   suggestions: Suggestion[];
   usage: UsagePanel;
-  security: { status: 'coming-soon'; message: string };
+  /** Cached Security Agent code review results (security-review), per repo. */
+  security: SecurityPanel;
 }
 
 export interface PayloadOptions extends DiscoverOptions {
@@ -177,6 +179,6 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     },
     suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),
     usage,
-    security: { status: 'coming-soon', message: 'Coming with prism-cli security findings.' },
+    security: collectSecurity(repos),
   };
 }

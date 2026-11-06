@@ -31,18 +31,54 @@ export interface Finding {
   file: string;
   line: number | null;
   message: string;
+  /** security-review only: the Security Agent risk level (CRITICAL ... UNKNOWN), finding title, CWE and id. */
+  risk_level?: string;
+  title?: string;
+  cwe?: string | null;
+  finding_id?: string;
+  /** security-review only: the path exactly as the service reported it (file is repo-relative). */
+  raw_file?: string;
 }
 
-/** `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code). */
-export type ResultKind = 'secrets' | 'review';
+/** `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code); `security-review` = an AWS Security Agent code review job. */
+export type ResultKind = 'secrets' | 'review' | 'security-review';
+
+/** security-review only: the job behind the result. */
+export interface SecurityReviewInfo {
+  job_id: string;
+  code_review_id: string;
+  agent_space_id: string;
+  region: string;
+  /** The AWS account the job ran in, so `security findings` only completes its own account's pending records. */
+  account?: string;
+  /** diff: the branch diff base...tip. full: the whole repo at tip. unknown: fetched later by `security findings`. */
+  scope: 'diff' | 'full' | 'unknown';
+  /**
+   * The commit the code review's source asset (repo/<slug>/latest.zip) held
+   * when the job started: the code a diff job reads around the patch. null
+   * when unknown (a job `security findings` fetched with no pending record).
+   */
+  context_commit?: string | null;
+  job_status: string;
+  /** Findings per Security Agent risk level. */
+  counts: Record<string, number>;
+  /** The service's job timestamps, and updatedAt - createdAt (queue plus run time), when it reported them. */
+  service_created_at?: string | null;
+  service_updated_at?: string | null;
+  service_duration_s?: number | null;
+  /** Our wall time from starting the job to seeing it finish (code-review only; includes polling). */
+  wall_s?: number | null;
+}
 export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual';
 /**
  * ok        ran, nothing found
  * findings  ran, found something
  * error     could not produce a verdict (tool missing, crashed, unparseable output)
  * skipped   did not run: no changes to review, or the hook was bypassed (`--no-verify`)
+ * pending   security-review only: the job was started and has no verdict yet.
+ *           finished_at equals started_at until the record is completed in place.
  */
-export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped';
+export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped' | 'pending';
 
 export interface PrismResult {
   schema_version: typeof RESULT_SCHEMA_VERSION;
@@ -76,6 +112,8 @@ export interface PrismResult {
    * consumers (the dashboard, CI) match on exactly: see REASON_*.
    */
   reason: string | null;
+  /** Present on kind security-review. */
+  security?: SecurityReviewInfo;
 }
 
 export type ResultInit = Omit<PrismResult, 'schema_version' | 'tool_version' | 'model' | 'commit' | 'tree' | 'branch' | 'upstream' | 'base' | 'summary' | 'score' | 'reason' | 'findings'>
@@ -139,13 +177,18 @@ export function ensureResultsExcluded(repoRoot: string): boolean {
   return true;
 }
 
-export function writeResult(repoRoot: string, r: PrismResult): string {
+/**
+ * `id` (a ResultEntry id) rewrites that existing file in place instead of
+ * naming a new one: how a pending security-review record is completed.
+ */
+export function writeResult(repoRoot: string, r: PrismResult, id?: string): string {
+  if (id !== undefined && !/^[A-Za-z0-9_-]{1,200}$/.test(id)) throw new Error(`invalid result id: ${id}`);
   const dir = resolve(repoRoot, RESULTS_DIR);
   if (!fileExists(dir)) {
     try { ensureResultsExcluded(repoRoot); } catch { /* never fail a write over this */ }
   }
   mkdirSync(dir, { recursive: true });
-  const dest = join(dir, resultFileName(r));
+  const dest = join(dir, id !== undefined ? `${id}.json` : resultFileName(r));
   const tmp = `${dest}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(r, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, dest);

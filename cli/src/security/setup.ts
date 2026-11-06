@@ -80,7 +80,7 @@ export interface Deps {
   now(): Date;
 }
 
-class Abort extends Error {}
+export class Abort extends Error {}
 
 // ---------------------------------------------------------------------------
 // Exact AWS calls. Dry-run prints these; apply runs them. One builder each so
@@ -115,9 +115,9 @@ export function isWriteCall(args: string[]): boolean {
 // Read helpers
 // ---------------------------------------------------------------------------
 /** Options after region resolution: every AWS and CDK call uses this region. */
-type Resolved = SecurityOptions & { region: string; regionSource: string };
+export type Resolved = SecurityOptions & { region: string; regionSource: string };
 
-interface Ctx {
+export interface Ctx {
   opts: Resolved;
   deps: Deps;
   cliVersion: string | null;
@@ -125,7 +125,7 @@ interface Ctx {
 }
 
 /** Runs a call; on failure either returns the result (expected codes) or aborts with an explained message. */
-function call(ctx: Ctx, args: string[], expected: string[] = []): AwsResult {
+export function call(ctx: Ctx, args: string[], expected: string[] = []): AwsResult {
   if (ctx.readOnly && isWriteCall(args)) throw new Error(`internal: write call in read-only mode: ${args.slice(0, 2).join(' ')}`);
   const r = ctx.deps.aws(args, ctx.opts.region);
   if (r.ok) return r;
@@ -133,7 +133,7 @@ function call(ctx: Ctx, args: string[], expected: string[] = []): AwsResult {
   throw new Abort(explainAwsError(args, r.raw, ctx.cliVersion).message);
 }
 
-function getParam(ctx: Ctx, name: string): string | null {
+export function getParam(ctx: Ctx, name: string): string | null {
   const r = call(ctx, ['ssm', 'get-parameter', '--name', name], ['ParameterNotFound']);
   return r.ok ? (r.json?.Parameter?.Value ?? null) : null;
 }
@@ -153,7 +153,7 @@ export function roleExists(ctx: Ctx, roleArn: string): boolean | null {
 
 const roleName = (arn: string) => arn.split('/').pop() || arn;
 
-interface Identity { account: string; arn: string; alias: string | null }
+export interface Identity { account: string; arn: string; alias: string | null }
 
 function identity(ctx: Ctx): Identity {
   const r = call(ctx, ['sts', 'get-caller-identity']);
@@ -201,7 +201,7 @@ export const DEPLOY_NOTICE = [
   'parameters. These may incur cost. It shows the account, a diff and the plan, and asks before any change.',
 ];
 
-function printIdentity(ctx: Ctx, id: Identity): void {
+export function printIdentity(ctx: Ctx, id: Identity): void {
   const { deps, opts } = ctx;
   deps.log(`Account:     ${accountLabel(id)}`);
   deps.log(`Caller:      ${id.arn || 'unknown'}`);
@@ -211,16 +211,22 @@ function printIdentity(ctx: Ctx, id: Identity): void {
 
 export interface RepoCtx { root: string; id: string; slug: string; title: string; param: string; zipKey: string }
 
-/** The repo whose code review this run manages, or a reason it cannot. */
-export function resolveRepo(opts: SecurityOptions, deps: Deps): RepoCtx | { error: string } {
-  const top = deps.git(['rev-parse', '--show-toplevel']);
+/**
+ * The repo whose code review this run manages, or a reason it cannot.
+ * `root`, when given, is an already-checked repository top level: every git
+ * call runs with `-C <root>` (the security commands). Without it the repo is
+ * found from the working directory, walking up (enable security, unchanged).
+ */
+export function resolveRepo(opts: SecurityOptions, deps: Deps, root?: string): RepoCtx | { error: string } {
+  const at = root ? ['-C', root] : [];
+  const top = root ? { ok: true, stdout: root, stderr: '' } : deps.git(['rev-parse', '--show-toplevel']);
   if (!top.ok) return { error: 'not inside a git repository, so the per-repo code review is skipped (run from the repo to set it up)' };
   let id: string | null;
   if (opts.repo) {
     if (!/^[A-Za-z0-9.-]+(\/[A-Za-z0-9._-]+)+$/.test(opts.repo)) return { error: `--repo must look like github.com/owner/name, got "${opts.repo}"` };
     id = opts.repo;
   } else {
-    const remote = deps.git(['remote', 'get-url', 'origin']);
+    const remote = deps.git([...at, 'remote', 'get-url', 'origin']);
     id = remote.ok ? repoIdFromRemote(remote.stdout) : null;
     if (!id) return { error: 'this repo has no usable "origin" remote; pass --repo github.com/<owner>/<name> (the name the CI eval gate uses)' };
   }
@@ -373,7 +379,7 @@ interface Service {
   items: PlanItem[];
 }
 
-function md5(path: string): string {
+export function md5(path: string): string {
   return createHash('md5').update(readFileSync(path)).digest('hex');
 }
 
@@ -554,7 +560,7 @@ function applyService(ctx: Ctx, svc: Service, repo: RepoCtx | { error: string },
   return { applicationId, codeReviewId };
 }
 
-function preflight(ctx: Ctx): Identity {
+export function preflight(ctx: Ctx): Identity {
   const v = cliVersionOk(ctx.cliVersion);
   if (!v.ok) throw new Abort(`prism-cli enable security needs AWS CLI ${MIN_AWS_CLI_TEXT} or later for the securityagent commands (found ${v.version}). Install it from https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html`);
   return identity(ctx);
