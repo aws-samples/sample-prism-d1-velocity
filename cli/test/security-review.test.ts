@@ -171,7 +171,7 @@ test('code-review: notice first, diff scope, upload, start, poll with backoff, f
     assert.equal(h.lines[0], CODE_REVIEW_NOTICE);
     assert.match(CODE_REVIEW_NOTICE, /only AWS writes/);
     assert.deepEqual(h.sleeps, [POLL_FIRST_MS, 20_000, 40_000, POLL_MAX_MS, POLL_MAX_MS, POLL_MAX_MS]);
-    assert.deepEqual(h.writes(), ['s3api put-object', 'securityagent start-code-review-job']);
+    assert.deepEqual(h.writes(), ['s3api put-object', 's3api put-object', 'securityagent start-code-review-job']);
     const start = h.calls.find((c) => c[1] === 'start-code-review-job')!;
     assert.deepEqual(JSON.parse(arg(start, '--diff-source')), { s3Uri: `s3://${BUCKET}/diffs/${SLUG}/local/${TIP.slice(0, 12)}-${BASE.slice(0, 12)}.patch` });
     assert.ok(h.gitCalls.some((g) => g.includes(`${BASE}...${TIP}`)), 'diff of base...tip');
@@ -198,7 +198,7 @@ test('code-review: the result file uses the codewatch schema with kind security-
     assert.equal(r.base, BASE);
     assert.equal(r.upstream, 'origin/main');
     assert.deepEqual({ ...r.security, counts: undefined }, {
-      job_id: 'job-1', code_review_id: 'cr-1', agent_space_id: 'as-1', region: REGION, account: ACCOUNT, scope: 'diff', job_status: 'COMPLETED', counts: undefined,
+      job_id: 'job-1', code_review_id: 'cr-1', agent_space_id: 'as-1', region: REGION, account: ACCOUNT, scope: 'diff', context_commit: TIP, job_status: 'COMPLETED', counts: undefined,
       service_created_at: '2026-11-07T10:00:00Z', service_updated_at: '2026-11-07T10:05:00Z', service_duration_s: 300, wall_s: 10,
     });
     assert.deepEqual(r.security.counts, { CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 1, INFORMATIONAL: 0, UNKNOWN: 0 });
@@ -249,7 +249,7 @@ test('code-review: Ctrl-C stops waiting, leaves the job running, exits 130', asy
     assert.equal(await securityCodeReview(cr(), h.deps), 130);
     assert.match(h.out(), /Stopped waiting\. The job keeps running in AWS\. Fetch its results later with: prism-cli security findings --job job-1/);
     assert.equal(h.calls.filter((c) => c[1] === 'batch-get-code-review-jobs').length, 1, 'no poll after Ctrl-C');
-    assert.deepEqual(h.writes(), ['s3api put-object', 'securityagent start-code-review-job'], 'nothing stops or cancels the job');
+    assert.deepEqual(h.writes(), ['s3api put-object', 's3api put-object', 'securityagent start-code-review-job'], 'nothing stops or cancels the job');
   } finally { h.cleanup(); }
 });
 
@@ -278,14 +278,50 @@ test('--full reviews the repo at HEAD: zip to the code review asset, no diff sou
   } finally { h.cleanup(); }
 });
 
-test('an identical snapshot skips the upload', async () => {
-  const s = state(); s.objects[`diffs/${SLUG}/local/${TIP.slice(0, 12)}-${BASE.slice(0, 12)}.patch`] = md5(PATCH);
+test('an identical snapshot skips the upload (patch and review context)', async () => {
+  const s = state();
+  s.objects[`diffs/${SLUG}/local/${TIP.slice(0, 12)}-${BASE.slice(0, 12)}.patch`] = md5(PATCH);
+  s.objects[`repo/${SLUG}/latest.zip`] = md5(ZIP);
   const h = harness(s);
   try {
     assert.equal(await securityCodeReview(cr(), h.deps), 0);
     assert.deepEqual(h.writes(), ['securityagent start-code-review-job']);
-    assert.match(h.out(), /is already up to date; upload skipped/);
+    assert.match(h.out(), /patch is already up to date; upload skipped/);
+    assert.match(h.out(), /Review context: s3:\/\/.*\/latest\.zip is already HEAD aaaaaaaaaaaa; upload skipped/);
   } finally { h.cleanup(); }
+});
+
+test('a diff job refreshes the review context (latest.zip) to HEAD first and records context_commit', async () => {
+  const s = state(); s.objects[`repo/${SLUG}/latest.zip`] = md5('stale zip of an older commit');
+  const h = harness(s);
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 0);
+    const puts = h.calls.filter((c) => c[1] === 'put-object').map((c) => arg(c, '--key'));
+    assert.deepEqual(puts, [`repo/${SLUG}/latest.zip`, `diffs/${SLUG}/local/${TIP.slice(0, 12)}-${BASE.slice(0, 12)}.patch`]);
+    assert.equal(s.objects[`repo/${SLUG}/latest.zip`], md5(ZIP), 'context is HEAD now');
+    const putAt = h.calls.findIndex((c) => c[1] === 'put-object');
+    assert.ok(putAt < h.calls.findIndex((c) => c[1] === 'start-code-review-job'), 'refreshed before the job starts');
+    assert.ok(h.gitCalls.some((g) => g.includes('archive') && g.includes('HEAD')));
+    assert.match(h.out(), /Review context: updated s3:\/\/.*\/repo\/github\.com-acme-widgets\/latest\.zip to HEAD aaaaaaaaaaaa/);
+    const [r] = h.results();
+    assert.equal(r.security.scope, 'diff');
+    assert.equal(r.security.context_commit, TIP);
+  } finally { h.cleanup(); }
+});
+
+test('context_commit: kept when findings completes a pending record, null for a job fetched without one', async () => {
+  const h = harness(state({ jobs: [{ codeReviewJobId: 'job-api', status: 'COMPLETED', createdAt: '2026-11-08T00:00:00Z' }] }));
+  try {
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
+    assert.equal(h.results()[0].security.context_commit, TIP, 'pending records it');
+    assert.equal(await securityFindings(fo(), h.deps), 0);
+    assert.equal(h.results()[0].security.context_commit, TIP);
+  } finally { h.cleanup(); }
+  const h2 = harness(state({ jobs: [{ codeReviewJobId: 'job-api', status: 'COMPLETED', createdAt: '2026-11-08T00:00:00Z' }] }));
+  try {
+    assert.equal(await securityFindings(fo(), h2.deps), 0);
+    assert.equal(h2.results()[0].security.context_commit, null);
+  } finally { h2.cleanup(); }
 });
 
 test('an empty diff starts nothing', async () => {
@@ -294,6 +330,7 @@ test('an empty diff starts nothing', async () => {
     assert.equal(await securityCodeReview(cr(), h.deps), 0);
     assert.match(h.out(), /No changes against origin\/main; nothing to review\./);
     assert.deepEqual(h.writes(), []);
+    assert.ok(!h.gitCalls.some((g) => g.includes('archive')), 'no context zip for an empty diff');
   } finally { h.cleanup(); }
 });
 
@@ -676,7 +713,7 @@ test('findings with no --job completes the pending record and keeps its scope an
     assert.equal(r.status, 'findings');
     assert.equal(r.findings.length, 3);
     assert.deepEqual([r.security.job_id, r.security.scope, r.commit, r.base, r.upstream, r.started_at], ['job-1', 'diff', TIP, BASE, 'origin/main', '2026-11-07T10:00:00.000Z']);
-    assert.deepEqual(h.writes(), ['s3api put-object', 'securityagent start-code-review-job'], 'findings itself writes nothing in AWS');
+    assert.deepEqual(h.writes(), ['s3api put-object', 's3api put-object', 'securityagent start-code-review-job'], 'findings itself writes nothing in AWS');
   } finally { h.cleanup(); }
 });
 

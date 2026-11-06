@@ -1414,9 +1414,13 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
 3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
    upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
    changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
-4. Uploads the snapshot to the scan bucket, skipping the upload when the object's ETag already
-   matches. A diff goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`; `--full` refreshes the code
-   review's own source, `repo/<repo-slug>/latest.zip`.
+4. Uploads to the scan bucket, skipping any upload whose object's ETag already matches. Both scopes
+   first refresh the code review's own source, `repo/<repo-slug>/latest.zip`, to `git archive
+   HEAD` and print `Review context: updated ... to HEAD <sha>`. A diff job reads that zip as the
+   code around the patch, so a stale zip would make it report code that no longer exists. The
+   Security Agent has no per-job source, so this is the zip CI diff jobs read too. A diff then
+   goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`. The result records the zip's commit as
+   `security.context_commit`.
 5. Starts the job and at once saves a **pending** result in `.prism/results/` with the job ID, the
    scope and the commits. When the job ends, that same file is completed, so a wait that does not
    finish loses nothing. Then it waits. It polls every 10 seconds, doubling up to 60, with a
@@ -1435,7 +1439,7 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
 7. Saves the result in `.prism/results/`, in the codewatch result format with `kind:
    security-review`, `tool: security-agent`, the job ID, base, tip and scope.
 
-The snapshot upload and starting the job are its only AWS writes. It exits 0 (report only, like
+The uploads and starting the job are its only AWS writes. It exits 0 (report only, like
 codewatch) unless `--fail-on <critical|high|medium|low>` finds a finding at or above that level,
 which exits 1. A failed or stopped job exits 1 with its reason. `--json` prints only the result JSON
 on stdout, with progress on stderr.

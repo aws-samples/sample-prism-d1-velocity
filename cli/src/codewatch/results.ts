@@ -53,6 +53,12 @@ export interface SecurityReviewInfo {
   account?: string;
   /** diff: the branch diff base...tip. full: the whole repo at tip. unknown: fetched later by `security findings`. */
   scope: 'diff' | 'full' | 'unknown';
+  /**
+   * The commit the code review's source asset (repo/<slug>/latest.zip) held
+   * when the job started: the code a diff job reads around the patch. null
+   * when unknown (a job `security findings` fetched with no pending record).
+   */
+  context_commit?: string | null;
   job_status: string;
   /** Findings per Security Agent risk level. */
   counts: Record<string, number>;

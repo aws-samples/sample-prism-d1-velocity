@@ -348,6 +348,8 @@ function toSeverity(risk: string): Severity {
 interface ResultBase {
   setup: Setup; region: string; account?: string; scope: 'diff' | 'full' | 'unknown';
   tip?: string | null; base?: string | null; branch?: string | null; upstream?: string | null;
+  /** The commit the code review's source asset held for this job; null when not known (a job fetched with no pending record). */
+  contextCommit?: string | null;
   /** When we started the job (code-review) or the pending record's start; default: the job's createdAt. */
   startedAt?: string;
 }
@@ -360,7 +362,7 @@ export function pendingResult(o: ResultBase & { job: JobInfo; startedAt: string 
     started_at: o.startedAt, finished_at: o.startedAt,
     security: {
       job_id: o.job.codeReviewJobId, code_review_id: o.setup.codeReviewId, agent_space_id: o.setup.agentSpaceId,
-      region: o.region, account: o.account, scope: o.scope, job_status: o.job.status, counts: {},
+      region: o.region, account: o.account, scope: o.scope, job_status: o.job.status, counts: {}, context_commit: o.contextCommit ?? null,
       service_created_at: o.job.createdAt ?? null, service_updated_at: null, service_duration_s: null, wall_s: null,
     },
   });
@@ -374,7 +376,7 @@ function scopeText(r: PrismResult): string {
 
 /** The fields of a pending record that its completion keeps. */
 function fromPending(p: PrismResult): Omit<ResultBase, 'setup' | 'region' | 'account'> {
-  return { scope: p.security!.scope, tip: p.commit, base: p.base, branch: p.branch, upstream: p.upstream, startedAt: p.started_at };
+  return { scope: p.security!.scope, tip: p.commit, base: p.base, branch: p.branch, upstream: p.upstream, contextCommit: p.security!.context_commit ?? null, startedAt: p.started_at };
 }
 
 /**
@@ -412,7 +414,7 @@ export function toResult(o: ResultBase & {
     reason: ok ? null : `job ${o.job.status}${o.job.reason ? `: ${redact(o.job.reason)}` : ''}`,
     security: {
       job_id: o.job.codeReviewJobId, code_review_id: o.setup.codeReviewId, agent_space_id: o.setup.agentSpaceId,
-      region: o.region, account: o.account, scope: o.scope, job_status: o.job.status, counts,
+      region: o.region, account: o.account, scope: o.scope, job_status: o.job.status, counts, context_commit: o.contextCommit ?? null,
       service_created_at: o.job.createdAt ?? null, service_updated_at: o.job.updatedAt ?? null,
       service_duration_s: serviceSeconds(o.job), wall_s: o.wallS ?? null,
     },
@@ -517,7 +519,16 @@ export async function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin
 // Scope and upload
 // ---------------------------------------------------------------------------
 
-interface Scope { scope: 'diff' | 'full'; tip: string; base: string | null; upstream: string | null; branch: string | null; file: string; key: string; empty: boolean }
+interface Snapshot { file: string; key: string }
+/**
+ * `context` is `git archive HEAD` for the code review's own source asset
+ * (repo/<slug>/latest.zip). A diff job reads it as the code around the patch,
+ * and start-code-review-job has no per-job source override (AWS CLI 2.36), so
+ * both scopes refresh it: otherwise a diff job reviews against whatever HEAD
+ * last ran --full or CI's first setup, and reports code that no longer exists.
+ * `diff` is the patch for a diff job.
+ */
+interface Scope { scope: 'diff' | 'full'; tip: string; base: string | null; upstream: string | null; branch: string | null; context: Snapshot; diff: Snapshot | null; empty: boolean }
 
 function git(ctx: Ctx, repo: RepoCtx, args: string[]): string | null {
   const r = ctx.deps.git(['-C', repo.root, ...args]);
@@ -544,23 +555,26 @@ function buildScope(ctx: Ctx, repo: RepoCtx, full: boolean): Scope {
   if (!tip) throw new Abort('Could not read HEAD; is this a repository with at least one commit?');
   const branch = git(ctx, repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const dir = ctx.deps.makeTempDir();
-  if (full) {
-    const file = join(dir, 'repo.zip');
-    if (!ctx.deps.git(['-C', repo.root, 'archive', 'HEAD', '--format=zip', '-o', file]).ok) throw new Abort('git archive HEAD failed.');
-    return { scope: 'full', tip, base: null, upstream: null, branch, file, key: repoZipKey(repo.slug), empty: false };
-  }
+  const zip = join(dir, 'repo.zip');
+  const archive = () => {
+    // A zip of one commit is byte-identical run to run (file times are the commit time), so the MD5 skip works.
+    if (!ctx.deps.git(['-C', repo.root, 'archive', 'HEAD', '--format=zip', '-o', zip]).ok) throw new Abort('git archive HEAD failed.');
+    return { file: zip, key: repoZipKey(repo.slug) };
+  };
+  if (full) return { scope: 'full', tip, base: null, upstream: null, branch, context: archive(), diff: null, empty: false };
   const { base, upstream } = resolveDiffBase(ctx, repo);
   // The API requires a .patch object. --output writes straight to the file, so a large diff never passes through a buffer.
   const file = join(dir, 'changes.patch');
   if (!ctx.deps.git(['-C', repo.root, 'diff', '--no-color', '--no-ext-diff', `--output=${file}`, `${base}...${tip}`]).ok) throw new Abort(`git diff ${upstream}...HEAD failed.`);
   let size = 0;
   try { size = statSync(file).size; } catch { throw new Abort('git diff wrote no patch file.'); }
-  const key = `diffs/${repo.slug}/local/${tip.slice(0, 12)}-${base.slice(0, 12)}.patch`;
-  return { scope: 'diff', tip, base, upstream, branch, file, key, empty: size === 0 };
+  const diff = { file, key: `diffs/${repo.slug}/local/${tip.slice(0, 12)}-${base.slice(0, 12)}.patch` };
+  if (size === 0) return { scope: 'diff', tip, base, upstream, branch, context: { file: '', key: repoZipKey(repo.slug) }, diff, empty: true };
+  return { scope: 'diff', tip, base, upstream, branch, context: archive(), diff, empty: false };
 }
 
-/** Uploads the snapshot unless the object already has the same MD5. Returns whether it uploaded. */
-function upload(ctx: Ctx, bucket: string, s: Scope): boolean {
+/** Uploads a snapshot unless the object already has the same MD5. Returns whether it uploaded. */
+function upload(ctx: Ctx, bucket: string, s: Snapshot): boolean {
   const sum = md5(s.file);
   const head = call(ctx, ['s3api', 'head-object', '--bucket', bucket, '--key', s.key], ['404', 'NotFound', 'NoSuchKey']);
   if (head.ok && String(head.json?.ETag || '').replace(/"/g, '') === sum) return false;
@@ -572,7 +586,7 @@ function upload(ctx: Ctx, bucket: string, s: Scope): boolean {
 // Commands
 // ---------------------------------------------------------------------------
 
-export const CODE_REVIEW_NOTICE = 'prism-cli security code-review uploads a snapshot of your changes (or, with --full, the repo at HEAD) to the Security Agent scan bucket and starts a code review job in the AWS account your credentials point to. Those are its only AWS writes; it may incur cost. The result is saved to .prism/results/.';
+export const CODE_REVIEW_NOTICE = 'prism-cli security code-review uploads the repo at HEAD as the code review\'s source (repo/<slug>/latest.zip, which CI reviews also read) and, for a branch diff, a patch of your changes to the Security Agent scan bucket, and starts a code review job in the AWS account your credentials point to. Those are its only AWS writes; it may incur cost. The result is saved to .prism/results/.';
 
 /** A FAILED / STOPPED job: saves the error result (in place over `id` when given) and prints why. Exit 1. */
 function saveFailed(ctx: Ctx, json: boolean, result: PrismResult, job: JobInfo, repo: RepoCtx, id?: string): number {
@@ -622,19 +636,23 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
       say(`No changes against ${s.upstream}; nothing to review.`);
       return 0;
     }
-    say(upload(ctx, bucket, s) ? `Uploaded s3://${bucket}/${s.key}` : `s3://${bucket}/${s.key} is already up to date; upload skipped`);
+    const ctxUri = `s3://${bucket}/${s.context.key}`;
+    say(upload(ctx, bucket, s.context)
+      ? `Review context: updated ${ctxUri} to HEAD ${s.tip.slice(0, 12)}`
+      : `Review context: ${ctxUri} is already HEAD ${s.tip.slice(0, 12)}; upload skipped`);
+    if (s.diff) say(upload(ctx, bucket, s.diff) ? `Uploaded s3://${bucket}/${s.diff.key}` : `s3://${bucket}/${s.diff.key} is already up to date; upload skipped`);
 
     const startedAt = deps.now().getTime();
     const start = call(ctx, [
       'securityagent', 'start-code-review-job', '--agent-space-id', setup.agentSpaceId, '--code-review-id', setup.codeReviewId,
-      // shortcut: --full reviews the code review's own source asset (repo/<slug>/latest.zip, just refreshed); no diff source.
-      ...(s.scope === 'diff' ? ['--diff-source', JSON.stringify({ s3Uri: `s3://${bucket}/${s.key}` })] : []),
+      // --full reviews the code review's own source asset (just refreshed); a diff job reviews the patch with that asset as context.
+      ...(s.diff ? ['--diff-source', JSON.stringify({ s3Uri: `s3://${bucket}/${s.diff.key}` })] : []),
     ]);
     const started = toJob(start.json);
     if (!started.codeReviewJobId) throw new Abort('start-code-review-job returned no codeReviewJobId.');
     const job = started.status === 'UNKNOWN' ? { ...started, status: 'IN_PROGRESS' } : started;
     say(`Started job ${job.codeReviewJobId}`);
-    const kept = { setup, region: ctx.opts.region, account: id.account, scope: s.scope, tip: s.tip, base: s.base, branch: s.branch, upstream: s.upstream, startedAt: new Date(startedAt).toISOString() };
+    const kept = { setup, region: ctx.opts.region, account: id.account, scope: s.scope, tip: s.tip, base: s.base, branch: s.branch, upstream: s.upstream, contextCommit: s.tip, startedAt: new Date(startedAt).toISOString() };
     // Written before any wait, and completed in place below, so a lost wait (timeout, Ctrl-C, a poll error, a closed terminal) loses nothing.
     let pendingId: string | undefined;
     try {
