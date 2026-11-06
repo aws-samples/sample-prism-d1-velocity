@@ -5,7 +5,7 @@
  */
 import { collectCodewatch, combineSecretScanning, type CodewatchPanel, type SecretScanning } from './codewatch.js';
 import { discoverRepos, type DiscoverOptions } from './repos.js';
-import { codewatchSetup, GLOBAL_FORCE_CMD, GLOBAL_INSTALL_CMD, machineChecks, type CheckItem, type CodewatchSetup, type MachineDeps } from './setup.js';
+import { codewatchSetup, GLOBAL_FORCE_CMD, GLOBAL_INSTALL_CMD, machineChecks, securitySetup, type CheckItem, type CodewatchSetup, type MachineDeps, type SecuritySetup } from './setup.js';
 import { globalStatus, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { homedir } from 'node:os';
@@ -26,6 +26,8 @@ export interface RepoPayload {
   hasPrism: boolean;
   codewatch: CodewatchPanel;
   setup: CodewatchSetup;
+  /** Security Agent, from the enable security marker. */
+  security: SecuritySetup;
 }
 
 /** One row of the setup table. */
@@ -39,6 +41,8 @@ export interface SetupRow {
   fix: string;
   /** Global hooks cover this repo. */
   global: boolean;
+  /** Security Agent row for this repo. */
+  security: SecuritySetup;
   /** Shown inside the collapsed "repos without codewatch" group: missing or opted out, and not the current repo. */
   collapsed: boolean;
 }
@@ -139,10 +143,12 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     hasPrism: r.hasPrism,
     codewatch: collectCodewatch(r.path, opts.trendRuns, gitleaksAvailable),
     setup: codewatchSetup(r.path, { pathEnv: opts.pathEnv, global: g }),
+    security: securitySetup(r.path),
   }));
   const setupRows = sortSetupRows(repos.map((r) => ({
     name: r.name, path: r.path, current: r.current, status: r.setup.status, reviewer: r.setup.reviewer, detail: r.setup.detail, fix: r.setup.fix,
     global: r.setup.global,
+    security: r.security,
     // Bypassed repos (warn) need attention, so they stay visible.
     collapsed: !r.current && (r.setup.status === 'missing' || r.setup.status === 'opted-out'),
   })));
