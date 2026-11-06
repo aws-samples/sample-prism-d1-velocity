@@ -15,8 +15,8 @@
  * none. Results go to .prism/results/ with kind security-review, so the
  * dashboard can show them without credentials.
  */
-import { statSync } from 'node:fs';
-import { join } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { makeResult, writeResult, type Finding, type PrismResult, type Severity } from '../codewatch/results.js';
 import { redact } from './errors.js';
 import { readSecurityMarker } from './marker.js';
@@ -59,9 +59,13 @@ export interface ReviewDeps extends Deps {
   err(line?: string): void;
   /** The --json document (stdout). */
   out(text: string): void;
+  /** Working directory, for the repo-root check when there is no --path. */
+  cwd(): string;
 }
 
 export interface CodeReviewOptions extends SecurityOptions {
+  /** Repository top level (default: the working directory, which must be the top level). */
+  path?: string;
   full?: boolean;
   /** Minutes. */
   timeout?: string | number;
@@ -72,6 +76,7 @@ export interface CodeReviewOptions extends SecurityOptions {
 }
 
 export interface FindingsOptions extends SecurityOptions {
+  path?: string;
   job?: string;
   latest?: boolean;
   severity?: string;
@@ -133,8 +138,32 @@ function begin(input: SecurityOptions, deps: Deps, readOnly: boolean, say: (l?: 
   return { opts, deps: { ...deps, log: say }, cliVersion: deps.awsVersion(), readOnly };
 }
 
-function needRepo(ctx: Ctx): RepoCtx {
-  const repo = resolveRepo(ctx.opts, ctx.deps);
+const real = (p: string): string => { try { return realpathSync(p); } catch { return resolve(p); } };
+
+/**
+ * The repo these commands work on, strictly: `--path <dir>`, or the working
+ * directory, must be the top level of a git repository (compared by realpath,
+ * so a symlinked root is fine). A subdirectory or a non-repo is an error, never
+ * a walk up to some enclosing repo. Every later git call runs with -C <root>,
+ * and results are written under it.
+ */
+export function resolveRepoRoot(deps: Pick<Deps, 'git'> & { cwd(): string }, path?: string): string {
+  const dir = path !== undefined ? resolve(deps.cwd(), path) : deps.cwd();
+  const top = deps.git(['-C', dir, 'rev-parse', '--show-toplevel']);
+  const root = top.ok ? top.stdout.trim() : '';
+  if (path !== undefined) {
+    if (!root) throw new Abort(`--path ${dir} is not a git repository.`);
+    if (real(dir) !== real(root)) throw new Abort(`--path ${dir} is not the top level of its repository; the top level is ${root}.`);
+    return root;
+  }
+  if (!root) throw new Abort('not a git repository; cd into one or pass --path <repo>');
+  if (real(dir) !== real(root)) throw new Abort(`run from the repository root (${root}) or pass --path <repo>`);
+  return root;
+}
+
+function needRepo(ctx: Ctx, path?: string): RepoCtx {
+  const root = resolveRepoRoot(ctx.deps as ReviewDeps, path);
+  const repo = resolveRepo(ctx.opts, ctx.deps, root);
   if ('error' in repo) throw new Abort(repo.error);
   return repo;
 }
@@ -431,7 +460,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     const timeout = parseTimeout(input.timeout);
     const id = preflight(ctx);
     printIdentity(ctx, id);
-    const repo = needRepo(ctx);
+    const repo = needRepo(ctx, input.path);
     const setup = resolveSetup(ctx, id, repo);
     say(`Repo:        ${repo.id}`);
     say(`Code review: ${setup.codeReviewId} (from ${setup.source})`);
@@ -495,7 +524,7 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
     const timeout = parseTimeout(input.timeout);
     const id = preflight(ctx);
     printIdentity(ctx, id);
-    const repo = needRepo(ctx);
+    const repo = needRepo(ctx, input.path);
     const setup = resolveSetup(ctx, id, repo);
     let job: JobInfo | null;
     if (input.job) {

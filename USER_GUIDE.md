@@ -1431,6 +1431,12 @@ on stdout, with progress on stderr.
 <id>`, and caches the result for the dashboard. `--severity <level>` hides lower levels. A job
 still running exits 2 with a note; `--wait` waits for it with the same poller.
 
+Both work on one repository: run them from its top level, or pass `--path <repo>`. A subdirectory
+is refused (the message names the top level), and so is a directory that is not a repository; they
+never walk up to an enclosing repo. Results are written under that top level. `--repo
+<host/owner/name>` is the repo id (not a path) the code review is named after, as in `enable
+security`.
+
 Both take `--profile`, `--region` and `--repo`, as `enable security` does. Besides the
 `enable security` read permissions, they need `securityagent:StartCodeReviewJob`,
 `BatchGetCodeReviewJobs`, `ListCodeReviewJobsForCodeReview`, `ListFindings` and `BatchGetFindings`,

@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
 import {
-  CODE_REVIEW_NOTICE, POLL_FIRST_MS, POLL_MAX_MS, securityCodeReview, securityFindings,
+  CODE_REVIEW_NOTICE, POLL_FIRST_MS, POLL_MAX_MS, resolveRepoRoot, securityCodeReview, securityFindings,
   type CodeReviewOptions, type FindingsOptions, type ReviewDeps,
 } from '../src/security/review.js';
 import { collectSecurity, latestSecurityReview } from '../src/dashboard/security.js';
@@ -61,7 +61,7 @@ interface H {
   gitCalls: string[][]; repo: string; out: () => string; writes: () => string[]; cleanup: () => void; results: () => any[];
 }
 
-function harness(s: State, o: { tty?: boolean; marker?: boolean; upstream?: boolean; patch?: string; interruptOnSleep?: number } = {}): H {
+function harness(s: State, o: { cwd?: (repo: string) => string; tty?: boolean; marker?: boolean; upstream?: boolean; patch?: string; interruptOnSleep?: number } = {}): H {
   const repo = mkdtempSync(join(tmpdir(), 'prism-scr-repo-'));
   if (o.marker !== false) {
     mkdirSync(join(repo, '.prism'), { recursive: true });
@@ -109,7 +109,11 @@ function harness(s: State, o: { tty?: boolean; marker?: boolean; upstream?: bool
     git(a) {
       gitCalls.push(a);
       const has = (x: string) => a.includes(x);
-      if (has('--show-toplevel')) return { ok: true, stdout: repo, stderr: '' };
+      if (has('--show-toplevel')) {
+        // Like git: the real path of the enclosing repo, or a failure outside one.
+        const dir = realpathSync(a[a.indexOf('-C') + 1]); const top = realpathSync(repo);
+        return dir === top || dir.startsWith(top + '/') ? { ok: true, stdout: top, stderr: '' } : { ok: false, stdout: '', stderr: 'fatal: not a git repository' };
+      }
       if (has('remote')) return { ok: true, stdout: 'https://github.com/acme/widgets.git', stderr: '' };
       if (has('@{upstream}')) return o.upstream === false ? { ok: false, stdout: '', stderr: 'no upstream' } : { ok: true, stdout: 'origin/main', stderr: '' };
       if (has('symbolic-ref')) return { ok: false, stdout: '', stderr: '' };
@@ -134,6 +138,7 @@ function harness(s: State, o: { tty?: boolean; marker?: boolean; upstream?: bool
     ticker: (l) => { ticks.push(l); },
     err: (l = '') => { errs.push(l); },
     out: (t) => { outs.push(t); },
+    cwd: () => (o.cwd ? o.cwd(repo) : repo),
   };
   const writeVerbs = /^(create|update|put|delete|start|stop)-/;
   return {
@@ -431,4 +436,57 @@ test('the codewatch panel ignores security-review results', () => {
     assert.equal(cw.hasResults, false);
     assert.equal(cw.trend.length, 0);
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+// --------------------------------------------------------------- repo selection (--path)
+
+test('repo root: the working directory must be the top level; --path must be a top level', async () => {
+  const outside = mkdtempSync(join(tmpdir(), 'prism-scr-out-'));
+  const links = mkdtempSync(join(tmpdir(), 'prism-scr-link-'));
+  const h = harness(state());
+  const sub = join(h.repo, 'src'); mkdirSync(sub);
+  const link = join(links, 'repo-link'); symlinkSync(h.repo, link);
+  const top = realpathSync(h.repo);
+  const git = h.deps.git;
+  const at = (cwd: string) => ({ git, cwd: () => cwd });
+  try {
+    // root OK
+    assert.equal(resolveRepoRoot(at(h.repo)), top);
+    // subdirectory
+    assert.throws(() => resolveRepoRoot(at(sub)), (e: any) => e.message === `run from the repository root (${top}) or pass --path <repo>`);
+    // not a repo
+    assert.throws(() => resolveRepoRoot(at(outside)), (e: any) => e.message === 'not a git repository; cd into one or pass --path <repo>');
+    // --path to the root, from anywhere
+    assert.equal(resolveRepoRoot(at(outside), h.repo), top);
+    // --path to a subdirectory names the real top level
+    assert.throws(() => resolveRepoRoot(at(outside), sub), new RegExp(`--path ${sub} is not the top level of its repository; the top level is ${top}\\.`));
+    // --path to a non-repo
+    assert.throws(() => resolveRepoRoot(at(h.repo), outside), new RegExp(`--path ${outside} is not a git repository\\.`));
+    // a symlinked root is fine, as cwd and as --path
+    assert.equal(resolveRepoRoot(at(link)), top);
+    assert.equal(resolveRepoRoot(at(outside), link), top);
+  } finally { h.cleanup(); rmSync(outside, { recursive: true, force: true }); rmSync(links, { recursive: true, force: true }); }
+});
+
+test('the commands refuse a subdirectory with an Error line and make no AWS write', async () => {
+  const h = harness(state(), { cwd: (repo) => { const d = join(repo, 'src'); mkdirSync(d, { recursive: true }); return d; } });
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 1);
+    assert.match(h.out(), /Error: run from the repository root \(.*\) or pass --path <repo>/);
+    assert.deepEqual(h.writes(), []);
+    assert.equal(await securityFindings(fo(), h.deps), 1);
+  } finally { h.cleanup(); }
+});
+
+test('--path from outside the repo works, uses -C <root> for git and writes results under the root', async () => {
+  const outside = mkdtempSync(join(tmpdir(), 'prism-scr-out-'));
+  const h = harness(state(), { cwd: () => outside });
+  try {
+    assert.equal(await securityCodeReview(cr({ path: h.repo }), h.deps), 0);
+    const top = realpathSync(h.repo);
+    assert.ok(h.gitCalls.every((g) => g[0] === '-C'), 'every git call is -C');
+    assert.ok(h.gitCalls.filter((g) => !g.includes('--show-toplevel')).every((g) => g[1] === top), 'all later calls at the root');
+    assert.equal(h.results().length, 1);
+    assert.deepEqual(readdirSync(outside), [], 'nothing written in the working directory');
+  } finally { h.cleanup(); rmSync(outside, { recursive: true, force: true }); }
 });

@@ -211,16 +211,22 @@ export function printIdentity(ctx: Ctx, id: Identity): void {
 
 export interface RepoCtx { root: string; id: string; slug: string; title: string; param: string; zipKey: string }
 
-/** The repo whose code review this run manages, or a reason it cannot. */
-export function resolveRepo(opts: SecurityOptions, deps: Deps): RepoCtx | { error: string } {
-  const top = deps.git(['rev-parse', '--show-toplevel']);
+/**
+ * The repo whose code review this run manages, or a reason it cannot.
+ * `root`, when given, is an already-checked repository top level: every git
+ * call runs with `-C <root>` (the security commands). Without it the repo is
+ * found from the working directory, walking up (enable security, unchanged).
+ */
+export function resolveRepo(opts: SecurityOptions, deps: Deps, root?: string): RepoCtx | { error: string } {
+  const at = root ? ['-C', root] : [];
+  const top = root ? { ok: true, stdout: root, stderr: '' } : deps.git(['rev-parse', '--show-toplevel']);
   if (!top.ok) return { error: 'not inside a git repository, so the per-repo code review is skipped (run from the repo to set it up)' };
   let id: string | null;
   if (opts.repo) {
     if (!/^[A-Za-z0-9.-]+(\/[A-Za-z0-9._-]+)+$/.test(opts.repo)) return { error: `--repo must look like github.com/owner/name, got "${opts.repo}"` };
     id = opts.repo;
   } else {
-    const remote = deps.git(['remote', 'get-url', 'origin']);
+    const remote = deps.git([...at, 'remote', 'get-url', 'origin']);
     id = remote.ok ? repoIdFromRemote(remote.stdout) : null;
     if (!id) return { error: 'this repo has no usable "origin" remote; pass --repo github.com/<owner>/<name> (the name the CI eval gate uses)' };
   }

@@ -15,13 +15,15 @@ export function reviewDeps(opts: SecurityOptions): ReviewDeps {
     ticker: (line) => { process.stderr.write(`\r\u001b[2K${line}`); },
     err: (line = '') => console.error(line),
     out: (text) => { process.stdout.write(text); },
+    cwd: () => process.cwd(),
   };
 }
 
 export const REVIEW_TARGET_OPTIONS = [
   { flags: '--profile <name>', description: 'AWS CLI profile (default: none; the standard credential chain)' },
   { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, else the profile\'s configured region)' },
-  { flags: '--repo <host/owner/name>', description: 'Repo id for the code review, as the CI gate names it (default: from the origin remote)' },
+  { flags: '--path <dir>', description: 'The repository top level to work on (default: the current directory, which must be the top level)' },
+  { flags: '--repo <host/owner/name>', description: 'Repo id (not a path) for the code review, as the CI gate names it (default: from the origin remote)' },
 ];
 
 export interface ReviewHooks extends RunHooks { reviewDeps?: (opts: SecurityOptions) => ReviewDeps }
