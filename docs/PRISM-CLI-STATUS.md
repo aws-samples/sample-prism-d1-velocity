@@ -62,7 +62,7 @@ Sets up AWS Security Agent (Continuum) for one account and region, plus the code
 - **`--dry-run`:** runs every read and prints the exact create and update calls. **`--status`:** a read-only report.
 - **Idempotent:** reuses the agent space, application, code review, S3 snapshot (skipped when its ETag matches) and SSM parameter. A different value already in SSM is a conflict that needs a second yes.
 - **Fixes:** writes `/prism/continuum/code-review-id/<repo-slug>`, the parameter the eval gate reads (the old command wrote an unslugged one nothing read), and reads the `codeReviewSummaries` the API returns.
-- **Marker:** `.prism/config.json` gets a `security` block (ids only); the dashboard's setup checklist shows a Security Agent column from it.
+- **Marker:** `.prism/security.local.json` (ids, account and region; per developer, never committed, git-ignored through `.git/info/exclude` when needed). `.prism/config.json` stays the committed team file; a legacy `security` block in it is read and moved on the next run. The dashboard's setup checklist shows a Security Agent column from it.
 - **No uninstall** yet: deleting AWS resources needs its own design.
 - **User docs:** [Security Agent Setup](../USER_GUIDE.md#security-agent-setup-enable-security).
 

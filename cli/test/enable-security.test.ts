@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
@@ -12,7 +12,7 @@ import {
 import { codeReviewTitle, repoIdFromRemote, repoSlug } from '../src/security/repo.js';
 import { categorize, diffTemplates } from '../src/security/cfn-diff.js';
 import { explainAwsError, NO_CREDENTIALS_MESSAGE, redact } from '../src/security/errors.js';
-import { readSecurityMarker } from '../src/security/marker.js';
+import { MARKER_PATH, readSecurityMarker, readSecurityMarkerWithSource, removeLegacyBlock } from '../src/security/marker.js';
 import { securitySetup } from '../src/dashboard/setup.js';
 import alias, { DEPRECATION } from '../src/commands/securityagent/setup.js';
 import { SECURITY_OPTIONS } from '../src/commands/enable/security.js';
@@ -195,9 +195,14 @@ function harness(state: State, o: { ignored?: boolean; tty?: boolean; answers?: 
     },
     git(args) {
       if (o.inRepo === false) return { ok: false, stdout: '', stderr: 'fatal: not a git repository' };
-      if (args[0] === 'rev-parse') return { ok: true, stdout: repo, stderr: '' };
+      if (args.includes('--git-path')) return { ok: true, stdout: join(repo, '.git-dir', 'info', 'exclude'), stderr: '' };
+      if (args.includes('rev-parse')) return { ok: true, stdout: repo, stderr: '' };
       if (args[0] === 'remote') return { ok: true, stdout: REMOTE, stderr: '' };
-      if (args.includes('check-ignore')) return { ok: !!o.ignored, stdout: '', stderr: '' };
+      if (args.includes('check-ignore')) {
+        const ex = join(repo, '.git-dir', 'info', 'exclude');
+        const inExclude = existsSync(ex) && readFileSync(ex, 'utf8').split('\n').includes('.prism/security.local.json');
+        return { ok: !!o.ignored || inExclude, stdout: '', stderr: '' };
+      }
       if (args[0] === 'archive') { writeFileSync(args[args.indexOf('-o') + 1], ZIP); return { ok: true, stdout: '', stderr: '' }; }
       return { ok: false, stdout: '', stderr: 'unexpected git call' };
     },
@@ -304,10 +309,10 @@ test('re-run when everything is set up: "already set up", no writes, marker left
     assert.equal(await enableSecurity(opts(), h.deps), 0);
     assert.match(h.out(), /Already set up: nothing to change\./);
     assert.deepEqual(h.writes(), []);
-    const first = readFileSync(join(h.repo, '.prism/config.json'), 'utf8');
+    const first = readFileSync(join(h.repo, MARKER_PATH), 'utf8');
     h.deps.now = () => new Date('2027-01-01T00:00:00Z');
     assert.equal(await enableSecurity(opts(), h.deps), 0);
-    assert.equal(readFileSync(join(h.repo, '.prism/config.json'), 'utf8'), first, 'setupAt is kept when nothing changed');
+    assert.equal(readFileSync(join(h.repo, MARKER_PATH), 'utf8'), first, 'setupAt is kept when nothing changed');
     assert.deepEqual(h.writes(), []);
   } finally { h.cleanup(); }
 });
@@ -427,16 +432,15 @@ test('outside a git repo: account-level setup only, no marker', async () => {
   } finally { h.cleanup(); }
 });
 
-test('the marker holds ids only and keeps the rest of .prism/config.json', async () => {
+test('the marker is its own file with ids only, and .prism/config.json is left alone', async () => {
   const h = harness(fullySetUp());
   mkdirSync(join(h.repo, '.prism'));
   writeFileSync(join(h.repo, '.prism/config.json'), JSON.stringify({ team_id: 'team-a', eval: { reviewer: 'kiro' } }));
   try {
     assert.equal(await enableSecurity(opts(), h.deps), 0);
-    const cfg = JSON.parse(readFileSync(join(h.repo, '.prism/config.json'), 'utf8'));
-    assert.equal(cfg.team_id, 'team-a');
-    assert.deepEqual(cfg.eval, { reviewer: 'kiro' });
-    assert.deepEqual(Object.keys(cfg.security).sort(), ['account', 'agentSpaceId', 'applicationId', 'codeReviewId', 'region', 'setupAt']);
+    assert.equal(readFileSync(join(h.repo, '.prism/config.json'), 'utf8'), JSON.stringify({ team_id: 'team-a', eval: { reviewer: 'kiro' } }));
+    const m = JSON.parse(readFileSync(join(h.repo, MARKER_PATH), 'utf8'));
+    assert.deepEqual(Object.keys(m).sort(), ['account', 'agentSpaceId', 'applicationId', 'codeReviewId', 'region', 'setupAt']);
   } finally { h.cleanup(); }
 });
 
@@ -711,15 +715,88 @@ test('a leftover application with a missing role is fixed by the deploy, not blo
   } finally { h.cleanup(); }
 });
 
-test('the marker message says where it was written, that it is local, and never asks to commit it', async () => {
-  for (const ignored of [true, false]) {
-    const h = harness(fullySetUp(), { ignored });
-    try {
-      assert.equal(await enableSecurity(opts(), h.deps), 0);
-      const out = h.out();
-      assert.ok(out.includes(`Wrote the security block (ids, account and region; no secrets) to ${join(h.repo, '.prism', 'config.json')}`), out);
-      assert.match(out, ignored ? /\(local only: git ignores it\)/ : /\(local: it holds the account ID, so check before committing it\)/);
-      assert.doesNotMatch(out, /commit it so teammates/);
-    } finally { h.cleanup(); }
-  }
+test('the marker message names the new file and says it is local and not committed', async () => {
+  const h = harness(fullySetUp(), { ignored: true });
+  try {
+    assert.equal(await enableSecurity(opts(), h.deps), 0);
+    assert.ok(h.out().includes(`Wrote ${join(h.repo, MARKER_PATH)} (ids, account and region; no secrets; local only, not committed)`), h.out());
+    assert.doesNotMatch(h.out(), /commit it|teammates|Added .* so git ignores it/);
+    assert.equal(existsSync(join(h.repo, '.git-dir', 'info', 'exclude')), false, 'already ignored: info/exclude untouched');
+  } finally { h.cleanup(); }
+});
+
+test('not ignored: the marker path is added to info/exclude once, never to .gitignore', async () => {
+  const h = harness(fullySetUp(), { ignored: false });
+  const ex = join(h.repo, '.git-dir', 'info', 'exclude');
+  mkdirSync(join(h.repo, '.git-dir', 'info'), { recursive: true });
+  writeFileSync(ex, '# existing\n*.swp');
+  try {
+    assert.equal(await enableSecurity(opts(), h.deps), 0);
+    assert.match(h.out(), new RegExp(`Added \\.prism/security\\.local\\.json to ${ex.replace(/[.]/g, '\\.')} so git ignores it`));
+    assert.equal(await enableSecurity(opts(), h.deps), 0);
+    const lines = readFileSync(ex, 'utf8').split('\n');
+    assert.equal(lines.filter((l) => l === MARKER_PATH).length, 1, 'added once');
+    assert.equal(lines[1], '*.swp', 'existing lines kept');
+    assert.equal(existsSync(join(h.repo, '.gitignore')), false);
+  } finally { h.cleanup(); }
+});
+
+const LEGACY = { agentSpaceId: 'as-1', applicationId: 'app-1', codeReviewId: 'cr-1', region: 'us-west-2', account: ACCOUNT, setupAt: '2026-11-06T05:00:00.000Z' };
+
+test('readers fall back to a legacy security block in .prism/config.json', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'prism-sec-legacy-'));
+  try {
+    mkdirSync(join(repo, '.prism'));
+    writeFileSync(join(repo, '.prism/config.json'), JSON.stringify({ team_id: 't', security: LEGACY }));
+    assert.deepEqual(readSecurityMarkerWithSource(repo), { marker: LEGACY, source: 'legacy' });
+    assert.equal(securitySetup(repo).status, 'ok');
+    writeFileSync(join(repo, MARKER_PATH), JSON.stringify({ ...LEGACY, codeReviewId: 'cr-new' }));
+    assert.equal(readSecurityMarkerWithSource(repo)!.source, 'local', 'the local file wins');
+    assert.match(securitySetup(repo).detail, /code review cr-new/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('--status reports a legacy block as waiting to move', async () => {
+  const h = harness(fullySetUp());
+  mkdirSync(join(h.repo, '.prism'));
+  writeFileSync(join(h.repo, '.prism/config.json'), JSON.stringify({ security: LEGACY }));
+  try {
+    assert.equal(await enableSecurity(opts({ status: true }), h.deps), 0);
+    assert.match(h.out(), /\[warn\] Local marker: legacy security block in \.prism\/config\.json .* moves it to \.prism\/security\.local\.json/);
+    assert.ok(JSON.parse(readFileSync(join(h.repo, '.prism/config.json'), 'utf8')).security, '--status never moves it');
+  } finally { h.cleanup(); }
+});
+
+test('a successful run moves the legacy block: new file, only the security key removed, formatting kept', async () => {
+  const h = harness(fullySetUp(), { ignored: true });
+  mkdirSync(join(h.repo, '.prism'));
+  const before = { team_id: 'team-a', eval: { reviewer: 'kiro', timeout_seconds: 300 }, security: LEGACY, zeta: [1, 2] };
+  writeFileSync(join(h.repo, '.prism/config.json'), JSON.stringify(before, null, 4) + '\n');
+  try {
+    assert.equal(await enableSecurity(opts(), h.deps), 0);
+    const { security, ...rest } = before;
+    assert.equal(readFileSync(join(h.repo, '.prism/config.json'), 'utf8'), JSON.stringify(rest, null, 4) + '\n');
+    assert.deepEqual(JSON.parse(readFileSync(join(h.repo, MARKER_PATH), 'utf8')), security, 'same ids, setupAt kept');
+    assert.match(h.out(), /Moved the security block out of \.prism\/config\.json into \.prism\/security\.local\.json/);
+  } finally { h.cleanup(); }
+});
+
+test('removeLegacyBlock leaves a config without a security key untouched', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'prism-sec-legacy-'));
+  try {
+    mkdirSync(join(repo, '.prism'));
+    const text = '{\n  "team_id": "t"\n}';
+    writeFileSync(join(repo, '.prism/config.json'), text);
+    assert.equal(removeLegacyBlock(repo), false);
+    assert.equal(readFileSync(join(repo, '.prism/config.json'), 'utf8'), text);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('dashboard Security Agent row reads the new file', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'prism-sec-dash-'));
+  try {
+    mkdirSync(join(repo, '.prism'));
+    writeFileSync(join(repo, MARKER_PATH), JSON.stringify(LEGACY));
+    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ${ACCOUNT} (us-west-2), set up 2026-11-06`, fix: '' });
+  } finally { rmSync(repo, { recursive: true, force: true }); }
 });

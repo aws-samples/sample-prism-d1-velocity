@@ -468,7 +468,7 @@ This installs the two hooks into the repo's hooks directory and adds these files
 | File | Purpose | Commit it? |
 |---|---|---|
 | `.prism/review/rules.md` | Review rules. Copied from `.kiro/steering/code-review.md` when that exists, otherwise the bundled default. An existing file is kept | Yes |
-| `.prism/config.json` | `eval.reviewer` is the team default reviewer. Other keys in the file are kept | Yes |
+| `.prism/config.json` | `eval.reviewer` is the team default reviewer. Other keys in the file are kept. It holds no account details, so it stays safe to commit (`enable security` writes its own per-developer file, `.prism/security.local.json`) | Yes |
 | `.gitleaks.toml` | Starter allowlist for gitleaks false positives. An existing file is kept | Yes |
 | `.gitignore` | Gains a `.prism/results/` entry | Yes |
 
@@ -644,7 +644,8 @@ codewatch installed (ok); warn, when the global hooks are installed but the repo
 hooks from before the codewatch rename; or opted out with `git config prism.codewatch false`. Repos covered by the global hooks are
 marked "(global)". Repos missing codewatch are collapsed into one group. Each problem row shows the
 command that fixes it. A **Security Agent** column shows ok when `prism-cli enable security` has
-finished in that repo (from the `security` block it writes to `.prism/config.json`), or missing with
+finished in that repo (from the `.prism/security.local.json` it writes, or a legacy `security` block in
+`.prism/config.json`), or missing with
 the fix `cd <repo> && prism-cli enable security`. That is local evidence only; `enable security
 --status` checks the AWS side (see [Security Agent Setup](#security-agent-setup-enable-security)).
 
@@ -736,10 +737,17 @@ Run it from the repo whose pull requests the eval gate should scan.
    creates the application and attaches the `prism-d1-security-agent-prism-d1-security` role,
    uploads `git archive HEAD` to `s3://<scan bucket>/repo/<repo-slug>/latest.zip`, creates the code
    review, and sets `/prism/continuum/code-review-id/<repo-slug>`.
-8. Writes a `security` block to `.prism/config.json` (agent space, application and code review ids,
-   account, region, setup time; no secrets). It is a local record: the command prints the path and
-   whether git ignores it, and since it holds the account ID it is not meant to be committed. The
-   [Local Dashboard](#local-dashboard) reads it.
+8. Writes `.prism/security.local.json` (agent space, application and code review ids, account,
+   region, setup time; no secrets). It is per developer and never committed: if git does not
+   already ignore it, the command adds it to this clone's `.git/info/exclude` (found with
+   `git rev-parse --git-path`, so linked worktrees work) and never edits `.gitignore`. The
+   [Local Dashboard](#local-dashboard) reads it. `.prism/config.json` is not touched and stays safe
+   to commit.
+
+   Earlier versions wrote this record as a `security` block inside `.prism/config.json`. Readers
+   still accept it, `--status` reports it as legacy, and the next successful run moves it into
+   `.prism/security.local.json` and removes only that key from `config.json`, keeping the other
+   keys and the indent.
 
 The resolved region is passed to every AWS call and to CDK, so every step works in the same region.
 

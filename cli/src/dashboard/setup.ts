@@ -193,7 +193,8 @@ export function enableSecurityFix(repo: string): string {
 }
 
 /**
- * Security Agent per repo, from the marker `enable security` writes. Local
+ * Security Agent per repo, from the marker `enable security` writes
+ * (.prism/security.local.json, else a legacy block in .prism/config.json). Local
  * evidence only: the dashboard makes no AWS calls, so this says the setup ran
  * here, not that the AWS resources still exist (`enable security --status` checks those).
  */

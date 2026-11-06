@@ -22,7 +22,7 @@ import type { AwsResult } from '../utils/aws.js';
 import type { RunResult } from '../utils/exec.js';
 import { diffTemplates, formatDiff, type CfnTemplate, type TemplateDiff } from './cfn-diff.js';
 import { cliVersionOk, explainAwsError, MIN_AWS_CLI_TEXT, redact } from './errors.js';
-import { readSecurityMarker, writeSecurityMarker } from './marker.js';
+import { ensureMarkerIgnored, MARKER_PATH, readSecurityMarkerWithSource, writeSecurityMarker } from './marker.js';
 import { codeReviewParam, codeReviewTitle, repoIdFromRemote, repoSlug, repoZipKey, SSM_PREFIX } from './repo.js';
 
 /** Hosts Security Agent when deployed with enableSecurityAgent=true (the original layout). */
@@ -637,12 +637,14 @@ export async function enableSecurity(input: SecurityOptions, deps: Deps): Promis
 function finish(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, space: string | null, applicationId: string, codeReviewId: string | null): number {
   const { deps, opts } = ctx;
   if (!('error' in repo) && codeReviewId && space) {
-    const wrote = writeSecurityMarker(repo.root, { agentSpaceId: space, applicationId, codeReviewId, region: opts.region, account: id.account }, deps.now());
-    const file = join(repo.root, '.prism', 'config.json');
-    const ig = deps.git(['-C', repo.root, 'check-ignore', '-q', '.prism/config.json']);
-    // check-ignore: exit 0 ignored, 1 not ignored, anything else unknown (RunResult only says ok or not).
-    const local = ig.ok ? 'local only: git ignores it' : 'local: it holds the account ID, so check before committing it';
-    deps.log(wrote ? `Wrote the security block (ids, account and region; no secrets) to ${file} (${local}).` : `The security block in ${file} is already current (${local}).`);
+    // Ignored first, so the file is never shown as untracked.
+    const excluded = ensureMarkerIgnored(repo.root, deps.git);
+    if (excluded) deps.log(`Added ${MARKER_PATH} to ${excluded} so git ignores it in this clone.`);
+    const w = writeSecurityMarker(repo.root, { agentSpaceId: space, applicationId, codeReviewId, region: opts.region, account: id.account }, deps.now());
+    deps.log(w.wrote || w.migrated
+      ? `Wrote ${w.path} (ids, account and region; no secrets; local only, not committed)`
+      : `${w.path} is already current (local only, not committed)`);
+    if (w.migrated) deps.log(`Moved the security block out of .prism/config.json into ${MARKER_PATH}; the rest of config.json is unchanged.`);
   }
   deps.log('');
   deps.log(`Security Agent web console: https://${opts.region}.console.aws.amazon.com/securityagent/home?region=${opts.region} (choose "Admin access").`);
@@ -730,8 +732,10 @@ function securityStatus(ctx: Ctx): number {
       if (legacy) add('warn', 'Legacy SSM', `${LEGACY_PARAM_CODE_REVIEW} = ${legacy} (written by the old securityagent setup; nothing reads it)`);
       const ci = ciWorkflowStep(repo.root);
       add(ci.mark, 'CI workflow step', ci.detail);
-      const m = readSecurityMarker(repo.root);
-      add(m ? 'ok' : 'missing', 'Local marker', m ? `.prism/config.json security (code review ${m.codeReviewId}, set up ${m.setupAt || 'unknown'})` : '.prism/config.json has no security block');
+      const ms = readSecurityMarkerWithSource(repo.root);
+      if (!ms) add('missing', 'Local marker', `no ${MARKER_PATH}`);
+      else if (ms.source === 'local') add('ok', 'Local marker', `${MARKER_PATH} (code review ${ms.marker.codeReviewId}, set up ${ms.marker.setupAt || 'unknown'})`);
+      else add('warn', 'Local marker', `legacy security block in .prism/config.json (code review ${ms.marker.codeReviewId}); the next prism-cli enable security moves it to ${MARKER_PATH}`);
     }
   } catch (e) {
     if (!(e instanceof Abort)) throw e;
