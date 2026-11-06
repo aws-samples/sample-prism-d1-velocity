@@ -490,3 +490,30 @@ test('--path from outside the repo works, uses -C <root> for git and writes resu
     assert.deepEqual(readdirSync(outside), [], 'nothing written in the working directory');
   } finally { h.cleanup(); rmSync(outside, { recursive: true, force: true }); }
 });
+
+test('a wrong directory is refused before the notice, the region lookup and any AWS call', async () => {
+  const outside = mkdtempSync(join(tmpdir(), 'prism-scr-out-'));
+  try {
+    for (const where of ['subdir', 'not-a-repo', 'path-subdir', 'path-not-a-repo'] as const) {
+      for (const run of ['code-review', 'findings'] as const) {
+        const h = harness(state(), { cwd: (repo) => {
+          if (where === 'subdir') { const d = join(repo, 'src'); mkdirSync(d, { recursive: true }); return d; }
+          return where === 'not-a-repo' ? outside : repo;
+        } });
+        let regionLookups = 0; let versionChecks = 0;
+        h.deps.configRegion = () => { regionLookups++; return null; };
+        h.deps.awsVersion = () => { versionChecks++; return 'aws-cli/2.36.19'; };
+        const path = where === 'path-subdir' ? (() => { const d = join(h.repo, 'lib'); mkdirSync(d, { recursive: true }); return d; })()
+          : where === 'path-not-a-repo' ? outside : undefined;
+        try {
+          const code = run === 'code-review' ? await securityCodeReview(cr({ path }), h.deps) : await securityFindings(fo({ path }), h.deps);
+          assert.equal(code, 1, `${where} ${run}`);
+          assert.equal(h.calls.length, 0, `${where} ${run}: no AWS call`);
+          assert.equal(regionLookups + versionChecks, 0, `${where} ${run}: no region or CLI lookup`);
+          assert.equal(h.lines.length, 1, `${where} ${run}: only the Error line, got ${JSON.stringify(h.lines)}`);
+          assert.match(h.lines[0], /^Error: /);
+        } finally { h.cleanup(); }
+      }
+    }
+  } finally { rmSync(outside, { recursive: true, force: true }); }
+});

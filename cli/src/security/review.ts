@@ -161,8 +161,18 @@ export function resolveRepoRoot(deps: Pick<Deps, 'git'> & { cwd(): string }, pat
   return root;
 }
 
-function needRepo(ctx: Ctx, path?: string): RepoCtx {
-  const root = resolveRepoRoot(ctx.deps as ReviewDeps, path);
+/**
+ * The repo root, checked before anything else runs: a wrong directory prints
+ * one Error line and makes no AWS call (no notice, no region lookup, no STS).
+ */
+function checkedRoot(deps: ReviewDeps, path: string | undefined, say: (l?: string) => void): string | null {
+  try { return resolveRepoRoot(deps, path); } catch (e) {
+    if (e instanceof Abort) { say(`Error: ${redact(e.message)}`); return null; }
+    throw e;
+  }
+}
+
+function needRepo(ctx: Ctx, root: string): RepoCtx {
   const repo = resolveRepo(ctx.opts, ctx.deps, root);
   if ('error' in repo) throw new Abort(repo.error);
   return repo;
@@ -451,6 +461,8 @@ function finishFindings(ctx: Ctx, json: boolean, result: PrismResult, findings: 
 /** `prism-cli security code-review`. Returns the exit code. */
 export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewDeps): Promise<number> {
   const say = input.json ? deps.err : deps.log;
+  const root = checkedRoot(deps, input.path, say);
+  if (!root) return 1;
   say(CODE_REVIEW_NOTICE);
   say('');
   const ctx = begin(input, deps, false, say);
@@ -460,7 +472,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     const timeout = parseTimeout(input.timeout);
     const id = preflight(ctx);
     printIdentity(ctx, id);
-    const repo = needRepo(ctx, input.path);
+    const repo = needRepo(ctx, root);
     const setup = resolveSetup(ctx, id, repo);
     say(`Repo:        ${repo.id}`);
     say(`Code review: ${setup.codeReviewId} (from ${setup.source})`);
@@ -515,6 +527,8 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
 /** `prism-cli security findings`. Read-only: no AWS writes. Returns the exit code. */
 export async function securityFindings(input: FindingsOptions, deps: ReviewDeps): Promise<number> {
   const say = input.json ? deps.err : deps.log;
+  const root = checkedRoot(deps, input.path, say);
+  if (!root) return 1;
   say('Read-only (security findings): nothing in AWS will be changed; results are cached to .prism/results/.');
   say('');
   const ctx = begin(input, deps, true, say);
@@ -524,7 +538,7 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
     const timeout = parseTimeout(input.timeout);
     const id = preflight(ctx);
     printIdentity(ctx, id);
-    const repo = needRepo(ctx, input.path);
+    const repo = needRepo(ctx, root);
     const setup = resolveSetup(ctx, id, repo);
     let job: JobInfo | null;
     if (input.job) {
