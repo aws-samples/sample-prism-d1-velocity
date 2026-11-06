@@ -732,7 +732,7 @@ test('not ignored: the marker path is added to info/exclude once, never to .giti
   writeFileSync(ex, '# existing\n*.swp');
   try {
     assert.equal(await enableSecurity(opts(), h.deps), 0);
-    assert.match(h.out(), new RegExp(`Added \\.prism/security\\.local\\.json to ${ex.replace(/[.]/g, '\\.')} so git ignores it`));
+    assert.match(h.out(), new RegExp(`Added \\.prism/security\\.local\\.json to ${ex.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} so git ignores it`));
     assert.equal(await enableSecurity(opts(), h.deps), 0);
     const lines = readFileSync(ex, 'utf8').split('\n');
     assert.equal(lines.filter((l) => l === MARKER_PATH).length, 1, 'added once');
