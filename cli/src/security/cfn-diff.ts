@@ -73,7 +73,11 @@ function comparable(r: CfnResource): string {
 }
 
 /** `deployed` is null when the stack does not exist yet. */
-export function diffTemplates(deployed: CfnTemplate | null, synthesized: CfnTemplate, stackName: string): TemplateDiff {
+/** `isFeature` decides which resources belong to Security Agent; default: SECURITY_AGENT_PATHS. */
+export function diffTemplates(
+  deployed: CfnTemplate | null, synthesized: CfnTemplate, stackName: string,
+  isFeature: (path: string) => boolean = (path) => SECURITY_AGENT_PATHS.some((p) => path.startsWith(p)),
+): TemplateDiff {
   const before = deployed?.Resources ?? {};
   const after = synthesized.Resources ?? {};
   const changes: ResourceChange[] = [];
@@ -82,7 +86,7 @@ export function diffTemplates(deployed: CfnTemplate | null, synthesized: CfnTemp
     const path = cdkPath(r, stackName) || logicalId;
     changes.push({
       logicalId, type: r.Type, path, change, category: categorize(r.Type),
-      securityAgent: SECURITY_AGENT_PATHS.some((p) => path.startsWith(p)),
+      securityAgent: isFeature(path),
     });
   };
   for (const [id, r] of Object.entries(after)) {

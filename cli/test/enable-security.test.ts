@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
 import {
-  enableSecurity, isWriteCall, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET, PARAM_SERVICE_ROLE, STACK_NAME, type Deps, type SecurityOptions,
+  credentialSource, DEPLOY_NOTICE, enableSecurity, isWriteCall, NO_REGION_MESSAGE, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET, PARAM_SERVICE_ROLE,
+  PIPELINE_STACK, resolveRegion, STANDALONE_STACK, type CdkEnv, type Deps, type SecurityOptions,
 } from '../src/security/setup.js';
 import { codeReviewTitle, repoIdFromRemote, repoSlug } from '../src/security/repo.js';
 import { categorize, diffTemplates } from '../src/security/cfn-diff.js';
@@ -32,7 +33,7 @@ const ZIP_MD5 = createHash('md5').update(ZIP).digest('hex');
 
 const res = (r: Partial<AwsResult>): AwsResult => ({ ok: true, json: {}, errorCode: '', raw: '', ...r });
 const fail = (code: string, raw: string): AwsResult => ({ ok: false, json: null, errorCode: code, raw });
-const meta = (path: string) => ({ 'aws:cdk:path': `${STACK_NAME}/${path}` });
+const meta = (path: string, stack = PIPELINE_STACK) => ({ 'aws:cdk:path': `${stack}/${path}` });
 
 /** The synthesized template: the Security Agent resources plus one unrelated function. */
 function synthTemplate(lambdaCode = 'v1') {
@@ -49,8 +50,30 @@ function synthTemplate(lambdaCode = 'v1') {
   };
 }
 
+/** The standalone stack's template: the Security Agent resources and their own KMS key, nothing else. */
+function standaloneTemplate(bucketProps: any = { B: 1 }) {
+  const m = (p: string) => meta(p, STANDALONE_STACK);
+  return {
+    Resources: {
+      SecurityAgentKey: { Type: 'AWS::KMS::Key', Properties: { K: 1 }, Metadata: m('SecurityAgentKey/Resource') },
+      SecurityAgentRole1: { Type: 'AWS::IAM::Role', Properties: { RoleName: 'r' }, Metadata: m('SecurityAgent/SecurityAgentRole/Resource') },
+      SecurityAgentSpace: { Type: 'AWS::SecurityAgent::AgentSpace', Properties: { Name: 'prism-d1-security' }, Metadata: m('SecurityAgent/AgentSpace') },
+      SecurityAgentBucket: { Type: 'AWS::S3::Bucket', Properties: bucketProps, Metadata: m('SecurityAgent/ScanBucket/Resource') },
+      SecurityAgentBucketPolicy: { Type: 'AWS::S3::BucketPolicy', Properties: { P: 1 }, Metadata: m('SecurityAgent/ScanBucket/Policy/Resource') },
+      ContinuumCiPolicy1: { Type: 'AWS::IAM::ManagedPolicy', Properties: { M: 1 }, Metadata: m('ContinuumCiPolicy/Resource') },
+    },
+  };
+}
+
+/** A pipeline deployed without Security Agent (the metrics-only layout). */
+function pipelineWithoutSa() {
+  const t = synthTemplate();
+  return { Resources: { Processor: t.Resources.Processor } };
+}
+
 interface State {
-  stack: any | null;               // deployed template, or null when the stack does not exist
+  stack: any | null;               // deployed PrismD1MetricsPipeline template, or null when the stack does not exist
+  standalone: any | null;          // deployed PrismD1SecurityAgent template, or null
   params: Record<string, string>;
   spaces: { agentSpaceId: string; name: string }[];
   apps: { applicationId: string; roleArn: string | null }[];
@@ -63,6 +86,7 @@ interface State {
 function fullySetUp(): State {
   return {
     stack: synthTemplate(),
+    standalone: null,
     params: { [PARAM_AGENT_SPACE]: 'as-1', [PARAM_SCAN_BUCKET]: BUCKET, [PARAM_SERVICE_ROLE]: ROLE, [PARAM]: 'cr-1' },
     spaces: [{ agentSpaceId: 'as-1', name: 'prism-d1-security' }],
     apps: [{ applicationId: 'app-1', roleArn: ROLE }],
@@ -70,22 +94,24 @@ function fullySetUp(): State {
     objects: { [`repo/${SLUG}/latest.zip`]: ZIP_MD5 },
   };
 }
-const emptyAccount = (): State => ({ stack: null, params: {}, spaces: [], apps: [], reviews: [], objects: {} });
+const emptyAccount = (): State => ({ stack: null, standalone: null, params: {}, spaces: [], apps: [], reviews: [], objects: {} });
 
 function arg(args: string[], flag: string): string { return args[args.indexOf(flag) + 1]; }
 
-function fakeAws(state: State, log: string[][]) {
+function fakeAws(state: State, log: string[][], regions: string[]) {
   let next = 1;
-  return (args: string[]): AwsResult => {
+  return (args: string[], region: string): AwsResult => {
     log.push(args);
+    regions.push(region);
+    const tpl = () => (arg(args, '--stack-name') === STANDALONE_STACK ? state.standalone : state.stack);
     const [svc, cmd] = args;
     if (state.deny === cmd) return fail('AccessDeniedException', `An error occurred (AccessDeniedException) when calling the ${cmd.split('-').map((p) => p[0].toUpperCase() + p.slice(1)).join('')} operation: User: arn:aws:sts::${ACCOUNT}:assumed-role/Dev/me is not authorized to perform: ${svc}:${cmd.split('-').map((p) => p[0].toUpperCase() + p.slice(1)).join('')} on resource: *`);
     switch (`${svc} ${cmd}`) {
       case 'sts get-caller-identity': return res({ json: { Account: ACCOUNT, Arn: `arn:aws:sts::${ACCOUNT}:assumed-role/Dev/me` } });
       case 'iam list-account-aliases': return res({ json: { AccountAliases: ['acme-dev'] } });
       case 'cloudformation describe-stacks':
-        return state.stack ? res({ json: { Stacks: [{ StackStatus: 'UPDATE_COMPLETE' }] } }) : fail('ValidationError', `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${STACK_NAME} does not exist`);
-      case 'cloudformation get-template': return res({ json: { TemplateBody: state.stack } });
+        return tpl() ? res({ json: { Stacks: [{ StackStatus: 'UPDATE_COMPLETE' }] } }) : fail('ValidationError', `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${arg(args, '--stack-name')} does not exist`);
+      case 'cloudformation get-template': return res({ json: { TemplateBody: tpl() } });
       case 'ssm get-parameter': {
         const v = state.params[arg(args, '--name')];
         return v ? res({ json: { Parameter: { Value: v } } }) : fail('ParameterNotFound', 'An error occurred (ParameterNotFound) when calling the GetParameter operation: ');
@@ -119,6 +145,12 @@ interface Harness {
   calls: string[][];
   lines: string[];
   deploys: { approveAll: boolean }[];
+  /** Stack and CDK env of each deploy. */
+  targets: { stack: string; env: CdkEnv }[];
+  /** Synth contexts. */
+  contexts: Record<string, string>[];
+  /** The region every aws call was given. */
+  regions: string[];
   questions: string[];
   repo: string;
   out: () => string;
@@ -126,24 +158,31 @@ interface Harness {
   cleanup: () => void;
 }
 
-function harness(state: State, o: { tty?: boolean; answers?: string[]; synth?: any; cliVersion?: string; inRepo?: boolean } = {}): Harness {
+function harness(state: State, o: { tty?: boolean; answers?: string[]; synth?: any; synthStandalone?: any; cliVersion?: string; inRepo?: boolean; env?: NodeJS.ProcessEnv; configRegion?: string | null } = {}): Harness {
   const repo = mkdtempSync(join(tmpdir(), 'prism-sec-repo-'));
   const calls: string[][] = []; const lines: string[] = []; const deploys: { approveAll: boolean }[] = []; const questions: string[] = [];
   const answers = [...(o.answers ?? [])];
   const synth = o.synth ?? synthTemplate();
+  const synthStandalone = o.synthStandalone ?? standaloneTemplate();
+  const targets: { stack: string; env: CdkEnv }[] = []; const contexts: Record<string, string>[] = []; const regions: string[] = [];
   const deps: Deps = {
-    aws: fakeAws(state, calls),
+    aws: fakeAws(state, calls, regions),
+    configRegion: () => (o.configRegion === undefined ? null : o.configRegion),
+    env: o.env ?? {},
     awsVersion: () => o.cliVersion ?? 'aws-cli/2.36.19 Python/3.14',
     cdk: {
-      synth(outDir) {
+      synth(outDir, context) {
+        contexts.push(context);
         mkdirSync(outDir, { recursive: true });
-        writeFileSync(join(outDir, `${STACK_NAME}.template.json`), JSON.stringify(synth));
+        if (context.securityAgentStandalone === 'true') writeFileSync(join(outDir, `${STANDALONE_STACK}.template.json`), JSON.stringify(synthStandalone));
+        else writeFileSync(join(outDir, `${PIPELINE_STACK}.template.json`), JSON.stringify(synth));
         return { ok: true, stdout: '', stderr: '' };
       },
-      diff: () => ({ ok: true, output: 'Stack PrismD1MetricsPipeline\nIAM Statement Changes\n...' }),
-      deploy(_dir, _acct, opts) {
+      diff: (_dir, stack) => ({ ok: true, output: `Stack ${stack}\nIAM Statement Changes\n...` }),
+      deploy(_dir, stack, env, opts) {
         deploys.push(opts);
-        state.stack = synth;
+        targets.push({ stack, env });
+        if (stack === STANDALONE_STACK) state.standalone = synthStandalone; else state.stack = synth;
         state.params[PARAM_AGENT_SPACE] = 'as-1'; state.params[PARAM_SCAN_BUCKET] = BUCKET; state.params[PARAM_SERVICE_ROLE] = ROLE;
         if (!state.spaces.length) state.spaces.push({ agentSpaceId: 'as-1', name: 'prism-d1-security' });
         return true;
@@ -163,7 +202,7 @@ function harness(state: State, o: { tty?: boolean; answers?: string[]; synth?: a
     now: () => new Date('2026-11-06T05:00:00Z'),
   };
   return {
-    deps, state, calls, lines, deploys, questions, repo,
+    deps, state, calls, lines, deploys, targets, contexts, regions, questions, repo,
     out: () => lines.join('\n'),
     writes: () => calls.filter(isWriteCall).map((c) => `${c[0]} ${c[1]}`),
     cleanup: () => rmSync(repo, { recursive: true, force: true }),
@@ -181,10 +220,13 @@ test('--dry-run on a fresh account: full plan with exact calls, no writes, no de
     assert.deepEqual(h.writes(), []);
     assert.equal(h.deploys.length, 0);
     const out = h.out();
-    assert.match(out, /Account 111122223333 \(acme-dev\), region us-west-2/);
-    assert.match(out, /Stack PrismD1MetricsPipeline \(new stack\): 6 to add, 0 to change, 0 to remove/);
+    assert.match(out, /Account: {5}111122223333 \(acme-dev\)/);
+    assert.match(out, /Stack: {7}PrismD1SecurityAgent \(no Security Agent resources found, so the standalone PrismD1SecurityAgent stack is used\)/);
+    assert.match(out, /Stack PrismD1SecurityAgent \(new stack\): 6 to add, 0 to change, 0 to remove/);
     assert.match(out, /IAM and resource policies:\n\s+\+ AWS::IAM::ManagedPolicy {2}ContinuumCiPolicy/);
-    assert.match(out, /cdk deploy --app \S+ PrismD1MetricsPipeline --exclusively/);
+    assert.match(out, /Public endpoints \(.*\): none/);
+    assert.match(out, /cdk deploy --app \S+ PrismD1SecurityAgent --exclusively/);
+    assert.deepEqual(h.contexts, [{ securityAgentStandalone: 'true' }]);
     assert.match(out, /aws securityagent create-application --region us-west-2/);
     assert.match(out, new RegExp(`aws ssm put-parameter --name ${PARAM} --value '<code review id>' --type String --region us-west-2`));
     assert.match(out, /Dry run: nothing was changed\./);
@@ -218,7 +260,7 @@ test('confirmation names the account, alias and region; "n" changes nothing', as
   const h = harness(emptyAccount(), { tty: true, answers: ['n'] });
   try {
     assert.equal(await enableSecurity(opts(), h.deps), 1);
-    assert.match(h.questions[0], /Deploy PrismD1MetricsPipeline .* in account 111122223333 \(acme-dev\), region us-west-2\? \[y\/N\]/);
+    assert.match(h.questions[0], /Deploy PrismD1SecurityAgent .* in account 111122223333 \(acme-dev\), region us-west-2\? \[y\/N\]/);
     assert.deepEqual(h.writes(), []);
     assert.equal(h.deploys.length, 0);
   } finally { h.cleanup(); }
@@ -363,7 +405,7 @@ test('--status on an account with nothing deployed', async () => {
   const h = harness(emptyAccount());
   try {
     assert.equal(await enableSecurity(opts({ status: true }), h.deps), 0);
-    assert.match(h.out(), /\[missing\] Stack: PrismD1MetricsPipeline not deployed/);
+    assert.match(h.out(), /\[missing\] Stack: neither PrismD1MetricsPipeline \(not deployed\) nor PrismD1SecurityAgent holds Security Agent/);
     assert.match(h.out(), /\[missing\] Code review: .* not set/);
     assert.deepEqual(h.writes(), []);
   } finally { h.cleanup(); }
@@ -440,13 +482,13 @@ test('template diff: IAM, network and endpoint changes are called out', () => {
   assert.equal(categorize('AWS::S3::BucketPolicy'), 'iam');
   assert.equal(categorize('AWS::EC2::SecurityGroupIngress'), 'network');
   assert.equal(categorize('AWS::ApiGatewayV2::Api'), 'endpoint');
-  const d = diffTemplates(synthTemplate(), { Resources: { ...synthTemplate().Resources, Extra: { Type: 'AWS::EC2::SecurityGroup', Properties: {} } } } as any, STACK_NAME);
+  const d = diffTemplates(synthTemplate(), { Resources: { ...synthTemplate().Resources, Extra: { Type: 'AWS::EC2::SecurityGroup', Properties: {} } } } as any, PIPELINE_STACK);
   assert.deepEqual(d.changes.map((c) => [c.change, c.type]), [['add', 'AWS::EC2::SecurityGroup']]);
   assert.equal(d.touchesSecurityAgent, false);
   // The scan bucket's autoDeleteObjects adds a stack-level provider; it belongs to the feature.
-  const p = diffTemplates({ Resources: {} }, { Resources: { Prov: { Type: 'AWS::IAM::Role', Metadata: meta('Custom::S3AutoDeleteObjectsCustomResourceProvider/Role') } } } as any, STACK_NAME);
+  const p = diffTemplates({ Resources: {} }, { Resources: { Prov: { Type: 'AWS::IAM::Role', Metadata: meta('Custom::S3AutoDeleteObjectsCustomResourceProvider/Role') } } } as any, PIPELINE_STACK);
   assert.equal(p.changes[0].securityAgent, true);
-  const r = diffTemplates(synthTemplate(), { Resources: {} }, STACK_NAME);
+  const r = diffTemplates(synthTemplate(), { Resources: {} }, PIPELINE_STACK);
   assert.equal(r.counts.remove, 6, 'CDK metadata is ignored');
 });
 
@@ -470,6 +512,148 @@ test('securityagent setup is a deprecated alias with the same flags', () => {
   for (const f of ['--profile <name>', '--region <region>', '--yes', '--dry-run', '--status']) {
     assert.ok(SECURITY_OPTIONS.some((o) => o.flags === f), f);
   }
-  assert.equal(SECURITY_OPTIONS.find((o) => o.flags === '--region <region>')!.default, 'us-west-2');
+  // No hardcoded defaults: the AWS credential chain and region resolution apply.
+  assert.equal(SECURITY_OPTIONS.find((o) => o.flags === '--region <region>')!.default, undefined);
+  assert.equal(SECURITY_OPTIONS.find((o) => o.flags === '--profile <name>')!.default, undefined);
   assert.ok(!SECURITY_OPTIONS.some((o) => /uninstall|teardown|destroy/.test(o.flags)), 'no teardown in this command');
+});
+
+// --------------------------------------------------------------- notice, identity, region
+
+test('the deploy notice comes before any AWS call; identity is shown before the plan', async () => {
+  const s = emptyAccount();
+  const h = harness(s, { tty: true, answers: ['n'], env: { AWS_PROFILE: 'dev' } });
+  const order: string[] = [];
+  const log = h.deps.log, aws = h.deps.aws;
+  h.deps.log = (l = '') => { order.push(`log:${l}`); log(l); };
+  h.deps.aws = (a, r) => { order.push(`aws:${a[0]} ${a[1]}`); return aws(a, r); };
+  try {
+    await enableSecurity(opts(), h.deps);
+    const firstAws = order.findIndex((x) => x.startsWith('aws:'));
+    assert.deepEqual(order.slice(0, DEPLOY_NOTICE.length).map((x) => x.slice(4)), DEPLOY_NOTICE);
+    assert.ok(firstAws > DEPLOY_NOTICE.length);
+    assert.match(DEPLOY_NOTICE.join(' '), /Security Agent space, an IAM service role and policies, an encrypted S3 scan bucket and SSM parameters\. These may incur cost/);
+    const out = h.out();
+    assert.match(out, /Account: {5}111122223333 \(acme-dev\)\nCaller: {6}arn:aws:sts::111122223333:assumed-role\/Dev\/me\nRegion: {6}us-west-2 \(--region\)\nCredentials: profile dev \(AWS_PROFILE\)/);
+    assert.ok(out.indexOf('Caller:') < out.indexOf('to add'), 'identity before the diff');
+  } finally { h.cleanup(); }
+});
+
+test('--status and --dry-run print a one-line read-only notice instead', async () => {
+  for (const [flag, re] of [['status', /^Read-only status check \(--status\): nothing will be changed\.$/], ['dryRun', /^Dry run \(--dry-run\): every lookup runs, nothing will be changed\.$/]] as const) {
+    const h = harness(fullySetUp());
+    try {
+      await enableSecurity(opts({ [flag]: true }), h.deps);
+      assert.match(h.lines[0], re);
+      assert.ok(!h.out().includes(DEPLOY_NOTICE[0]));
+    } finally { h.cleanup(); }
+  }
+});
+
+test('region: --region, then AWS_REGION, AWS_DEFAULT_REGION, then the profile region', () => {
+  const none = { env: {}, configRegion: () => null };
+  assert.deepEqual(resolveRegion({ region: 'eu-west-1' }, { env: { AWS_REGION: 'us-east-1' }, configRegion: () => 'ap-south-1' }), { region: 'eu-west-1', source: '--region' });
+  assert.deepEqual(resolveRegion({}, { env: { AWS_REGION: 'us-east-1', AWS_DEFAULT_REGION: 'us-east-2' }, configRegion: () => 'x' }), { region: 'us-east-1', source: 'AWS_REGION' });
+  assert.deepEqual(resolveRegion({}, { env: { AWS_DEFAULT_REGION: 'us-east-2' }, configRegion: () => 'x' }), { region: 'us-east-2', source: 'AWS_DEFAULT_REGION' });
+  let asked: string | undefined = 'unset';
+  assert.deepEqual(resolveRegion({ profile: 'dev' }, { env: {}, configRegion: (p) => { asked = p; return 'ap-south-1'; } }), { region: 'ap-south-1', source: 'region configured for profile dev' });
+  assert.equal(asked, 'dev', 'asks the --profile profile');
+  assert.deepEqual(resolveRegion({}, { env: { AWS_PROFILE: 'ops' }, configRegion: () => 'ca-central-1' }), { region: 'ca-central-1', source: 'region configured for profile ops (AWS_PROFILE)' });
+  assert.equal(resolveRegion({}, none), null);
+});
+
+test('no region anywhere: refuses with no AWS call', async () => {
+  const h = harness(fullySetUp());
+  try {
+    assert.equal(await enableSecurity({ dryRun: true }, h.deps), 1);
+    assert.match(h.out(), new RegExp(`Error: ${NO_REGION_MESSAGE.replace(/[.()]/g, '\\$&')}`));
+    assert.equal(h.calls.length, 0);
+  } finally { h.cleanup(); }
+});
+
+test('the resolved region reaches every aws call and CDK', async () => {
+  const h = harness(emptyAccount(), { env: { AWS_REGION: 'eu-central-1' } });
+  try {
+    assert.equal(await enableSecurity({ yes: true }, h.deps), 0);
+    assert.ok(h.regions.length > 5);
+    assert.ok(h.regions.every((r) => r === 'eu-central-1'), [...new Set(h.regions)].join(','));
+    assert.deepEqual(h.targets.map((t) => t.env), [{ account: ACCOUNT, region: 'eu-central-1' }]);
+    assert.match(h.out(), /Region: {6}eu-central-1 \(AWS_REGION\)/);
+    assert.ok(!h.out().includes('--profile'), 'no --profile in any printed command when none was given');
+  } finally { h.cleanup(); }
+});
+
+test('credential source is described without reading credentials', () => {
+  assert.equal(credentialSource({ profile: 'p' }, { AWS_PROFILE: 'q' }), 'profile p (--profile)');
+  assert.equal(credentialSource({}, { AWS_PROFILE: 'q' }), 'profile q (AWS_PROFILE)');
+  assert.equal(credentialSource({}, { AWS_ACCESS_KEY_ID: 'AKIA...' }), 'environment variables (AWS_ACCESS_KEY_ID)');
+  assert.match(credentialSource({}, {}), /^the default credential chain/);
+});
+
+// --------------------------------------------------------------- which stack
+
+test('an account with Security Agent in the pipeline keeps the pipeline layout', async () => {
+  const h = harness(fullySetUp(), { tty: false });
+  try {
+    assert.equal(await enableSecurity(opts({ dryRun: true }), h.deps), 0);
+    assert.match(h.out(), /Stack: {7}PrismD1MetricsPipeline \(this account already hosts Security Agent in PrismD1MetricsPipeline, so that stack is kept\)/);
+    assert.deepEqual(h.contexts, [{ enableSecurityAgent: 'true' }]);
+  } finally { h.cleanup(); }
+});
+
+test('a pipeline deployed without Security Agent is left alone; the standalone stack is used', async () => {
+  const s = emptyAccount(); s.stack = pipelineWithoutSa();
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 0);
+    assert.deepEqual(h.targets.map((t) => t.stack), [STANDALONE_STACK]);
+    assert.deepEqual(h.state.stack, pipelineWithoutSa(), 'pipeline not redeployed');
+    assert.match(h.out(), /PrismD1MetricsPipeline is deployed without them and is not touched/);
+  } finally { h.cleanup(); }
+});
+
+test('the standalone layout is re-used, re-runs change nothing, and drift redeploys it', async () => {
+  const s = fullySetUp(); s.stack = null; s.standalone = standaloneTemplate();
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts(), h.deps), 0);
+    assert.match(h.out(), /Already set up: nothing to change\./);
+    assert.equal(h.targets.length, 0);
+  } finally { h.cleanup(); }
+  const s2 = fullySetUp(); s2.stack = null; s2.standalone = standaloneTemplate();
+  const h2 = harness(s2, { synthStandalone: standaloneTemplate({ B: 2 }) });
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h2.deps), 0);
+    assert.match(h2.out(), /0 to add, 1 to change, 0 to remove/);
+    assert.deepEqual(h2.targets.map((t) => t.stack), [STANDALONE_STACK]);
+  } finally { h2.cleanup(); }
+});
+
+test('an agent space no stack manages stops the run instead of creating a second one', async () => {
+  const s = emptyAccount(); s.spaces = [{ agentSpaceId: 'as-manual', name: 'prism-d1-security' }];
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 1);
+    assert.match(h.out(), /an agent space named prism-d1-security exists, but neither PrismD1MetricsPipeline nor PrismD1SecurityAgent manages it/);
+    assert.equal(h.targets.length, 0);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+});
+
+test('both layouts present is refused', async () => {
+  const s = fullySetUp(); s.standalone = standaloneTemplate();
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 1);
+    assert.match(h.out(), /both PrismD1MetricsPipeline and PrismD1SecurityAgent hold Security Agent resources/);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+});
+
+test('--context cannot switch the layout: the mode key is set by the command', async () => {
+  const h = harness(emptyAccount());
+  try {
+    assert.equal(await enableSecurity(opts({ dryRun: true, context: ['enableSecurityAgent=true', 'securityAgentKmsKeyArn=arn:aws:kms:us-west-2:111122223333:key/k'] }), h.deps), 0);
+    assert.deepEqual(h.contexts, [{ securityAgentKmsKeyArn: 'arn:aws:kms:us-west-2:111122223333:key/k', securityAgentStandalone: 'true' }]);
+  } finally { h.cleanup(); }
 });

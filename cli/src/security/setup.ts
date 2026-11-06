@@ -25,7 +25,10 @@ import { cliVersionOk, explainAwsError, MIN_AWS_CLI_TEXT, redact } from './error
 import { readSecurityMarker, writeSecurityMarker } from './marker.js';
 import { codeReviewParam, codeReviewTitle, repoIdFromRemote, repoSlug, repoZipKey, SSM_PREFIX } from './repo.js';
 
-export const STACK_NAME = 'PrismD1MetricsPipeline';
+/** Hosts Security Agent when deployed with enableSecurityAgent=true (the original layout). */
+export const PIPELINE_STACK = 'PrismD1MetricsPipeline';
+/** The standalone stack (infra context securityAgentStandalone=true): Security Agent only. */
+export const STANDALONE_STACK = 'PrismD1SecurityAgent';
 export const AGENT_SPACE_NAME = 'prism-d1-security';
 export const SERVICE_ROLE_NAME = `prism-d1-security-agent-${AGENT_SPACE_NAME}`;
 export const PARAM_AGENT_SPACE = `${SSM_PREFIX}/agent-space-id`;
@@ -35,8 +38,10 @@ export const PARAM_SERVICE_ROLE = `${SSM_PREFIX}/service-role-arn`;
 export const LEGACY_PARAM_CODE_REVIEW = `${SSM_PREFIX}/code-review-id`;
 
 export interface SecurityOptions {
+  /** Unset: the standard AWS credential chain, and no --profile is passed anywhere. */
   profile?: string;
-  region: string;
+  /** Unset: resolved like the AWS CLI does (see resolveRegion). */
+  region?: string;
   yes?: boolean;
   dryRun?: boolean;
   status?: boolean;
@@ -46,18 +51,24 @@ export interface SecurityOptions {
   context?: string[];
 }
 
+/** Where CDK runs: the account from STS and the resolved region (CDK_DEFAULT_*). */
+export interface CdkEnv { account: string; region: string }
+
 export interface CdkRunner {
   /** `cdk synth -o outDir -c ...` for the whole app. */
-  synth(outDir: string, context: Record<string, string>, account: string): RunResult;
+  synth(outDir: string, context: Record<string, string>, env: CdkEnv): RunResult;
   /** `cdk diff --app outDir <stack>`; output is the full text. */
-  diff(outDir: string, account: string): { ok: boolean; output: string };
+  diff(outDir: string, stack: string, env: CdkEnv): { ok: boolean; output: string };
   /** `cdk deploy --app outDir <stack> --exclusively`, attached to the terminal. */
-  deploy(outDir: string, account: string, opts: { approveAll: boolean }): boolean;
+  deploy(outDir: string, stack: string, env: CdkEnv, opts: { approveAll: boolean }): boolean;
 }
 
 export interface Deps {
-  /** `aws <args>` with --region/--profile and --output json applied. */
-  aws(args: string[]): AwsResult;
+  /** `aws <args> --region <region>` with --output json, plus --profile only when one was given. */
+  aws(args: string[], region: string): AwsResult;
+  /** `aws configure get region [--profile p]`: the configured region, or null. Local, no AWS call. */
+  configRegion(profile?: string): string | null;
+  env: NodeJS.ProcessEnv;
   awsVersion(): string | null;
   cdk: CdkRunner;
   /** `git <args>` in the working directory. */
@@ -90,7 +101,7 @@ export const calls = {
 
 const quote = (a: string) => (/^[A-Za-z0-9_./:=@,<>+-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
 
-function display(args: string[], opts: SecurityOptions): string {
+function display(args: string[], opts: Resolved): string {
   return ['aws', ...args, '--region', opts.region, ...(opts.profile ? ['--profile', opts.profile] : [])].map(quote).join(' ');
 }
 
@@ -103,8 +114,11 @@ export function isWriteCall(args: string[]): boolean {
 // ---------------------------------------------------------------------------
 // Read helpers
 // ---------------------------------------------------------------------------
+/** Options after region resolution: every AWS and CDK call uses this region. */
+type Resolved = SecurityOptions & { region: string; regionSource: string };
+
 interface Ctx {
-  opts: SecurityOptions;
+  opts: Resolved;
   deps: Deps;
   cliVersion: string | null;
   readOnly: boolean;
@@ -113,7 +127,7 @@ interface Ctx {
 /** Runs a call; on failure either returns the result (expected codes) or aborts with an explained message. */
 function call(ctx: Ctx, args: string[], expected: string[] = []): AwsResult {
   if (ctx.readOnly && isWriteCall(args)) throw new Error(`internal: write call in read-only mode: ${args.slice(0, 2).join(' ')}`);
-  const r = ctx.deps.aws(args);
+  const r = ctx.deps.aws(args, ctx.opts.region);
   if (r.ok) return r;
   if (expected.includes(r.errorCode) || expected.some((e) => r.raw.includes(e))) return r;
   throw new Abort(explainAwsError(args, r.raw, ctx.cliVersion).message);
@@ -131,12 +145,54 @@ function identity(ctx: Ctx): Identity {
   const account = String(r.json?.Account || '');
   if (!account) throw new Abort('Failed to get account ID. Check your AWS credentials.');
   // The alias is a nicety for the confirmation; a caller without iam:ListAccountAliases still proceeds.
-  const a = ctx.deps.aws(['iam', 'list-account-aliases']);
+  const a = ctx.deps.aws(['iam', 'list-account-aliases'], ctx.opts.region);
   const alias = a.ok && Array.isArray(a.json?.AccountAliases) && a.json.AccountAliases[0] ? String(a.json.AccountAliases[0]) : null;
   return { account, arn: String(r.json?.Arn || ''), alias };
 }
 
 const accountLabel = (id: Identity) => `${id.account}${id.alias ? ` (${id.alias})` : ' (no account alias)'}`;
+
+/**
+ * The region, resolved in the AWS CLI's order: --region, AWS_REGION,
+ * AWS_DEFAULT_REGION, then the profile's configured region (the --profile
+ * profile, else AWS_PROFILE, else default). Null when none is set.
+ */
+export function resolveRegion(opts: SecurityOptions, deps: Pick<Deps, 'env' | 'configRegion'>): { region: string; source: string } | null {
+  if (opts.region) return { region: opts.region, source: '--region' };
+  for (const k of ['AWS_REGION', 'AWS_DEFAULT_REGION']) {
+    const v = deps.env[k]?.trim();
+    if (v) return { region: v, source: k };
+  }
+  const v = deps.configRegion(opts.profile)?.trim();
+  const which = opts.profile ? `profile ${opts.profile}` : deps.env.AWS_PROFILE ? `profile ${deps.env.AWS_PROFILE} (AWS_PROFILE)` : 'the default profile';
+  return v ? { region: v, source: `region configured for ${which}` } : null;
+}
+
+export const NO_REGION_MESSAGE = 'No AWS region is set. Pass --region <region>, or set AWS_REGION, or configure one with "aws configure set region <region>".';
+
+/** Where the credentials come from, as far as can be told without reading them. */
+export function credentialSource(opts: SecurityOptions, env: NodeJS.ProcessEnv): string {
+  if (opts.profile) return `profile ${opts.profile} (--profile)`;
+  if (env.AWS_PROFILE) return `profile ${env.AWS_PROFILE} (AWS_PROFILE)`;
+  if (env.AWS_ACCESS_KEY_ID) return 'environment variables (AWS_ACCESS_KEY_ID)';
+  if (env.AWS_WEB_IDENTITY_TOKEN_FILE) return 'web identity token (AWS_WEB_IDENTITY_TOKEN_FILE)';
+  if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI || env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) return 'container credentials';
+  return 'the default credential chain (default profile, SSO, or an instance role)';
+}
+
+export const DEPLOY_NOTICE = [
+  'prism-cli enable security deploys AWS resources into the AWS account your credentials point to:',
+  'an AWS Security Agent space, an IAM service role and policies, an encrypted S3 scan bucket and SSM',
+  'parameters. These may incur cost. It shows the account, a diff and the plan, and asks before any change.',
+];
+
+function printIdentity(ctx: Ctx, id: Identity): void {
+  const { deps, opts } = ctx;
+  deps.log(`Account:     ${accountLabel(id)}`);
+  deps.log(`Caller:      ${id.arn || 'unknown'}`);
+  deps.log(`Region:      ${opts.region} (${opts.regionSource})`);
+  deps.log(`Credentials: ${credentialSource(opts, deps.env)}`);
+}
 
 export interface RepoCtx { root: string; id: string; slug: string; title: string; param: string; zipKey: string }
 
@@ -161,6 +217,8 @@ export function resolveRepo(opts: SecurityOptions, deps: Deps): RepoCtx | { erro
 // Stack
 // ---------------------------------------------------------------------------
 export interface StackPlan {
+  stack: string;
+  cdkEnv: CdkEnv;
   deployed: boolean;
   status: string | null;
   diff: TemplateDiff;
@@ -170,63 +228,106 @@ export interface StackPlan {
   diffFile: string | null;
 }
 
-function parseContext(pairs: string[] = []): Record<string, string> {
+/** CDK context that selects each layout; the other key is removed so the two can never combine. */
+const MODE_CONTEXT = { pipeline: 'enableSecurityAgent', standalone: 'securityAgentStandalone' } as const;
+
+function parseContext(pairs: string[] = [], mode: Mode): Record<string, string> {
   const ctx: Record<string, string> = {};
   for (const p of pairs) {
     const m = /^([A-Za-z0-9_:@./-]+)=(.*)$/.exec(p);
     if (!m) throw new Abort(`--context must be key=value, got "${p}"`);
     ctx[m[1]] = m[2];
   }
-  ctx.enableSecurityAgent = 'true';
+  delete ctx[MODE_CONTEXT.pipeline];
+  delete ctx[MODE_CONTEXT.standalone];
+  ctx[MODE_CONTEXT[mode]] = 'true';
   return ctx;
 }
 
-function describeStack(ctx: Ctx): { deployed: boolean; status: string | null } {
-  const r = call(ctx, ['cloudformation', 'describe-stacks', '--stack-name', STACK_NAME], ['does not exist']);
-  if (!r.ok) return { deployed: false, status: null };
-  return { deployed: true, status: String(r.json?.Stacks?.[0]?.StackStatus || 'UNKNOWN') };
-}
+interface StackState { name: string; deployed: boolean; status: string | null; template: CfnTemplate | null; hasSecurityAgent: boolean }
 
-function deployedTemplate(ctx: Ctx): CfnTemplate | null {
-  const r = call(ctx, ['cloudformation', 'get-template', '--stack-name', STACK_NAME, '--template-stage', 'Original']);
-  const body = r.json?.TemplateBody;
-  if (body && typeof body === 'object') return body;
-  if (typeof body === 'string') {
-    try { return JSON.parse(body); } catch { throw new Abort(`the deployed ${STACK_NAME} template is not JSON; cannot compare it`); }
+function readStack(ctx: Ctx, name: string): StackState {
+  const r = call(ctx, ['cloudformation', 'describe-stacks', '--stack-name', name], ['does not exist']);
+  if (!r.ok) return { name, deployed: false, status: null, template: null, hasSecurityAgent: false };
+  const status = String(r.json?.Stacks?.[0]?.StackStatus || 'UNKNOWN');
+  const t = call(ctx, ['cloudformation', 'get-template', '--stack-name', name, '--template-stage', 'Original']);
+  let template: CfnTemplate | null = null;
+  const body = t.json?.TemplateBody;
+  if (body && typeof body === 'object') template = body;
+  else if (typeof body === 'string') {
+    try { template = JSON.parse(body); } catch { throw new Abort(`the deployed ${name} template is not JSON; cannot compare it`); }
   }
-  return null;
+  const hasSecurityAgent = Object.values(template?.Resources ?? {}).some((x) => x.Type === 'AWS::SecurityAgent::AgentSpace');
+  return { name, deployed: true, status, template, hasSecurityAgent };
 }
 
-function planStack(ctx: Ctx, id: Identity): StackPlan {
+/** pipeline: Security Agent inside PrismD1MetricsPipeline. standalone: PrismD1SecurityAgent. */
+export type Mode = 'pipeline' | 'standalone';
+
+export interface Target { mode: Mode; stack: StackState; why: string; pipeline: StackState }
+
+/**
+ * Which stack holds Security Agent in this account and region. Never both:
+ * an account that already hosts it in the pipeline keeps that layout (no
+ * second agent space, nothing moved); otherwise the standalone stack is used.
+ * An agent space named like ours that neither stack owns stops the run.
+ */
+export function chooseTarget(ctx: Ctx, spaces: { agentSpaceId: string; name: string }[]): Target {
+  const pipeline = readStack(ctx, PIPELINE_STACK);
+  const standalone = readStack(ctx, STANDALONE_STACK);
+  if (pipeline.hasSecurityAgent && standalone.hasSecurityAgent) {
+    throw new Abort(`both ${PIPELINE_STACK} and ${STANDALONE_STACK} hold Security Agent resources in this account and region, which should be impossible (they share names and exports). Fix this in CloudFormation before running enable security.`);
+  }
+  if (pipeline.hasSecurityAgent) {
+    return { mode: 'pipeline', stack: pipeline, pipeline, why: `this account already hosts Security Agent in ${PIPELINE_STACK}, so that stack is kept` };
+  }
+  if (standalone.deployed) {
+    return { mode: 'standalone', stack: standalone, pipeline, why: `this account uses the standalone ${STANDALONE_STACK} stack` };
+  }
+  if (spaces.some((s) => s.name === AGENT_SPACE_NAME)) {
+    throw new Abort(`an agent space named ${AGENT_SPACE_NAME} exists, but neither ${PIPELINE_STACK} nor ${STANDALONE_STACK} manages it. Deploying would create a second one; remove it or bring it under CloudFormation first.`);
+  }
+  return {
+    mode: 'standalone', stack: standalone, pipeline,
+    why: `no Security Agent resources found, so the standalone ${STANDALONE_STACK} stack is used${pipeline.deployed ? ` (${PIPELINE_STACK} is deployed without them and is not touched)` : ''}`,
+  };
+}
+
+function planStack(ctx: Ctx, id: Identity, target: Target): StackPlan {
   const { deps, opts } = ctx;
-  const st = describeStack(ctx);
-  if (st.status && /_IN_PROGRESS$/.test(st.status)) throw new Abort(`stack ${STACK_NAME} is busy (${st.status}); wait for it to finish and re-run`);
-  const deployed = st.deployed ? deployedTemplate(ctx) : null;
+  const st = target.stack;
+  const name = st.name;
+  if (st.status && /_IN_PROGRESS$/.test(st.status)) throw new Abort(`stack ${name} is busy (${st.status}); wait for it to finish and re-run`);
 
   const dir = deps.makeTempDir();
   const assemblyDir = join(dir, 'cdk.out');
-  deps.log(`Synthesizing the CDK app with enableSecurityAgent=true (local, no AWS writes)...`);
-  const s = deps.cdk.synth(assemblyDir, parseContext(opts.context), id.account);
+  const context = parseContext(opts.context, target.mode);
+  const cdkEnv = { account: id.account, region: opts.region };
+  deps.log(`Synthesizing the CDK app with ${MODE_CONTEXT[target.mode]}=true (local, no AWS writes)...`);
+  const s = deps.cdk.synth(assemblyDir, context, cdkEnv);
   if (!s.ok) throw new Abort(`cdk synth failed:\n${redact(s.stderr).split('\n').slice(-15).join('\n')}`);
-  const tplPath = join(assemblyDir, `${STACK_NAME}.template.json`);
-  if (!existsSync(tplPath)) throw new Abort(`cdk synth produced no ${STACK_NAME} template`);
+  const tplPath = join(assemblyDir, `${name}.template.json`);
+  if (!existsSync(tplPath)) throw new Abort(`cdk synth produced no ${name} template`);
   const synthesized = JSON.parse(readFileSync(tplPath, 'utf8')) as CfnTemplate;
-  const diff = diffTemplates(deployed, synthesized, STACK_NAME);
+  // Every resource of the standalone stack is a Security Agent resource.
+  const diff = diffTemplates(st.template, synthesized, name, target.mode === 'standalone' ? () => true : undefined);
 
   let diffFile: string | null = null;
-  const full = deps.cdk.diff(assemblyDir, id.account);
+  const full = deps.cdk.diff(assemblyDir, name, cdkEnv);
   if (full.output) {
     diffFile = join(dir, 'cdk-diff.txt');
     writeFileSync(diffFile, redact(full.output));
   }
 
   let needsDeploy: boolean, reason: string;
-  if (!st.deployed) { needsDeploy = true; reason = `${STACK_NAME} is not deployed in this account and region; deploying it creates the whole metrics pipeline stack, with the Security Agent resources`; }
-  else if (!diff.deployedHasSecurityAgent) { needsDeploy = true; reason = `${STACK_NAME} is deployed without the Security Agent resources`; }
-  else if (diff.touchesSecurityAgent) { needsDeploy = true; reason = 'the deployed Security Agent resources differ from the local infra code (drift)'; }
-  else if (diff.changes.length) { needsDeploy = false; reason = `the Security Agent resources are up to date; the other ${diff.changes.length} change(s) in ${STACK_NAME} are not deployed by this command (run cdk deploy yourself if you want them)`; }
+  if (target.mode === 'standalone') {
+    if (!st.deployed) { needsDeploy = true; reason = `${name} is not deployed in this account and region; it holds only the Security Agent resources`; }
+    else if (diff.changes.length) { needsDeploy = true; reason = 'the deployed Security Agent resources differ from the local infra code (drift)'; }
+    else { needsDeploy = false; reason = 'up to date'; }
+  } else if (diff.touchesSecurityAgent) { needsDeploy = true; reason = 'the deployed Security Agent resources differ from the local infra code (drift)'; }
+  else if (diff.changes.length) { needsDeploy = false; reason = `the Security Agent resources are up to date; the other ${diff.changes.length} change(s) in ${name} are not deployed by this command (run cdk deploy yourself if you want them)`; }
   else { needsDeploy = false; reason = 'up to date'; }
-  return { deployed: st.deployed, status: st.status, diff, needsDeploy, reason, assemblyDir, diffFile };
+  return { stack: name, deployed: st.deployed, status: st.status, diff, needsDeploy, reason, assemblyDir, diffFile, cdkEnv };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +363,7 @@ function md5(path: string): string {
 }
 
 /** Reads everything and decides each item. Makes no writes. */
-function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, stackReady: boolean): Service {
+function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, stackReady: boolean, stackName: string): Service {
   const items: PlanItem[] = [];
   const conventionRole = `arn:aws:iam::${id.account}:role/${SERVICE_ROLE_NAME}`;
   const svc: Service = { agentSpaceId: null, scanBucket: null, serviceRoleArn: conventionRole, app: null, appCount: 0, review: null, ssmValue: null, zip: null, remoteEtag: null, items };
@@ -287,7 +388,7 @@ function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, 
   svc.serviceRoleArn = getParam(ctx, PARAM_SERVICE_ROLE) || conventionRole;
   const spaces: any[] = call(ctx, ['securityagent', 'list-agent-spaces']).json?.agentSpaceSummaries || [];
   const space = spaces.find((s) => s.agentSpaceId === svc.agentSpaceId) || spaces.find((s) => s.name === AGENT_SPACE_NAME);
-  if (!space) throw new Abort(`${STACK_NAME} is deployed but no agent space named ${AGENT_SPACE_NAME} was found (SSM ${PARAM_AGENT_SPACE}: ${svc.agentSpaceId ?? 'missing'}). Check the stack in the CloudFormation console.`);
+  if (!space) throw new Abort(`${stackName} is deployed but no agent space named ${AGENT_SPACE_NAME} was found (SSM ${PARAM_AGENT_SPACE}: ${svc.agentSpaceId ?? 'missing'}). Check the stack in the CloudFormation console.`);
   if (svc.agentSpaceId && space.agentSpaceId !== svc.agentSpaceId) {
     throw new Abort(`SSM ${PARAM_AGENT_SPACE} holds ${svc.agentSpaceId}, which is not an agent space here; ${AGENT_SPACE_NAME} is ${space.agentSpaceId}. The stack owns that parameter, so redeploy it rather than editing the value.`);
   }
@@ -312,7 +413,7 @@ function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, 
   }
 
   if ('error' in repo) { items.push({ key: 'code-review', label: 'Code review', state: 'skip', detail: repo.error, calls: [] }); return svc; }
-  if (!svc.scanBucket) throw new Abort(`SSM ${PARAM_SCAN_BUCKET} is missing although ${STACK_NAME} has the Security Agent resources; redeploy the stack.`);
+  if (!svc.scanBucket) throw new Abort(`SSM ${PARAM_SCAN_BUCKET} is missing although ${stackName} has the Security Agent resources; redeploy the stack.`);
 
   // Code review for this repo: the SSM pointer if it is still valid, else one with the CI title.
   svc.ssmValue = getParam(ctx, repo.param);
@@ -364,10 +465,10 @@ const STATE_WORD: Record<ItemState, string> = { ok: 'ok', create: 'create', upda
 function printPlan(ctx: Ctx, stack: StackPlan, svc: Service): void {
   const { deps, opts } = ctx;
   deps.log('');
-  for (const l of formatDiff(stack.diff, STACK_NAME)) deps.log(l);
+  for (const l of formatDiff(stack.diff, stack.stack)) deps.log(l);
   if (stack.diffFile) deps.log(`  Full cdk diff: ${stack.diffFile}`);
   deps.log(`  Deploy: ${stack.needsDeploy ? 'yes' : 'no'} (${stack.reason})`);
-  if (stack.needsDeploy) deps.log(`    cdk deploy --app ${stack.assemblyDir} ${STACK_NAME} --exclusively${opts.profile ? ` --profile ${opts.profile}` : ''}`);
+  if (stack.needsDeploy) deps.log(`    cdk deploy --app ${stack.assemblyDir} ${stack.stack} --exclusively${opts.profile ? ` --profile ${opts.profile}` : ''}  (CDK_DEFAULT_REGION=${opts.region})`);
   deps.log('');
   deps.log('Security Agent:');
   for (const it of svc.items) {
@@ -439,20 +540,32 @@ function preflight(ctx: Ctx): Identity {
 }
 
 /** Runs `enable security`. Returns the process exit code. */
-export async function enableSecurity(opts: SecurityOptions, deps: Deps): Promise<number> {
-  const ctx: Ctx = { opts, deps, cliVersion: deps.awsVersion(), readOnly: !!(opts.dryRun || opts.status) };
+export async function enableSecurity(input: SecurityOptions, deps: Deps): Promise<number> {
+  const readOnly = !!(input.dryRun || input.status);
+  // Before any AWS call: what this command does, or that this run changes nothing.
+  if (input.status) deps.log('Read-only status check (--status): nothing will be changed.');
+  else if (input.dryRun) deps.log('Dry run (--dry-run): every lookup runs, nothing will be changed.');
+  else for (const l of DEPLOY_NOTICE) deps.log(l);
+  deps.log('');
+
+  const r = resolveRegion(input, deps);
+  if (!r) { deps.log(`Error: ${NO_REGION_MESSAGE}`); return 1; }
+  const opts: Resolved = { ...input, region: r.region, regionSource: r.source };
+  const ctx: Ctx = { opts, deps, cliVersion: deps.awsVersion(), readOnly };
   try {
     if (opts.status) return securityStatus(ctx);
     const id = preflight(ctx);
+    printIdentity(ctx, id);
     const repo = resolveRepo(opts, deps);
-    deps.log(`Account ${accountLabel(id)}, region ${opts.region}${opts.profile ? `, profile ${opts.profile}` : ''}`);
-    deps.log('error' in repo ? `Repo: ${repo.error}` : `Repo: ${repo.id} (code review slug ${repo.slug})`);
+    deps.log('error' in repo ? `Repo:        ${repo.error}` : `Repo:        ${repo.id} (code review slug ${repo.slug})`);
     // Probe the securityagent commands before the slow synth, so an old CLI fails fast.
-    call(ctx, ['securityagent', 'list-agent-spaces']);
+    const spaces: any[] = call(ctx, ['securityagent', 'list-agent-spaces']).json?.agentSpaceSummaries || [];
 
-    const stack = planStack(ctx, id);
-    const stackReady = stack.deployed && stack.diff.deployedHasSecurityAgent;
-    let svc = planService(ctx, id, repo, stackReady);
+    const target = chooseTarget(ctx, spaces);
+    deps.log(`Stack:       ${target.stack.name} (${target.why})`);
+    const stack = planStack(ctx, id, target);
+    const stackReady = target.stack.hasSecurityAgent;
+    let svc = planService(ctx, id, repo, stackReady, target.stack.name);
     printPlan(ctx, stack, svc);
     deps.log('');
 
@@ -463,16 +576,16 @@ export async function enableSecurity(opts: SecurityOptions, deps: Deps): Promise
       return finish(ctx, id, repo, svc.agentSpaceId, svc.app?.id ?? '', svc.review?.id ?? null);
     }
 
-    const what = stack.needsDeploy ? `deploy ${STACK_NAME} and apply the Security Agent changes above` : 'apply the Security Agent changes above';
+    const what = stack.needsDeploy ? `deploy ${stack.stack} and apply the Security Agent changes above` : 'apply the Security Agent changes above';
     if (!(await confirm(ctx, id, `${what[0].toUpperCase()}${what.slice(1)} in account ${accountLabel(id)}, region ${opts.region}?`))) {
       deps.log('Nothing was changed.');
       return 1;
     }
 
     if (stack.needsDeploy) {
-      deps.log(`Deploying ${STACK_NAME}...`);
-      if (!deps.cdk.deploy(stack.assemblyDir, id.account, { approveAll: !!opts.yes })) throw new Abort('cdk deploy failed (see the output above). Nothing after the deploy was attempted.');
-      svc = planService(ctx, id, repo, true);
+      deps.log(`Deploying ${stack.stack}...`);
+      if (!deps.cdk.deploy(stack.assemblyDir, stack.stack, stack.cdkEnv, { approveAll: !!opts.yes })) throw new Abort('cdk deploy failed (see the output above). Nothing after the deploy was attempted.');
+      svc = planService(ctx, id, repo, true, stack.stack);
       deps.log('After the deploy:');
       for (const it of svc.items) deps.log(`  [${STATE_WORD[it.state]}] ${it.label}: ${it.detail}`);
     }
@@ -531,7 +644,7 @@ function securityStatus(ctx: Ctx): number {
   const rows: [Mark, string, string][] = [];
   const add = (m: Mark, label: string, detail: string) => rows.push([m, label, detail]);
   const print = () => {
-    deps.log(`Security Agent status (${opts.region}${opts.profile ? `, profile ${opts.profile}` : ''}):`);
+    deps.log(`Security Agent status (region ${opts.region}, ${opts.regionSource}; credentials: ${credentialSource(opts, deps.env)}):`);
     for (const [m, l, d] of rows) deps.log(`  [${m}] ${l}: ${d}`);
   };
   let id: Identity;
@@ -540,13 +653,15 @@ function securityStatus(ctx: Ctx): number {
     print();
     return 1;
   }
-  add('ok', 'Credentials', `account ${accountLabel(id)}`);
+  add('ok', 'Credentials', `account ${accountLabel(id)}, caller ${id.arn || 'unknown'}`);
   const repo = resolveRepo(opts, deps);
   try {
-    const st = describeStack(ctx);
-    const tpl = st.deployed ? deployedTemplate(ctx) : null;
-    const hasSa = !!tpl && Object.values(tpl.Resources ?? {}).some((r) => r.Type === 'AWS::SecurityAgent::AgentSpace');
-    add(st.deployed && hasSa ? 'ok' : 'missing', 'Stack', !st.deployed ? `${STACK_NAME} not deployed` : `${STACK_NAME} ${st.status}${hasSa ? ', with the Security Agent resources' : ', WITHOUT the Security Agent resources'}`);
+    const pipe = readStack(ctx, PIPELINE_STACK);
+    const solo = readStack(ctx, STANDALONE_STACK);
+    const host = pipe.hasSecurityAgent && solo.hasSecurityAgent ? null : pipe.hasSecurityAgent ? pipe : solo.hasSecurityAgent ? solo : undefined;
+    if (host === null) add('warn', 'Stack', `both ${PIPELINE_STACK} and ${STANDALONE_STACK} hold Security Agent resources (should be impossible)`);
+    else if (host) add('ok', 'Stack', `${host.name} ${host.status}, with the Security Agent resources${host === pipe ? ' (pipeline layout)' : ' (standalone layout)'}`);
+    else add('missing', 'Stack', `neither ${PIPELINE_STACK}${pipe.deployed ? ` (deployed, ${pipe.status}, without Security Agent)` : ' (not deployed)'} nor ${STANDALONE_STACK} holds Security Agent`);
 
     const spaceParam = getParam(ctx, PARAM_AGENT_SPACE);
     const spaces: any[] = call(ctx, ['securityagent', 'list-agent-spaces']).json?.agentSpaceSummaries || [];
