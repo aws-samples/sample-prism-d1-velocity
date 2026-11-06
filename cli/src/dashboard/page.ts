@@ -259,7 +259,7 @@ function setupPanel(data) {
   const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail, i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
   s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(data.machine.setup)));
   const repos = data.overview.setup, c = data.overview.counts;
-  s.append(el('h3', {}, 'Codewatch per repo (' + c.codewatch + ' of ' + c.repos + ' installed)'));
+  s.append(el('h3', {}, 'Per repo: codewatch (' + c.codewatch + ' of ' + c.repos + ' installed)'));
   const label = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'opted out' };
   const pillClass = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'skipped' };
   const rowOf = (r) => [
@@ -267,20 +267,28 @@ function setupPanel(data) {
     el('div', {}, pill(pillClass[r.status] || 'missing', (label[r.status] || r.status) + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
       r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail),
       r.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, r.fix)) : null),
+    securityCell(r.security),
   ];
   const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
   if (sg) s.append(suggestionCallout(sg));
   // Always shown: the current repo (installed or not) and every installed repo.
   const shown = repos.filter((r) => !r.collapsed);
   const hidden = repos.filter((r) => r.collapsed);
-  if (shown.length) s.append(table(['Repo', 'Codewatch'], shown.map(rowOf)));
+  if (shown.length) s.append(table(['Repo', 'Codewatch', 'Security Agent'], shown.map(rowOf)));
   else if (!hidden.length) s.append(el('p', { class: 'empty' }, 'No git repositories found under ' + txt(data.scope.root_display) + '.'));
   if (hidden.length) {
     s.append(el('details', { class: 'missing-group' },
       el('summary', {}, hidden.length + ' repo' + (hidden.length === 1 ? '' : 's') + ' without codewatch'),
-      table(['Repo', 'Codewatch'], hidden.map(rowOf))));
+      table(['Repo', 'Codewatch', 'Security Agent'], hidden.map(rowOf))));
   }
   return s;
+}
+
+/** Security Agent per repo, from the enable security marker (local evidence; the page makes no AWS calls). */
+function securityCell(sec) {
+  if (!sec) return el('span', { class: 'fix' }, '-');
+  return el('div', {}, pill(sec.status === 'ok' ? 'ok' : 'missing', sec.status), ' ', sec.status === 'ok' ? txt(sec.detail) : '',
+    sec.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, sec.fix)) : null);
 }
 
 function securityPanel(sec) {

@@ -7,13 +7,19 @@ const commandsDir = resolve(__dirname, 'commands');
 /** Files here register as top-level commands (`prism-cli <name>`), not as a group. */
 const TOP_LEVEL_DIR = '_top';
 
+/** An option may carry a commander parser (e.g. to collect a repeatable flag). */
+function addOption(cmd: any, opt: any) {
+  if (typeof opt.parser === 'function') cmd.option(opt.flags, opt.description, opt.parser, opt.default);
+  else cmd.option(opt.flags, opt.description, opt.default);
+}
+
 function attach(program: any, category: string, command: string, def: any) {
   // Reuse an existing category command if it was already created
   let categoryCmd = program.commands.find((c: any) => c.name() === category);
   if (!categoryCmd) categoryCmd = program.command(category).description(`${category} commands`);
   const sub = categoryCmd.command(command).description(def.description || command);
   if (def.options) {
-    for (const opt of def.options) sub.option(opt.flags, opt.description, opt.default);
+    for (const opt of def.options) addOption(sub, opt);
   }
   sub.action((opts: any) => def.action(opts));
 }
@@ -22,7 +28,7 @@ function attachTop(program: any, name: string, def: any) {
   if (program.commands.find((c: any) => c.name() === name)) return;
   const cmd = program.command(name).description(def.description || name);
   if (def.options) {
-    for (const opt of def.options) cmd.option(opt.flags, opt.description, opt.default);
+    for (const opt of def.options) addOption(cmd, opt);
   }
   cmd.action((opts: any) => def.action(opts));
 }

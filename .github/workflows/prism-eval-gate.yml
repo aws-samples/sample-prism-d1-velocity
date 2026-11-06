@@ -638,7 +638,7 @@ jobs:
 
             if [ -z "$CODE_REVIEW_ID" ]; then
               echo "::error::Could not create the Continuum Code Review resource: ${CR_OUTPUT}"
-              echo "  Run 'prism-cli securityagent setup' to create it manually."
+              echo "  Run 'prism-cli enable security' to create it manually."
               echo "scan_error=true" >> "$GITHUB_OUTPUT"
               echo "findings=-1" >> "$GITHUB_OUTPUT"
               exit 0

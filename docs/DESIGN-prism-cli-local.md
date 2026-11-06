@@ -29,7 +29,7 @@ These were agreed with the user before this doc was written.
    - `--json` prints the same data instead of serving it;
    - finds repos on its own: it scans the home directory (3 levels) for every git repo, wherever it is run from, and lists the current repo first.
 5. **`enable codewatch`** installs those hooks (spec and implementation below).
-6. **`enable security` is an open slot.** It is not an alias for codewatch. It will probably wrap the existing Security Agent setup (`securityagent setup`); see [`enable security`](#enable-security-open-slot).
+6. **`enable security` is the Security Agent setup.** It is not an alias for codewatch. It replaces `securityagent setup` with a scoped, confirmed, idempotent version; see [`enable security`](#enable-security-built) and [its implementation](#enable-security-implementation).
 
 ## How the new commands fit the CLI
 
@@ -45,7 +45,7 @@ Proposed layout:
 ```
 commands/
   _top/        version.ts, dashboard.ts          (new: top-level commands)
-  enable/      codewatch.ts (built), codeburn.ts, security.ts (open slot: likely wraps securityagent setup)
+  enable/      codewatch.ts (built), codeburn.ts, security.ts (built: Security Agent setup)
   export/      otel.ts
   install/     transformation-center.ts
   security/    design-review.ts, threat-model.ts, code-review.ts, pentest.ts, findings.ts
@@ -69,10 +69,9 @@ Aliases stay for at least one minor release after the new command ships, and the
 | Old | New | Status |
 |---|---|---|
 | `bootstrapper install-git-hooks` | `enable codewatch` | **Done:** deprecated alias. Old trailer flags are ignored. |
-| `securityagent setup` | `enable security` | Proposed alias (see the open slot below) |
+| `securityagent setup` | `enable security` | **Done:** deprecated alias with the same flags. It now asks before deploying (`--yes` for unattended runs). |
 | `git commit-trailers` | (none) | Kept, marked `[deprecated]`, because already-installed `prepare-commit-msg` hooks call it. Remove after one release. |
 | `bootstrapper setup-otel-sync` | `enable codeburn` | Proposed alias |
-| `securityagent setup` | `security` setup step (see below) | Proposed alias |
 | `workshop perform-pen-test` | `security pentest` (workshop target only) | Proposed alias |
 | `bedrock-protection scan-account` | `aws check` (Bedrock section) | Proposed alias |
 | `workshop verify-setup` | `dashboard` setup panel + `version` | Keep; reuse its checks |
@@ -94,10 +93,12 @@ The local git-hook gate. See [enable codewatch: implementation](#enable-codewatc
 - **Reuses:** `.gitleaks.toml` starter and `.prism/gitleaks-baseline.json` from `install-eval-harness` (the starter config is now a shared module both use); the review rules `install-eval-harness` installs; the hook backup convention of `install-git-hooks` (`<hook>.pre-prism`).
 - **New:** hooks, reviewer adapters, result schema and writer.
 
-### `enable security` (open slot)
-- **Not** codewatch, and deliberately not an alias for it, so the name stays free for the slide's own command.
-- **Likely reuses:** `securityagent setup` (deploys Security Agent infrastructure and creates the web console application) and `bootstrapper/security-agent/setup.sh`. That makes it the setup step for the Secure commands, and `securityagent setup` would become its alias.
-- **Open questions:** Is that the intended meaning? It needs AWS credentials, unlike the rest of Observe; does it belong under Observe or Secure on the slide?
+### `enable security` (built)
+- **Decided:** it is the Security Agent setup and the setup step for the Secure commands; `securityagent setup` is its deprecated alias. **Not** codewatch.
+- **Reuses:** the `securityagent setup` steps (deploy, agent space, application and role, repo snapshot, code review, SSM), made safe: only the pipeline stack is deployed, a diff and a confirmation come first, `--dry-run` and `--status` are read-only, and re-runs change nothing. `bootstrapper/security-agent/setup.sh` (the findings webhook config) is not used; it is a separate, older path.
+- **Fixes on the way:** the code review id goes to `/prism/continuum/code-review-id/<repo-slug>`, the parameter the eval gate reads (the old command wrote an unslugged name nothing read); code reviews are listed from `codeReviewSummaries` (the old code read `codeReviews`, which the API does not return); the agent space is matched by id or name, not taken as the first one listed.
+- **Writes locally:** `.prism/security.local.json` (per developer, never committed; added to `.git/info/exclude` when not already ignored), which the dashboard's setup checklist reads for its Security Agent column. `.prism/config.json` stays the committed team file.
+- **Open question:** Observe or Secure on the slide? It is the only Observe command that needs AWS credentials.
 
 ### `dashboard` (built on `feat/dashboard`)
 - **Code:** `cli/src/commands/_top/dashboard.ts` (top-level commands now live in `commands/_top/`), data collectors and server in `cli/src/dashboard/`.
@@ -140,7 +141,7 @@ The local git-hook gate. See [enable codewatch: implementation](#enable-codewatc
 All of these call AWS and need credentials; none run in hooks.
 
 ### Setup step
-- **Reuses:** `securityagent setup`, proposed to move to `enable security` (see the open slot under Observe).
+- **Built:** `prism-cli enable security` (see under Observe).
 - **Proposal:** `security` commands detect a missing agent space and print the one command to run (`prism-cli enable security`).
 
 ### `security design-review`, `security threat-model` (new)
@@ -252,9 +253,42 @@ Each run writes `.prism/results/<commit12|tree-<tree12>>-<UTC time>-<hook>-<kind
 
 `bootstrapper install-git-hooks` is now a **deprecated alias** for `enable codewatch` (chosen over a deprecation-only error so existing docs and scripts keep working). `enable codewatch` removes a PRISM `prepare-commit-msg` (identified by `AI-Origin`) and restores whatever it had backed up. `git commit-trailers` stays, marked deprecated, because hooks already installed in other repos call it. Not touched automatically: `~/.git-templates/hooks/prepare-commit-msg` (from the old `--global`) and the Claude Code `SessionStart` entry in `~/.claude/settings.json`; the alias prints a note for the template.
 
+## enable security: implementation
+
+Code: `cli/src/commands/enable/security.ts` (flags, real runners), `cli/src/security/` (`setup.ts` plan and apply, `cfn-diff.ts` template diff, `repo.ts` repo slug, `errors.ts` AWS error messages, `marker.ts` the `.prism/config.json` block). `cli/src/commands/securityagent/setup.ts` is the deprecated alias, built like `install-git-hooks`: a warning, then the same action with the same flags.
+
+### Flow
+0. **Notice and region:** before any AWS call, a notice that the command deploys a Security Agent space, an IAM service role and policies, an encrypted S3 scan bucket and SSM parameters into the account the credentials point to and may incur cost (`--status` and `--dry-run` print a one-line read-only notice). The region is `--region`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else `aws configure get region [--profile p]`; none resolving is a refusal. It is passed to every `aws` call and to CDK (`CDK_DEFAULT_REGION`, `AWS_DEFAULT_REGION`, `AWS_REGION`). `--profile` has no default and is passed only when given, so the standard credential chain applies. After STS, the account and alias, caller ARN, region and its source, and the credential source (from `--profile`, `AWS_PROFILE`, environment keys, or "the default chain"; credentials are never read) are printed.
+1. **Preflight:** `aws --version` must be v2.36 or later (the CI gate's own floor for the `securityagent` code review commands). `sts get-caller-identity` gives the account; `iam list-account-aliases` gives the alias when the caller may read it.
+2. **Repo:** `git rev-parse --show-toplevel` and the `origin` remote, normalized to `host/owner/name` with userinfo and ports dropped (`--repo` overrides). The slug, S3 key, SSM name and code review title are computed exactly as `prism-eval-gate.yml` computes them, so the gate finds what this command creates. Outside a git repo the account-level steps still run and the code review is skipped.
+3. **Stack:** `cdk synth -o <tmp>/cdk.out -c enableSecurityAgent=true [--context ...]` for the whole app (CDK has no per-stack synth), then a resource diff of `PrismD1MetricsPipeline.template.json` against `cloudformation get-template --template-stage Original`. `cdk diff --app <tmp>/cdk.out PrismD1MetricsPipeline --exclusively` still runs; its full text goes to `<tmp>/cdk-diff.txt`.
+4. **Service lookups:** the three CDK-owned SSM parameters, `list-agent-spaces` (matched by the SSM id, else by name), `list-applications` plus `get-application` (role check), `list-code-reviews` (by the SSM id, else by the gate's title), and for a missing code review `git archive HEAD` plus `s3api head-object` to compare the ETag with the archive's MD5.
+5. **Plan:** each item is ok, create, update, conflict, skip, or "after deploy" when the stack is not there yet. Every change prints its exact `aws ...` command (placeholders for ids that do not exist yet). `--dry-run` stops here. A guard refuses any write call in `--dry-run` and `--status`.
+6. **Confirm:** one prompt naming the account ID, alias and region; `--yes` skips it; no terminal and no `--yes` refuses. An SSM conflict asks again.
+7. **Apply:** `cdk deploy --app <tmp>/cdk.out PrismD1MetricsPipeline --exclusively`, the same assembly that was diffed. Interactively CDK keeps its default `--require-approval broadening`; with `--yes` it gets `never`, because `--yes` is the user's approval of the plan. Then, after a re-read: `create-application` and `update-application --role-arn` (the sequence the old command used), `s3api put-object` (single-part, so the ETag is the MD5), `create-code-review`, `ssm put-parameter` (`--overwrite` only for an approved conflict).
+8. **Marker:** `.prism/security.local.json` with `{ agentSpaceId, applicationId, codeReviewId, region, account, setupAt }`; `setupAt` is kept when nothing else changed, so an idempotent re-run leaves the file alone. Before writing, `git check-ignore` decides whether the path needs adding to `info/exclude` (`git rev-parse --path-format=absolute --git-path info/exclude`, so worktrees use their own file); `.gitignore` is never edited, and the line is never added twice. It is kept out of `.prism/config.json` because that file is committed for the team reviewer and the record holds the account ID. A legacy `security` block in `config.json` is still read (the local file wins), reported by `--status`, and moved on the next successful run: the new file is written first, then only the `security` key is removed, with the file's indent and trailing newline kept.
+
+### Which stack, and why
+**Two layouts, one per account.** `infra/lib/security-agent-resources.ts` holds the Security Agent resources (the `SecurityAgent` construct, the OIDC bucket-policy statement, the `ContinuumCiPolicy` managed policy and its output), and both stacks call it: `PrismD1MetricsPipeline` with `enableSecurityAgent=true` (the original layout, using `PrismDataKey`), and the new `PrismD1SecurityAgent` (`infra/lib/security-agent-stack.ts`) with its own rotating, retained KMS key `alias/prism-d1-security-agent-key`, or `securityAgentKmsKeyArn=<arn>` to import one. With `securityAgentStandalone=true` the app builds only that stack; with both flags it refuses to synthesize. Construct ids are relative to the stack, so the pipeline's synthesized templates (pipeline, API, dashboard, dummy account, `skipVpc`) are byte-identical before and after the extraction: existing deployments see no change.
+
+**Migration rule.** `enable security` reads both stacks. Security Agent in the pipeline: keep the pipeline layout. Standalone stack deployed: keep it. Neither: deploy the standalone stack, leaving any pipeline stack untouched. An agent space named `prism-d1-security` that neither stack owns, or both stacks holding the resources: stop. Nothing is ever moved between stacks, because moving would delete and recreate the agent space (and its code reviews) or need a CloudFormation resource import. Both layouts use the same fixed names and exports (`PrismD1SecurityAgentSpaceId`, `PrismD1SecurityAgentRoleArn`, `PrismD1SecurityAgentDomainIds` when domains are set, `PrismD1ContinuumScanBucket`), so consumers do not change and CloudFormation refuses a second copy.
+
+**What standalone-only loses.** `SecurityAgentProcessor` and the remediation tracker read the pipeline's tables and stay in the pipeline. The eval gate's code review works, but its findings events have no `prism-d1-metrics` bus to land on until the pipeline is deployed (without `enableSecurityAgent`); nothing is backfilled.
+
+**Pipeline layout detail (original analysis):** Every Security Agent resource is in `PrismD1MetricsPipeline` (the `SecurityAgent` construct, the `ContinuumCiPolicy` managed policy, and CDK's auto-delete provider for the scan bucket). Synthesized with and without `enableSecurityAgent=true` (skipVpc on, dummy account), `PrismD1Api` and `PrismD1Dashboard` are byte-identical and the pipeline stack only gains outputs, so deploying the pipeline stack alone cannot break its dependents. Deploy happens when the stack is missing, has no agent space, or a Security Agent resource differs; differences only elsewhere in the stack are listed and not deployed.
+
+### Deploy diff summary
+Counts of resources added, changed and removed, then by name every IAM and resource-policy change (IAM, bucket, queue, topic and event-bus policies, KMS keys, Lambda permissions), every security-group and network change, and every public endpoint (API Gateway, load balancers, CloudFront, function URLs, Cognito domains); other resources are counted by type. Modified means `Type`, `Properties`, `DependsOn` or `Condition` differ; `Metadata` and `AWS::CDK::Metadata` are ignored. Removals get a warning to pass the original `--context`.
+
+### Errors
+No credentials keeps the old first line ("Failed to get account ID. Check your AWS credentials."). An unknown `securityagent` command names v2.36 and the version found. An AccessDenied names the operation and the IAM action (from the error text, else derived from the argv). Everything printed is passed through a redactor for access keys, secret keys and session tokens.
+
+### Not in this version
+No uninstall or teardown: deleting an agent space, code reviews or the scan bucket needs its own design and explicit sign-off.
+
 ## Open questions
 
-1. **`enable security`:** confirm it wraps the Security Agent setup (`securityagent setup`), and whether it sits under Observe or Secure. (Resolved: codewatch is the git-hook gate.)
+1. **Decided: `enable security` is the Security Agent setup** (built; `securityagent setup` is its alias). Still open: does it sit under Observe or Secure on the slide?
 2. **transformation-center:** what is it and what does installing it do locally?
 3. **codeburn attribution:** with commit trailers retired, what does `codeburn sync push --attribution` attribute usage to, and should it stay on?
 4. **Decided: repo discovery is a home-directory scan.** The dashboard scans `~` (or `--root`) 3 levels deep from any working directory and lists every git repo; a registry is not needed for now.

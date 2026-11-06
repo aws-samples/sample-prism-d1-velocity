@@ -210,7 +210,7 @@ export class SecurityAgentConstruct extends Construct {
 
     // Log group for pen test results (Security Agent writes to /aws/securityagent/<space>/pt-<id>)
     // Note: we do NOT set logGroupName to avoid conflicts with pre-existing log groups
-    // created by prism-cli securityagent setup or the Security Agent service itself.
+    // created by prism-cli enable security or the Security Agent service itself.
     const pentestLogGroup = logs.LogGroup.fromLogGroupName(
       this, 'PentestLogGroup',
       `/aws/securityagent/${props.agentSpaceName}`,
@@ -298,10 +298,11 @@ export class SecurityAgentConstruct extends Construct {
     // Code Review resource — NOT created here in CDK.
     // CreateCodeReview requires assets.sourceCode pointing to
     // an existing ZIP of the repo (chicken-and-egg at deploy).
-    // Instead, `prism-cli securityagent setup` handles:
-    //   1. git archive → upload repo.zip to scan bucket
+    // Instead, `prism-cli enable security` (or the CI eval gate on its
+    // first run) handles, per repo:
+    //   1. git archive → upload repo/<repo-slug>/latest.zip to the scan bucket
     //   2. CreateCodeReview API call
-    //   3. Write code-review-id to SSM
+    //   3. Write /prism/continuum/code-review-id/<repo-slug> to SSM
     // The CDK only provisions the bucket + role + SSM scaffold.
     // -------------------------------------------------------
 
@@ -325,7 +326,7 @@ export class SecurityAgentConstruct extends Construct {
       tier: ssm.ParameterTier.STANDARD,
     });
 
-    // code-review-id is written by `prism-cli securityagent setup` (not CDK)
+    // code-review-id/<repo-slug> is written by `prism-cli enable security` (not CDK)
     // because CreateCodeReview needs an existing repo ZIP in S3 first.
 
     new ssm.StringParameter(this, 'ParamScanBucket', {

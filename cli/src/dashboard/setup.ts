@@ -14,6 +14,7 @@ import { globalHooksDir, globalStatus, isOptedOut, OPT_OUT_KEY, repoLocalHooksPa
 import { realpathSync } from 'node:fs';
 import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
+import { readSecurityMarker } from '../security/marker.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'missing';
 export interface CheckItem {
@@ -177,4 +178,29 @@ export function codewatchSetup(repo: string, deps: { pathEnv?: string; global?: 
   const detail = state.some((x) => x.old) ? 'hooks from before the codewatch rename'
     : have.length ? `only ${have.join(', ')} installed` : 'not installed';
   return { ...base, status: 'missing', detail, fix: enableCodewatchFix(repo) };
+}
+
+export interface SecuritySetup {
+  /** ok: `prism-cli enable security` finished here (its .prism/config.json marker). missing: no marker. */
+  status: 'ok' | 'missing';
+  detail: string;
+  /** Empty when ok. */
+  fix: string;
+}
+
+export function enableSecurityFix(repo: string): string {
+  return `cd ${shellPath(repo)} && prism-cli enable security`;
+}
+
+/**
+ * Security Agent per repo, from the marker `enable security` writes
+ * (.prism/security.local.json, else a legacy block in .prism/config.json). Local
+ * evidence only: the dashboard makes no AWS calls, so this says the setup ran
+ * here, not that the AWS resources still exist (`enable security --status` checks those).
+ */
+export function securitySetup(repo: string): SecuritySetup {
+  const m = readSecurityMarker(repo);
+  if (!m) return { status: 'missing', detail: 'not set up', fix: enableSecurityFix(repo) };
+  const when = m.setupAt ? `, set up ${m.setupAt.slice(0, 10)}` : '';
+  return { status: 'ok', detail: `code review ${m.codeReviewId} in account ${m.account} (${m.region})${when}`, fix: '' };
 }
