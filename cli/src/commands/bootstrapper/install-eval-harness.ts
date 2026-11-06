@@ -5,6 +5,9 @@ import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
 import { run } from '../../utils/exec.js';
 import { applyRegion, DEFAULT_REGION } from '../../utils/region.js';
+import { installGitleaksConfig as installGitleaksConfigShared } from '../../codewatch/gitleaks.js';
+import { ensureRulesFile } from '../../codewatch/rules.js';
+import { RULES_PATH } from '../../codewatch/config.js';
 
 /**
  * Copies a workflow asset into the repo with the region templated.
@@ -49,56 +52,11 @@ async function writeWorkflow(
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EVAL_SOURCE = getAssetPath(import.meta.url, 'bootstrapper/eval-harness');
 
-/**
- * Starter gitleaks config, written only when the repo has none.
- *
- * The secret-scan step in the workflow runs with or without this file --
- * gitleaks ships usable defaults. What the defaults do not know is which
- * credential-shaped strings in THIS repo are deliberate, so the first PR that
- * touches a test fixture fails the gate on a fake key. A team that hits that
- * with no obvious place to record the exception tends to delete the gate rather
- * than tune it, so the tuning surface ships up front and is documented inline.
- *
- * `useDefault = true` is what keeps this additive: without it, declaring a
- * config REPLACES the entire default ruleset and the gate silently stops
- * detecting anything it does not name explicitly.
- */
-const GITLEAKS_STARTER_CONFIG = `# gitleaks configuration for the PRISM eval gate.
-#
-# The gate scans only the commits a PR introduces, so anything flagged here is
-# something this PR added. Two ways to handle a false positive:
-#
-#   1. Allowlist the path or pattern below (preferred -- reviewable, and it
-#      keeps working as the file changes).
-#   2. Add an inline "gitleaks:allow" comment on the offending line.
-#
-# A real exposure is NOT a false positive: rotate the credential first, because
-# deleting it from the branch does not un-expose what was already pushed.
-
-[extend]
-# Keep gitleaks' built-in ruleset. Removing this line replaces the defaults
-# entirely rather than adding to them, which turns the gate into a no-op for
-# every credential type not restated in this file.
-useDefault = true
-
-[[allowlists]]
-description = "Test fixtures and documented examples"
-paths = [
-  '''(^|/)tests?/''',
-  '''(^|/)__fixtures__/''',
-  '''(^|/)__tests__/''',
-  '''\\.example($|\\.)''',
-]
-`;
-
 function installGitleaksConfig(gitRoot: string): void {
-  const dest = resolve(gitRoot, '.gitleaks.toml');
-  if (existsSync(dest)) {
-    console.log('✓ Kept existing .gitleaks.toml');
-    return;
-  }
-  writeFileSync(dest, GITLEAKS_STARTER_CONFIG);
-  console.log('✓ Installed .gitleaks.toml (allowlist starter)');
+  // Config text and write-if-missing logic are shared with `enable codewatch`,
+  // so the local pre-commit scan and the CI gate use the same allowlist.
+  if (installGitleaksConfigShared(gitRoot)) console.log('✓ Installed .gitleaks.toml (allowlist starter)');
+  else console.log('✓ Kept existing .gitleaks.toml');
 }
 
 /**
@@ -263,6 +221,13 @@ async function installKiroMode(
     console.log('✓ Installed .kiro/steering/code-review.md');
   }
 
+  // --- Shared, tool-neutral rule set ---
+  // The CI gate copies this over .kiro/steering/code-review.md before it runs,
+  // so the local pre-push review (enable codewatch) and CI use the same rules.
+  // Seeded from the steering file just installed or kept above.
+  const rulesOutcome = ensureRulesFile(gitRoot, steeringSrc);
+  console.log(`✓ ${rulesOutcome === 'kept' ? 'Kept' : 'Installed'} ${RULES_PATH} (shared by CI and local review)`);
+
   // --- Install workflow ---
   const workflowsDir = resolve(gitRoot, '.github/workflows');
   const workflowSrc = getAssetPath(import.meta.url, 'bootstrapper/github-workflows/prism-eval-gate-kiro.yml');
@@ -297,7 +262,7 @@ async function installKiroMode(
   console.log('  ✅ Eval gate installed (kiro-cli)');
   console.log('════════════════════════════════════════════════');
   console.log('\n  Gate:     kiro-cli headless review + gitleaks secret scan');
-  console.log('  Rules:    .kiro/steering/code-review.md');
+  console.log(`  Rules:    ${RULES_PATH} (CI syncs it into .kiro/steering/code-review.md)`);
   console.log('  Workflow: .github/workflows/prism-eval-gate.yml');
   console.log('\n  Required: Add KIRO_API_KEY as a GitHub repository secret');
   console.log('  Generate at: https://app.kiro.dev → Settings → API Keys');

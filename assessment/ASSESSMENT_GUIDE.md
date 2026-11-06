@@ -210,7 +210,7 @@ npx ts-node src/index.ts --repo /path/to/customer/repo --verbose
 
 ### Scoring Example: Commit Hygiene (15 pts)
 
-> **⚠️ KNOWN ISSUE — stale scoring:** The 'Commit Hygiene' category (15 points) scores `AI-Origin` git trailers and awards 3 bonus points for `AI-Model` trailers. However: (1) Git hooks that produce these trailers are being **deprecated** in this project in favour of OTEL-based attribution via `codeburn sync --attribution`, and (2) the report remediation text (see Report Generation section) recommends deploying hooks for an `AI-Confidence` trailer that was **never implemented** — no hook, CLI flag, or spec for this trailer exists. Point values are preserved as-is pending a scoring model revision.
+> **⚠️ KNOWN ISSUE — stale scoring:** The 'Commit Hygiene' category (15 points) scores `AI-Origin` git trailers and awards 3 bonus points for `AI-Model` trailers. However: (1) the git hook that produced these trailers is **retired** in this project in favour of OTEL-based attribution via `codeburn sync --attribution`, and (2) the report remediation text (see Report Generation section) recommends deploying hooks for an `AI-Confidence` trailer that was **never implemented** — no hook, CLI flag, or spec for this trailer exists. Point values are preserved as-is pending a scoring model revision.
 
 The scanner runs `git log --format='%B' -200` and counts AI-Origin trailers:
 
@@ -1199,7 +1199,7 @@ The `reports/report-generator.ts` produces the customer-facing assessment report
 
 ### Gap Analysis Remediation Text
 
-> **⚠️ KNOWN ISSUE — stale scoring:** The report generator's gap remediation for the 'Commit Hygiene' category recommends: *"Deploy git hooks for AI-Origin and AI-Confidence trailers."* This text has two problems: (1) Git hooks are being **deprecated** in this project in favour of OTEL-based attribution via `codeburn sync --attribution`, and (2) `AI-Confidence` was **never an implemented trailer** — no hook, spec, or code for it exists anywhere in the project. The remediation text should be updated to reference OTEL attribution once the scoring model revision is complete.
+> **⚠️ KNOWN ISSUE — stale scoring:** The report generator's gap remediation for the 'Commit Hygiene' category recommends: *"Deploy git hooks for AI-Origin and AI-Confidence trailers."* This text has two problems: (1) the trailer git hook is **retired** in this project in favour of OTEL-based attribution via `codeburn sync --attribution`, and (2) `AI-Confidence` was **never an implemented trailer** — no hook, spec, or code for it exists anywhere in the project. The remediation text should be updated to reference OTEL attribution once the scoring model revision is complete.
 
 ### Output Formats
 

@@ -1,0 +1,42 @@
+[
+ {
+  "RuleID": "aws-access-token",
+  "Description": "Identified a pattern that may indicate AWS credentials, risking unauthorized cloud resource access and data breaches on AWS platforms.",
+  "StartLine": 2,
+  "EndLine": 2,
+  "StartColumn": 16,
+  "EndColumn": 35,
+  "Match": "REDACTED",
+  "Secret": "REDACTED",
+  "File": "src/aws.ts",
+  "SymlinkFile": "",
+  "Commit": "",
+  "Entropy": 3.7,
+  "Author": "",
+  "Email": "",
+  "Date": "0001-01-01T00:00:00Z",
+  "Message": "",
+  "Tags": [],
+  "Fingerprint": "src/aws.ts:aws-access-token:2"
+ },
+ {
+  "RuleID": "generic-api-key",
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 3,
+  "EndLine": 3,
+  "StartColumn": 3,
+  "EndColumn": 60,
+  "Match": "secretAccessKey: \"REDACTED\"",
+  "Secret": "REDACTED",
+  "File": "src/aws.ts",
+  "SymlinkFile": "",
+  "Commit": "",
+  "Entropy": 4.8,
+  "Author": "",
+  "Email": "",
+  "Date": "0001-01-01T00:00:00Z",
+  "Message": "",
+  "Tags": [],
+  "Fingerprint": "src/aws.ts:generic-api-key:3"
+ }
+]

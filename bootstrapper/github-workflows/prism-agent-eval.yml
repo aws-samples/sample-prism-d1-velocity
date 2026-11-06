@@ -6,7 +6,8 @@
 #   - OIDC provider configured for GitHub Actions in your AWS account
 #   - IAM role with bedrock:InvokeModel and events:PutEvents permissions
 #   - Repository secret PRISM_METRICS_ROLE_ARN set to the OIDC role ARN
-#   - .prism/config.json committed to the repo (created by: bash prism-cli bootstrapper install-git-hooks)
+#   - .prism/config.json committed to the repo with a "team_id" key; add it by hand, e.g.
+#     {"team_id": "team-payments"} (prism-cli enable codewatch keeps existing keys in this file)
 #   - .prism/eval-harness/ installed (run: bash prism-cli bootstrapper install-eval-harness)
 #   - (Optional) Agent entry point supports --mock flag for dry-run execution
 

@@ -36,7 +36,7 @@ docs/               — GitHub Pages site + leader guide
 
 1. **Always start with a spec** — Write or reference a spec in `specs/` before coding
 2. **Emit metadata** — Any new component must emit structured events via the metrics schema
-3. **Tag AI origin** — Use `ai-origin: claude-code` or `ai-origin: kiro` in commit trailers
+3. **AI origin is automatic** — codeburn attribution records it; commit trailers are retired, so do not add `AI-Origin` trailers by hand
 4. **Run eval gates** — Bedrock Evaluations must pass before merging to main
 
 ### Spec-Driven Development Flow:

@@ -186,6 +186,14 @@ prism-eval-gate:
       elif [ -z "${BASE_SHA}" ] || [ -z "${HEAD_SHA}" ]; then
         echo "⚠️  Missing base/head SHA — review skipped."
       else
+        # Shared rule set (also used by the local pre-push review). kiro-cli
+        # loads rules from .kiro/steering/, so sync it in for this run.
+        if [ -f .prism/review/rules.md ]; then
+          mkdir -p .kiro/steering
+          cp .prism/review/rules.md .kiro/steering/code-review.md
+          echo "Review rules: .prism/review/rules.md"
+        fi
+
         FILES=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" \
           | grep -E '\.(ts|js|py|go|java|rs|tsx|jsx)$' \
           | grep -vE '\.test\.|\.spec\.|__test__|_test\.' \

@@ -15,21 +15,11 @@ This repository follows **spec-first development** for all infrastructure change
 - Use the `integration` or `agent-workflow` spec templates for infrastructure changes.
 - Reference the spec in your commit with the `Spec-Ref:` trailer.
 
-### 2. AI Origin Tagging
+### 2. AI Origin Is Recorded Automatically
 
-Every commit MUST include an `AI-Origin` trailer:
-
-```
-AI-Origin: ai-generated    # Entirely produced by AI
-AI-Origin: ai-assisted     # Human-authored with AI help
-AI-Origin: human           # No AI involvement
-```
-
-If the AI model is known, also include:
-
-```
-AI-Model: anthropic.claude-sonnet-4-20250514
-```
+Do not add `AI-Origin`, `AI-Model` or token trailers to commit messages. PRISM records AI origin and
+usage through codeburn attribution (`prism-cli bootstrapper setup-otel-sync`), so commits need no
+extra metadata. The commit-trailer hook that used to add them is retired.
 
 ### 3. CDK / IaC Patterns
 
@@ -104,13 +94,12 @@ This repo emits events to the `prism-d1-metrics` EventBridge bus:
 
 | Event | When |
 |---|---|
-| `prism.d1.commit` | Every commit (via git hook) |
 | `prism.d1.pr` | PR merge (via GitHub Actions) |
 | `prism.d1.eval` | Eval gate run |
 | `prism.d1.deploy` | Deployment to any environment |
 | `prism.d1.assessment` | Weekly DORA assessment |
 
-Ensure the metric hooks are installed (`bash prism-cli bootstrapper install-git-hooks`) and GitHub workflows are configured.
+Commit-level AI attribution comes from codeburn (`prism-cli bootstrapper setup-otel-sync`, once per developer machine), and PR, eval and deploy events come from the GitHub workflows, so make sure both are set up. For local secret scanning and a pre-push review, run `prism-cli enable codewatch` (optional; it emits no metrics).
 
 ## Quick Reference
 

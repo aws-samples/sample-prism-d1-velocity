@@ -18,7 +18,7 @@ If a `prism-cli` command installs it, you never touch this directory. If it is a
 | `github-workflows/` | `prism-ai-metrics.yml` (per-merge DORA facts), `prism-eval-gate-kiro.yml`, `prism-agent-eval.yml` |
 | `gitlab-workflows/` | GitLab CI equivalents plus a root `.gitlab-ci.yml` |
 | `eval-harness/` | `eval-config.json`, five Bedrock rubrics, `run-eval.sh`, and `steering/code-review.md`. Only `agent-quality.json` is installed into repos; `run-eval.sh` and `eval-config.json` are used by `prism-agent-eval.yml`, not by the eval gate |
-| `metric-hooks/` | `prepare-commit-msg` hook and `config.json.template` |
+| `metric-hooks/` | The retired `prepare-commit-msg` trailer hook and `config.json.template`, kept for reference. No command installs the hook any more; local git hooks are now `prism-cli enable codewatch` |
 | `claude-code/` | Four `CLAUDE.md` templates by team archetype |
 | `spec-templates/` | Five Kiro-compatible spec templates |
 | `aidlc-steering/` | AI-DLC workflow and security-baseline steering files |
@@ -161,6 +161,6 @@ This is a lightweight adaptation focused on PRISM metric emission at each workfl
 
 ## A note on commit trailers
 
-Older revisions of these templates instructed you to add `AI-Origin:`, `AI-Model:`, and token/cost trailers to every commit, injected by the `metric-hooks/prepare-commit-msg` hook. **AI attribution no longer depends on trailers** — codeburn correlates commits to LLM API calls directly, which is both more accurate and hook-free. See [git hooks](../USER_GUIDE.md#git-hooks-deprecated) in the User Guide.
+Older revisions of these templates instructed you to add `AI-Origin:`, `AI-Model:`, and token/cost trailers to every commit, injected by the `metric-hooks/prepare-commit-msg` hook. **AI attribution no longer depends on trailers** — codeburn correlates commits to LLM API calls directly, which is both more accurate and hook-free. See [Commit Trailers and Token Tracker (retired)](../USER_GUIDE.md#commit-trailers-and-token-tracker-retired) in the User Guide.
 
 `Spec-Ref:` remains useful as a human-readable pointer from a commit to the spec that motivated it, which is why the example above keeps it.
