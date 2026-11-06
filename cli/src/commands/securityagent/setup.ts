@@ -1,4 +1,4 @@
-import { runEnableSecurity, SECURITY_OPTIONS } from '../enable/security.js';
+import { runEnableSecurity, SECURITY_OPTIONS, type RunHooks } from '../enable/security.js';
 import type { SecurityOptions } from '../../security/setup.js';
 
 /**
@@ -21,9 +21,10 @@ export const DEPRECATION = [
 export default {
   description: '[deprecated] Alias for "prism-cli enable security"',
   options: SECURITY_OPTIONS,
-  async action(opts: SecurityOptions) {
+  /** Errors are handled once, in runEnableSecurity, for this alias too. `hooks` is for tests. */
+  async action(opts: SecurityOptions, hooks?: RunHooks) {
     for (const l of DEPRECATION) console.warn(l);
     console.warn('');
-    await runEnableSecurity(opts);
+    await runEnableSecurity(opts, hooks);
   },
 };

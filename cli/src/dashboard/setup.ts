@@ -181,7 +181,7 @@ export function codewatchSetup(repo: string, deps: { pathEnv?: string; global?: 
 }
 
 export interface SecuritySetup {
-  /** ok: `prism-cli enable security` finished here (its .prism/config.json marker). missing: no marker. */
+  /** ok: `prism-cli enable security` finished here (.prism/security.local.json, or a legacy .prism/config.json block). missing: no marker. */
   status: 'ok' | 'missing';
   detail: string;
   /** Empty when ok. */
