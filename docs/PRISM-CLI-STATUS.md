@@ -56,7 +56,8 @@ A local web page for one developer, started with `prism-cli dashboard` from any 
 ### `enable security`
 Sets up AWS Security Agent (Continuum) for one account and region, plus the code review the CI eval gate uses for the current repo. It replaces `securityagent setup`, which stays as a deprecated alias.
 
-- **Scoped deploy:** only the `PrismD1MetricsPipeline` stack (`--exclusively`), which holds every Security Agent resource. The old command deployed `--all`.
+- **Scoped deploy:** only the Security Agent resources (`--exclusively`; the old command deployed `--all`). A new standalone stack, `PrismD1SecurityAgent`, holds them with its own KMS key; an account that already hosts them in `PrismD1MetricsPipeline` keeps that layout. The two never coexist (same names and exports). A standalone-only account gets the CI code review but no findings in the dashboards until the pipeline is deployed.
+- **Notice and defaults:** a cost and resource notice before any AWS call, then the account, caller, region and credential source. No hardcoded profile or region: the AWS credential chain and the CLI's region order apply, and it refuses when no region resolves.
 - **Asks first:** prints a resource diff with IAM, network and public endpoint changes named (the full `cdk diff` goes to a file), then asks with the account ID, alias and region named. `--yes` approves for CI; with no terminal and no `--yes` it refuses. `--require-approval never` is gone.
 - **`--dry-run`:** runs every read and prints the exact create and update calls. **`--status`:** a read-only report.
 - **Idempotent:** reuses the agent space, application, code review, S3 snapshot (skipped when its ETag matches) and SSM parameter. A different value already in SSM is a conflict that needs a second yes.
