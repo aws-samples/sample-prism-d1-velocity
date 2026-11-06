@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from '
 import { join } from 'node:path';
 import { run, runInteractive } from '../../utils/exec.js';
 import { withPrivateTemp } from '../../utils/tempfile.js';
+import {
+  CRON_MARKER, PLIST_LABEL, SCHTASK_NAME, otelLogDir, codeburnSyncConfigPath,
+  linuxCrontabAvailable, darwinPlistPath, scheduleExists, schedulerName,
+} from '../../utils/otel-sync-schedule.js';
 
 function prompt(question: string, defaultValue?: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -18,10 +22,8 @@ function prompt(question: string, defaultValue?: string): Promise<string> {
 
 // ---- Constants ----
 
-const CRON_MARKER = '# prism-otel-sync';
-const PLIST_LABEL = 'com.prism.otel-sync';
-const SCHTASK_NAME = 'PrismOtelSync';
-const LOG_DIR = join(homedir(), '.prism', 'logs');
+// Marker, label and task name are shared with the dashboard's setup check.
+const LOG_DIR = otelLogDir();
 
 /** Window the recurring sync pushes on every run. */
 const SYNC_SINCE = '7d';
@@ -51,16 +53,6 @@ function syncArgs(since: string): string[] {
 }
 
 // ---- Linux: user crontab ----
-
-function linuxScheduleExists(): boolean {
-  if (!linuxCrontabAvailable()) return false;
-  const result = run('crontab', ['-l']);
-  return result.ok && result.stdout.includes(CRON_MARKER);
-}
-
-function linuxCrontabAvailable(): boolean {
-  return run('which', ['crontab']).ok;
-}
 
 /**
  * Single-quotes a value for the crontab line.
@@ -104,14 +96,6 @@ function linuxRemoveSchedule(): void {
 }
 
 // ---- macOS: LaunchAgent ----
-
-function darwinPlistPath(): string {
-  return join(homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
-}
-
-function darwinScheduleExists(): boolean {
-  return existsSync(darwinPlistPath());
-}
 
 /**
  * Escapes a value for use inside a plist <string> element.
@@ -173,11 +157,6 @@ function darwinRemoveSchedule(): void {
 
 // ---- Windows: schtasks ----
 
-function windowsScheduleExists(): boolean {
-  const result = run('schtasks', ['/query', '/tn', SCHTASK_NAME, '/fo', 'CSV']);
-  return result.ok;
-}
-
 /** Path of the generated batch wrapper the scheduled task invokes. */
 function windowsWrapperPath(): string {
   return join(homedir(), '.prism', 'otel-sync.cmd');
@@ -237,14 +216,6 @@ function windowsRemoveSchedule(): void {
 
 // ---- Unified scheduler interface ----
 
-function scheduleExists(): boolean {
-  switch (platform()) {
-    case 'darwin': return darwinScheduleExists();
-    case 'win32': return windowsScheduleExists();
-    default: return linuxScheduleExists();
-  }
-}
-
 function installSchedule(codeburnPath: string, intervalHours: number): boolean {
   mkdirSync(LOG_DIR, { recursive: true });
   switch (platform()) {
@@ -259,14 +230,6 @@ function removeSchedule(): void {
     case 'darwin': return darwinRemoveSchedule();
     case 'win32': return windowsRemoveSchedule();
     default: return linuxRemoveSchedule();
-  }
-}
-
-function schedulerName(): string {
-  switch (platform()) {
-    case 'darwin': return 'LaunchAgent';
-    case 'win32': return 'Scheduled Task';
-    default: return 'crontab';
   }
 }
 
@@ -285,7 +248,7 @@ function showStatus(codeburnPath: string | null): void {
   }
 
   // Sync configured?
-  const configPath = join(homedir(), '.config', 'codeburn', 'sync.json');
+  const configPath = codeburnSyncConfigPath();
   if (existsSync(configPath)) {
     try {
       const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -394,7 +357,7 @@ export default {
     }
 
     // 3. Check if codeburn sync is already configured for this URL
-    const configPath = join(homedir(), '.config', 'codeburn', 'sync.json');
+    const configPath = codeburnSyncConfigPath();
     let needsSetup = true;
     if (existsSync(configPath)) {
       try {

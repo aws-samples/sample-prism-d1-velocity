@@ -10,6 +10,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Administrator Setup](#administrator-setup)
 - [Developer Setup](#developer-setup)
 - [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)
+- [Local Dashboard](#local-dashboard)
 - [CI-CD Workflows (GitHub and GitLab)](#ci-cd-workflows-github-and-gitlab)
 - [Eval Gates](#eval-gates)
 - [Bedrock Protection Audit](#bedrock-protection-audit)
@@ -560,6 +561,126 @@ removes the scripts from `~/.prism/hooks`. It never touches repo-local hooks.
 flags (`--team-id`, `--max-tokens`, `--max-cost`, `--global`) are accepted and ignored; `--reviewer`
 and `--uninstall` are passed through. Installing over the retired `prepare-commit-msg` trailer hook
 removes it.
+
+### Scan Reports
+
+`prism-cli codewatch report` writes a report for one pre-push review: the pushed range, the
+reviewer, the findings grouped by file and attributed to commits, the secret scan of each commit in
+the range, and any gitleaks blocks during the push. It reads `.prism/results/` and needs no server.
+
+```bash
+prism-cli codewatch report                               # newest review in this repo, Markdown
+prism-cli codewatch report --commit 1a2b3c4d             # newest review whose push included this commit
+prism-cli codewatch report --format html --output scan.html
+```
+
+| Flag | Purpose |
+|---|---|
+| `--repo <path>` | Repository (default: the current one) |
+| `--id <result-id>` | A specific review: its file name in `.prism/results/` without `.json` |
+| `--commit <sha>` | The newest review whose pushed range includes this commit. Not with `--id` |
+| `--format <fmt>` | `md` (default), `html` or `json` |
+| `--output <file>` | Write to a file instead of stdout |
+
+Reports never contain secret values: results store only the gitleaks rule and location. The same
+reports are linked from the dashboard (see [Local Dashboard](#local-dashboard)).
+
+---
+
+## Local Dashboard
+
+`prism-cli dashboard` starts a web page for one developer that shows codewatch results across your
+repos, a codeburn usage summary and a setup checklist. Run it from any directory:
+
+```bash
+prism-cli dashboard
+```
+
+It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in your browser.
+
+- **Local only.** It listens on `127.0.0.1`, never on other interfaces. The token is random for each
+  run; the first page load exchanges it for a cookie, and requests without it are refused. Do not
+  share the URL. Ctrl-C stops the server.
+- **Read-only.** The page only reads data; every fix it suggests is a command for you to run.
+- **No AWS calls.** It reads local files and runs local tools (git, codeburn) only. The AWS row in the
+  checklist checks that credentials are configured, without validating them.
+
+### Finding Repos
+
+The dashboard scans your home directory, 3 levels deep, for every git repository, including linked
+worktrees. It skips hidden directories and build or dependency folders (`node_modules`, `build`,
+`dist`, `target`, `venv` and similar), does not follow symlinks, and does not look inside a repo it
+has already found. It stops after 200 repos or 20,000 directories, and the page header then says
+"scan capped". Use `--root <dir>`
+to scan somewhere else. The repo you started it in is listed first.
+
+### Panels
+
+**Codewatch.** One summary row per repo with codewatch results: high, medium and low findings in the
+latest reviews, the last run, the reviewer, commits pushed without a secret scan, and the gitleaks
+state. A banner warns when gitleaks is not installed, because commits on this machine are then not
+scanned. Under **Per repo**, each repo expands to:
+
+- **Commits:** the latest 50 commits with results, each with its secret scan and review status. A row
+  with findings expands to list them. Each finding is placed on the commit that introduced the line,
+  using `git blame` at the reviewed tip. When blame cannot place it, the finding is shown on the tip
+  and marked "in push of <tip>".
+- **Scans:** recent pre-push reviews, each linking to its scan report. The review cells in the
+  Commits table and the last-run time in the summary row link to reports too.
+- **Trend:** findings by severity over recent runs.
+- **Gitleaks blocks:** commits that the pre-commit scan blocked.
+- **Commits pushed without a pre-commit scan:** usually `git commit --no-verify`; rebases and
+  cherry-picks also appear here.
+
+**Usage (codeburn).** Today's and this month's cost, top models and top projects, from the local
+codeburn data. For full charts it points you to `codeburn web`.
+
+**Setup checklist.** For this machine: codeburn installed, the scheduled sync from `setup-otel-sync`
+and its last run, gitleaks, AWS credentials, and the global codewatch hooks. Then one row per repo:
+codewatch installed (ok); warn, when the global hooks are installed but the repo's own
+`core.hooksPath` (husky and similar) bypasses them; missing, including only one hook installed or
+hooks from before the codewatch rename; or opted out with `git config prism.codewatch false`. Repos covered by the global hooks are
+marked "(global)". Repos missing codewatch are collapsed into one group. Each problem row shows the
+command that fixes it.
+
+When the global hooks are not installed and at least two repos are missing codewatch, the page
+suggests covering them all with `prism-cli enable codewatch --global` (see
+[Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)).
+
+**Security findings.** A placeholder for the planned `prism-cli security findings`.
+
+Data is read when the page loads; the **Refresh** button reads it again.
+
+### Scan Report Pages
+
+Each review in the **Scans** list links to `/report/<id>`, a printable page with the same content as
+`prism-cli codewatch report`. `/report/<id>.md` returns it as Markdown. See
+[Scan Reports](#scan-reports) to export a report without the server.
+
+### Options
+
+| Flag | Purpose |
+|---|---|
+| `--json` | Print the dashboard data as JSON and exit. No server is started |
+| `--root <dir>` | Where to scan for repos, 3 levels deep (default: your home directory) |
+| `--port <n>` | Port on `127.0.0.1`, 1024-65535 (default: a random free port) |
+| `--no-open` | Do not open a browser; open the printed URL yourself |
+| `--all` | Deprecated and has no effect: every repo under `--root` is shown by default |
+
+### Remote Machines
+
+On a cloud desktop or other remote host, keep the dashboard on the remote loopback and forward the
+port over SSH instead of binding it anywhere else:
+
+```bash
+# on the remote host
+prism-cli dashboard --port 8765 --no-open
+
+# on your laptop
+ssh -L 8765:127.0.0.1:8765 <remote-host>
+```
+
+Then open the printed URL (`http://127.0.0.1:8765/?token=...`) in your laptop's browser.
 
 ---
 

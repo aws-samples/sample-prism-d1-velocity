@@ -1,0 +1,20 @@
+{
+ "schema_version": 1,
+ "tool_version": null,
+ "model": null,
+ "commit": "d1d1d1d1d1d1d1d1",
+ "tree": null,
+ "branch": "feature-x",
+ "upstream": null,
+ "base": null,
+ "summary": null,
+ "score": null,
+ "reason": "no reviewer available",
+ "findings": [],
+ "kind": "review",
+ "hook": "pre-push",
+ "status": "error",
+ "tool": "none",
+ "started_at": "2026-11-03T09:00:00.000Z",
+ "finished_at": "2026-11-03T09:00:00.000Z"
+}

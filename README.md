@@ -87,11 +87,19 @@ prism-cli enable codewatch --uninstall         # remove (add --global for the gl
 
 It needs gitleaks plus kiro-cli or Claude Code; telemetry does not depend on it. It replaces the retired commit-trailer hook, and `bootstrapper install-git-hooks` is now an alias for it. Details: [Codewatch (Local Git Hooks)](USER_GUIDE.md#codewatch-local-git-hooks).
 
+### Optional: see it all on one page (dashboard)
+
+```bash
+prism-cli dashboard
+```
+
+Starts a local web page with codewatch results for every repo it finds under your home directory (3 levels deep), per-commit results and a report for each scan, a codeburn usage summary, and a setup checklist. It listens on `127.0.0.1` only, behind a per-run token in the printed URL, is read-only, and makes no AWS calls. On a remote host, forward the port with `ssh -L <port>:127.0.0.1:<port>`. `prism-cli codewatch report` exports a scan report without the server. Details: [Local Dashboard](USER_GUIDE.md#local-dashboard).
+
 ## Documentation
 
 | Guide | For | Contents |
 |-------|-----|----------|
-| **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, codewatch git hooks, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
+| **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, codewatch git hooks, local dashboard, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
 | **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the attribution pipeline, metrics catalog with known gaps, alarms, dashboard design decisions |
 | **[Bedrock Protection](docs/BEDROCK-PROTECTION.md)** | Engineers and security leaders | Layered defence against LLMjacking: gitleaks in CI and full-history repo scans, IAM credential hygiene, Bedrock spend guardrails across both billing surfaces |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
