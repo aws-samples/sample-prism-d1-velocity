@@ -138,6 +138,21 @@ function getParam(ctx: Ctx, name: string): string | null {
   return r.ok ? (r.json?.Parameter?.Value ?? null) : null;
 }
 
+/**
+ * Does the IAM role behind `roleArn` exist? `iam get-role`, read-only. null when
+ * it cannot be told (no iam:GetRole), so a missing permission never reads as
+ * "missing role".
+ */
+export function roleExists(ctx: Ctx, roleArn: string): boolean | null {
+  const name = roleArn.split('/').pop() || roleArn;
+  const r = ctx.deps.aws(['iam', 'get-role', '--role-name', name], ctx.opts.region);
+  if (r.ok) return true;
+  if (r.errorCode === 'NoSuchEntity' || /NoSuchEntity/.test(r.raw)) return false;
+  return null;
+}
+
+const roleName = (arn: string) => arn.split('/').pop() || arn;
+
 interface Identity { account: string; arn: string; alias: string | null }
 
 function identity(ctx: Ctx): Identity {
@@ -333,7 +348,7 @@ function planStack(ctx: Ctx, id: Identity, target: Target): StackPlan {
 // ---------------------------------------------------------------------------
 // Service-side state (agent space, application, code review, S3, SSM)
 // ---------------------------------------------------------------------------
-type ItemState = 'ok' | 'create' | 'update' | 'conflict' | 'skip' | 'after-deploy';
+type ItemState = 'ok' | 'create' | 'update' | 'conflict' | 'skip' | 'after-deploy' | 'blocked';
 
 export interface PlanItem {
   key: 'agent-space' | 'application' | 'repo-zip' | 'code-review' | 'ssm-code-review';
@@ -407,7 +422,13 @@ function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, 
     const roleArn = got?.roleArn ? String(got.roleArn) : null;
     svc.app = { id: appId, roleArn };
     const many = apps.length > 1 ? ` (${apps.length} applications in this region; using the first)` : '';
-    if (roleArn === svc.serviceRoleArn) items.push({ key: 'application', label: 'Application', state: 'ok', detail: `${appId}, role attached${many}`, calls: [] });
+    // The stack is deployed, so it owns the expected role: missing means it was
+    // deleted outside CloudFormation, and re-attaching it would not help.
+    const exists = roleExists(ctx, svc.serviceRoleArn);
+    if (exists === false) items.push({ key: 'application', label: 'Application', state: 'blocked', calls: [],
+      detail: `${appId}: role ${roleName(svc.serviceRoleArn)} does not exist although the stack is deployed (deleted outside CloudFormation?). Recreate it through the stack before re-running${many}` });
+    else if (roleArn === svc.serviceRoleArn) items.push({ key: 'application', label: 'Application', state: 'ok', calls: [],
+      detail: `${appId}, role attached${exists === null ? ' (could not check that it exists: no iam:GetRole)' : ''}${many}` });
     else items.push({ key: 'application', label: 'Application', state: 'update', calls: [calls.updateApplication(appId, svc.serviceRoleArn)],
       detail: `${appId}: role is ${roleArn ?? 'not set'}, expected ${svc.serviceRoleArn} (drift)${many}` });
   }
@@ -460,7 +481,7 @@ function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, 
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
-const STATE_WORD: Record<ItemState, string> = { ok: 'ok', create: 'create', update: 'update', conflict: 'CONFLICT', skip: 'skip', 'after-deploy': 'after deploy' };
+const STATE_WORD: Record<ItemState, string> = { ok: 'ok', create: 'create', update: 'update', conflict: 'CONFLICT', skip: 'skip', 'after-deploy': 'after deploy', blocked: 'BLOCKED' };
 
 function printPlan(ctx: Ctx, stack: StackPlan, svc: Service): void {
   const { deps, opts } = ctx;
@@ -473,7 +494,7 @@ function printPlan(ctx: Ctx, stack: StackPlan, svc: Service): void {
   deps.log('Security Agent:');
   for (const it of svc.items) {
     deps.log(`  [${STATE_WORD[it.state]}] ${it.label}: ${it.detail}`);
-    if (it.state !== 'ok' && it.state !== 'skip') for (const c of it.calls) deps.log(`      ${display(c, opts)}`);
+    if (it.state !== 'ok' && it.state !== 'skip' && it.state !== 'blocked') for (const c of it.calls) deps.log(`      ${display(c, opts)}`);
   }
 }
 
@@ -571,6 +592,9 @@ export async function enableSecurity(input: SecurityOptions, deps: Deps): Promis
 
     if (opts.dryRun) { deps.log('Dry run: nothing was changed.'); return 0; }
 
+    const blocked = svc.items.find((i) => i.state === 'blocked');
+    if (blocked) throw new Abort(`${blocked.label}: ${blocked.detail}. Nothing was changed.`);
+
     if (!hasWrites(stack, svc)) {
       deps.log('Already set up: nothing to change.');
       return finish(ctx, id, repo, svc.agentSpaceId, svc.app?.id ?? '', svc.review?.id ?? null);
@@ -614,7 +638,11 @@ function finish(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, space
   const { deps, opts } = ctx;
   if (!('error' in repo) && codeReviewId && space) {
     const wrote = writeSecurityMarker(repo.root, { agentSpaceId: space, applicationId, codeReviewId, region: opts.region, account: id.account }, deps.now());
-    deps.log(wrote ? `Wrote .prism/config.json security (ids only; commit it so teammates see it).` : '.prism/config.json security is already current.');
+    const file = join(repo.root, '.prism', 'config.json');
+    const ig = deps.git(['-C', repo.root, 'check-ignore', '-q', '.prism/config.json']);
+    // check-ignore: exit 0 ignored, 1 not ignored, anything else unknown (RunResult only says ok or not).
+    const local = ig.ok ? 'local only: git ignores it' : 'local: it holds the account ID, so check before committing it';
+    deps.log(wrote ? `Wrote the security block (ids, account and region; no secrets) to ${file} (${local}).` : `The security block in ${file} is already current (${local}).`);
   }
   deps.log('');
   deps.log(`Security Agent web console: https://${opts.region}.console.aws.amazon.com/securityagent/home?region=${opts.region} (choose "Admin access").`);
@@ -674,7 +702,16 @@ function securityStatus(ctx: Ctx): number {
     else {
       const got = call(ctx, ['securityagent', 'get-application', '--application-id', String(apps[0].applicationId)]).json;
       const want = roleParam || `arn:aws:iam::${id.account}:role/${SERVICE_ROLE_NAME}`;
-      add(got?.roleArn === want ? 'ok' : 'warn', 'Application', `${apps[0].applicationId}${got?.roleArn === want ? ', role attached' : `, role ${got?.roleArn ?? 'not set'} (expected ${want})`}`);
+      const appId = String(apps[0].applicationId);
+      const many = apps.length > 1 ? ` (${apps.length} applications in this region; checked the first)` : '';
+      if (got?.roleArn !== want) add('warn', 'Application', `${appId}, role ${got?.roleArn ?? 'not set'} (expected ${want})${many}`);
+      else {
+        const exists = roleExists(ctx, want);
+        // No stack yet: enable security deploys the role. A deployed stack owns it, so it was deleted outside CloudFormation.
+        const fix = host ? `${host.name} is deployed, so it was deleted outside CloudFormation; recreate it through the stack` : 'run prism-cli enable security';
+        if (exists === false) add('warn', 'Application', `${appId}: role ${roleName(want)} attached but does not exist; ${fix}${many}`);
+        else add('ok', 'Application', `${appId}, role attached${exists === null ? ' (could not check that it exists: no iam:GetRole)' : ''}${many}`);
+      }
     }
 
     for (const [name, label] of [[PARAM_AGENT_SPACE, 'SSM agent-space-id'], [PARAM_SCAN_BUCKET, 'SSM scan-bucket'], [PARAM_SERVICE_ROLE, 'SSM service-role-arn']] as const) {

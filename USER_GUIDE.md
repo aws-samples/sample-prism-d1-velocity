@@ -737,7 +737,9 @@ Run it from the repo whose pull requests the eval gate should scan.
    uploads `git archive HEAD` to `s3://<scan bucket>/repo/<repo-slug>/latest.zip`, creates the code
    review, and sets `/prism/continuum/code-review-id/<repo-slug>`.
 8. Writes a `security` block to `.prism/config.json` (agent space, application and code review ids,
-   account, region, setup time; no secrets). The [Local Dashboard](#local-dashboard) reads it.
+   account, region, setup time; no secrets). It is a local record: the command prints the path and
+   whether git ignores it, and since it holds the account ID it is not meant to be committed. The
+   [Local Dashboard](#local-dashboard) reads it.
 
 The resolved region is passed to every AWS call and to CDK, so every step works in the same region.
 
@@ -828,7 +830,8 @@ it is fixed.
 
 Read-only. Reports, per item: credentials, account and caller, which stack holds the Security
 Agent resources (pipeline or standalone layout), the agent space, the application and its role, the three SSM parameters, the code
-review for this repo, the CI workflow step (the eval gate's `start-code-review-job`), and the local
+review for this repo (the application row warns when its role is attached but does not exist, and
+names the application it checked when there are several), the CI workflow step (the eval gate's `start-code-review-job`), and the local
 marker. It also flags the unused `/prism/continuum/code-review-id` parameter left by the old
 `securityagent setup`.
 
@@ -851,7 +854,8 @@ Besides what `cdk deploy` needs (the CDK bootstrap roles), the caller needs `sts
 `/prism/continuum/*`, `s3:GetObject` and `PutObject` on the scan bucket, `iam:PassRole` on the
 service role, and `securityagent:ListAgentSpaces`, `ListApplications`, `GetApplication`,
 `CreateApplication`, `UpdateApplication`, `ListCodeReviews` and `CreateCodeReview`.
-`iam:ListAccountAliases` is optional. On an AccessDenied the command names the API that failed and
+`iam:GetRole` (to confirm the application's role exists) and `iam:ListAccountAliases` are optional;
+without `iam:GetRole` the role is reported as attached but unchecked. On an AccessDenied the command names the API that failed and
 the permission it needed.
 
 ### Removing It

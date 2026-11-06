@@ -79,6 +79,7 @@ interface State {
   apps: { applicationId: string; roleArn: string | null }[];
   reviews: { codeReviewId: string; title: string }[];
   objects: Record<string, string>; // key -> ETag (md5)
+  roles?: string[];                // IAM role names that exist (default: the service role)
   deny?: string;                   // CLI command that returns AccessDenied
 }
 
@@ -109,6 +110,10 @@ function fakeAws(state: State, log: string[][], regions: string[]) {
     switch (`${svc} ${cmd}`) {
       case 'sts get-caller-identity': return res({ json: { Account: ACCOUNT, Arn: `arn:aws:sts::${ACCOUNT}:assumed-role/Dev/me` } });
       case 'iam list-account-aliases': return res({ json: { AccountAliases: ['acme-dev'] } });
+      case 'iam get-role': {
+        const existing = state.roles ?? ((state.stack || state.standalone) ? [ROLE.split('/').pop()!] : []);
+        return existing.includes(arg(args, '--role-name')) ? res({ json: { Role: { RoleName: arg(args, '--role-name') } } }) : fail('NoSuchEntity', `An error occurred (NoSuchEntity) when calling the GetRole operation: The role with name ${arg(args, '--role-name')} cannot be found.`);
+      }
       case 'cloudformation describe-stacks':
         return tpl() ? res({ json: { Stacks: [{ StackStatus: 'UPDATE_COMPLETE' }] } }) : fail('ValidationError', `An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id ${arg(args, '--stack-name')} does not exist`);
       case 'cloudformation get-template': return res({ json: { TemplateBody: tpl() } });
@@ -158,7 +163,7 @@ interface Harness {
   cleanup: () => void;
 }
 
-function harness(state: State, o: { tty?: boolean; answers?: string[]; synth?: any; synthStandalone?: any; cliVersion?: string; inRepo?: boolean; env?: NodeJS.ProcessEnv; configRegion?: string | null } = {}): Harness {
+function harness(state: State, o: { ignored?: boolean; tty?: boolean; answers?: string[]; synth?: any; synthStandalone?: any; cliVersion?: string; inRepo?: boolean; env?: NodeJS.ProcessEnv; configRegion?: string | null } = {}): Harness {
   const repo = mkdtempSync(join(tmpdir(), 'prism-sec-repo-'));
   const calls: string[][] = []; const lines: string[] = []; const deploys: { approveAll: boolean }[] = []; const questions: string[] = [];
   const answers = [...(o.answers ?? [])];
@@ -192,6 +197,7 @@ function harness(state: State, o: { tty?: boolean; answers?: string[]; synth?: a
       if (o.inRepo === false) return { ok: false, stdout: '', stderr: 'fatal: not a git repository' };
       if (args[0] === 'rev-parse') return { ok: true, stdout: repo, stderr: '' };
       if (args[0] === 'remote') return { ok: true, stdout: REMOTE, stderr: '' };
+      if (args.includes('check-ignore')) return { ok: !!o.ignored, stdout: '', stderr: '' };
       if (args[0] === 'archive') { writeFileSync(args[args.indexOf('-o') + 1], ZIP); return { ok: true, stdout: '', stderr: '' }; }
       return { ok: false, stdout: '', stderr: 'unexpected git call' };
     },
@@ -656,4 +662,64 @@ test('--context cannot switch the layout: the mode key is set by the command', a
     assert.equal(await enableSecurity(opts({ dryRun: true, context: ['enableSecurityAgent=true', 'securityAgentKmsKeyArn=arn:aws:kms:us-west-2:111122223333:key/k'] }), h.deps), 0);
     assert.deepEqual(h.contexts, [{ securityAgentKmsKeyArn: 'arn:aws:kms:us-west-2:111122223333:key/k', securityAgentStandalone: 'true' }]);
   } finally { h.cleanup(); }
+});
+
+// --------------------------------------------------------------- role existence, marker message
+
+test('--status warns when the attached role does not exist (leftover application, no stack)', async () => {
+  const s = emptyAccount(); s.apps = [{ applicationId: 'app-old', roleArn: ROLE }];
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ status: true }), h.deps), 0);
+    assert.match(h.out(), /\[warn\] Application: app-old: role prism-d1-security-agent-prism-d1-security attached but does not exist; run prism-cli enable security/);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+});
+
+test('--status names the application it checked when there are several', async () => {
+  const s = fullySetUp(); s.apps.push({ applicationId: 'app-2', roleArn: null });
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ status: true }), h.deps), 0);
+    assert.match(h.out(), /\[ok\] Application: app-1, role attached \(2 applications in this region; checked the first\)/);
+  } finally { h.cleanup(); }
+});
+
+test('setup plan: a deployed stack whose role is gone is BLOCKED, and nothing is changed', async () => {
+  const s = fullySetUp(); s.roles = [];
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ dryRun: true }), h.deps), 0);
+    assert.match(h.out(), /\[BLOCKED\] Application: app-1: role prism-d1-security-agent-prism-d1-security does not exist although the stack is deployed/);
+  } finally { h.cleanup(); }
+  const s2 = fullySetUp(); s2.roles = [];
+  const h2 = harness(s2);
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h2.deps), 1);
+    assert.match(h2.out(), /Error: Application: .* Nothing was changed\./);
+    assert.deepEqual(h2.writes(), []);
+  } finally { h2.cleanup(); }
+});
+
+test('a leftover application with a missing role is fixed by the deploy, not blocked', async () => {
+  const s = emptyAccount(); s.apps = [{ applicationId: 'app-old', roleArn: ROLE }];
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 0);
+    assert.deepEqual(h.targets.map((t) => t.stack), [STANDALONE_STACK]);
+    assert.match(h.out(), /\[ok\] Application: app-old, role attached/);
+  } finally { h.cleanup(); }
+});
+
+test('the marker message says where it was written, that it is local, and never asks to commit it', async () => {
+  for (const ignored of [true, false]) {
+    const h = harness(fullySetUp(), { ignored });
+    try {
+      assert.equal(await enableSecurity(opts(), h.deps), 0);
+      const out = h.out();
+      assert.ok(out.includes(`Wrote the security block (ids, account and region; no secrets) to ${join(h.repo, '.prism', 'config.json')}`), out);
+      assert.match(out, ignored ? /\(local only: git ignores it\)/ : /\(local: it holds the account ID, so check before committing it\)/);
+      assert.doesNotMatch(out, /commit it so teammates/);
+    } finally { h.cleanup(); }
+  }
 });
