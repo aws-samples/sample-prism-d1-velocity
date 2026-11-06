@@ -36,6 +36,8 @@ export interface Finding {
   title?: string;
   cwe?: string | null;
   finding_id?: string;
+  /** security-review only: the path exactly as the service reported it (file is repo-relative). */
+  raw_file?: string;
 }
 
 /** `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code); `security-review` = an AWS Security Agent code review job. */
@@ -52,6 +54,12 @@ export interface SecurityReviewInfo {
   job_status: string;
   /** Findings per Security Agent risk level. */
   counts: Record<string, number>;
+  /** The service's job timestamps, and updatedAt - createdAt (queue plus run time), when it reported them. */
+  service_created_at?: string | null;
+  service_updated_at?: string | null;
+  service_duration_s?: number | null;
+  /** Our wall time from starting the job to seeing it finish (code-review only; includes polling). */
+  wall_s?: number | null;
 }
 export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual';
 /**

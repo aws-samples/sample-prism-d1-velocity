@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
 import {
-  CODE_REVIEW_NOTICE, POLL_FIRST_MS, POLL_MAX_MS, resolveRepoRoot, securityCodeReview, securityFindings,
+  CODE_REVIEW_NOTICE, POLL_FIRST_MS, POLL_MAX_MS, repoRelative, resolveRepoRoot, securityCodeReview, securityFindings,
   type CodeReviewOptions, type FindingsOptions, type ReviewDeps,
 } from '../src/security/review.js';
 import { collectSecurity, latestSecurityReview } from '../src/dashboard/security.js';
@@ -61,7 +61,7 @@ interface H {
   gitCalls: string[][]; repo: string; out: () => string; writes: () => string[]; cleanup: () => void; results: () => any[];
 }
 
-function harness(s: State, o: { cwd?: (repo: string) => string; tty?: boolean; marker?: boolean; upstream?: boolean; patch?: string; interruptOnSleep?: number } = {}): H {
+function harness(s: State, o: { tracked?: boolean; sandbox?: boolean; cwd?: (repo: string) => string; tty?: boolean; marker?: boolean; upstream?: boolean; patch?: string; interruptOnSleep?: number } = {}): H {
   const repo = mkdtempSync(join(tmpdir(), 'prism-scr-repo-'));
   if (o.marker !== false) {
     mkdirSync(join(repo, '.prism'), { recursive: true });
@@ -96,7 +96,7 @@ function harness(s: State, o: { cwd?: (repo: string) => string; tty?: boolean; m
         }
         case 'securityagent batch-get-findings': {
           const ids = a.slice(a.indexOf('--finding-ids') + 1);
-          return ok({ findings: ids.map((id) => ({ findingId: id, description: `Details of ${id}. More text.`, codeLocations: [{ filePath: `src/${id}.ts`, lineStart: 7 }] })) });
+          return ok({ findings: ids.map((id) => ({ findingId: id, description: `Details of ${id}. More text.`, codeLocations: [{ filePath: `${o.sandbox ? '/tmp/opt/source_code/code_sc-ab12cd/' : ''}src/${id}.ts`, lineStart: 7 }] })) });
         }
         case 'securityagent list-code-review-jobs-for-code-review': return ok({ codeReviewJobSummaries: s.jobs });
         default: return fail('', `fake aws: unexpected ${a.join(' ')}`);
@@ -120,6 +120,7 @@ function harness(s: State, o: { cwd?: (repo: string) => string; tty?: boolean; m
       if (has('--verify')) return { ok: true, stdout: BASE, stderr: '' };
       if (has('--abbrev-ref') && has('HEAD')) return { ok: true, stdout: 'work', stderr: '' };
       if (has('rev-parse') && has('HEAD')) return { ok: true, stdout: TIP, stderr: '' };
+      if (has('ls-files')) return { ok: !!o.tracked, stdout: '', stderr: o.tracked ? '' : 'error: pathspec did not match' };
       if (has('archive')) { writeFileSync(arg(a, '-o'), ZIP); return { ok: true, stdout: '', stderr: '' }; }
       if (has('diff')) { const f = a.find((x) => x.startsWith('--output='))!.slice('--output='.length); writeFileSync(f, o.patch ?? PATCH); return { ok: true, stdout: '', stderr: '' }; }
       return { ok: false, stdout: '', stderr: `fake git: ${a.join(' ')}` };
@@ -192,7 +193,10 @@ test('code-review: the result file uses the codewatch schema with kind security-
     assert.equal(r.commit, TIP);
     assert.equal(r.base, BASE);
     assert.equal(r.upstream, 'origin/main');
-    assert.deepEqual({ ...r.security, counts: undefined }, { job_id: 'job-1', code_review_id: 'cr-1', agent_space_id: 'as-1', region: REGION, scope: 'diff', job_status: 'COMPLETED', counts: undefined });
+    assert.deepEqual({ ...r.security, counts: undefined }, {
+      job_id: 'job-1', code_review_id: 'cr-1', agent_space_id: 'as-1', region: REGION, scope: 'diff', job_status: 'COMPLETED', counts: undefined,
+      service_created_at: '2026-11-07T10:00:00Z', service_updated_at: '2026-11-07T10:05:00Z', service_duration_s: 300, wall_s: 10,
+    });
     assert.deepEqual(r.security.counts, { CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 1, INFORMATIONAL: 0, UNKNOWN: 0 });
     assert.deepEqual(r.findings.map((f: any) => [f.risk_level, f.severity, f.file, f.line, f.cwe]), [
       ['CRITICAL', 'high', 'src/f3.ts', 7, null], ['HIGH', 'high', 'src/f1.ts', 7, 'CWE-89'], ['LOW', 'low', 'src/f2.ts', 7, null]]);
@@ -516,4 +520,102 @@ test('a wrong directory is refused before the notice, the region lookup and any 
       }
     }
   } finally { rmSync(outside, { recursive: true, force: true }); }
+});
+
+// --------------------------------------------------------------- which code review (SSM is the source of truth)
+
+const REVIEW_PARAM = `/prism/continuum/code-review-id/${SLUG}`;
+function marker(repo: string, over: Record<string, string> = {}) {
+  mkdirSync(join(repo, '.prism'), { recursive: true });
+  writeFileSync(join(repo, MARKER_PATH), JSON.stringify({ agentSpaceId: 'as-1', applicationId: 'app-1', codeReviewId: 'cr-1', region: REGION, account: ACCOUNT, setupAt: '2026-11-06T00:00:00Z', ...over }));
+}
+
+test('the legacy security block in .prism/config.json is never used', async () => {
+  const s = state(); delete s.params[REVIEW_PARAM];
+  const h = harness(s, { marker: false });
+  mkdirSync(join(h.repo, '.prism'), { recursive: true });
+  writeFileSync(join(h.repo, '.prism/config.json'), JSON.stringify({ security: { agentSpaceId: 'as-evil', applicationId: 'a', codeReviewId: 'cr-evil', region: REGION, account: ACCOUNT, setupAt: 'x' } }));
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 1);
+    assert.match(h.out(), /run prism-cli enable security first/);
+    assert.ok(!h.calls.flat().some((a) => /evil/.test(a)));
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+});
+
+test('a marker git tracks is ignored, even with SSM empty', async () => {
+  const s = state(); delete s.params[REVIEW_PARAM];
+  const h = harness(s, { tracked: true });
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 1);
+    assert.match(h.out(), /Warning: ignoring \.prism\/security\.local\.json because git tracks it/);
+    assert.match(h.out(), /run prism-cli enable security first/);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+});
+
+test('SSM and the marker disagree: SSM wins, with a warning', async () => {
+  const h = harness(state(), { marker: false });
+  marker(h.repo, { agentSpaceId: 'as-other', codeReviewId: 'cr-other' });
+  try {
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
+    assert.match(h.out(), /Warning: \.prism\/security\.local\.json names agent space as-other and code review cr-other, but SSM says as-1 and cr-1; using SSM/);
+    const start = h.calls.find((c) => c[1] === 'start-code-review-job')!;
+    assert.deepEqual([arg(start, '--agent-space-id'), arg(start, '--code-review-id')], ['as-1', 'cr-1']);
+  } finally { h.cleanup(); }
+});
+
+test('an untracked marker is the fallback when SSM has no code review, and says so', async () => {
+  const s = state(); delete s.params[REVIEW_PARAM];
+  const h = harness(s, { marker: false });
+  marker(h.repo, { codeReviewId: 'cr-local' });
+  try {
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
+    assert.match(h.out(), /Note: SSM has no \/prism\/continuum\/code-review-id\/github\.com-acme-widgets; using the IDs from the local marker \.prism\/security\.local\.json\./);
+    assert.match(h.out(), /Code review: cr-local \(from local marker/);
+    assert.equal(arg(h.calls.find((c) => c[1] === 'start-code-review-job')!, '--code-review-id'), 'cr-local');
+  } finally { h.cleanup(); }
+});
+
+test('findings use the same rule (SSM wins over the marker)', async () => {
+  const h = harness(state({ jobs: [{ codeReviewJobId: 'job-1', status: 'COMPLETED', createdAt: '2026-11-07T00:00:00Z' }] }), { marker: false });
+  marker(h.repo, { codeReviewId: 'cr-other' });
+  try {
+    assert.equal(await securityFindings(fo(), h.deps), 0);
+    assert.equal(arg(h.calls.find((c) => c[1] === 'list-code-review-jobs-for-code-review')!, '--code-review-id'), 'cr-1');
+  } finally { h.cleanup(); }
+});
+
+// --------------------------------------------------------------- paths and timing
+
+test('service sandbox paths are shown repo-relative; the raw path is kept', async () => {
+  const h = harness(state(), { sandbox: true });
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 0);
+    assert.match(h.out(), / {2}Hardcoded key {2}src\/f3\.ts:7/);
+    assert.doesNotMatch(h.out(), /source_code/);
+    const f = h.results()[0].findings[0];
+    assert.equal(f.file, 'src/f3.ts');
+    assert.equal(f.raw_file, '/tmp/opt/source_code/code_sc-ab12cd/src/f3.ts');
+    const panel = collectSecurity([{ name: 'w', path: h.repo, current: true }]);
+    assert.equal(panel.repos[0].findings[0].file, 'src/f3.ts');
+  } finally { h.cleanup(); }
+});
+
+test('repoRelative strips the sandbox prefix, the repo root and leading ./ or /', () => {
+  assert.equal(repoRelative('/tmp/opt/source_code/code_sc-9f/cli/src/security/review.ts'), 'cli/src/security/review.ts');
+  assert.equal(repoRelative('/work/repo/src/a.ts', '/work/repo'), 'src/a.ts');
+  assert.equal(repoRelative('./src/a.ts'), 'src/a.ts');
+  assert.equal(repoRelative('src/a.ts'), 'src/a.ts');
+});
+
+test('service duration and our wall time are both recorded and printed', async () => {
+  const h = harness(state({ statuses: ['IN_PROGRESS', 'COMPLETED'] }));
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 0);
+    const sec = h.results()[0].security;
+    assert.equal(sec.service_duration_s, 300);
+    assert.equal(sec.wall_s, 30);
+    assert.match(h.out(), /Finished in 30s here; the service reports 300s from job creation to its last update\./);
+  } finally { h.cleanup(); }
 });

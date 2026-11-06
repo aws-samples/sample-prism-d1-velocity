@@ -1403,9 +1403,12 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
 
 1. Prints a notice, then the same account, caller, region and credential block as `enable
    security`, with the same credential chain and region rules.
-2. Finds the agent space and this repo's code review in `.prism/security.local.json`, or in SSM
-   (`/prism/continuum/code-review-id/<repo-slug>`). With neither, it says to run
-   `prism-cli enable security` first and exits 1.
+2. Finds the agent space and this repo's code review in SSM (`/prism/continuum/agent-space-id` and
+   `/prism/continuum/code-review-id/<repo-slug>`), the source of truth, because a file in the repo
+   could be committed by anyone. `.prism/security.local.json` is used only when SSM has no value,
+   only if git does not track it, and it says so; when the two disagree, SSM wins with a warning.
+   The legacy `security` block in `.prism/config.json` is never read here. With no IDs, it says to
+   run `prism-cli enable security` first and exits 1.
 3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
    upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
    changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
@@ -1418,7 +1421,9 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
      --job` command, and exits 2.
    - Ctrl-C stops waiting but leaves the job running, prints the same hint, and exits 130.
 6. Prints the findings, grouped by risk level and then file: title, file:line, CWE when present,
-   and a short description. Then totals.
+   and a short description. Then totals, our wall time and the service's own job duration.
+   Paths are repo-relative: the service's sandbox prefix (`.../source_code/code_sc-<id>/`) is
+   removed, and the result keeps the original as `raw_file`.
 7. Saves the result in `.prism/results/`, in the codewatch result format with `kind:
    security-review`, `tool: security-agent`, the job ID, base, tip and scope.
 

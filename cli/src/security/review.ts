@@ -19,7 +19,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { makeResult, writeResult, type Finding, type PrismResult, type Severity } from '../codewatch/results.js';
 import { redact } from './errors.js';
-import { readSecurityMarker } from './marker.js';
+import { MARKER_PATH, readLocalMarker } from './marker.js';
 import { repoZipKey, SSM_PREFIX } from './repo.js';
 import {
   Abort, call, getParam, md5, preflight, printIdentity, resolveRegion, resolveRepo, NO_REGION_MESSAGE,
@@ -100,6 +100,8 @@ export interface JobInfo {
 
 export interface ReviewFinding {
   findingId: string;
+  /** The path as the service reported it; `file` is the repo-relative form. */
+  rawFile: string;
   riskLevel: string;
   title: string;
   file: string;
@@ -116,18 +118,36 @@ export interface ReviewFinding {
 export const NOT_SET_UP = 'run prism-cli enable security first';
 
 /**
- * Agent space and code review for this repo: the local marker when it is for
- * this account and region, else the SSM parameters `enable security` and the
- * CI gate write.
+ * Agent space and code review for this repo. The SSM parameters (written by
+ * `enable security` and the CI gate, in the account itself) are the source of
+ * truth: a file in the repo can be committed by anyone, so it must never
+ * choose where a developer's code is uploaded and reviewed.
+ *
+ * - The legacy `security` block in the committable `.prism/config.json` is
+ *   never read here.
+ * - `.prism/security.local.json` is only a fallback when SSM has no value,
+ *   only when git does not track it, and only for this account and region.
+ * - When SSM and the marker disagree, SSM wins and the difference is shown.
  */
-function resolveSetup(ctx: Ctx, id: Identity, repo: RepoCtx): Setup {
-  const m = readSecurityMarker(repo.root);
-  if (m && m.account === id.account && m.region === ctx.opts.region) {
-    return { agentSpaceId: m.agentSpaceId, codeReviewId: m.codeReviewId, source: '.prism/security.local.json' };
-  }
+export function resolveSetup(ctx: Ctx, id: Identity, repo: RepoCtx): Setup {
   const space = getParam(ctx, PARAM_AGENT_SPACE);
   const review = getParam(ctx, repo.param);
-  if (space && review) return { agentSpaceId: space, codeReviewId: review, source: `SSM ${repo.param}` };
+  let local = readLocalMarker(repo.root);
+  if (local && ctx.deps.git(['-C', repo.root, 'ls-files', '--error-unmatch', MARKER_PATH]).ok) {
+    ctx.deps.log(`Warning: ignoring ${MARKER_PATH} because git tracks it; a committed file cannot choose the code review.`);
+    local = null;
+  }
+  if (local && (local.account !== id.account || local.region !== ctx.opts.region)) local = null;
+  if (space && review) {
+    if (local && (local.agentSpaceId !== space || local.codeReviewId !== review)) {
+      ctx.deps.log(`Warning: ${MARKER_PATH} names agent space ${local.agentSpaceId} and code review ${local.codeReviewId}, but SSM says ${space} and ${review}; using SSM. Re-run prism-cli enable security to refresh the marker.`);
+    }
+    return { agentSpaceId: space, codeReviewId: review, source: `SSM ${repo.param}` };
+  }
+  if (local) {
+    ctx.deps.log(`Note: SSM has no ${space ? repo.param : PARAM_AGENT_SPACE}; using the IDs from the local marker ${MARKER_PATH}.`);
+    return { agentSpaceId: local.agentSpaceId, codeReviewId: local.codeReviewId, source: `local marker ${MARKER_PATH}` };
+  }
   throw new Abort(`No Security Agent code review for ${repo.id} in account ${id.account}, region ${ctx.opts.region}: ${NOT_SET_UP}.`);
 }
 
@@ -227,7 +247,21 @@ export function latestJob(ctx: Ctx, setup: Setup): JobInfo | null {
 
 const CWE = /\bCWE-\d+\b/i;
 
-export function fetchFindings(ctx: Ctx, setup: Setup, jobId: string): ReviewFinding[] {
+/** The service reports paths inside its own sandbox: `/tmp/opt/source_code/code_sc-<id>/<repo path>`. */
+const SANDBOX_PREFIX = /^.*?\/source_code\/code_sc-[^/]+\//;
+
+/** A finding path as a repo-relative path: the sandbox prefix, the repo root and a leading ./ or / removed. */
+export function repoRelative(raw: string, repoRoot?: string): string {
+  let p = raw.replace(/\\/g, '/');
+  p = p.replace(SANDBOX_PREFIX, '');
+  if (repoRoot) {
+    const root = repoRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+    if (p.startsWith(root)) p = p.slice(root.length);
+  }
+  return p.replace(/^(\.\/)+/, '').replace(/^\/+/, '');
+}
+
+export function fetchFindings(ctx: Ctx, setup: Setup, jobId: string, repoRoot?: string): ReviewFinding[] {
   const summaries = paged(ctx, ['securityagent', 'list-findings', '--agent-space-id', setup.agentSpaceId, '--code-review-job-id', jobId], 'findingsSummaries');
   const details = new Map<string, any>();
   for (let i = 0; i < summaries.length; i += DETAILS_BATCH) {
@@ -248,7 +282,8 @@ export function fetchFindings(ctx: Ctx, setup: Setup, jobId: string): ReviewFind
       findingId: String(s.findingId || ''),
       riskLevel: String(d.riskLevel || s.riskLevel || 'UNKNOWN').toUpperCase(),
       title, riskType, cwe,
-      file: loc?.filePath ? String(loc.filePath) : '',
+      rawFile: loc?.filePath ? String(loc.filePath) : '',
+      file: loc?.filePath ? repoRelative(String(loc.filePath), repoRoot) : '',
       line: typeof loc?.lineStart === 'number' ? loc.lineStart : null,
       description,
     };
@@ -305,13 +340,15 @@ function toSeverity(risk: string): Severity {
 export function toResult(o: {
   setup: Setup; job: JobInfo; findings: ReviewFinding[]; region: string; scope: 'diff' | 'full' | 'unknown';
   tip?: string | null; base?: string | null; branch?: string | null; upstream?: string | null; now: Date;
+  /** Our wall time from start-code-review-job to the terminal state, in seconds. */
+  wallS?: number | null;
 }): PrismResult {
   const counts = countByRisk(o.findings);
   const ok = o.job.status === 'COMPLETED';
   const findings: Finding[] = sortFindings(o.findings).map((f) => ({
     severity: toSeverity(f.riskLevel), category: 'security', rule: f.cwe || f.riskType || f.title,
     file: f.file, line: f.line, message: f.description ? `${f.title}: ${shortText(f.description)}` : f.title,
-    risk_level: f.riskLevel, title: f.title, cwe: f.cwe, finding_id: f.findingId,
+    risk_level: f.riskLevel, title: f.title, cwe: f.cwe, finding_id: f.findingId, raw_file: f.rawFile,
   }));
   return makeResult({
     kind: 'security-review', hook: 'manual', tool: 'security-agent',
@@ -325,8 +362,17 @@ export function toResult(o: {
     security: {
       job_id: o.job.codeReviewJobId, code_review_id: o.setup.codeReviewId, agent_space_id: o.setup.agentSpaceId,
       region: o.region, scope: o.scope, job_status: o.job.status, counts,
+      service_created_at: o.job.createdAt ?? null, service_updated_at: o.job.updatedAt ?? null,
+      service_duration_s: serviceSeconds(o.job), wall_s: o.wallS ?? null,
     },
   });
+}
+
+/** updatedAt - createdAt of a finished job: the service's queue plus run time. null when not reported. */
+export function serviceSeconds(job: JobInfo): number | null {
+  if (!TERMINAL.has(job.status) || !job.createdAt || !job.updatedAt) return null;
+  const a = Date.parse(job.createdAt), b = Date.parse(job.updatedAt);
+  return Number.isFinite(a) && Number.isFinite(b) && b >= a ? Math.round((b - a) / 1000) : null;
 }
 
 export function failOnHit(fs: ReviewFinding[], failOn: string | undefined): boolean {
@@ -487,6 +533,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     }
     say(upload(ctx, bucket, s) ? `Uploaded s3://${bucket}/${s.key}` : `s3://${bucket}/${s.key} is already up to date; upload skipped`);
 
+    const startedAt = deps.now().getTime();
     const start = call(ctx, [
       'securityagent', 'start-code-review-job', '--agent-space-id', setup.agentSpaceId, '--code-review-id', setup.codeReviewId,
       // shortcut: --full reviews the code review's own source asset (repo/<slug>/latest.zip, just refreshed); no diff source.
@@ -505,7 +552,10 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     if (out.kind === 'interrupted') { say(''); say(`Stopped waiting. ${fetchLaterHint(job.codeReviewJobId)}`); return 130; }
     if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (job ${job.codeReviewJobId} is ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return 2; }
 
-    const base = { setup, job: out.job, region: ctx.opts.region, scope: s.scope, tip: s.tip, base: s.base, branch: s.branch, upstream: s.upstream, now: deps.now() };
+    const wallS = Math.round((deps.now().getTime() - startedAt) / 1000);
+    const svc = serviceSeconds(out.job);
+    say(`Finished in ${wallS}s here${svc !== null ? `; the service reports ${svc}s from job creation to its last update` : ''}.`);
+    const base = { setup, job: out.job, region: ctx.opts.region, scope: s.scope, tip: s.tip, base: s.base, branch: s.branch, upstream: s.upstream, now: deps.now(), wallS };
     if (out.job.status !== 'COMPLETED') {
       const result = toResult({ ...base, findings: [] });
       const path = writeResult(repo.root, result);
@@ -514,7 +564,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
       say(`Saved ${path}`);
       return 1;
     }
-    const findings = fetchFindings(ctx, setup, out.job.codeReviewJobId);
+    const findings = fetchFindings(ctx, setup, out.job.codeReviewJobId, repo.root);
     finishFindings(ctx, !!input.json, toResult({ ...base, findings }), findings, repo);
     if (failOnHit(findings, failOn)) { say(`--fail-on ${failOn}: findings at or above ${failOn}.`); return 1; }
     return 0;
@@ -560,7 +610,7 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
       say(`Error: job ${job.codeReviewJobId} ended ${job.status}${job.reason ? `: ${redact(job.reason)}` : ''}`);
       return 1;
     }
-    const findings = fetchFindings(ctx, setup, job.codeReviewJobId);
+    const findings = fetchFindings(ctx, setup, job.codeReviewJobId, repo.root);
     finishFindings(ctx, !!input.json, toResult({ setup, job, findings, region: ctx.opts.region, scope: 'unknown', now: deps.now() }), findings, repo, min);
     return 0;
   } catch (e) {
