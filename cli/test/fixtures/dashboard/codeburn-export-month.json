@@ -1,0 +1,167 @@
+{
+ "schema": "codeburn.export.v2",
+ "generated": "2026-11-05T05:04:00.000Z",
+ "currency": {
+  "code": "USD",
+  "rate": 1,
+  "symbol": "$"
+ },
+ "summary": [
+  {
+   "Period": "2026-11-01 to 2026-11-05",
+   "Cost (USD)": 24.83,
+   "Saved (USD)": 0,
+   "API Calls": 103,
+   "Sessions": 33,
+   "Projects": 27
+  }
+ ],
+ "periods": [
+  {
+   "label": "2026-11-01 to 2026-11-05",
+   "daily": [
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Date": "2026-11-02",
+     "Cost (USD)": 5.05,
+     "Saved (USD)": 0,
+     "API Calls": 7,
+     "Sessions": 1,
+     "Input Tokens": 102418,
+     "Output Tokens": 16221,
+     "Cache Read Tokens": 0,
+     "Cache Write Tokens": 0
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Date": "2026-11-03",
+     "Cost (USD)": 3.1,
+     "Saved (USD)": 0,
+     "API Calls": 15,
+     "Sessions": 3,
+     "Input Tokens": 169135,
+     "Output Tokens": 14527,
+     "Cache Read Tokens": 0,
+     "Cache Write Tokens": 0
+    }
+   ],
+   "activity": [
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Activity": "Exploration",
+     "Cost (USD)": 17.58,
+     "Share (%)": 70.82,
+     "Turns": 66
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Activity": "Conversation",
+     "Cost (USD)": 5.93,
+     "Share (%)": 23.88,
+     "Turns": 29
+    }
+   ],
+   "models": [
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Model": "Opus 5.5",
+     "Cost (USD)": 24.76,
+     "Saved (USD)": 0,
+     "Share (%)": 99.72,
+     "API Calls": 97,
+     "Edit Turns": 0,
+     "One-shot Rate (%)": "",
+     "Retries/Edit": "",
+     "Cost/Edit (USD)": "",
+     "Input Tokens": 831708,
+     "Output Tokens": 97173,
+     "Cache Read Tokens": 0,
+     "Cache Write Tokens": 0
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Model": "Kiro (auto)",
+     "Cost (USD)": 0.07,
+     "Saved (USD)": 0,
+     "Share (%)": 0.28,
+     "API Calls": 4,
+     "Edit Turns": 0,
+     "One-shot Rate (%)": "",
+     "Retries/Edit": "",
+     "Cost/Edit (USD)": "",
+     "Input Tokens": 611,
+     "Output Tokens": 1403,
+     "Cache Read Tokens": 0,
+     "Cache Write Tokens": 0
+    }
+   ]
+  }
+ ],
+ "projects": [
+  {
+   "Project": "/home/dev/projects/project-1",
+   "Cost (USD)": 5.05,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 5.05,
+   "Share (%)": 20.35,
+   "API Calls": 7,
+   "Sessions": 1
+  },
+  {
+   "Project": "/home/dev/projects/project-2",
+   "Cost (USD)": 5.02,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 5.02,
+   "Share (%)": 20.23,
+   "API Calls": 27,
+   "Sessions": 1
+  },
+  {
+   "Project": "/home/dev/projects/project-3",
+   "Cost (USD)": 3.49,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 3.49,
+   "Share (%)": 14.08,
+   "API Calls": 5,
+   "Sessions": 1
+  },
+  {
+   "Project": "/home/dev/projects/project-4",
+   "Cost (USD)": 3.31,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 3.31,
+   "Share (%)": 13.35,
+   "API Calls": 3,
+   "Sessions": 1
+  },
+  {
+   "Project": "/home/dev/projects/project-5",
+   "Cost (USD)": 2.55,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 2.55,
+   "Share (%)": 10.28,
+   "API Calls": 16,
+   "Sessions": 1
+  },
+  {
+   "Project": "/home/dev/projects/project-6",
+   "Cost (USD)": 2.5,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 2.5,
+   "Share (%)": 10.08,
+   "API Calls": 11,
+   "Sessions": 1
+  },
+  {
+   "Project": "/home/dev/projects/project-7",
+   "Cost (USD)": 0.93,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 0.93,
+   "Share (%)": 3.73,
+   "API Calls": 1,
+   "Sessions": 1
+  }
+ ],
+ "sessions": [],
+ "records": []
+}

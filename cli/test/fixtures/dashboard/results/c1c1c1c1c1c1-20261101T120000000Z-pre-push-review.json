@@ -1,0 +1,29 @@
+{
+ "schema_version": 1,
+ "tool_version": null,
+ "model": null,
+ "commit": "c1c1c1c1c1c1c1c1",
+ "tree": null,
+ "branch": "main-work",
+ "upstream": "origin/main-work",
+ "base": null,
+ "summary": null,
+ "score": null,
+ "reason": null,
+ "findings": [
+  {
+   "severity": "medium",
+   "category": "quality",
+   "rule": "Missing error handling",
+   "file": "src/a.ts",
+   "line": 3,
+   "message": "old finding"
+  }
+ ],
+ "kind": "review",
+ "hook": "pre-push",
+ "status": "findings",
+ "tool": "kiro",
+ "started_at": "2026-11-01T12:00:00.000Z",
+ "finished_at": "2026-11-01T12:00:20.000Z"
+}

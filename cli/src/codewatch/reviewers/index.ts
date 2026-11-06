@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { findOnPath } from '../../utils/tool-check.js';
 import { claudeAdapter } from './claude.js';
 import { kiroAdapter } from './kiro.js';
 import { isReviewerId, REVIEWER_IDS, type ParsedReview, type ReviewerAdapter, type ReviewerId, type ReviewRequest } from './types.js';
@@ -12,20 +11,7 @@ export const ADAPTERS: Record<ReviewerId, ReviewerAdapter> = {
   claude: claudeAdapter,
 };
 
-/** Resolves an executable on PATH without spawning `which`. */
-export function findOnPath(binary: string, pathEnv: string | undefined = process.env.PATH): string | null {
-  for (const dir of (pathEnv || '').split(delimiter)) {
-    if (!dir) continue;
-    const p = join(dir, binary);
-    try {
-      if (statSync(p).isFile()) {
-        accessSync(p, constants.X_OK);
-        return p;
-      }
-    } catch { /* not here */ }
-  }
-  return null;
-}
+export { findOnPath, toolVersion } from '../../utils/tool-check.js';
 
 /** Reviewer tools present on PATH, in REVIEWER_IDS order. */
 export function detectReviewers(pathEnv: string | undefined = process.env.PATH): ReviewerId[] {
@@ -124,11 +110,4 @@ export function runReview(adapter: ReviewerAdapter, req: ReviewRequest, timeoutM
     const exit = res.status !== 0 ? ` (exit ${res.status}${res.stderr ? `: ${res.stderr.trim().slice(0, 200)}` : ''})` : '';
     return { ok: false, review: null, error: `${e.message}${exit}`, rawStdout: stdout };
   }
-}
-
-/** First line of `<binary> --version`, or null. */
-export function toolVersion(binary: string): string | null {
-  const r = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (r.error || r.status !== 0) return null;
-  return (r.stdout || '').trim().split('\n')[0] || null;
 }

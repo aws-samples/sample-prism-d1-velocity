@@ -1,0 +1,37 @@
+{
+ "schema_version": 1,
+ "tool_version": null,
+ "model": "claude-sonnet-4-5",
+ "commit": "c2c2c2c2c2c2c2c2",
+ "tree": null,
+ "branch": "main-work",
+ "upstream": "origin/main-work",
+ "base": null,
+ "summary": null,
+ "score": null,
+ "reason": null,
+ "findings": [
+  {
+   "severity": "low",
+   "category": "quality",
+   "rule": "Magic numbers",
+   "file": "src/b.ts",
+   "line": 9,
+   "message": "use a constant"
+  },
+  {
+   "severity": "high",
+   "category": "security",
+   "rule": "Command injection",
+   "file": "src/lookup.ts",
+   "line": 4,
+   "message": "<script>alert(1)</script> user in execSync"
+  }
+ ],
+ "kind": "review",
+ "hook": "pre-push",
+ "status": "findings",
+ "tool": "claude",
+ "started_at": "2026-11-02T12:00:00.000Z",
+ "finished_at": "2026-11-02T12:00:30.000Z"
+}
