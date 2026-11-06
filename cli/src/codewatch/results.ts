@@ -49,6 +49,8 @@ export interface SecurityReviewInfo {
   code_review_id: string;
   agent_space_id: string;
   region: string;
+  /** The AWS account the job ran in, so `security findings` only completes its own account's pending records. */
+  account?: string;
   /** diff: the branch diff base...tip. full: the whole repo at tip. unknown: fetched later by `security findings`. */
   scope: 'diff' | 'full' | 'unknown';
   job_status: string;
@@ -67,8 +69,10 @@ export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual';
  * findings  ran, found something
  * error     could not produce a verdict (tool missing, crashed, unparseable output)
  * skipped   did not run: no changes to review, or the hook was bypassed (`--no-verify`)
+ * pending   security-review only: the job was started and has no verdict yet.
+ *           finished_at equals started_at until the record is completed in place.
  */
-export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped';
+export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped' | 'pending';
 
 export interface PrismResult {
   schema_version: typeof RESULT_SCHEMA_VERSION;
@@ -167,13 +171,18 @@ export function ensureResultsExcluded(repoRoot: string): boolean {
   return true;
 }
 
-export function writeResult(repoRoot: string, r: PrismResult): string {
+/**
+ * `id` (a ResultEntry id) rewrites that existing file in place instead of
+ * naming a new one: how a pending security-review record is completed.
+ */
+export function writeResult(repoRoot: string, r: PrismResult, id?: string): string {
+  if (id !== undefined && !/^[A-Za-z0-9_-]{1,200}$/.test(id)) throw new Error(`invalid result id: ${id}`);
   const dir = resolve(repoRoot, RESULTS_DIR);
   if (!fileExists(dir)) {
     try { ensureResultsExcluded(repoRoot); } catch { /* never fail a write over this */ }
   }
   mkdirSync(dir, { recursive: true });
-  const dest = join(dir, resultFileName(r));
+  const dest = join(dir, id !== undefined ? `${id}.json` : resultFileName(r));
   const tmp = `${dest}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(r, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, dest);

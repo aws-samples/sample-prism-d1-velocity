@@ -16,9 +16,9 @@
  * dashboard can show them without credentials.
  */
 import { realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { makeResult, writeResult, type Finding, type PrismResult, type Severity } from '../codewatch/results.js';
-import { redact } from './errors.js';
+import { basename, join, resolve } from 'node:path';
+import { makeResult, readResultEntries, writeResult, type Finding, type PrismResult, type ResultEntry, type Severity } from '../codewatch/results.js';
+import { explainAwsError, redact } from './errors.js';
 import { MARKER_PATH, readLocalMarker } from './marker.js';
 import { repoZipKey, SSM_PREFIX } from './repo.js';
 import {
@@ -36,6 +36,9 @@ export const TERMINAL = new Set(['COMPLETED', 'FAILED', 'STOPPED']);
 export const POLL_FIRST_MS = 10_000;
 export const POLL_MAX_MS = 60_000;
 export const DEFAULT_TIMEOUT_MIN = 30;
+/** A failed job poll is retried this many times, after 2 s, 4 s and 8 s. */
+export const POLL_RETRIES = 3;
+export const RETRY_FIRST_MS = 2_000;
 /** Findings per list-findings page, and ids per batch-get-findings call (assumed limit). */
 export const FINDINGS_PAGE = 100;
 export const DETAILS_BATCH = 25;
@@ -218,11 +221,16 @@ function toJob(j: any): JobInfo {
   };
 }
 
-export function getJob(ctx: Ctx, setup: Setup, jobId: string): JobInfo {
-  const r = call(ctx, ['securityagent', 'batch-get-code-review-jobs', '--agent-space-id', setup.agentSpaceId, '--code-review-job-ids', jobId]);
-  const j = (r.json?.codeReviewJobs || [])[0];
+const jobArgs = (setup: Setup, jobId: string) => ['securityagent', 'batch-get-code-review-jobs', '--agent-space-id', setup.agentSpaceId, '--code-review-job-ids', jobId];
+
+function parseJob(json: any, setup: Setup, jobId: string): JobInfo {
+  const j = (json?.codeReviewJobs || [])[0];
   if (!j) throw new Abort(`No code review job ${jobId} in agent space ${setup.agentSpaceId}.`);
   return toJob(j);
+}
+
+export function getJob(ctx: Ctx, setup: Setup, jobId: string): JobInfo {
+  return parseJob(call(ctx, jobArgs(setup, jobId)).json, setup, jobId);
 }
 
 /** Every page of `--max-items` results, following NextToken (the CLI's) or nextToken (the API's). */
@@ -337,9 +345,52 @@ function toSeverity(risk: string): Severity {
   return riskRank(risk) >= 3 ? 'high' : riskRank(risk) === 2 ? 'medium' : 'low';
 }
 
-export function toResult(o: {
-  setup: Setup; job: JobInfo; findings: ReviewFinding[]; region: string; scope: 'diff' | 'full' | 'unknown';
-  tip?: string | null; base?: string | null; branch?: string | null; upstream?: string | null; now: Date;
+interface ResultBase {
+  setup: Setup; region: string; account?: string; scope: 'diff' | 'full' | 'unknown';
+  tip?: string | null; base?: string | null; branch?: string | null; upstream?: string | null;
+  /** When we started the job (code-review) or the pending record's start; default: the job's createdAt. */
+  startedAt?: string;
+}
+
+/** The record code-review writes right after start-code-review-job, so a lost wait loses nothing. */
+export function pendingResult(o: ResultBase & { job: JobInfo; startedAt: string }): PrismResult {
+  return makeResult({
+    kind: 'security-review', hook: 'manual', tool: 'security-agent', status: 'pending',
+    commit: o.tip ?? null, base: o.base ?? null, branch: o.branch ?? null, upstream: o.upstream ?? null,
+    started_at: o.startedAt, finished_at: o.startedAt,
+    security: {
+      job_id: o.job.codeReviewJobId, code_review_id: o.setup.codeReviewId, agent_space_id: o.setup.agentSpaceId,
+      region: o.region, account: o.account, scope: o.scope, job_status: o.job.status, counts: {},
+      service_created_at: o.job.createdAt ?? null, service_updated_at: null, service_duration_s: null, wall_s: null,
+    },
+  });
+}
+
+function scopeText(r: PrismResult): string {
+  const tip = (r.commit || '').slice(0, 12);
+  const s = r.security?.scope;
+  return s === 'full' ? `the whole repo at ${tip}` : s === 'diff' ? `${r.upstream || 'base'}...${tip}` : 'scope unknown';
+}
+
+/** The fields of a pending record that its completion keeps. */
+function fromPending(p: PrismResult): Omit<ResultBase, 'setup' | 'region' | 'account'> {
+  return { scope: p.security!.scope, tip: p.commit, base: p.base, branch: p.branch, upstream: p.upstream, startedAt: p.started_at };
+}
+
+/**
+ * Pending records in this repo for this account, region and code review,
+ * newest first. Records from another account or code review are never
+ * completed with this one's findings.
+ */
+export function pendingReviews(root: string, account: string, region: string, codeReviewId: string): ResultEntry[] {
+  return readResultEntries(root)
+    .filter(({ result: r }) => r.kind === 'security-review' && r.status === 'pending' && r.security?.job_id
+      && r.security.account === account && r.security.region === region && r.security.code_review_id === codeReviewId)
+    .sort((a, b) => b.result.started_at.localeCompare(a.result.started_at));
+}
+
+export function toResult(o: ResultBase & {
+  job: JobInfo; findings: ReviewFinding[]; now: Date;
   /** Our wall time from start-code-review-job to the terminal state, in seconds. */
   wallS?: number | null;
 }): PrismResult {
@@ -354,14 +405,14 @@ export function toResult(o: {
     kind: 'security-review', hook: 'manual', tool: 'security-agent',
     status: !ok ? 'error' : findings.length ? 'findings' : 'ok',
     commit: o.tip ?? null, base: o.base ?? null, branch: o.branch ?? null, upstream: o.upstream ?? null,
-    started_at: o.job.createdAt || o.now.toISOString(),
+    started_at: o.startedAt || o.job.createdAt || o.now.toISOString(),
     finished_at: o.job.updatedAt || o.now.toISOString(),
     findings,
     summary: ok ? totalsLine(counts) : null,
     reason: ok ? null : `job ${o.job.status}${o.job.reason ? `: ${redact(o.job.reason)}` : ''}`,
     security: {
       job_id: o.job.codeReviewJobId, code_review_id: o.setup.codeReviewId, agent_space_id: o.setup.agentSpaceId,
-      region: o.region, scope: o.scope, job_status: o.job.status, counts,
+      region: o.region, account: o.account, scope: o.scope, job_status: o.job.status, counts,
       service_created_at: o.job.createdAt ?? null, service_updated_at: o.job.updatedAt ?? null,
       service_duration_s: serviceSeconds(o.job), wall_s: o.wallS ?? null,
     },
@@ -404,6 +455,34 @@ export type PollOutcome = { kind: 'done'; job: JobInfo } | { kind: 'timeout'; jo
 
 const mmss = (ms: number) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 
+/** Errors a retry cannot fix: a missing or malformed job. Credential, AccessDenied and old-CLI errors are excluded by kind. */
+const NOT_TRANSIENT = /ResourceNotFound|ValidationException|NotFound/;
+
+/**
+ * One poll, retried up to POLL_RETRIES times (2 s, 4 s, 8 s) when the AWS CLI
+ * fails in a way a retry can fix (throttling, a network error, any other
+ * non-zero exit that is not about credentials, permissions or the request).
+ * A final failure aborts with the fetch-later hint. null: Ctrl-C during a backoff.
+ */
+async function getJobRetrying(ctx: Ctx, setup: Setup, jobId: string, signal: AbortSignal): Promise<JobInfo | null> {
+  const deps = ctx.deps as ReviewDeps;
+  const args = jobArgs(setup, jobId);
+  for (let attempt = 0; ; attempt++) {
+    const r = ctx.deps.aws(args, ctx.opts.region);
+    if (r.ok) return parseJob(r.json, setup, jobId);
+    const why = explainAwsError(args, r.raw, ctx.cliVersion);
+    if (why.kind !== 'other' || NOT_TRANSIENT.test(r.raw) || attempt >= POLL_RETRIES) {
+      const tries = attempt ? ` (after ${attempt} ${attempt === 1 ? 'retry' : 'retries'})` : '';
+      throw new Abort(`${why.message}${tries}\n${fetchLaterHint(jobId)}`);
+    }
+    const wait = RETRY_FIRST_MS * 2 ** attempt;
+    if (deps.isTTY) deps.ticker('');
+    ctx.deps.log(`  Poll failed: ${why.message.split('\n')[0]}; retrying in ${wait / 1000}s (${attempt + 1}/${POLL_RETRIES})`);
+    await deps.sleep(wait, signal);
+    if (signal.aborted) return null;
+  }
+}
+
 /** Polls until a terminal state, the timeout, or Ctrl-C (which never cancels the job). */
 export async function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin: number): Promise<PollOutcome> {
   const deps = ctx.deps as ReviewDeps;
@@ -421,7 +500,9 @@ export async function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin
       await deps.sleep(Math.min(delay, limit - elapsed), ac.signal);
       if (interrupted) return { kind: 'interrupted', job };
       delay = Math.min(delay * 2, POLL_MAX_MS);
-      job = getJob(ctx, setup, job.codeReviewJobId);
+      const next = await getJobRetrying(ctx, setup, job.codeReviewJobId, ac.signal);
+      if (!next) return { kind: 'interrupted', job };
+      job = next;
       const line = `[${mmss(deps.now().getTime() - start)}] ${job.status}${job.step ? ` (${job.step})` : ''}`;
       if (deps.isTTY) deps.ticker(line); else ctx.deps.log(`  ${line}`);
     }
@@ -493,10 +574,20 @@ function upload(ctx: Ctx, bucket: string, s: Scope): boolean {
 
 export const CODE_REVIEW_NOTICE = 'prism-cli security code-review uploads a snapshot of your changes (or, with --full, the repo at HEAD) to the Security Agent scan bucket and starts a code review job in the AWS account your credentials point to. Those are its only AWS writes; it may incur cost. The result is saved to .prism/results/.';
 
-function finishFindings(ctx: Ctx, json: boolean, result: PrismResult, findings: ReviewFinding[], repo: RepoCtx, minLevel?: string): void {
+/** A FAILED / STOPPED job: saves the error result (in place over `id` when given) and prints why. Exit 1. */
+function saveFailed(ctx: Ctx, json: boolean, result: PrismResult, job: JobInfo, repo: RepoCtx, id?: string): number {
+  const deps = ctx.deps as ReviewDeps;
+  const path = writeResult(repo.root, result, id);
+  if (json) deps.out(JSON.stringify(result, null, 2) + '\n');
+  ctx.deps.log(`Error: job ${job.codeReviewJobId} ended ${job.status}${job.reason ? `: ${redact(job.reason)}` : ''}`);
+  ctx.deps.log(`Saved ${path}`);
+  return 1;
+}
+
+function finishFindings(ctx: Ctx, json: boolean, result: PrismResult, findings: ReviewFinding[], repo: RepoCtx, minLevel?: string, id?: string): void {
   const deps = ctx.deps as ReviewDeps;
   const shown = minLevel ? findings.filter((f) => riskRank(f.riskLevel) >= riskRank(minLevel.toUpperCase()) && riskRank(f.riskLevel) > 0) : findings;
-  const path = writeResult(repo.root, result);
+  const path = writeResult(repo.root, result, id);
   if (json) { deps.out(JSON.stringify(result, null, 2) + '\n'); deps.err(`Saved ${path}`); return; }
   ctx.deps.log('');
   if (shown.length) printFindings(ctx.deps.log, shown); else ctx.deps.log(minLevel ? `No findings at ${minLevel} or above.` : 'No findings.');
@@ -539,33 +630,37 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
       // shortcut: --full reviews the code review's own source asset (repo/<slug>/latest.zip, just refreshed); no diff source.
       ...(s.scope === 'diff' ? ['--diff-source', JSON.stringify({ s3Uri: `s3://${bucket}/${s.key}` })] : []),
     ]);
-    const job = toJob(start.json);
-    if (!job.codeReviewJobId) throw new Abort('start-code-review-job returned no codeReviewJobId.');
+    const started = toJob(start.json);
+    if (!started.codeReviewJobId) throw new Abort('start-code-review-job returned no codeReviewJobId.');
+    const job = started.status === 'UNKNOWN' ? { ...started, status: 'IN_PROGRESS' } : started;
     say(`Started job ${job.codeReviewJobId}`);
+    const kept = { setup, region: ctx.opts.region, account: id.account, scope: s.scope, tip: s.tip, base: s.base, branch: s.branch, upstream: s.upstream, startedAt: new Date(startedAt).toISOString() };
+    // Written before any wait, and completed in place below, so a lost wait (timeout, Ctrl-C, a poll error, a closed terminal) loses nothing.
+    let pendingId: string | undefined;
+    try {
+      const p = writeResult(repo.root, pendingResult({ ...kept, job }));
+      pendingId = basename(p, '.json');
+      say(`Saved ${p} (pending)`);
+    } catch (e) {
+      say(`Warning: could not save the pending record (${redact(e instanceof Error ? e.message : String(e))}).`);
+    }
     if (input.wait === false) {
       say(`Not waiting (--no-wait). ${fetchLaterHint(job.codeReviewJobId)}`);
       return 0;
     }
 
     say(`Waiting for the job (up to ${timeout} min; Ctrl-C stops waiting, the job keeps running)...`);
-    const out = await pollJob(ctx, setup, job.status ? job : { ...job, status: 'IN_PROGRESS' }, timeout);
+    const out = await pollJob(ctx, setup, job, timeout);
     if (out.kind === 'interrupted') { say(''); say(`Stopped waiting. ${fetchLaterHint(job.codeReviewJobId)}`); return 130; }
     if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (job ${job.codeReviewJobId} is ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return 2; }
 
     const wallS = Math.round((deps.now().getTime() - startedAt) / 1000);
     const svc = serviceSeconds(out.job);
     say(`Finished in ${wallS}s here${svc !== null ? `; the service reports ${svc}s from job creation to its last update` : ''}.`);
-    const base = { setup, job: out.job, region: ctx.opts.region, scope: s.scope, tip: s.tip, base: s.base, branch: s.branch, upstream: s.upstream, now: deps.now(), wallS };
-    if (out.job.status !== 'COMPLETED') {
-      const result = toResult({ ...base, findings: [] });
-      const path = writeResult(repo.root, result);
-      if (input.json) deps.out(JSON.stringify(result, null, 2) + '\n');
-      say(`Error: job ${out.job.codeReviewJobId} ended ${out.job.status}${out.job.reason ? `: ${redact(out.job.reason)}` : ''}`);
-      say(`Saved ${path}`);
-      return 1;
-    }
+    const base = { ...kept, job: out.job, now: deps.now(), wallS };
+    if (out.job.status !== 'COMPLETED') return saveFailed(ctx, !!input.json, toResult({ ...base, findings: [] }), out.job, repo, pendingId);
     const findings = fetchFindings(ctx, setup, out.job.codeReviewJobId, repo.root);
-    finishFindings(ctx, !!input.json, toResult({ ...base, findings }), findings, repo);
+    finishFindings(ctx, !!input.json, toResult({ ...base, findings }), findings, repo, undefined, pendingId);
     if (failOnHit(findings, failOn)) { say(`--fail-on ${failOn}: findings at or above ${failOn}.`); return 1; }
     return 0;
   } catch (e) {
@@ -590,14 +685,25 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
     printIdentity(ctx, id);
     const repo = needRepo(ctx, root);
     const setup = resolveSetup(ctx, id, repo);
+    const pendings = pendingReviews(repo.root, id.account, ctx.opts.region, setup.codeReviewId);
+    let pending: ResultEntry | null = null;
     let job: JobInfo | null;
     if (input.job) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.job)) throw new Abort(`--job must be a job id, got "${input.job}"`);
+      pending = pendings.find((e) => e.result.security!.job_id === input.job) ?? null;
       job = getJob(ctx, setup, input.job);
+    } else if (pendings.length) {
+      // A job code-review started and did not see finish: the newest one, completed in place with its scope and commits.
+      pending = pendings[0];
+      if (pendings.length > 1) {
+        say(`Also pending: ${pendings.slice(1).map((e) => `${e.result.security!.job_id} (started ${e.result.started_at})`).join(', ')}. Fetch one with --job <id>.`);
+      }
+      job = getJob(ctx, setup, pending.result.security!.job_id);
     } else {
       job = latestJob(ctx, setup);
       if (!job) { say(`No code review jobs yet for ${repo.id}. Start one with: prism-cli security code-review`); return 0; }
     }
+    if (pending) say(`Pending:     recorded by code-review at ${pending.result.started_at} (${scopeText(pending.result)})`);
     say(`Job:         ${job.codeReviewJobId} (${job.status}${job.createdAt ? `, started ${job.createdAt}` : ''})`);
     if (!TERMINAL.has(job.status)) {
       if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return 2; }
@@ -606,12 +712,14 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
       if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (still ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return 2; }
       job = out.job;
     }
+    const base = { setup, job, region: ctx.opts.region, account: id.account, now: deps.now(), ...(pending ? fromPending(pending.result) : { scope: 'unknown' as const }) };
     if (job.status !== 'COMPLETED') {
+      if (pending) return saveFailed(ctx, !!input.json, toResult({ ...base, findings: [] }), job, repo, pending.id);
       say(`Error: job ${job.codeReviewJobId} ended ${job.status}${job.reason ? `: ${redact(job.reason)}` : ''}`);
       return 1;
     }
     const findings = fetchFindings(ctx, setup, job.codeReviewJobId, repo.root);
-    finishFindings(ctx, !!input.json, toResult({ setup, job, findings, region: ctx.opts.region, scope: 'unknown', now: deps.now() }), findings, repo, min);
+    finishFindings(ctx, !!input.json, toResult({ ...base, findings }), findings, repo, min, pending?.id);
     return 0;
   } catch (e) {
     if (e instanceof Abort) { say(`Error: ${redact(e.message)}`); return 1; }

@@ -6,13 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
 import {
-  CODE_REVIEW_NOTICE, POLL_FIRST_MS, POLL_MAX_MS, repoRelative, resolveRepoRoot, securityCodeReview, securityFindings,
+  CODE_REVIEW_NOTICE, pendingResult, POLL_FIRST_MS, POLL_MAX_MS, POLL_RETRIES, repoRelative, resolveRepoRoot, RETRY_FIRST_MS, securityCodeReview, securityFindings,
   type CodeReviewOptions, type FindingsOptions, type ReviewDeps,
 } from '../src/security/review.js';
 import { collectSecurity, latestSecurityReview } from '../src/dashboard/security.js';
 import { collectCodewatch } from '../src/dashboard/codewatch.js';
 import { MARKER_PATH } from '../src/security/marker.js';
-import type { PrismResult } from '../src/codewatch/results.js';
+import { writeResult, type PrismResult } from '../src/codewatch/results.js';
+import { renderPage } from '../src/dashboard/page.js';
 
 // ---------------------------------------------------------------------------
 // A fake AWS account and repo, in the style of the enable security tests.
@@ -41,6 +42,8 @@ interface State {
   pageSize: number;
   jobs: { codeReviewJobId: string; status: string; createdAt: string }[];
   failReason?: string;
+  /** Raw CLI errors returned by the next batch-get-code-review-jobs calls, before any status. */
+  pollErrors?: string[];
 }
 
 function state(o: Partial<State> = {}): State {
@@ -82,6 +85,7 @@ function harness(s: State, o: { tracked?: boolean; sandbox?: boolean; cwd?: (rep
         case 's3api put-object': s.objects[arg(a, '--key')] = createHash('md5').update(readFileSync(arg(a, '--body'))).digest('hex'); return ok({});
         case 'securityagent start-code-review-job': return ok({ codeReviewJobId: 'job-1', status: 'IN_PROGRESS', createdAt: '2026-11-07T10:00:00Z' });
         case 'securityagent batch-get-code-review-jobs': {
+          if (s.pollErrors?.length) return fail('', s.pollErrors.shift()!);
           const st = s.statuses[Math.min(polls++, s.statuses.length - 1)];
           return ok({ codeReviewJobs: [{
             codeReviewJobId: arg(a, '--code-review-job-ids'), status: st, createdAt: '2026-11-07T10:00:00Z', updatedAt: '2026-11-07T10:05:00Z',
@@ -194,7 +198,7 @@ test('code-review: the result file uses the codewatch schema with kind security-
     assert.equal(r.base, BASE);
     assert.equal(r.upstream, 'origin/main');
     assert.deepEqual({ ...r.security, counts: undefined }, {
-      job_id: 'job-1', code_review_id: 'cr-1', agent_space_id: 'as-1', region: REGION, scope: 'diff', job_status: 'COMPLETED', counts: undefined,
+      job_id: 'job-1', code_review_id: 'cr-1', agent_space_id: 'as-1', region: REGION, account: ACCOUNT, scope: 'diff', job_status: 'COMPLETED', counts: undefined,
       service_created_at: '2026-11-07T10:00:00Z', service_updated_at: '2026-11-07T10:05:00Z', service_duration_s: 300, wall_s: 10,
     });
     assert.deepEqual(r.security.counts, { CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 1, INFORMATIONAL: 0, UNKNOWN: 0 });
@@ -232,7 +236,10 @@ test('code-review: timeout exits 2 with the job id and how to fetch it later', a
     assert.equal(await securityCodeReview(cr({ timeout: '1' }), h.deps), 2);
     assert.deepEqual(h.sleeps, [10_000, 20_000, 30_000], 'last sleep cut to the time left');
     assert.match(h.out(), /Timed out after 1 min \(job job-1 is IN_PROGRESS\)\. The job keeps running in AWS\. Fetch its results later with: prism-cli security findings --job job-1/);
-    assert.equal(h.results().length, 0);
+    const rs = h.results();
+    assert.equal(rs.length, 1, 'only the pending record');
+    assert.equal(rs[0].status, 'pending');
+    assert.equal(rs[0].security.job_id, 'job-1');
   } finally { h.cleanup(); }
 });
 
@@ -618,4 +625,158 @@ test('service duration and our wall time are both recorded and printed', async (
     assert.equal(sec.wall_s, 30);
     assert.match(h.out(), /Finished in 30s here; the service reports 300s from job creation to its last update\./);
   } finally { h.cleanup(); }
+});
+
+// --------------------------------------------------------------- pending records (a lost wait loses nothing)
+
+const SETUP = { agentSpaceId: 'as-1', codeReviewId: 'cr-1', source: 'test' };
+function writePending(repo: string, job: string, startedAt: string, account = ACCOUNT): void {
+  writeResult(repo, pendingResult({ setup: SETUP, region: REGION, account, scope: 'full', tip: 'c'.repeat(40), startedAt, job: { codeReviewJobId: job, status: 'IN_PROGRESS' } }));
+}
+
+test('code-review --no-wait writes a pending record with the job, scope and commits', async () => {
+  const h = harness(state());
+  try {
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
+    const rs = h.results();
+    assert.equal(rs.length, 1);
+    const [r] = rs;
+    assert.equal(r.status, 'pending');
+    assert.deepEqual([r.commit, r.base, r.branch, r.upstream, r.started_at], [TIP, BASE, 'work', 'origin/main', '2026-11-07T10:00:00.000Z']);
+    assert.deepEqual([r.security.job_id, r.security.code_review_id, r.security.agent_space_id, r.security.region, r.security.account, r.security.scope, r.security.job_status],
+      ['job-1', 'cr-1', 'as-1', REGION, ACCOUNT, 'diff', 'IN_PROGRESS']);
+    assert.match(h.out(), /Saved .*\(pending\)/);
+  } finally { h.cleanup(); }
+});
+
+test('Ctrl-C leaves the pending record; a completed wait rewrites the same file', async () => {
+  const h = harness(state({ statuses: ['IN_PROGRESS'] }), { interruptOnSleep: 1 });
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 130);
+    assert.deepEqual(h.results().map((r) => r.status), ['pending']);
+  } finally { h.cleanup(); }
+  const h2 = harness(state({ statuses: ['IN_PROGRESS', 'COMPLETED'] }));
+  try {
+    assert.equal(await securityCodeReview(cr(), h2.deps), 0);
+    assert.deepEqual(h2.results().map((r) => r.status), ['findings'], 'one file, completed in place');
+  } finally { h2.cleanup(); }
+});
+
+test('findings with no --job completes the pending record and keeps its scope and commits', async () => {
+  const h = harness(state({ statuses: ['COMPLETED'], jobs: [{ codeReviewJobId: 'job-api', status: 'COMPLETED', createdAt: '2026-11-08T00:00:00Z' }] }));
+  try {
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
+    h.lines.length = 0;
+    assert.equal(await securityFindings(fo(), h.deps), 0);
+    assert.ok(!h.calls.some((c) => c[1] === 'list-code-review-jobs-for-code-review'), 'pending first; no API latest');
+    assert.match(h.out(), /Pending: {5}recorded by code-review at 2026-11-07T10:00:00\.000Z \(origin\/main\.\.\.aaaaaaaaaaaa\)/);
+    const rs = h.results();
+    assert.equal(rs.length, 1, 'no second file');
+    const [r] = rs;
+    assert.equal(r.status, 'findings');
+    assert.equal(r.findings.length, 3);
+    assert.deepEqual([r.security.job_id, r.security.scope, r.commit, r.base, r.upstream, r.started_at], ['job-1', 'diff', TIP, BASE, 'origin/main', '2026-11-07T10:00:00.000Z']);
+    assert.deepEqual(h.writes(), ['s3api put-object', 'securityagent start-code-review-job'], 'findings itself writes nothing in AWS');
+  } finally { h.cleanup(); }
+});
+
+test('findings on a pending job that is still running says so (exit 2) and keeps the record', async () => {
+  const h = harness(state({ statuses: ['IN_PROGRESS'] }));
+  try {
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
+    assert.equal(await securityFindings(fo(), h.deps), 2);
+    assert.match(h.out(), /The job is still IN_PROGRESS\. Re-run with --wait/);
+    assert.deepEqual(h.results().map((r) => r.status), ['pending']);
+  } finally { h.cleanup(); }
+});
+
+test('findings picks the newest pending, names the older ones, and ignores another account', async () => {
+  const h = harness(state());
+  try {
+    writePending(h.repo, 'job-old', '2026-11-06T09:00:00.000Z');
+    writePending(h.repo, 'job-new', '2026-11-07T09:00:00.000Z');
+    writePending(h.repo, 'job-other', '2026-11-08T09:00:00.000Z', '999988887777');
+    assert.equal(await securityFindings(fo(), h.deps), 0);
+    assert.match(h.out(), /Job: {9}job-new/);
+    assert.match(h.out(), /Also pending: job-old \(started 2026-11-06T09:00:00\.000Z\)\. Fetch one with --job <id>\./);
+    const by = Object.fromEntries(h.results().map((r) => [r.security.job_id, r]));
+    assert.equal(by['job-new'].status, 'findings');
+    assert.equal(by['job-new'].security.scope, 'full');
+    assert.equal(by['job-old'].status, 'pending');
+    assert.equal(by['job-other'].status, 'pending');
+    assert.equal(h.results().length, 3);
+  } finally { h.cleanup(); }
+});
+
+test('findings --job <id> completes that pending record; a FAILED job records the error in place', async () => {
+  const h = harness(state());
+  try {
+    writePending(h.repo, 'job-old', '2026-11-06T09:00:00.000Z');
+    writePending(h.repo, 'job-new', '2026-11-07T09:00:00.000Z');
+    assert.equal(await securityFindings(fo({ job: 'job-old' }), h.deps), 0);
+    const by = Object.fromEntries(h.results().map((r) => [r.security.job_id, r]));
+    assert.equal(by['job-old'].status, 'findings');
+    assert.equal(by['job-old'].security.scope, 'full');
+    assert.equal(by['job-new'].status, 'pending');
+  } finally { h.cleanup(); }
+  const h2 = harness(state({ statuses: ['FAILED'], failReason: 'boom' }));
+  try {
+    writePending(h2.repo, 'job-x', '2026-11-07T09:00:00.000Z');
+    assert.equal(await securityFindings(fo(), h2.deps), 1);
+    const [r] = h2.results();
+    assert.deepEqual([r.status, r.security.job_status, r.security.scope, h2.results().length], ['error', 'FAILED', 'full', 1]);
+  } finally { h2.cleanup(); }
+});
+
+test('poll: a transient AWS CLI failure is retried with backoff and recovers', async () => {
+  const s = state({ statuses: ['IN_PROGRESS', 'COMPLETED'], pollErrors: [
+    'An error occurred (ThrottlingException) when calling the BatchGetCodeReviewJobs operation: Rate exceeded',
+    'Could not connect to the endpoint URL: "https://securityagent.us-west-2.amazonaws.com/"',
+  ] });
+  const h = harness(s);
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 0);
+    assert.deepEqual(h.sleeps, [POLL_FIRST_MS, RETRY_FIRST_MS, 2 * RETRY_FIRST_MS, 20_000]);
+    assert.match(h.out(), /Poll failed: aws securityagent batch-get-code-review-jobs failed: .*Rate exceeded; retrying in 2s \(1\/3\)/);
+    assert.match(h.out(), /retrying in 4s \(2\/3\)/);
+    assert.deepEqual(h.results().map((r) => r.status), ['findings']);
+  } finally { h.cleanup(); }
+});
+
+test('poll: a permanent failure prints the Error line and the fetch-later hint; the pending record stays', async () => {
+  const net = 'Could not connect to the endpoint URL: "https://securityagent.us-west-2.amazonaws.com/"';
+  const h = harness(state({ statuses: ['IN_PROGRESS'], pollErrors: [net, net, net, net] }));
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 1);
+    assert.deepEqual(h.sleeps, [POLL_FIRST_MS, 2_000, 4_000, 8_000], `${POLL_RETRIES} retries`);
+    assert.match(h.out(), /Error: aws securityagent batch-get-code-review-jobs failed: Could not connect.* \(after 3 retries\)\nThe job keeps running in AWS\. Fetch its results later with: prism-cli security findings --job job-1/);
+    assert.deepEqual(h.results().map((r) => r.status), ['pending']);
+  } finally { h.cleanup(); }
+  // AccessDenied is not retried.
+  const denied = 'An error occurred (AccessDeniedException) when calling the BatchGetCodeReviewJobs operation: User is not authorized to perform: securityagent:BatchGetCodeReviewJobs';
+  const h2 = harness(state({ statuses: ['IN_PROGRESS'], pollErrors: [denied] }));
+  try {
+    assert.equal(await securityCodeReview(cr(), h2.deps), 1);
+    assert.deepEqual(h2.sleeps, [POLL_FIRST_MS]);
+    assert.match(h2.out(), /AccessDenied: BatchGetCodeReviewJobs[\s\S]*Fetch its results later with: prism-cli security findings --job job-1/);
+    assert.deepEqual(h2.results().map((r) => r.status), ['pending']);
+  } finally { h2.cleanup(); }
+});
+
+test('dashboard: a pending repo shows review running with its start time, stale? after 2h', () => {
+  const pending = (at: string): PrismResult => ({ ...result('job-p', 'diff', at), status: 'pending', security: { ...result('job-p', 'diff', at).security!, job_status: 'IN_PROGRESS', counts: {} } });
+  const now = new Date('2026-11-07T12:00:00Z');
+  const fresh = collectSecurity([{ name: 'w', path: '/w', current: true }], () => [pending('2026-11-07T11:00:00Z')], now).repos[0];
+  assert.deepEqual([fresh.pending, fresh.stale, fresh.started_at], [true, false, '2026-11-07T11:00:00Z']);
+  const old = collectSecurity([{ name: 'w', path: '/w', current: true }], () => [pending('2026-11-07T09:59:00Z')], now);
+  assert.deepEqual([old.repos[0].pending, old.repos[0].stale, old.pending_hint], [true, true, 'prism-cli security findings']);
+  // A verdict for the same job beats its pending copy.
+  const done = collectSecurity([{ name: 'w', path: '/w', current: true }], () => [pending('2026-11-07T11:00:00Z'), result('job-p', 'unknown', '2026-11-07T11:00:00Z')], now).repos[0];
+  assert.equal(done.pending, false);
+  const html = renderPage('NONCE');
+  const panel = html.slice(html.indexOf('function securityPanel(sec) {'), html.indexOf('async function load() {'));
+  assert.match(panel, /pill\('warn', 'review running'\)/);
+  assert.match(panel, /pill\('skipped', 'stale\?'\)/);
+  assert.match(panel, /'started ' \+ when\(r\.started_at\)/);
+  assert.match(panel, /sec\.pending_hint/);
 });

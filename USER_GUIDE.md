@@ -656,8 +656,10 @@ suggests covering them all with `prism-cli enable codewatch --global` (see
 **Security findings.** The latest AWS Security Agent code review per repo, from the results
 `prism-cli security code-review` and `security findings` cache in `.prism/results/`: the job time, the
 scope (branch diff, whole repo, or fetched later), counts by risk level, and the findings with their
-file, line and CWE. With none cached, it points to `prism-cli security code-review`. The page reads
-only those files; it makes no AWS calls.
+file, line and CWE. A job that was started but not fetched yet shows `review running`, the time it
+started and the `prism-cli security findings` command. After 2 hours it is also marked `stale?`:
+the page cannot tell whether the job has finished since. With none cached, it points to `prism-cli
+security code-review`. The page reads only those files; it makes no AWS calls.
 
 Data is read when the page loads; the **Refresh** button reads it again.
 
@@ -1395,7 +1397,7 @@ prism-cli security code-review                    # this branch's diff against i
 prism-cli security code-review --full             # the whole repo at HEAD
 prism-cli security code-review --fail-on high     # exit 1 on a high or critical finding
 prism-cli security code-review --no-wait          # start it and come back later
-prism-cli security findings                       # the latest job's findings
+prism-cli security findings                       # the pending job's findings, else the latest job's
 prism-cli security findings --job <id> --wait     # a specific job, waiting if it is still running
 ```
 
@@ -1415,11 +1417,17 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
 4. Uploads the snapshot to the scan bucket, skipping the upload when the object's ETag already
    matches. A diff goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`; `--full` refreshes the code
    review's own source, `repo/<repo-slug>/latest.zip`.
-5. Starts the job and waits. It polls every 10 seconds, doubling up to 60, with a one-line ticker on
-   a terminal and plain lines otherwise.
+5. Starts the job and at once saves a **pending** result in `.prism/results/` with the job ID, the
+   scope and the commits. When the job ends, that same file is completed, so a wait that does not
+   finish loses nothing. Then it waits. It polls every 10 seconds, doubling up to 60, with a
+   one-line ticker on a terminal and plain lines otherwise. A failed poll (throttling, a network
+   error) is retried 3 times, after 2, 4 and 8 seconds.
    - `--timeout <minutes>` (default 30): on timeout it prints the job ID and the `security findings
      --job` command, and exits 2.
    - Ctrl-C stops waiting but leaves the job running, prints the same hint, and exits 130.
+   - A poll that still fails, or fails on credentials or permissions, prints the error and the same
+     hint, and exits 1.
+   - In all three cases, and with `--no-wait`, the pending result stays for `security findings`.
 6. Prints the findings, grouped by risk level and then file: title, file:line, CWE when present,
    and a short description. Then totals, our wall time and the service's own job duration.
    Paths are repo-relative: the service's sandbox prefix (`.../source_code/code_sc-<id>/`) is
@@ -1432,9 +1440,13 @@ codewatch) unless `--fail-on <critical|high|medium|low>` finds a finding at or a
 which exits 1. A failed or stopped job exits 1 with its reason. `--json` prints only the result JSON
 on stdout, with progress on stderr.
 
-`security findings` is read-only. It shows the latest job for this repo's code review, or `--job
-<id>`, and caches the result for the dashboard. `--severity <level>` hides lower levels. A job
-still running exits 2 with a note; `--wait` waits for it with the same poller.
+`security findings` is read-only. Without `--job`, it first looks for pending results in this repo
+for the current account, region and code review. It takes the newest and names any older ones.
+When that job has finished, it fetches the findings and completes the pending result, keeping its
+scope and commits. Only when nothing is pending does it ask the API for the latest job (saved with
+scope `unknown`). `--job <id>` fetches that job, and completes its pending result if there is
+one. `--severity <level>` hides lower levels. A job still running exits 2 with a note; `--wait`
+waits for it with the same poller.
 
 Both work on one repository: run them from its top level, or pass `--path <repo>`. A subdirectory
 is refused (the message names the top level), and so is a directory that is not a repository; they

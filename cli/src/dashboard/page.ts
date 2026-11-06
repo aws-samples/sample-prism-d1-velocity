@@ -312,8 +312,16 @@ function securityPanel(sec) {
     const b = el('div', { class: 'sec-repo' });
     b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(r.name)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
     b.append(el('div', { class: 'fix' },
-      when(r.finished_at) + ' · ' + (r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched') + ' · job ' + txt(r.job_id).slice(0, 12)));
+      (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + (r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched') + ' · job ' + txt(r.job_id).slice(0, 12)));
     const pills = el('div', { class: 'sec-pills' });
+    if (r.pending) {
+      // Results are local: the page only knows the job was started, not whether it has finished since.
+      pills.append(pill('warn', 'review running'));
+      if (r.stale) pills.append(pill('skipped', 'stale?'));
+      b.append(pills, el('p', { class: 'note' }, r.stale ? 'Started over 2 h ago and not fetched yet; it has most likely finished. ' : '', 'Fetch the results with ', el('code', {}, (sec && sec.pending_hint) || 'prism-cli security findings'), '.'));
+      s.append(b);
+      continue;
+    }
     if (r.status === 'error') pills.append(pill('error', txt(r.job_status).toLowerCase()));
     else {
       const shown = RISKS.filter((k) => (counts[k] || 0) > 0);
