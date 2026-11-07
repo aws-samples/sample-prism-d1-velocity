@@ -611,7 +611,7 @@ test('the Security findings panel is a one-column card: compact blocks and wrapp
   assert.match(panel, /'no findings'/, 'all-zero state');
   assert.match(panel, /filter\(\(k\) => \(counts\[k\] \|\| 0\) > 0\)/, 'zero counts hidden');
   assert.match(panel, /showing the first/, 'cap note kept');
-  assert.match(panel, /No Security Agent code reviews or threat models yet/, 'empty state kept');
+  assert.match(panel, /No Security Agent code reviews, threat models or penetration tests yet/, 'empty state kept');
   assert.match(html, /ul\.sec-findings li \{[^}]*overflow-wrap:anywhere/, 'rows wrap');
   // Order in the grid: Codewatch (full width), then Usage, Setup and Security side by side.
   assert.match(html, /main\.append\(codewatchPanel\(data\), usagePanel\(data\.usage\), setupPanel\(data\), securityPanel\(data\.security\)\)/);
