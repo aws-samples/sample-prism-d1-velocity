@@ -1567,6 +1567,112 @@ statement. Its PassRole, scan bucket and SSM statements already cover the rest.
 There is no `security design-review` command: design review has no public API (see the research
 doc).
 
+### Running a Penetration Test from the CLI
+
+`prism-cli security pentest` builds this repo's app from its Dockerfile, deploys it into a
+temporary **private** environment in your AWS account, and runs an AWS Security Agent penetration
+test against that environment only. It never takes a URL, so it can only test what it just
+deployed. The design is in [docs/DESIGN-prism-cli-pentest.md](docs/DESIGN-prism-cli-pentest.md).
+
+```bash
+prism-cli security pentest --dry-run                    # the plan, target and cost; changes nothing
+prism-cli security pentest                              # deploy, start the job, return (no wait)
+prism-cli security pentest --status                     # refresh the job; tear down once it has finished
+prism-cli security findings --pentest                   # read the findings (read-only)
+prism-cli security pentest --cleanup                    # remove the environment now
+prism-cli security pentest --wait --fail-on high        # wait (up to 6 h), then exit 1 on a high finding
+```
+
+**Prerequisites**
+
+1. Docker running locally, to build the image.
+2. The account and region bootstrapped for CDK (`npx cdk bootstrap aws://<account>/<region>`).
+3. AWS CLI 2.36 or later, with permission to deploy CloudFormation, ECR, ECS, EC2, ELB,
+   Route 53, S3, CloudWatch Logs and IAM, and to call the Security Agent pentest APIs.
+4. `prism-cli enable security` is **not** required: each run creates its own agent space.
+
+**`.prism/pentest.json`** (committable; every field is optional):
+
+```jsonc
+{
+  "appType": "dockerfile",                 // v1 supports only dockerfile
+  "path": "sample-app",                    // Docker build context, relative to the repo root (default ".")
+  "dockerfile": "sample-app/Dockerfile",   // relative to the repo root (default <path>/Dockerfile)
+  "port": 8080,                            // the port the container listens on (default 8080)
+  "healthPath": "/health",                 // ALB health check path (default /health)
+  "env": {
+    "LOG_LEVEL": "info",                                              // a literal value
+    "DB_PASSWORD": { "secret": "arn:aws:secretsmanager:...:secret:db" } // a Secrets Manager reference
+  },
+  "actors": [                              // optional signed-in test users
+    { "identifier": "user", "auth": { "providerType": "SECRETS_MANAGER", "secret": "arn:aws:secretsmanager:...:secret:user" } }
+  ],
+  "excludeRiskTypes": ["DENIAL_OF_SERVICE"]
+}
+```
+
+An `env` name that looks sensitive (`password`, `secret`, `token`, `key`, ...) must be a
+`{ "secret": "<arn>" }` reference; a literal value there is refused, so no credential lands in
+the committed file. Secrets are injected by ECS when the task starts. An actor's `providerType` is
+`SECRETS_MANAGER`, `AWS_LAMBDA` or `AWS_IAM_ROLE`, and its ARN must be in the same account. The
+pentest's service role is granted read on exactly the actor ARNs listed. `--app-dir` and
+`--dockerfile` override `path` and `dockerfile` for one run.
+
+**Flags.** `--app-type`, `--path` (repository top level), `--app-dir`, `--dockerfile`, `--wait`,
+`--timeout <minutes>` (default 360), `--keep`, `--status`, `--cleanup`, `--dry-run`, `--yes`
+(approve without a prompt), `--include-false-positives`, `--fail-on critical|high|medium|low`,
+`--profile`, `--region`.
+
+**Waiting, status and teardown.** A run takes hours: the reference runs took about 2 h 50 min,
+mostly in the `PENTEST` step. So by default the command starts the job, saves a pending record in
+`.prism/results/` and returns. It prints the follow-up commands with the `--profile` and
+`--region` you passed.
+
+- `--status` refreshes the job and prints its step. Once the job has finished, it saves the
+  findings and tears the environment down.
+- `--wait` polls until the job finishes (or `--timeout`), prints the findings, then tears down.
+- `--keep` leaves the environment up after the job, to reproduce a finding.
+- `--cleanup` removes a run's environment at any time; it stops a running job first.
+- `security findings --pentest [<job>]` reads the findings without deleting anything.
+
+Teardown deletes the pentest, the run's agent space, its target domain and the CloudFormation
+stack. It first waits for the agent's network interfaces to be released, then retries the stack
+deletion once. If it still fails, the record keeps a `teardown failed` marker, which `--status`
+and the dashboard show; run `--cleanup` again later.
+
+**What it creates.** One CloudFormation stack per run, `PrismPentest-<repo>-<id>`, tagged
+`prism:purpose=pentest` and `prism:expires-at`:
+
+- a new VPC with two private subnets only: no public subnet, no internet gateway, no NAT, and no
+  `0.0.0.0/0` ingress;
+- VPC endpoints for ECR, S3, CloudWatch Logs, and Secrets Manager when `env` uses secrets;
+- the app on Fargate behind an **internal** ALB, reachable only from the pentest agent's security
+  group, under a private Route 53 name `app.<id>.prism.internal`;
+- a scoped service role, a private source bucket (the repo at HEAD, for white-box testing) and a
+  log group.
+
+Before deploying, the command shows the plan and the cost and asks for confirmation (`--yes`
+skips the prompt). It starts the job only after the app passes the ALB health check, waiting up
+to 10 minutes. If the app never becomes healthy, no pentest is created; the command prints the
+target's health reason and an `aws logs tail` command for the app's log group, and leaves the
+environment up for `--cleanup`.
+
+**Cost.** Security Agent penetration testing is billed in task-hours, publicly reported at **$50
+per task-hour** (per-second metered; check the current AWS Security Agent pricing page). The
+environment adds Fargate, internal ALB and VPC endpoint charges while it is up. With a
+reference run of about 2 h 50 min, budget accordingly, and do not leave `--keep` environments
+running.
+
+**Findings.** Each finding has a risk level and the agent's confidence, but no file or line.
+Findings the agent rated `FALSE_POSITIVE` are hidden by default, and `--fail-on` ignores them;
+`--include-false-positives` shows them. The result is saved with `kind: security-pentest`, and the
+dashboard's Security card shows it under "Penetration tests".
+
+**VPC quota.** Each run creates one VPC, and an account allows 5 VPCs per region by default.
+Concurrent runs, `--keep` environments or a failed teardown count against that quota. When a
+deploy fails with `VpcLimitExceeded`, run `--cleanup` on old runs, or request a higher quota in
+Service Quotas.
+
 ### Setup Script (Alternative)
 
 For forwarding findings to the PRISM API independently:
