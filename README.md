@@ -51,11 +51,11 @@ aws cognito-idp admin-create-user \
 ### 3. Each developer starts syncing (once per machine)
 
 ```bash
-npm install -g @prism-d1/cli codeburn
-prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl>
+npm install -g @prism-d1/cli
+prism-cli enable codeburn --url <OtelCollectorUrl>
 ```
 
-One command: authenticates, backfills 30 days, and installs a platform-native schedule (crontab / LaunchAgent / Scheduled Task) that pushes usage **and** git commit attribution every 12 hours. Check it with `--status`, remove it with `--remove`.
+One command: installs codeburn if it is missing (it asks first and prints the npm command), authenticates, backfills 30 days, and installs a platform-native schedule (crontab / LaunchAgent / Scheduled Task) that pushes usage **and** git commit attribution every 12 hours. Preview it with `--dry-run`, check it with `--status`, remove the schedule with `--remove`. Re-running it reports what is already set up. `prism-cli export otel` pushes immediately, and `prism-cli version` shows the CLI version, whether npm has a newer one, and any older `prism-cli` on PATH. (`bootstrapper setup-otel-sync` is the deprecated old name.)
 
 ### 4. Confirm data is flowing
 

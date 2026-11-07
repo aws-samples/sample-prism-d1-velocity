@@ -62,7 +62,7 @@ The onboarding track is determined by the blended PRISM D1 Level and the assessm
 
 - CLAUDE.md deployed to all active repositories
 - Spec templates adopted by the team (feature spec, bug fix spec, refactor spec)
-- First AI-attributed commits flowing (codeburn attribution, from `prism-cli bootstrapper setup-otel-sync` on each developer machine)
+- First AI-attributed commits flowing (codeburn attribution, from `prism-cli enable codeburn` on each developer machine)
 - Team has completed at least one spec-driven feature build
 
 > **Note — scoring source changed:** Earlier versions measured this deliverable with `AI-Origin` and `AI-Confidence` commit trailers. `AI-Confidence` was never implemented, and the hook that wrote `AI-Origin` is retired. AI share now comes from codeburn attribution; read it, with **Attribution Coverage**, on the PRISM-D1-Team-Velocity dashboard.
@@ -391,7 +391,7 @@ Here is what matters most this week:
 
 1. **[PRIORITY_1]** — [DETAILS — e.g., "Verify CLAUDE.md is deployed to all active repos. Run `verify-setup.sh` in each repo and send me a screenshot of the output."]
 2. **[PRIORITY_2]** — [DETAILS — e.g., "Start using spec templates for any new feature work. Your team committed to building the search API and the user profile update via specs — hold that line."]
-3. **[PRIORITY_3]** — [DETAILS — e.g., "Check that every developer has run `prism-cli bootstrapper setup-otel-sync` and that Attribution Coverage on the Team Velocity dashboard is rising. If a sync is failing, check the troubleshooting guide below."]
+3. **[PRIORITY_3]** — [DETAILS — e.g., "Check that every developer has run `prism-cli enable codeburn` and that Attribution Coverage on the Team Velocity dashboard is rising. If a sync is failing, check the troubleshooting guide below."]
 
 **Resources**
 
@@ -404,7 +404,7 @@ Here is what matters most this week:
 **Troubleshooting**
 
 If a developer's AI-attributed commits are not showing up:
-1. Check their sync schedule: `prism-cli bootstrapper setup-otel-sync --status`
+1. Check their sync schedule: `prism-cli enable codeburn --status`
 2. Verify the CLAUDE.md file is in the repo root
 3. Check that Node.js 22+ is installed (codeburn requires it)
 
