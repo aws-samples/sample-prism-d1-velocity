@@ -38,10 +38,39 @@ export interface Finding {
   finding_id?: string;
   /** security-review only: the path exactly as the service reported it (file is repo-relative). */
   raw_file?: string;
+  /** security-threat-model only: the threat's id, STRIDE categories, mitigation and every evidence path (repo-relative). */
+  threat_id?: string;
+  stride?: string[];
+  recommendation?: string;
+  evidence?: string[];
 }
 
-/** `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code); `security-review` = an AWS Security Agent code review job. */
-export type ResultKind = 'secrets' | 'review' | 'security-review';
+/**
+ * `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code);
+ * `security-review` = an AWS Security Agent code review job;
+ * `security-threat-model` = an AWS Security Agent threat model job.
+ */
+export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model';
+
+/** security-threat-model only: the job behind the result. */
+export interface ThreatModelInfo {
+  job_id: string;
+  threat_model_id: string;
+  agent_space_id: string;
+  region: string;
+  account?: string;
+  job_status: string;
+  /** Threats per severity (CRITICAL ... INFO). */
+  counts: Record<string, number>;
+  /** Threats per STRIDE category. */
+  stride_counts: Record<string, number>;
+  /** Repo paths of the scope docs, as read from the commit. */
+  scope_docs: string[];
+  /** The agent's system overview, in full; null until the job completes. */
+  system_overview: string | null;
+  service_created_at?: string | null;
+  service_updated_at?: string | null;
+}
 
 /** security-review only: the job behind the result. */
 export interface SecurityReviewInfo {
@@ -114,6 +143,8 @@ export interface PrismResult {
   reason: string | null;
   /** Present on kind security-review. */
   security?: SecurityReviewInfo;
+  /** Present on kind security-threat-model. */
+  threat_model?: ThreatModelInfo;
 }
 
 export type ResultInit = Omit<PrismResult, 'schema_version' | 'tool_version' | 'model' | 'commit' | 'tree' | 'branch' | 'upstream' | 'base' | 'summary' | 'score' | 'reason' | 'findings'>

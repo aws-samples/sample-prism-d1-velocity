@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
 import {
-  credentialSource, DEPLOY_NOTICE, enableSecurity, isWriteCall, NO_REGION_MESSAGE, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET, PARAM_SERVICE_ROLE,
+  credentialSource, DEPLOY_NOTICE, enableSecurity, isWriteCall, listsBucket, NO_REGION_MESSAGE, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET, PARAM_SERVICE_ROLE,
   PIPELINE_STACK, resolveRegion, STANDALONE_STACK, type CdkEnv, type Deps, type SecurityOptions,
 } from '../src/security/setup.js';
 import { codeReviewTitle, repoIdFromRemote, repoSlug } from '../src/security/repo.js';
@@ -76,7 +76,7 @@ interface State {
   stack: any | null;               // deployed PrismD1MetricsPipeline template, or null when the stack does not exist
   standalone: any | null;          // deployed PrismD1SecurityAgent template, or null
   params: Record<string, string>;
-  spaces: { agentSpaceId: string; name: string }[];
+  spaces: { agentSpaceId: string; name: string; s3Buckets?: string[] }[];
   apps: { applicationId: string; roleArn: string | null }[];
   reviews: { codeReviewId: string; title: string }[];
   objects: Record<string, string>; // key -> ETag (md5)
@@ -90,7 +90,7 @@ function fullySetUp(): State {
     stack: synthTemplate(),
     standalone: null,
     params: { [PARAM_AGENT_SPACE]: 'as-1', [PARAM_SCAN_BUCKET]: BUCKET, [PARAM_SERVICE_ROLE]: ROLE, [PARAM]: 'cr-1' },
-    spaces: [{ agentSpaceId: 'as-1', name: 'prism-d1-security' }],
+    spaces: [{ agentSpaceId: 'as-1', name: 'prism-d1-security', s3Buckets: [`arn:aws:s3:::${BUCKET}`] }],
     apps: [{ applicationId: 'app-1', roleArn: ROLE }],
     reviews: [{ codeReviewId: 'cr-1', title: codeReviewTitle(SLUG) }],
     objects: { [`repo/${SLUG}/latest.zip`]: ZIP_MD5 },
@@ -128,7 +128,11 @@ function fakeAws(state: State, log: string[][], regions: string[]) {
         state.params[name] = arg(args, '--value');
         return res({});
       }
-      case 'securityagent list-agent-spaces': return res({ json: { agentSpaceSummaries: state.spaces } });
+      case 'securityagent list-agent-spaces': return res({ json: { agentSpaceSummaries: state.spaces.map(({ agentSpaceId, name }) => ({ agentSpaceId, name })) } });
+      case 'securityagent batch-get-agent-spaces': {
+        const ids = args.slice(args.indexOf('--agent-space-ids') + 1);
+        return res({ json: { agentSpaces: state.spaces.filter((s) => ids.includes(s.agentSpaceId)).map((s) => ({ agentSpaceId: s.agentSpaceId, name: s.name, awsResources: { iamRoles: [ROLE], s3Buckets: s.s3Buckets ?? [] } })) } });
+      }
       case 'securityagent list-applications': return res({ json: { applicationSummaries: state.apps.map((a) => ({ applicationId: a.applicationId, applicationName: 'x', domain: 'd' })) } });
       case 'securityagent get-application': return res({ json: state.apps.find((a) => a.applicationId === arg(args, '--application-id')) });
       case 'securityagent create-application': { const id = `app-new-${next++}`; state.apps.push({ applicationId: id, roleArn: null }); return res({ json: { applicationId: id } }); }
@@ -405,12 +409,31 @@ test('--status is read-only and reports every item', async () => {
       /\[ok\] Agent space: as-1 \(prism-d1-security\)/,
       /\[ok\] Application: app-1, role attached/,
       /\[ok\] SSM scan-bucket: \/prism\/continuum\/scan-bucket = security-agent-scans/,
+      /\[ok\] Scan bucket on agent space: security-agent-scans-\S+ is in awsResources\.s3Buckets/,
       /\[ok\] Code review: cr-1 \(".*"\) from \/prism\/continuum\/code-review-id\/github\.com-acme-widgets/,
       /\[warn\] Legacy SSM: \/prism\/continuum\/code-review-id = cr-old/,
       /\[ok\] CI workflow step: \.github\/workflows\/prism-eval-gate\.yml/,
       /\[missing\] Local marker/,
     ]) assert.match(out, re);
   } finally { h.cleanup(); }
+});
+
+test('--status flags an agent space that does not list the scan bucket', async () => {
+  const s = fullySetUp(); s.spaces[0].s3Buckets = [];
+  const h = harness(s);
+  try {
+    assert.equal(await enableSecurity(opts({ status: true }), h.deps), 0);
+    assert.match(h.out(), /\[missing\] Scan bucket on agent space: security-agent-scans-\S+ is not in awsResources\.s3Buckets, so security threat-model fails; run prism-cli enable security/);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+});
+
+test('listsBucket matches a bucket by name or ARN, nothing else', () => {
+  assert.ok(listsBucket(['my-bucket'], 'my-bucket'));
+  assert.ok(listsBucket(['arn:aws:s3:::my-bucket'], 'my-bucket'));
+  assert.ok(listsBucket(['arn:aws-cn:s3:::my-bucket'], 'my-bucket'));
+  assert.ok(!listsBucket(['arn:aws:s3:::my-bucket-2', 'other'], 'my-bucket'));
+  assert.ok(!listsBucket([], 'my-bucket'));
 });
 
 test('--status on an account with nothing deployed', async () => {
