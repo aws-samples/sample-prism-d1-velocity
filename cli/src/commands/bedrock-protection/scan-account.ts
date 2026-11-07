@@ -5,8 +5,7 @@ import {
   Finding, renderReport, parseFailOn, applyFailOn,
   FAIL_ON_OPTION, JSON_OPTION,
 } from '../../utils/audit.js';
-import { auditRoot, auditPasswordPolicy, auditUsers, auditUserPolicies } from '../../utils/audit-iam.js';
-import { auditBudgets, auditBudgetAlerting, auditDetection, auditAiProtection, auditCommitments, auditForensics } from '../../utils/audit-bedrock.js';
+import { auditAccount, ACCOUNT_AUDIT_GROUPS } from '../../utils/audit-account.js';
 
 /**
  * Audit the AWS account side of Bedrock protection.
@@ -71,41 +70,14 @@ export default {
     const runIam = !opts.bedrockOnly;
     const runBedrock = !opts.iamOnly;
 
-    // auditBudgets returns the covering budget names so the alerting check can
-    // scope its per-notification calls to them rather than every budget.
-    const budgets = runBedrock ? auditBudgets(target, accountId) : null;
-
-    const findings: Finding[] = [
-      ...(runIam ? [
-        ...auditRoot(target),
-        auditPasswordPolicy(target),
-        ...auditUsers(target, maxKeyAge, unusedDays),
-        auditUserPolicies(target),
-      ] : []),
-      ...(runBedrock && budgets ? [
-        ...budgets.findings,
-        auditBudgetAlerting(target, accountId, budgets.coveringBudgets, budgets.listError),
-        ...auditDetection(target, region),
-        auditAiProtection(target, region),
-        auditCommitments(target, region),
-        auditForensics(target, region),
-      ] : []),
-    ];
+    const findings: Finding[] = auditAccount(target, accountId, region, { maxKeyAge, unusedDays, runIam, runBedrock });
 
     const scope = runIam && runBedrock ? '' : runIam ? '    Scope: IAM only' : '    Scope: Bedrock only';
 
     renderReport(findings, {
       title: '🛡️  Bedrock protection — account audit',
       subtitle: `Account: ${accountId}    Region: ${region}${scope}`,
-      groups: [
-        ['root', 'Root user — unconstrainable by design'],
-        ['users', 'IAM users and access keys'],
-        ['policy', 'Account-wide policy'],
-        ['budget', 'Spend ceilings — both billing surfaces'],
-        ['detection', 'Detection speed — how fast you find out'],
-        ['commitment', 'Standing commitments'],
-        ['forensics', 'Forensics — can you answer "who?"'],
-      ],
+      groups: ACCOUNT_AUDIT_GROUPS,
       json: Boolean(opts.json),
       jsonContext: {
         account: accountId,

@@ -65,3 +65,26 @@ test('scan-account: text report is byte-for-byte what main printed', async () =>
   }
   assert.equal(out, readFileSync(GOLDEN, 'utf8'));
 });
+
+test('ACCOUNT_AUDIT_IDS lists every check id the IAM and Bedrock audit modules can emit', async () => {
+  const { ACCOUNT_AUDIT_IDS } = await import('../src/utils/audit-account.js');
+  const src = ['audit-iam.ts', 'audit-bedrock.ts']
+    .map((f) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'utils', f), 'utf8')).join('\n');
+  // Literal `id: '...'`, `const id = '...'` and the `['id', 'title'...]` tables used for INDETERMINATE fan-out.
+  const found = new Set<string>();
+  for (const m of src.matchAll(/\bid(?::|\s*=)\s*'([a-z0-9-]+)'/g)) found.add(m[1]);
+  for (const m of src.matchAll(/\[\s*'([a-z0-9-]+)',\s*'[A-Z]/g)) found.add(m[1]);
+  assert.deepEqual([...found].sort(), [...ACCOUNT_AUDIT_IDS].sort());
+});
+
+test('scan-account never skips the credential report generation it always did; aws check can opt out', async () => {
+  const stubs: AwsStub[] = [
+    { match: ['iam', 'get-credential-report'], error: 'ReportNotPresent' },
+    { match: ['iam', 'generate-credential-report'], error: 'AccessDenied' },
+  ];
+  const { auditUsers } = await import('../src/utils/audit-iam.js');
+  const gen = withFakeAws(stubs, () => auditUsers(undefined, 90, 90));
+  const noGen = withFakeAws(stubs, () => auditUsers(undefined, 90, 90, false));
+  assert.match(gen[0].detail, /AccessDenied/);
+  assert.match(noGen[0].detail, /ReportNotPresent/);
+});

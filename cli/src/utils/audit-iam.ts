@@ -28,12 +28,13 @@ interface CredRow {
  * kicks it off and re-reads a bounded number of times.
  *
  * This is the only non-read AWS call in the command. It produces a report
- * artifact and modifies no resource.
+ * artifact and modifies no resource. `generate: false` (aws check, which is
+ * strictly read-only) never makes it: a missing report is then an error.
  */
-function credentialReport(target?: AwsTarget): CredRow[] | { error: string } {
+function credentialReport(target?: AwsTarget, generate = true): CredRow[] | { error: string } {
   let got = aws(['iam', 'get-credential-report'], target);
 
-  if (!got.ok && got.errorCode === 'ReportNotPresent') {
+  if (!got.ok && got.errorCode === 'ReportNotPresent' && generate) {
     const gen = aws(['iam', 'generate-credential-report'], target);
     if (!gen.ok) return { error: gen.errorCode || 'generate-credential-report failed' };
     for (let i = 0; i < 10 && !got.ok; i++) {
@@ -155,9 +156,9 @@ export function auditPasswordPolicy(target?: AwsTarget): Finding {
   };
 }
 
-export function auditUsers(target: AwsTarget | undefined, maxKeyAge: number, unusedDays: number): Finding[] {
+export function auditUsers(target: AwsTarget | undefined, maxKeyAge: number, unusedDays: number, generateReport = true): Finding[] {
   const out: Finding[] = [];
-  const report = credentialReport(target);
+  const report = credentialReport(target, generateReport);
 
   if ('error' in report) {
     for (const [id, title, sev] of [
