@@ -303,8 +303,9 @@ const riskPill = (level, label) => el('span', { class: 'pill ' + (RISK_CLASS[lev
 function securityPanel(sec) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Security findings'));
   const rows = (sec && sec.repos) || [];
-  if (!rows.length) {
-    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
+  const tms = (sec && sec.threat_models) || [];
+  if (!rows.length && !tms.length) {
+    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews or threat models yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ' or ', el('code', {}, 'prism-cli security threat-model'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
     return s;
   }
   for (const r of rows) {
@@ -344,7 +345,55 @@ function securityPanel(sec) {
     if (r.truncated) b.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings for all'));
     s.append(b);
   }
+  if (tms.length) {
+    s.append(el('h3', {}, 'Threat models'));
+    for (const t of tms) s.append(threatModelBlock(t, (sec && sec.threats_hint) || 'prism-cli security threats'));
+  }
   return s;
+}
+
+const THREAT_LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+/** "INFORMATION_DISCLOSURE" -> "information disclosure". */
+const strideText = (list) => (list || []).map((x) => txt(x).toLowerCase().replace(/_/g, ' ')).join(', ');
+
+/** One cached threat model per repo, in the code review blocks' compact style. */
+function threatModelBlock(t, hint) {
+  const b = el('div', { class: 'sec-repo' });
+  b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(t.name)), t.current ? el('span', { class: 'tag' }, 'this repo') : null));
+  const docs = (t.scope_docs || []).length;
+  b.append(el('div', { class: 'fix' },
+    (t.pending ? 'started ' + when(t.started_at) : when(t.finished_at)) + ' · commit ' + txt(t.commit).slice(0, 12)
+    + ' · ' + (docs ? docs + ' scope doc' + (docs === 1 ? '' : 's') : 'source only') + ' · job ' + txt(t.job_id).slice(0, 12)));
+  const pills = el('div', { class: 'sec-pills' });
+  if (t.pending) {
+    // Results are local: the page only knows the job was started, not whether it has finished since.
+    pills.append(pill('warn', 'threat model running'));
+    if (t.stale) pills.append(pill('skipped', 'stale?'));
+    b.append(pills, el('p', { class: 'note' }, t.stale ? 'Started over 2 h ago and not fetched yet; it has most likely finished. ' : '', 'Fetch the threats with ', el('code', {}, hint), '.'));
+    return b;
+  }
+  if (t.status === 'error') pills.append(pill('error', txt(t.job_status).toLowerCase()));
+  else {
+    const counts = t.counts || {};
+    const shown = THREAT_LEVELS.filter((k) => (counts[k] || 0) > 0);
+    if (!shown.length) pills.append(pill('ok', 'no threats'));
+    for (const k of shown) pills.append(riskPill(k, counts[k] + ' ' + k.toLowerCase()));
+  }
+  b.append(pills);
+  if (t.reason) b.append(el('p', { class: 'note' }, txt(t.reason)));
+  if (t.overview) b.append(el('p', { class: 'note' }, txt(t.overview)));
+  if ((t.threats || []).length) {
+    const list = el('ul', { class: 'sec-findings' });
+    for (const x of t.threats) {
+      list.append(el('li', {},
+        riskPill(x.severity, txt(x.severity).toLowerCase()), ' ',
+        el('span', { class: 'sec-title' }, txt(x.title)),
+        (x.stride || []).length ? el('div', { class: 'fix' }, strideText(x.stride)) : null));
+    }
+    b.append(list);
+  }
+  if (t.more) b.append(el('p', { class: 'note' }, t.more + ' more; run ' + hint + ' for all'));
+  return b;
 }
 
 async function load() {
