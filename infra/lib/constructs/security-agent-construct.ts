@@ -168,6 +168,32 @@ export class SecurityAgentConstruct extends Construct {
       );
     }
 
+    // -------------------------------------------------------
+    // S3 Scan Bucket — stores repo ZIPs and diff files for
+    // API-triggered code reviews (diff scans from CI/CD) and
+    // threat models. Created before the agent space, which lists it.
+    // -------------------------------------------------------
+    this.scanBucket = new s3.Bucket(this, 'ScanBucket', {
+      bucketName: `security-agent-scans-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
+      // SSE-S3 (not the customer-managed KMS key): the Continuum service reads
+      // this bucket when creating the code review and cannot access a CMK it
+      // has no grant on. Artifacts here are ephemeral diffs (30-day lifecycle),
+      // the bucket is private (BLOCK_ALL) and SSL-enforced.
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: false,
+      lifecycleRules: [
+        {
+          id: 'expire-scan-artifacts',
+          expiration: cdk.Duration.days(30),
+          enabled: true,
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
     // Agent Space
     const agentSpace = new securityagent.CfnAgentSpace(this, 'AgentSpace', {
       name: props.agentSpaceName,
@@ -177,6 +203,9 @@ export class SecurityAgentConstruct extends Construct {
       }),
       awsResources: {
         iamRoles: [this.serviceRole.roleArn],
+        // create-threat-model refuses S3 sources and scope docs in a bucket the
+        // agent space does not list ("S3 bucket not found in agent instance S3 buckets").
+        s3Buckets: [this.scanBucket.bucketArn],
       },
       tags: [
         { key: 'prism:component', value: 'security-agent' },
@@ -236,31 +265,6 @@ export class SecurityAgentConstruct extends Construct {
         exportName: `PrismD1SecurityAgentDomainIds`,
       });
     }
-
-    // -------------------------------------------------------
-    // S3 Scan Bucket — stores repo ZIPs and diff files for
-    // API-triggered code reviews (diff scans from CI/CD).
-    // -------------------------------------------------------
-    this.scanBucket = new s3.Bucket(this, 'ScanBucket', {
-      bucketName: `security-agent-scans-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-      // SSE-S3 (not the customer-managed KMS key): the Continuum service reads
-      // this bucket when creating the code review and cannot access a CMK it
-      // has no grant on. Artifacts here are ephemeral diffs (30-day lifecycle),
-      // the bucket is private (BLOCK_ALL) and SSL-enforced.
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      enforceSSL: true,
-      versioned: false,
-      lifecycleRules: [
-        {
-          id: 'expire-scan-artifacts',
-          expiration: cdk.Duration.days(30),
-          enabled: true,
-        },
-      ],
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-    });
 
     // Grant Security Agent service role read access to the scan bucket
     this.scanBucket.grantRead(this.serviceRole);
