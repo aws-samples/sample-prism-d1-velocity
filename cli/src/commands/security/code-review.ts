@@ -1,4 +1,5 @@
 import { defaultDeps, runGuarded, type RunHooks } from '../enable/security.js';
+import { connectionDefaults } from '../../aws/connection.js';
 import { FAIL_ON_LEVELS, securityCodeReview, type CodeReviewOptions, type ReviewDeps } from '../../security/review.js';
 import type { SecurityOptions } from '../../security/setup.js';
 
@@ -20,8 +21,8 @@ export function reviewDeps(opts: SecurityOptions): ReviewDeps {
 }
 
 export const REVIEW_TARGET_OPTIONS = [
-  { flags: '--profile <name>', description: 'AWS CLI profile (default: none; the standard credential chain)' },
-  { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, else the profile\'s configured region)' },
+  { flags: '--profile <name>', description: 'AWS CLI profile (default: AWS_PROFILE or env credentials, else the profile saved by prism-cli aws connect, else the standard credential chain)' },
+  { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, the aws connect region, else the profile\'s configured region)' },
   { flags: '--path <dir>', description: 'The repository top level to work on (default: the current directory, which must be the top level)' },
   { flags: '--repo <host/owner/name>', description: 'Repo id (not a path) for the code review, as the CI gate names it (default: from the origin remote)' },
 ];
@@ -40,7 +41,7 @@ export default {
   ],
   async action(opts: CodeReviewOptions, hooks: ReviewHooks = {}) {
     await runGuarded(() => {
-      const o: CodeReviewOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
+      const o: CodeReviewOptions = connectionDefaults({ ...opts, profile: opts.profile || undefined, region: opts.region || undefined }, hooks.env);
       return securityCodeReview(o, (hooks.reviewDeps ?? reviewDeps)(o));
     }, hooks);
   },

@@ -1,4 +1,5 @@
 import { runGuarded } from '../enable/security.js';
+import { connectionDefaults } from '../../aws/connection.js';
 import { FAIL_ON_LEVELS, securityFindings, type FindingsOptions } from '../../security/review.js';
 import { securityPentestFindings, type PentestOptions } from '../../security/pentest.js';
 import { REVIEW_TARGET_OPTIONS, reviewDeps, type ReviewHooks } from './code-review.js';
@@ -18,14 +19,15 @@ export default {
   ],
   async action(opts: FindingsOptions & { pentest?: boolean | string; includeFalsePositives?: boolean }, hooks: ReviewHooks = {}) {
     await runGuarded(() => {
-      const deps = (hooks.reviewDeps ?? reviewDeps)(opts);
+      // Defaults first, so the runners use the saved profile too.
+      const base = connectionDefaults({ ...opts, profile: opts.profile || undefined, region: opts.region || undefined }, hooks.env);
+      const deps = (hooks.reviewDeps ?? reviewDeps)(base);
       if (opts.pentest !== undefined && opts.pentest !== false) {
         const job = typeof opts.pentest === 'string' ? opts.pentest : opts.job;
-        const o: PentestOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined, job };
+        const o: PentestOptions = { ...base, job };
         return securityPentestFindings(o, deps);
       }
-      const o: FindingsOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
-      return securityFindings(o, deps);
+      return securityFindings(base, deps);
     }, hooks);
   },
 };

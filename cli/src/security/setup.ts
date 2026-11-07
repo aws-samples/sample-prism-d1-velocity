@@ -24,6 +24,7 @@ import { diffTemplates, formatDiff, type CfnTemplate, type TemplateDiff } from '
 import { cliVersionOk, explainAwsError, MIN_AWS_CLI_TEXT, redact } from './errors.js';
 import { ensureMarkerIgnored, MARKER_PATH, readSecurityMarkerWithSource, writeSecurityMarker } from './marker.js';
 import { codeReviewParam, codeReviewTitle, repoIdFromRemote, repoSlug, repoZipKey, SSM_PREFIX } from './repo.js';
+import { accountChangeWarning, connectionLabel, type SavedConnection } from '../aws/connection.js';
 
 /** Hosts Security Agent when deployed with enableSecurityAgent=true (the original layout). */
 export const PIPELINE_STACK = 'PrismD1MetricsPipeline';
@@ -49,6 +50,10 @@ export interface SecurityOptions {
   repo?: string;
   /** Extra `cdk -c key=value` pairs, for stacks deployed with non-default context. */
   context?: string[];
+  /** Set by connectionDefaults (src/aws/connection.ts): where `profile` came from. */
+  profileSource?: string;
+  /** Set by connectionDefaults: the saved `aws connect` connection whose region applies. */
+  connection?: SavedConnection;
 }
 
 /** Where CDK runs: the account from STS and the resolved region (CDK_DEFAULT_*). */
@@ -188,8 +193,9 @@ const accountLabel = (id: Identity) => `${id.account}${id.alias ? ` (${id.alias}
 
 /**
  * The region, resolved in the AWS CLI's order: --region, AWS_REGION,
- * AWS_DEFAULT_REGION, then the profile's configured region (the --profile
- * profile, else AWS_PROFILE, else default). Null when none is set.
+ * AWS_DEFAULT_REGION, then the saved `aws connect` region (only with its own
+ * profile), then the profile's configured region (the --profile profile, else
+ * AWS_PROFILE, else default). Null when none is set.
  */
 export function resolveRegion(opts: SecurityOptions, deps: Pick<Deps, 'env' | 'configRegion'>): { region: string; source: string } | null {
   if (opts.region) return { region: opts.region, source: '--region' };
@@ -197,6 +203,7 @@ export function resolveRegion(opts: SecurityOptions, deps: Pick<Deps, 'env' | 'c
     const v = deps.env[k]?.trim();
     if (v) return { region: v, source: k };
   }
+  if (opts.connection?.region) return { region: opts.connection.region, source: connectionLabel(opts.connection) };
   const v = deps.configRegion(opts.profile)?.trim();
   const which = opts.profile ? `profile ${opts.profile}` : deps.env.AWS_PROFILE ? `profile ${deps.env.AWS_PROFILE} (AWS_PROFILE)` : 'the default profile';
   return v ? { region: v, source: `region configured for ${which}` } : null;
@@ -206,7 +213,7 @@ export const NO_REGION_MESSAGE = 'No AWS region is set. Pass --region <region>, 
 
 /** Where the credentials come from, as far as can be told without reading them. */
 export function credentialSource(opts: SecurityOptions, env: NodeJS.ProcessEnv): string {
-  if (opts.profile) return `profile ${opts.profile} (--profile)`;
+  if (opts.profile) return `profile ${opts.profile} (${opts.profileSource ?? '--profile'})`;
   if (env.AWS_PROFILE) return `profile ${env.AWS_PROFILE} (AWS_PROFILE)`;
   if (env.AWS_ACCESS_KEY_ID) return 'environment variables (AWS_ACCESS_KEY_ID)';
   if (env.AWS_WEB_IDENTITY_TOKEN_FILE) return 'web identity token (AWS_WEB_IDENTITY_TOKEN_FILE)';
@@ -226,6 +233,8 @@ export function printIdentity(ctx: Ctx, id: Identity): void {
   deps.log(`Caller:      ${id.arn || 'unknown'}`);
   deps.log(`Region:      ${opts.region} (${opts.regionSource})`);
   deps.log(`Credentials: ${credentialSource(opts, deps.env)}`);
+  const w = accountChangeWarning(opts.connection, id.account);
+  if (w) deps.log(w);
 }
 
 export interface RepoCtx { root: string; id: string; slug: string; title: string; param: string; zipKey: string }

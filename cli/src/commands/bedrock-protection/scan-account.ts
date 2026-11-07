@@ -1,11 +1,11 @@
-import { AwsTarget, resolveAccount, PROFILE_OPTION } from '../../utils/aws.js';
+import { AwsTarget, resolveAccount } from '../../utils/aws.js';
 import { DEFAULT_REGION } from '../../utils/region.js';
 import { validateAwsRegion } from '../../utils/validate.js';
 import {
   Finding, renderReport, parseFailOn, applyFailOn,
   FAIL_ON_OPTION, JSON_OPTION,
 } from '../../utils/audit.js';
-import { auditAccount, ACCOUNT_AUDIT_GROUPS } from '../../utils/audit-account.js';
+import { auditAccount, auditDefaults, accountChangeWarning, ACCOUNT_AUDIT_GROUPS, AUDIT_PROFILE_OPTION, auditRegionOption } from '../../utils/audit-account.js';
 
 /**
  * Audit the AWS account side of Bedrock protection.
@@ -37,8 +37,8 @@ import { auditAccount, ACCOUNT_AUDIT_GROUPS } from '../../utils/audit-account.js
 export default {
   description: 'Audit the AWS account for LLMjacking exposure: IAM credential hygiene plus Bedrock spend guardrails, detection speed and invocation logging',
   options: [
-    { flags: '--region <region>', description: 'Region for Bedrock, CloudWatch and Provisioned Throughput checks', default: DEFAULT_REGION },
-    PROFILE_OPTION,
+    auditRegionOption('Region for Bedrock, CloudWatch and Provisioned Throughput checks'),
+    AUDIT_PROFILE_OPTION,
     { flags: '--max-key-age <days>', description: 'Flag active access keys older than this', default: '90' },
     { flags: '--unused-days <days>', description: 'Flag credentials idle longer than this', default: '90' },
     { flags: '--iam-only', description: 'Only run the IAM credential hygiene checks' },
@@ -50,7 +50,8 @@ export default {
     region?: string; profile?: string; maxKeyAge?: string; unusedDays?: string;
     iamOnly?: boolean; bedrockOnly?: boolean; json?: boolean; failOn?: string;
   }) {
-    const region = validateAwsRegion(opts.region || DEFAULT_REGION);
+    const defaults = auditDefaults(opts, DEFAULT_REGION);
+    const region = validateAwsRegion(defaults.region);
     const failOn = parseFailOn(opts.failOn);
 
     if (opts.iamOnly && opts.bedrockOnly) {
@@ -63,9 +64,12 @@ export default {
     if (!Number.isFinite(unusedDays) || unusedDays < 1) throw new Error('--unused-days must be a positive integer');
 
     // One target for every check; scan-org supplies assumed-role creds instead.
-    const target: AwsTarget = { profile: opts.profile };
+    const target: AwsTarget = { profile: defaults.profile };
+    if (defaults.note) console.error(defaults.note);
     const accountId = resolveAccount(target);
     if (!accountId) { process.exitCode = 2; return; }
+    const changed = accountChangeWarning(defaults.connection, accountId);
+    if (changed) console.error(changed);
 
     const runIam = !opts.bedrockOnly;
     const runBedrock = !opts.iamOnly;

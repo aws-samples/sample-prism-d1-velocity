@@ -1,4 +1,5 @@
-import { aws, AwsTarget, assumeRole, resolveAccount, PROFILE_OPTION } from '../../utils/aws.js';
+import { aws, AwsTarget, assumeRole, resolveAccount } from '../../utils/aws.js';
+import { auditDefaults, accountChangeWarning, AUDIT_PROFILE_OPTION, auditRegionOption } from '../../utils/audit-account.js';
 import { DEFAULT_REGION } from '../../utils/region.js';
 import { validateAwsRegion } from '../../utils/validate.js';
 import {
@@ -141,8 +142,8 @@ export default {
   options: [
     { flags: '--ou <ids>', description: 'Comma-separated OU ids to scope to (default: the entire organization, recursing from every root)' },
     { flags: '--role-name <name>', description: 'Role to assume in each member account', default: 'OrganizationAccountAccessRole' },
-    { flags: '--region <region>', description: 'Region for Bedrock, CloudWatch and Provisioned Throughput checks', default: DEFAULT_REGION },
-    PROFILE_OPTION,
+    auditRegionOption('Region for Bedrock, CloudWatch and Provisioned Throughput checks'),
+    AUDIT_PROFILE_OPTION,
     { flags: '--max-accounts <n>', description: 'Stop after this many accounts (each costs ~10 AWS API calls)', default: '50' },
     { flags: '--session-duration <seconds>', description: 'AssumeRole session length', default: '3600' },
     { flags: '--max-key-age <days>', description: 'Flag active access keys older than this', default: '90' },
@@ -158,7 +159,8 @@ export default {
     maxKeyAge?: string; unusedDays?: string; skipBedrock?: boolean; skipGuardrails?: boolean;
     json?: boolean; failOn?: string;
   }) {
-    const region = validateAwsRegion(opts.region || DEFAULT_REGION);
+    const defaults = auditDefaults(opts, DEFAULT_REGION);
+    const region = validateAwsRegion(defaults.region);
     const failOn = parseFailOn(opts.failOn);
     const roleName = opts.roleName || 'OrganizationAccountAccessRole';
     if (!/^[\w+=,.@-]{1,64}$/.test(roleName)) {
@@ -180,9 +182,12 @@ export default {
       }
     }
 
-    const mgmt: AwsTarget = { profile: opts.profile };
+    const mgmt: AwsTarget = { profile: defaults.profile };
+    if (defaults.note) console.error(defaults.note);
     const callerAccount = resolveAccount(mgmt);
     if (!callerAccount) { process.exitCode = 2; return; }
+    const changed = accountChangeWarning(defaults.connection, callerAccount);
+    if (changed) console.error(changed);
 
     // Confirm we are actually in the management account (or a delegated admin).
     // Running from a member account silently returns only that account, which

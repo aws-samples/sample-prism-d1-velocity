@@ -1,4 +1,5 @@
 import { runGuarded } from '../enable/security.js';
+import { connectionDefaults } from '../../aws/connection.js';
 import { FAIL_ON_LEVELS } from '../../security/review.js';
 import { DEFAULT_TM_TIMEOUT_MIN, securityThreatModel, type ThreatModelOptions } from '../../security/threat-model.js';
 import { REVIEW_TARGET_OPTIONS, reviewDeps, type ReviewHooks } from './code-review.js';
@@ -18,7 +19,7 @@ export default {
   ],
   async action(opts: ThreatModelOptions, hooks: ReviewHooks = {}) {
     await runGuarded(() => {
-      const o: ThreatModelOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
+      const o: ThreatModelOptions = connectionDefaults({ ...opts, profile: opts.profile || undefined, region: opts.region || undefined }, hooks.env);
       return securityThreatModel(o, (hooks.reviewDeps ?? reviewDeps)(o));
     }, hooks);
   },

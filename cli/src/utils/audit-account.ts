@@ -5,6 +5,8 @@
  */
 import type { AwsTarget } from './aws.js';
 import type { Finding } from './audit.js';
+import { accountChangeWarning, configuredRegion, connectionDefaults, type SavedConnection } from '../aws/connection.js';
+import { resolveRegion } from '../security/setup.js';
 import { auditRoot, auditPasswordPolicy, auditUsers, auditUserPolicies } from './audit-iam.js';
 import { auditBudgets, auditBudgetAlerting, auditDetection, auditAiProtection, auditCommitments, auditForensics } from './audit-bedrock.js';
 
@@ -56,3 +58,42 @@ export function auditAccount(target: AwsTarget, accountId: string, region: strin
     ] : []),
   ];
 }
+
+export interface AuditDefaults {
+  profile?: string;
+  region: string;
+  connection?: SavedConnection;
+  /** One stderr line when the saved connection chose the profile or region, else null. */
+  note: string | null;
+}
+
+/**
+ * Profile and region for the bedrock-protection commands, through the shared
+ * resolver. Notes go to stderr so the report on stdout keeps its exact shape.
+ *
+ * shortcut: these commands always ran in us-west-2 when given no --region, so
+ * that stays the last fallback instead of refusing like the newer commands;
+ * drop it when bedrock-protection is folded into aws check.
+ */
+export function auditDefaults(opts: { profile?: string; region?: string }, fallbackRegion: string, env?: NodeJS.ProcessEnv): AuditDefaults {
+  const o = connectionDefaults({ profile: opts.profile || undefined, region: opts.region || undefined }, env);
+  const r = resolveRegion(o, { env: env ?? process.env, configRegion: configuredRegion });
+  const region = r?.region ?? fallbackRegion;
+  const fromSaved = o.profileSource?.startsWith('aws connect') || r?.source.startsWith('aws connect');
+  const note = fromSaved
+    ? `Using ${o.profile ? `profile ${o.profile} (${o.profileSource})` : 'the default credential chain'}, region ${region} (${r?.source ?? 'default'}).`
+    : null;
+  return { profile: o.profile, region, connection: o.connection, note };
+}
+
+export { accountChangeWarning };
+
+export const AUDIT_PROFILE_OPTION = {
+  flags: '--profile <name>',
+  description: 'AWS CLI profile to audit (default: AWS_PROFILE or env credentials, else the one saved by prism-cli aws connect, else the default chain)',
+};
+
+export const auditRegionOption = (what: string) => ({
+  flags: '--region <region>',
+  description: `${what} (default: AWS_REGION, AWS_DEFAULT_REGION, the aws connect region, the profile's region, else us-west-2)`,
+});
