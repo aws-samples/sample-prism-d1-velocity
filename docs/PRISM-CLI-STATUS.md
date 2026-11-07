@@ -75,6 +75,19 @@ Run the Security Agent code review the CI gate runs, from a developer's machine,
 - **Results:** cached in `.prism/results/` as `kind: security-review`; the dashboard's Security findings panel shows them with no AWS calls.
 - **User docs:** [Running a Review from the CLI](../USER_GUIDE.md#running-a-review-from-the-cli).
 
+### `security threat-model` and `security threats`
+Run a Security Agent threat model of the repo at HEAD, optionally focused by design docs, and read its threats. `security design-review` was dropped: design review has no public API ([research](RESEARCH-threat-model-design-review.md)).
+
+- **`security threat-model`:**
+  - **Inputs:** `git archive HEAD`, plus scope docs read from HEAD: `--doc`, repeatable and kept inside the repo; by default `.kiro/specs/*/{design,requirements}.md`; `--no-docs` for none. Both are uploaded to the scan bucket under a per-commit key.
+  - **Run:** it creates one threat model per run and starts its job, then waits with the code-review backoff (default 60 min).
+  - **Output:** threats by severity with STRIDE, recommendation and evidence paths, plus the overview's first paragraph.
+  - **Flags:** `--fail-on`, `--no-wait` and `--json` work as in code-review.
+- **`security threats`:** read-only. It reads the pending job, `--job <id>`, or the latest job, with `--severity` and `--wait`.
+- **Open:** whether the scan bucket must be registered on the agent space, and the scope-doc limits. Both need one live run ([research](RESEARCH-threat-model-design-review.md), Q1 and Q2). On a client error the commands print a hint for both.
+
+User docs: [Running a Threat Model from the CLI](../USER_GUIDE.md#running-a-threat-model-from-the-cli).
+
 ### `version`
 Prints the CLI version (from `package.json`) and the Node version.
 
@@ -102,8 +115,6 @@ Pushes codeburn's unsent telemetry to the configured PRISM collector now: `codeb
 
 ### Secure (AWS Continuum)
 All of these call AWS and need credentials.
-- **`security threat-model`, `security threats`:** built. They model the repo at HEAD, plus scope docs read from HEAD (default `.kiro/specs/*/{design,requirements}.md`), and read the threats. See [Running a Threat Model from the CLI](../USER_GUIDE.md#running-a-threat-model-from-the-cli). Open: whether the scan bucket must be registered on the agent space, and the scope-doc limits. Both need one live run ([research](RESEARCH-threat-model-design-review.md), Q1 and Q2).
-- **`security design-review`:** dropped. Design review exists only in the Security Agent web app, and no public API backs it. `threat-model --doc` covers threat-modeling a design ([research](RESEARCH-threat-model-design-review.md)).
 - **`security pentest`:** reuses `workshop perform-pen-test`. It runs only against targets the customer owns and authorizes: the target must pass domain verification and the user confirms it by name, with no flag to skip that. Open: what authorization evidence is needed beyond domain verification.
 
 ### Advise (AWS account)
