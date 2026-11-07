@@ -308,19 +308,19 @@ test('threat-model: --no-wait saves a pending record and prints the threats hint
   } finally { h.cleanup(); }
 });
 
-test('threat-model: Ctrl-C exits 130 and leaves the job running; the default timeout is 60 min', async () => {
+test('threat-model: Ctrl-C exits 130 and leaves the job running; the default timeout is 120 min', async () => {
   const h = harness(state({ statuses: ['IN_PROGRESS'] }), { interruptOnSleep: 2 });
   try {
     assert.equal(await securityThreatModel(tm(), h.deps), 130);
     assert.ok(!h.calls.some((c) => c[1] === 'stop-threat-model-job'));
     assert.equal(h.results()[0].status, 'pending');
   } finally { h.cleanup(); }
-  assert.equal(DEFAULT_TM_TIMEOUT_MIN, 60);
+  assert.equal(DEFAULT_TM_TIMEOUT_MIN, 120);
   const h2 = harness(state({ statuses: ['IN_PROGRESS'] }));
   try {
     assert.equal(await securityThreatModel(tm(), h2.deps), 2);
-    assert.match(h2.out(), /Timed out after 60 min/);
-    assert.equal(h2.sleeps.reduce((a, b) => a + b, 0), 60 * 60_000);
+    assert.match(h2.out(), /Timed out after 120 min/);
+    assert.equal(h2.sleeps.reduce((a, b) => a + b, 0), 120 * 60_000);
   } finally { h2.cleanup(); }
 });
 

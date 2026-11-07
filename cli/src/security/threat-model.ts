@@ -30,7 +30,9 @@ import {
   type Ctx, type Identity, type RepoCtx, type SecurityOptions,
 } from './setup.js';
 
-export const DEFAULT_TM_TIMEOUT_MIN = 60;
+// The first live run (a full repo plus one scope doc) took ~51 min, well past
+// the 5-30 min AWS's IDE guide gives, so wait up to two hours by default.
+export const DEFAULT_TM_TIMEOUT_MIN = 120;
 
 /** Threat severities, most severe first (the API's enum). */
 export const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;

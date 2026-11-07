@@ -21,7 +21,7 @@ Doc content below is paraphrased.
 | Do security requirements feed threat models? | No. Requirement packs feed design reviews and code reviews only. | Medium-high |
 | Can `threat-model` reuse what `enable security` creates? | Yes: agent space, service role and scan bucket. One S3 registration question is open. | Medium |
 | Cost | Free while threat modeling is in preview. No task-hour field exists on threat-model jobs. | High (for now) |
-| Typical duration | 5 to 30 minutes. | Medium (one AWS doc) |
+| Typical duration | AWS's IDE guide says 5 to 30 minutes; the first live run of this repo (full source + one scope doc) took about 51 minutes. | High (measured) |
 | Recommendation | Build `security threat-model`, with optional `--doc` scope docs uploaded to S3. Do not build `design-review` until AWS ships an API. | n/a |
 
 ## 1. Design review
@@ -214,7 +214,7 @@ As built:
 - The title is `<slug>-tm-<sha12>-<UTC time>`, so each run's model is distinct.
 - The result has `system_overview` (the full text) instead of `system_overview_file`, and no `source` field.
 
-- **Wait by default, like `code-review`.** Runs take 5 to 30 minutes, which is shorter than a full code review. The default `--timeout` is 60 as built, which leaves room for slow runs. Ctrl-C and timeouts leave the job running and print the `security threats --job <id>` hint. `--no-wait` starts the job, prints its id and exits.
+- **Wait by default, like `code-review`.** Runs take 5 to 30 minutes, which is shorter than a full code review. The default `--timeout` is 120: the first live run took about 51 minutes. Ctrl-C and timeouts leave the job running and print the `security threats --job <id>` hint. `--no-wait` starts the job, prints its id and exits.
 - **Pending record.** Write it right after `start-threat-model-job`: kind `security-threat-model`, status `pending`, in `.prism/results/`. `security threats` completes it in place, filtered on the same account, region and threat model id as `pendingReviews`.
 - **One threat model per run.** Name it `<slug>-tm-<sha12>` (or `--title`), and do not reuse a per-repo threat model updated before each run. Reasons:
   - The job snapshots its inputs, so a per-repo model would work. But two developers running at once could each `update-threat-model` and start the other's inputs, and nothing would flag it.

@@ -1529,7 +1529,7 @@ failed job 1). It differs in these ways:
    uploaded again. The CI code review's `repo/<repo-slug>/latest.zip` is not touched.
 4. Each run creates its own threat model, titled `<repo-slug>-tm-<commit>-<time>`, and starts its
    job. `security threats` finds the latest one by that title prefix.
-5. `--timeout` defaults to 60 minutes. AWS's IDE docs give 5 to 30 minutes for a run.
+5. `--timeout` defaults to 120 minutes. AWS's IDE docs give 5 to 30 minutes for a run, but a full-repo run with one scope doc took about 51 minutes in testing.
 6. The output has the first paragraph of the system overview, then the threats by severity
    (CRITICAL, HIGH, MEDIUM, LOW, INFO). Each threat shows its STRIDE categories, title,
    recommendation and evidence paths, with the sandbox prefix removed. The result is saved with
