@@ -1,8 +1,8 @@
 # prism-cli: status of the "one tool, three jobs" commands
 
-Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md).
+Status as of 2026-11-07. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md).
 
-`enable codewatch`, `dashboard`, `enable security`, `security code-review` and `security findings` are on `main`. `version`, `enable codeburn` and `export otel` are on the unpushed branch `feat/codeburn-version`.
+`enable codewatch`, `dashboard`, `enable security`, `security code-review` and `security findings` are on `main`. `version`, `enable codeburn` and `export otel` are on the unpushed branch `feat/codeburn-version`. `aws connect`, `aws check` and `aws recommend` are on the unpushed branch `feat/aws-advise`.
 
 ## Summary
 
@@ -21,11 +21,11 @@ Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-
 | Secure | `prism-cli security code-review` | **Built** |
 | Secure | `prism-cli security pentest` | **Built** (not merged) |
 | Secure | `prism-cli security findings` | **Built** |
-| Advise | `prism-cli aws connect` | Planned |
-| Advise | `prism-cli aws check` | Planned (reuse) |
-| Advise | `prism-cli aws recommend` | Planned |
+| Advise | `prism-cli aws connect` | **Built** (not merged) |
+| Advise | `prism-cli aws check` | **Built** (not merged; Startup Advisor section is a placeholder) |
+| Advise | `prism-cli aws recommend` | **Built** (not merged; fixed mapping) |
 
-So far 9 of the 15 are built, 4 are planned, 1 is blocked until we know what it is, and 1 (`security design-review`) was dropped because no public API backs it.
+So far 13 of the 15 are built (several not merged yet), 1 is blocked until we know what it is, and 1 (`security design-review`) was dropped because no public API backs it.
 
 ## Built
 
@@ -112,16 +112,23 @@ Pushes codeburn's unsent telemetry to the configured PRISM collector now: `codeb
 
 - **Not yet:** `--endpoint` for a team's own OTLP collector, and exporting `.prism/results/`. Open: whether codeburn accepts a custom endpoint, and whether per-developer gate results should be exported.
 
+### `aws connect`, `aws check` and `aws recommend` (Advise)
+
+Built on `feat/aws-advise`; design in [DESIGN-prism-cli-aws-advise.md](DESIGN-prism-cli-aws-advise.md), user docs in [AWS Account Advice](../USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend). All three are read-only against AWS and say so first.
+
+- **`aws connect`:** picks a profile and region (flags, or a choice from `aws configure list-profiles` on a terminal), validates them with STS, and reports the account, alias, whether it is an Organizations management account and whether the identity looks admin or read-only. Stores no credentials: `{profile, region, account, alias, verifiedAt}` in `~/.prism/aws.json`, or with `--repo` in a git-ignored `.prism/aws.local.json`. `--status`, `--clear`.
+  - **Decided:** both per user and per repo (repo wins).
+  - **Shared resolver:** the saved connection is the default for every AWS command (enable security, security *, aws check/recommend, bedrock-protection): flags > env > repo file > user file > default chain. The identity header names the source and warns when the account changed.
+- **`aws check`:** sections `bedrock` (the scan-account checks, unchanged, minus credential-report generation), `prism-setup` (metrics pipeline, Security Agent stack/SSM/scan bucket, CI OIDC role, codeburn sync), `baseline` (CloudTrail, GuardDuty, Security Hub, Access Analyzer, root MFA, budgets, S3 Block Public Access, EBS encryption) and `startup-advisor`. Denied reads are INDETERMINATE. `--section`, `--fail-on` (report-only by default), `--json`. Results are cached as kind `aws-check`; the dashboard's AWS account panel shows the latest per account.
+  - **Still open:** how Startup Advisor is consumed, and its license. Its section is a placeholder that reports "not integrated yet".
+- **`aws recommend`:** reads the latest `aws-check` result (no AWS calls; `--refresh` runs the check first) and maps each FAIL to a fix with steps, the `prism-cli` command when there is one, and a doc link; ranked by severity, then effort. INDETERMINATE checks become "grant read access" items. `--json`, `--markdown`.
+  - **Decided:** a fixed mapping, no model calls. A later `--explain` could use the codewatch reviewer adapters (TODO in the design doc).
+
 ## Planned
 
 ### Secure (AWS Continuum)
 All of these call AWS and need credentials.
 - **`security pentest`:** built on `feat/security-pentest`; see [the design](DESIGN-prism-cli-pentest.md). It deploys the repo's app into a temporary private VPC in the caller's account and tests only that, never an arbitrary URL. It does not wait by default; `--status`, `--cleanup` and `security findings --pentest` follow up.
-
-### Advise (AWS account)
-- **`aws connect`:** read-only. It records which AWS profile to use and stores no credentials. Open: per repo or per user.
-- **`aws check`:** reuses Startup Advisor's account checks. PRISM adds only the AI-DLC and Bedrock checks, building on `bedrock-protection scan-account`. Open: how Startup Advisor is consumed, and its license.
-- **`aws recommend`:** turns `aws check` findings into recommendations. Open: a fixed mapping or model-generated.
 
 ## Blocked
 
@@ -162,13 +169,13 @@ These existing commands get new names. The old names stay as deprecated aliases 
 | `bootstrapper setup-otel-sync` | `enable codeburn` (done) |
 | `securityagent setup` | `enable security` (done) |
 | `workshop perform-pen-test` | `security pentest` (workshop target only) |
-| `bedrock-protection scan-account` | `aws check` (Bedrock section) |
+| `bedrock-protection scan-account` | `aws check` (Bedrock section; scan-account stays, sharing the same checks) |
 
 ## Questions for the roadmap owner
 
 1. What is `install transformation-center`?
 2. `enable security` now wraps the Security Agent setup (decided). Does it belong under Observe or Secure on the slide? It is the only Observe command that needs AWS credentials.
 3. ~~Which Security Agent APIs back `design-review` and `threat-model`?~~ Answered in [the research doc](RESEARCH-threat-model-design-review.md): threat model has an API, design review does not.
-4. How do we consume Startup Advisor's checks, and under what license?
-5. Should `aws recommend` be a fixed mapping or model-generated?
+4. How do we consume Startup Advisor's checks, and under what license? (`aws check` has a placeholder section for it.)
+5. ~~Should `aws recommend` be a fixed mapping or model-generated?~~ Decided: a fixed mapping; a model `--explain` may come later.
 6. With commit trailers gone, should codeburn's `--attribution` stay on?

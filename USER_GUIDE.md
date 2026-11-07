@@ -14,6 +14,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Security Agent Setup (enable security)](#security-agent-setup-enable-security)
 - [CI-CD Workflows (GitHub and GitLab)](#ci-cd-workflows-github-and-gitlab)
 - [Eval Gates](#eval-gates)
+- [AWS Account Advice (aws connect, check, recommend)](#aws-account-advice-aws-connect-check-recommend)
 - [Bedrock Protection Audit](#bedrock-protection-audit)
 - [AWS Continuum Security Agent](#aws-continuum-security-agent)
 - [Dashboards](#dashboards)
@@ -695,6 +696,12 @@ the system overview and the top 5 threats with their STRIDE categories. A job th
 not fetched yet shows `threat model running` and the `prism-cli security threats` command. After
 2 hours it is also marked `stale?`.
 
+**AWS account.** The latest `prism-cli aws check` result per AWS account, from every repo's
+`.prism/results/` and `~/.prism/results/`: the region, when it ran, the profile and where it came
+from, pass / fail / not-checked counts, fails by severity and the top 5 failures, with a pointer to
+`prism-cli aws recommend`. With none cached, it points to `prism-cli aws check`. Local files only;
+no AWS calls (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend)).
+
 Data is read when the page loads; the **Refresh** button reads it again.
 
 ### Scan Report Pages
@@ -887,8 +894,8 @@ marker. It also flags the unused `/prism/continuum/code-review-id` parameter lef
 
 | Flag | Purpose |
 |---|---|
-| `--profile <name>` | AWS CLI profile (default: none; the standard credential chain) |
-| `--region <region>` | AWS region (default: `AWS_REGION`, `AWS_DEFAULT_REGION`, else the profile's region; refuses when none is set) |
+| `--profile <name>` | AWS CLI profile (default: `AWS_PROFILE` or env credentials, else the profile saved by [`aws connect`](#aws-account-advice-aws-connect-check-recommend), else the standard credential chain) |
+| `--region <region>` | AWS region (default: `AWS_REGION`, `AWS_DEFAULT_REGION`, the `aws connect` region, else the profile's region; refuses when none is set) |
 | `--dry-run` | Run every read-only step and print the plan; change nothing |
 | `--status` | Read-only report |
 | `--yes` | Approve without a prompt |
@@ -1188,6 +1195,87 @@ prism-cli bootstrapper install-eval-harness --uninstall
 
 ---
 
+## AWS Account Advice (aws connect, check, recommend)
+
+Three commands that look at one AWS account and say what to fix. All three are **read-only** against AWS: they only describe, get and list, and each says so before its first AWS call. Design notes: [DESIGN-prism-cli-aws-advise.md](docs/DESIGN-prism-cli-aws-advise.md).
+
+```bash
+prism-cli aws connect --profile prism-sa-test --region us-west-2   # verify and save the default profile and region
+prism-cli aws check                                                 # run the checks, save the result
+prism-cli aws recommend                                             # ranked fix list from that result (no AWS calls)
+```
+
+### aws connect
+
+Picks the AWS profile and region the other AWS commands use by default, checks them with `sts get-caller-identity`, and reports:
+
+- the account and its alias (`iam list-account-aliases`);
+- whether it is an Organizations management account (`organizations describe-organization`; "unknown" when that is denied);
+- whether the identity looks admin or read-only, from its attached managed policies when they can be read, else from the role or user name; "unknown" when neither is conclusive.
+
+Without `--profile`, on a terminal it lists `aws configure list-profiles` to choose from; without a terminal it uses `AWS_PROFILE` or refuses. The region comes from `--region`, else `AWS_REGION`/`AWS_DEFAULT_REGION` or the profile's region (asked on a terminal).
+
+It stores **no credentials**: only `{profile, region, account, alias, verifiedAt}`, in `~/.prism/aws.json` (per user) or, with `--repo`, in `.prism/aws.local.json` (per repo; added to `.git/info/exclude` so it is never committed). The AWS CLI still resolves the profile's credentials itself on every call, so an expired SSO session still needs `aws sso login`.
+
+| Flag | Purpose |
+|---|---|
+| `--profile <name>` | Profile to save |
+| `--region <region>` | Region to save |
+| `--repo` | Write (or clear) the per-repo file instead of the per-user one |
+| `--status` | Show both files, which one applies, and whether it still validates (exit 1 when it does not, or the account changed) |
+| `--clear` | Remove the user file, or the repo file with `--repo` |
+
+**How the saved connection is used.** It becomes the default for `enable security`, every `security` command, `aws check`/`aws recommend` and `bedrock-protection`. The order, per field:
+
+- profile: `--profile`, then the environment (`AWS_PROFILE`, or env keys / web identity / container credentials), then the repo file, then the user file, then the default credential chain;
+- region: `--region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the saved region, then the profile's configured region.
+
+The saved region applies only together with its own profile: `--profile other` uses `other`'s region. The identity header names the source, e.g. `Credentials: profile prism-sa-test (aws connect, user)`, and warns when the profile now resolves to a different account than the one saved. With no saved file, every command behaves as before.
+
+### aws check
+
+Runs read-only checks in sections and saves the result to `.prism/results/` as kind `aws-check` (in the current repo, or `~/.prism/results/` outside one). Each check is PASS, FAIL or INDETERMINATE; a check that could not run (access denied, an old CLI) is INDETERMINATE and is never counted as a pass.
+
+| Section | Checks |
+|---|---|
+| `bedrock` | The [`bedrock-protection scan-account`](#scan-account) checks, unchanged, except that it never calls `iam generate-credential-report` (the credential-report checks are INDETERMINATE until a report exists) |
+| `prism-setup` | The `PrismD1MetricsPipeline` stack; the Security Agent stack, its `/prism/continuum/*` SSM parameters and the scan bucket on the agent space (the `enable security --status` checks); a GitHub/GitLab OIDC provider and a `GitHubActions-*`/`GitLabCI-*` role; the codeburn sync endpoint on this machine (local file, no AWS call) |
+| `baseline` | A logging multi-region CloudTrail trail; a GuardDuty detector; Security Hub; IAM Access Analyzer; root MFA; at least one AWS Budget; account-level S3 Block Public Access; EBS encryption by default |
+| `startup-advisor` | Placeholder, INDETERMINATE ("not integrated yet") until how PRISM consumes Startup Advisor is settled |
+
+Regional checks (GuardDuty, Security Hub, Access Analyzer, EBS, the stacks) look at the resolved region only.
+
+| Flag | Purpose |
+|---|---|
+| `--profile`, `--region` | As above; refuses when no region resolves |
+| `--section <name>` | Run only this section; repeatable |
+| `--fail-on <severity>` | Exit 1 when a FAIL is at or above it (default `none`: report only). INDETERMINATE never trips it |
+| `--json` | Print the findings as JSON on stdout (notices go to stderr) |
+
+The dashboard's **AWS account** panel shows the latest result per account: counts by status, fails by severity and the top failures.
+
+### aws recommend
+
+Reads the latest `aws-check` result for the account (the `aws connect` account, or `--account`) and region, and turns it into a fix list. It makes no AWS calls and no model calls; `--refresh` runs `aws check` first.
+
+- Each FAIL is looked up in a fixed table: a title, why it matters, the steps, the `prism-cli` command that fixes it when there is one (`enable security`, `enable codeburn`, `bootstrapper setup-github-oidc`) and a doc link.
+- Fixes are ranked by severity, then effort (quick wins first), and grouped by section.
+- INDETERMINATE checks become "grant read access to check this" items that name the IAM actions the check reads.
+- With no result it says so and suggests `prism-cli aws check` or `--refresh`.
+
+| Flag | Purpose |
+|---|---|
+| `--account <id>` | Read this account's latest result |
+| `--refresh` | Run `aws check` first |
+| `--json` | Print the recommendations as JSON (`prism.aws-recommend.v1`) |
+| `--markdown` | Also write `<result>.recommend.md` next to the result |
+
+### Permissions
+
+Every check needs only read actions, so a read-only identity is enough. When one is missing, the check is INDETERMINATE and `aws recommend` names the action to grant. Admin credentials work but are not needed; `aws connect` points this out.
+
+---
+
 ## Bedrock Protection Audit
 
 Two read-only commands that audit an account and a repository for LLMjacking exposure — credential
@@ -1214,8 +1302,8 @@ without generating it first.
 
 | Option | Default | Purpose |
 |--------|---------|---------|
-| `--region <region>` | `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
-| `--profile <name>` | ambient credentials | AWS CLI profile to audit |
+| `--region <region>` | `AWS_REGION`, `AWS_DEFAULT_REGION`, the `aws connect` region, the profile's region, else `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
+| `--profile <name>` | `AWS_PROFILE` or env credentials, else the `aws connect` profile, else the ambient chain | AWS CLI profile to audit |
 | `--max-key-age <days>` | `90` | Flag active access keys older than this |
 | `--unused-days <days>` | `90` | Flag credentials idle longer than this |
 | `--iam-only` | — | Only the 7 IAM credential hygiene checks |
@@ -1238,8 +1326,8 @@ admin.
 |--------|---------|---------|
 | `--ou <ids>` | entire organization | Comma-separated OU ids to scope to |
 | `--role-name <name>` | `OrganizationAccountAccessRole` | Role to assume in each member account (`AWSControlTowerExecution` in Control Tower orgs) |
-| `--region <region>` | `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
-| `--profile <name>` | ambient credentials | Management-account profile |
+| `--region <region>` | `AWS_REGION`, `AWS_DEFAULT_REGION`, the `aws connect` region, the profile's region, else `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
+| `--profile <name>` | `AWS_PROFILE` or env credentials, else the `aws connect` profile, else the ambient chain | Management-account profile |
 | `--max-accounts <n>` | `50` | Stop after this many accounts (~10 API calls each) |
 | `--session-duration <seconds>` | `3600` | AssumeRole session length (minimum 900) |
 | `--max-key-age <days>` | `90` | Flag active access keys older than this |
