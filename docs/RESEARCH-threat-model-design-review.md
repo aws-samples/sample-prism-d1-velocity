@@ -1,6 +1,6 @@
 # Research: `security threat-model` and `security design-review`
 
-Status: research only, no code. Date: 2026-11-06. Answers open question 3 in [PRISM-CLI-STATUS.md](PRISM-CLI-STATUS.md) ("Which Security Agent APIs back `design-review` and `threat-model`?").
+Status: research, 2026-11-06. `security threat-model` and `security threats` are now built from section 3; differences are marked "as built". Usage is in [USER_GUIDE.md](../USER_GUIDE.md#running-a-threat-model-from-the-cli). Answers open question 3 in [PRISM-CLI-STATUS.md](PRISM-CLI-STATUS.md) ("Which Security Agent APIs back `design-review` and `threat-model`?").
 
 No AWS call that needs credentials was made. The evidence comes from:
 
@@ -208,7 +208,13 @@ prism-cli security threat-model [--doc <path>]... [--no-source] [--title <t>]
 prism-cli security threats [--job <id> | --latest] [--severity <level>] [--json] [--wait] [--timeout]
 ```
 
-- **Wait by default, like `code-review`.** Runs take 5 to 30 minutes, which is shorter than a full code review. The default `--timeout` is 30. Ctrl-C and timeouts leave the job running and print the `security threats --job <id>` hint. `--no-wait` starts the job, prints its id and exits.
+As built:
+
+- `--no-source` and `--title` were left out, since nobody asked for them, and `--no-docs` was added.
+- The title is `<slug>-tm-<sha12>-<UTC time>`, so each run's model is distinct.
+- The result has `system_overview` (the full text) instead of `system_overview_file`, and no `source` field.
+
+- **Wait by default, like `code-review`.** Runs take 5 to 30 minutes, which is shorter than a full code review. The default `--timeout` is 60 as built, which leaves room for slow runs. Ctrl-C and timeouts leave the job running and print the `security threats --job <id>` hint. `--no-wait` starts the job, prints its id and exits.
 - **Pending record.** Write it right after `start-threat-model-job`: kind `security-threat-model`, status `pending`, in `.prism/results/`. `security threats` completes it in place, filtered on the same account, region and threat model id as `pendingReviews`.
 - **One threat model per run.** Name it `<slug>-tm-<sha12>` (or `--title`), and do not reuse a per-repo threat model updated before each run. Reasons:
   - The job snapshots its inputs, so a per-repo model would work. But two developers running at once could each `update-threat-model` and start the other's inputs, and nothing would flag it.
@@ -250,7 +256,7 @@ Key: `threat-model/<slug>/<sha12>/docs/<repo-relative path>`. The scan bucket's 
 
 - **Terminal:** the job status line, then a STRIDE count line, then threats grouped by severity. Each threat shows its title, STRIDE tags, the first evidence path (repo-relative via `repoRelative()`), and the statement cut to 200 characters with `redact()`. A totals line ends the output.
 - **`--json`:** the result document only.
-- **System overview:** this can be long markdown. Write it to `.prism/results/<id>-system-overview.md`, a file next to the result JSON, and print its path. The JSON keeps the path, not the text.
+- **System overview:** this can be long markdown. As built, the result keeps the full text in `threat_model.system_overview`, and the terminal and dashboard show only its first paragraph. This is simpler than a separate file.
 - **Result** (`kind: 'security-threat-model'`, a new `ResultKind`; `tool: 'security-agent'`, `hook: 'manual'`):
   - `findings[]`: `severity` maps CRITICAL/HIGH to high, MEDIUM to medium, and LOW/INFO to low, the same mapping as `toSeverity`. The other fields are `category: 'security'`, `rule` (the STRIDE categories joined), `file` (the first evidence path), `line: null`, `message` (title plus statement), and pass-through fields: `threat_id`, `stride`, `recommendation`, `impacted_assets`.
   - `threat_model` block, a sibling of `security`: `job_id`, `threat_model_id`, `agent_space_id`, `region`, `account`, `job_status`, `counts` (per severity), `stride_counts`, `scope_docs[]` (repo paths), `source: 'zip' | 'none'`, `system_overview_file`, and the service timestamps.

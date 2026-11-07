@@ -688,6 +688,13 @@ started and the `prism-cli security findings` command. After 2 hours it is also 
 the page cannot tell whether the job has finished since. With none cached, it points to `prism-cli
 security code-review`. The page reads only those files; it makes no AWS calls.
 
+Below the code reviews, under **Threat models**, the panel shows the latest threat model per repo
+from the results `prism-cli security threat-model` and `security threats` cache. Each entry shows
+the commit, the number of scope docs (or "source only"), severity counts, the first paragraph of
+the system overview and the top 5 threats with their STRIDE categories. A job that was started but
+not fetched yet shows `threat model running` and the `prism-cli security threats` command. After
+2 hours it is also marked `stale?`.
+
 Data is read when the page loads; the **Refresh** button reads it again.
 
 ### Scan Report Pages
@@ -1489,6 +1496,71 @@ Both take `--profile`, `--region` and `--repo`, as `enable security` does. Besid
 `enable security` read permissions, they need `securityagent:StartCodeReviewJob`,
 `BatchGetCodeReviewJobs`, `ListCodeReviewJobsForCodeReview`, `ListFindings` and `BatchGetFindings`,
 `s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
+
+### Running a Threat Model from the CLI
+
+A Security Agent threat model reads the repo at HEAD and, optionally, design docs (scope docs). It
+returns a system overview and threats with a severity, STRIDE categories and a recommendation. AWS
+does not charge for threat modeling while it is in preview. The research behind this command is in
+[docs/RESEARCH-threat-model-design-review.md](docs/RESEARCH-threat-model-design-review.md).
+
+```bash
+prism-cli security threat-model                          # source + .kiro/specs/*/{design,requirements}.md
+prism-cli security threat-model --doc docs/DESIGN.md     # these scope docs instead (repeatable)
+prism-cli security threat-model --no-docs                # the source alone
+prism-cli security threat-model --no-wait                # start it and come back later
+prism-cli security threats                               # the pending job's threats, else the latest job's
+prism-cli security threats --job <id> --wait --severity high
+```
+
+`security threat-model` works like `security code-review`: the same repo-root check, notice,
+identity block, pending record, polling, `--json`, `--no-wait` and exit codes (Ctrl-C 130, timeout 2,
+failed job 1). It differs in these ways:
+
+1. The agent space, scan bucket and service role come from SSM (`/prism/continuum/agent-space-id`,
+   `scan-bucket`, `service-role-arn`) only. No repo file is read for them.
+2. Scope docs are read from **HEAD**, not the working tree, so they match the source that is
+   modeled. A `--doc` must be committed, must be inside the repository, must not be a symlink, and
+   must be `.md`, `.txt`, `.pdf`, `.doc`, `.docx`, `.png`, `.jpg` or `.jpeg`. A bad `--doc` prints
+   one error line before any AWS call. Without `--doc`, the Kiro spec files
+   `.kiro/specs/*/design.md` and `requirements.md` in HEAD are used when present.
+3. `git archive HEAD` and the docs go to the scan bucket under
+   `threat-model/<repo-slug>/<commit>/` (`source.zip`, `docs/<path>`). Identical objects are not
+   uploaded again. The CI code review's `repo/<repo-slug>/latest.zip` is not touched.
+4. Each run creates its own threat model, titled `<repo-slug>-tm-<commit>-<time>`, and starts its
+   job. `security threats` finds the latest one by that title prefix.
+5. `--timeout` defaults to 60 minutes. AWS's IDE docs give 5 to 30 minutes for a run.
+6. The output has the first paragraph of the system overview, then the threats by severity
+   (CRITICAL, HIGH, MEDIUM, LOW, INFO). Each threat shows its STRIDE categories, title,
+   recommendation and evidence paths, with the sandbox prefix removed. The result is saved with
+   `kind: security-threat-model` and keeps the full overview in `threat_model.system_overview`.
+7. `--fail-on <level>` exits 1 on a threat at or above that level. INFO never fails.
+
+Two parts of the API are not documented yet. On a client error, the command prints a hint for each:
+
+- The scan bucket may need to be listed in the agent space's `awsResources.s3Buckets`.
+- Scope docs may have size or count limits.
+
+It also warns when the docs exceed the web app's design-review limits: 5 files, 2 MB each
+(0.5 MB for `.md` and `.txt`), 6 MB in total.
+
+`security threats` is read-only and completes pending records like `security findings` does.
+
+**IAM.** Besides the `enable security` read permissions, the two commands need:
+
+- `securityagent:CreateThreatModel` and `StartThreatModelJob` (threat-model only);
+- `securityagent:BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats`;
+- for `security threats` without a pending record, `ListThreatModels` and `ListThreatModelJobs`;
+- `iam:PassRole` on the service role, conditioned on `iam:PassedToService = securityagent.amazonaws.com`;
+- `s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
+
+The CI managed policy `prism-d1-continuum-ci-scan` grants only the code-review actions. Running a
+threat model from CI would need `CreateThreatModel`, `StartThreatModelJob`,
+`BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats` added to its `ContinuumScanAPIs`
+statement. Its PassRole, scan bucket and SSM statements already cover the rest.
+
+There is no `security design-review` command: design review has no public API (see the research
+doc).
 
 ### Setup Script (Alternative)
 

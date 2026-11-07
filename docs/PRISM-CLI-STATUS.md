@@ -15,8 +15,9 @@ Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-
 | Observe | `prism-cli dashboard` | **Built** |
 | Observe | `prism-cli export otel` | **Built** (not merged; PRISM collector only, no `--endpoint` yet) |
 | Observe | `prism-cli install transformation-center` | Blocked: scope unknown |
-| Secure | `prism-cli security design-review` | Planned, API unknown |
-| Secure | `prism-cli security threat-model` | Planned, API unknown |
+| Secure | `prism-cli security design-review` | **Dropped**: no public API |
+| Secure | `prism-cli security threat-model` | **Built** (not merged) |
+| Secure | `prism-cli security threats` | **Built** (not merged), not on the slide |
 | Secure | `prism-cli security code-review` | **Built** |
 | Secure | `prism-cli security pentest` | Planned (reuse, guarded) |
 | Secure | `prism-cli security findings` | **Built** |
@@ -24,7 +25,7 @@ Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-
 | Advise | `prism-cli aws check` | Planned (reuse) |
 | Advise | `prism-cli aws recommend` | Planned |
 
-So far 8 of the 15 are built, 6 are planned, and 1 is blocked until we know what it is. None of the slide's commands were dropped.
+So far 9 of the 15 are built, 4 are planned, 1 is blocked until we know what it is, and 1 (`security design-review`) was dropped because no public API backs it.
 
 ## Built
 
@@ -101,7 +102,8 @@ Pushes codeburn's unsent telemetry to the configured PRISM collector now: `codeb
 
 ### Secure (AWS Continuum)
 All of these call AWS and need credentials.
-- **`security design-review`, `security threat-model`:** new. Open: which Security Agent APIs back them, and what input they take (a spec, a design doc or a repo).
+- **`security threat-model`, `security threats`:** built. They model the repo at HEAD, plus scope docs read from HEAD (default `.kiro/specs/*/{design,requirements}.md`), and read the threats. See [Running a Threat Model from the CLI](../USER_GUIDE.md#running-a-threat-model-from-the-cli). Open: whether the scan bucket must be registered on the agent space, and the scope-doc limits. Both need one live run ([research](RESEARCH-threat-model-design-review.md), Q1 and Q2).
+- **`security design-review`:** dropped. Design review exists only in the Security Agent web app, and no public API backs it. `threat-model --doc` covers threat-modeling a design ([research](RESEARCH-threat-model-design-review.md)).
 - **`security pentest`:** reuses `workshop perform-pen-test`. It runs only against targets the customer owns and authorizes: the target must pass domain verification and the user confirms it by name, with no flag to skip that. Open: what authorization evidence is needed beyond domain verification.
 
 ### Advise (AWS account)
@@ -115,10 +117,11 @@ All of these call AWS and need credentials.
 
 ## Decided not to build
 
-None of the slide's commands. These ideas came up during design and were dropped:
+One of the slide's commands, plus some ideas that came up during design:
 
 | Idea | Why not |
 |---|---|
+| `prism-cli security design-review` | No public API: design review exists only in the Security Agent web app. `security threat-model --doc` covers threat-modeling a design. Aliasing it would give a different report under a name web-app users know. See [the research doc](RESEARCH-threat-model-design-review.md). |
 | Rebuilding codeburn's usage charts in the dashboard | `codeburn web` already does this. The dashboard shows a summary and points to it. |
 | A local eval-harness panel in the dashboard | The eval gate runs through kiro-cli in CI and through codewatch's pre-push locally. There is no separate local harness to show. |
 | Blocking commits when gitleaks is missing | We decided a missing gitleaks only warns. The dashboard shows a banner, and CI's gitleaks step is the backstop. |
@@ -153,7 +156,7 @@ These existing commands get new names. The old names stay as deprecated aliases 
 
 1. What is `install transformation-center`?
 2. `enable security` now wraps the Security Agent setup (decided). Does it belong under Observe or Secure on the slide? It is the only Observe command that needs AWS credentials.
-3. Which Security Agent APIs back `design-review` and `threat-model`?
+3. ~~Which Security Agent APIs back `design-review` and `threat-model`?~~ Answered in [the research doc](RESEARCH-threat-model-design-review.md): threat model has an API, design review does not.
 4. How do we consume Startup Advisor's checks, and under what license?
 5. Should `aws recommend` be a fixed mapping or model-generated?
 6. With commit trailers gone, should codeburn's `--attribution` stay on?
