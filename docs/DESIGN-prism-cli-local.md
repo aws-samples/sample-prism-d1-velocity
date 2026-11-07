@@ -71,7 +71,7 @@ Aliases stay for at least one minor release after the new command ships, and the
 | `bootstrapper install-git-hooks` | `enable codewatch` | **Done:** deprecated alias. Old trailer flags are ignored. |
 | `securityagent setup` | `enable security` | **Done:** deprecated alias with the same flags. It now asks before deploying (`--yes` for unattended runs). |
 | `git commit-trailers` | (none) | Kept, marked `[deprecated]`, because already-installed `prepare-commit-msg` hooks call it. Remove after one release. |
-| `bootstrapper setup-otel-sync` | `enable codeburn` | Proposed alias |
+| `bootstrapper setup-otel-sync` | `enable codeburn` | **Done:** deprecated alias with the same flags. |
 | `workshop perform-pen-test` | `security pentest` (workshop target only) | Proposed alias |
 | `bedrock-protection scan-account` | `aws check` (Bedrock section) | Proposed alias |
 | `workshop verify-setup` | `dashboard` setup panel + `version` | Keep; reuse its checks |

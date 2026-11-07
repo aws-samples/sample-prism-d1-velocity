@@ -193,7 +193,7 @@ feat: implement user search endpoint
 Spec-Ref: specs/user-search.md
 ```
 
-Do not add `AI-Origin` or `AI-Model` trailers. AI origin comes from codeburn attribution (`prism-cli bootstrapper setup-otel-sync` on each developer machine), and the hook that wrote those trailers is retired.
+Do not add `AI-Origin` or `AI-Model` trailers. AI origin comes from codeburn attribution (`prism-cli enable codeburn` on each developer machine), and the hook that wrote those trailers is retired.
 
 ---
 

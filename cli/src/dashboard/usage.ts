@@ -68,7 +68,7 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
   let exporter = opts.exporter;
   if (!exporter) {
     const bin = findOnPath('codeburn', opts.pathEnv);
-    if (!bin) return emptyUsage('not-installed', 'codeburn is not installed. Install it with: npm install -g codeburn');
+    if (!bin) return emptyUsage('not-installed', 'codeburn is not installed. Set it up with: prism-cli enable codeburn');
     exporter = realCodeburnExport(bin);
   }
   const now = opts.now || new Date();

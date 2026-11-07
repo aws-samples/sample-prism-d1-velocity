@@ -30,7 +30,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - **Node.js 22+** — Required for prism-cli and the sample app
 - **jq** — For JSON processing in CI/CD workflows and eval harness
 - **prism-cli** — Install: `npm install -g @prism-d1/cli`
-- **codeburn** — **Required.** `codeburn sync push` is the only writer to the attribution store, so every AI metric depends on it: AI share, AI-to-merge ratio, AI defect rate, cost per shipped commit, Attribution Coverage, the observed PRISM level, and the entire Developer Productivity dashboard. Install: `npm install -g codeburn` (or `brew install codeburn` on macOS), then run `prism-cli bootstrapper setup-otel-sync` to authenticate and install the sync schedule. codeburn is what parses Kiro, Claude Code, Cursor and other tool sessions — prism-cli does not parse them itself.
+- **codeburn** — **Required.** `codeburn sync push` is the only writer to the attribution store, so every AI metric depends on it: AI share, AI-to-merge ratio, AI defect rate, cost per shipped commit, Attribution Coverage, the observed PRISM level, and the entire Developer Productivity dashboard. Install and connect it with `prism-cli enable codeburn`, which runs `npm install -g codeburn` when it is missing (or install it yourself, e.g. `brew install codeburn` on macOS), authenticates and installs the sync schedule. codeburn is what parses Kiro, Claude Code, Cursor and other tool sessions — prism-cli does not parse them itself.
 - **GitHub Actions or GitLab CI** — For CI/CD workflows
 - **AWS OIDC** — For secure CI/CD to AWS authentication (set up via `setup-github-oidc` or `setup-gitlab-oidc`)
 - **Amazon Bedrock** — Model access must be enabled for code evaluation
@@ -53,7 +53,7 @@ npx cdk deploy --all --context enableSecurityAgent=true
 
 `enableSecurityAgent=true` additionally creates the AWS Continuum scan bucket and the `prism-d1-continuum-ci-scan` managed policy that Step 2 attaches to the OIDC role. Leave the flag off for a metrics-only deployment. On a non-production deployment, add `--context skipVpc=true` to save roughly $35–50/month.
 
-Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 5, and developers need the URL for `setup-otel-sync`.
+Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 5, and developers need the URL for `prism-cli enable codeburn`.
 
 **Or let prism-cli set up Security Agent.** `prism-cli enable security` deploys only the Security Agent resources (after showing a diff and asking): in the standalone `PrismD1SecurityAgent` stack, or in the pipeline stack if this account already hosts them there. Then it does the Continuum onboarding that would otherwise follow it. If you use it, deploy the pipeline above without `--context enableSecurityAgent=true`:
 
@@ -388,23 +388,50 @@ hooks, no per-repo configuration, no CI changes. The optional local checks are c
 [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks).
 
 ```bash
-npm install -g @prism-d1/cli codeburn
-prism-cli bootstrapper setup-otel-sync --url <OtelCollectorUrl>
+npm install -g @prism-d1/cli
+prism-cli enable codeburn --url <OtelCollectorUrl>
 ```
 
 `<OtelCollectorUrl>` is the CDK stack output from Step 1. Your administrator creates your telemetry
 account in Step 5, using your email address as the username.
 
-The command authenticates against the Cognito user pool, backfills 30 days of history, then installs
-a platform-native schedule — crontab on Linux, LaunchAgent on macOS, Scheduled Task on Windows —
-that pushes AI usage **and** per-commit attribution every 12 hours.
+The command takes these steps, and a re-run reports the ones already done:
+
+1. **Installs codeburn** when it is not on PATH. It prints the exact command
+   (`npm install -g codeburn`) and asks first; `--yes` skips the question. With no terminal and no
+   `--yes` it stops and prints the command for you to run.
+2. **Connects codeburn's sync** with `codeburn sync setup <url>`, which opens a browser to sign in to
+   the Cognito user pool. Skipped when codeburn already syncs to that URL. Without `--url`, it uses
+   the URL codeburn is already configured with, and otherwise asks for one.
+3. **Backfills** 30 days of history (`codeburn sync push --since 30d --attribution`), on first setup
+   only.
+4. **Installs a platform-native schedule** — crontab on Linux, LaunchAgent on macOS, Scheduled Task
+   on Windows — that runs `codeburn sync push --since 7d --attribution` every 12 hours, pushing AI
+   usage **and** per-commit attribution. An existing schedule is refreshed in place.
+5. **Reports `codeburn sync status`.**
 
 | Flag | Purpose |
 |---|---|
-| `--url <url>` | OTEL collector URL (the `OtelCollectorUrl` stack output) |
+| `--url <url>` | OTEL collector URL (the `OtelCollectorUrl` stack output); default: the URL codeburn already syncs to |
 | `--interval <hours>` | Sync interval, default `12` |
-| `--status` | Show the current schedule |
+| `--yes` | Install codeburn, and reconfigure a different endpoint, without asking |
+| `--dry-run` | Print the plan with the exact commands; change nothing |
+| `--status` | Show codeburn, the sync config, the schedule, the last sync log lines and `codeburn sync status` |
 | `--remove` | Remove the schedule |
+
+`prism-cli bootstrapper setup-otel-sync` is the old name of this command. It still works, takes the
+same flags and prints a deprecation notice.
+
+**Push now.** `prism-cli export otel` runs the same push the schedule runs
+(`codeburn sync push --since 7d --attribution`), streams codeburn's output and exits with codeburn's
+exit code. `--since <window>` changes the window (`today`, `7d`, `30d`, `month`, `all`). It stops
+with a pointer to `prism-cli enable codeburn` when codeburn is missing or its sync is not set up.
+
+**Check your install.** `prism-cli version` prints the CLI and Node versions, says whether npm has
+a newer `@prism-d1/cli` (a 5-second `npm view` that never fails the command; `--offline` skips it),
+and warns when another `prism-cli` on PATH shadows this one or has a different version, such as an
+old `/usr/bin/prism-cli` from a system Node. `--json` prints the same report. `prism-cli --version`
+still prints only the version number.
 
 **This is required, not optional.** `codeburn sync push` is the only writer to the attribution store,
 so every AI metric depends on it: AI share, AI-to-merge ratio, AI defect rate, cost per shipped
@@ -417,7 +444,7 @@ dashboard. codeburn is also what parses Kiro, Claude Code, Cursor and other tool
 Below 80%, every AI metric understates reality, and the fix is getting more developers through this
 one command — not changing the dashboard.
 
-Verify with `prism-cli bootstrapper setup-otel-sync --status`. Within one sync cycle the
+Verify with `prism-cli enable codeburn --status`. Within one sync cycle the
 **PRISM-D1-Team-Velocity** dashboard should show AI-vs-human commit counts and a coverage
 percentage.
 
@@ -637,7 +664,7 @@ scanned. Under **Per repo**, each repo expands to:
 **Usage (codeburn).** Today's and this month's cost, top models and top projects, from the local
 codeburn data. For full charts it points you to `codeburn web`.
 
-**Setup checklist.** For this machine: codeburn installed, the scheduled sync from `setup-otel-sync`
+**Setup checklist.** For this machine: codeburn installed, the scheduled sync from `enable codeburn`
 and its last run, gitleaks, AWS credentials, and the global codewatch hooks. Then one row per repo:
 codewatch installed (ok); warn, when the global hooks are installed but the repo's own
 `core.hooksPath` (husky and similar) bypasses them; missing, including only one hook installed or
@@ -2119,7 +2146,7 @@ Options:
 The `prepare-commit-msg` hook that appended `AI-Origin`, `AI-Tool`, `AI-Model`, token, cost and
 `Spec-Ref` trailers to commit messages is retired, along with the token tracker that kept per-repo
 snapshots in `~/.prism/tokentracker/`. AI origin and usage now come from codeburn attribution, pushed
-by `setup-otel-sync` (see [Developer Setup](#developer-setup)), and no CI workflow reads trailers.
+by `enable codeburn` (see [Developer Setup](#developer-setup)), and no CI workflow reads trailers.
 
 - `prism-cli bootstrapper install-git-hooks` now installs codewatch (see
   [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)) and removes the trailer hook if it
@@ -2196,7 +2223,7 @@ Usage instructions for the copy-me artifacts live in [`bootstrapper/README.md`](
 | `bootstrapper/github-workflows/` | Reusable GitHub Actions for metric collection and eval gating |
 | `bootstrapper/gitlab-workflows/` | GitLab CI templates for metric collection and eval gating |
 | `bootstrapper/eval-harness/` | Agent eval rubric (`agent-quality.json`), runner script with `--spec` flag, and the `code-review.md` Kiro steering file |
-| `bootstrapper/metric-hooks/` | Retired commit-trailer hook, kept for reference (AI origin comes from `setup-otel-sync`; local hooks are [codewatch](#codewatch-local-git-hooks)) |
+| `bootstrapper/metric-hooks/` | Retired commit-trailer hook, kept for reference (AI origin comes from `enable codeburn`; local hooks are [codewatch](#codewatch-local-git-hooks)) |
 
 **Copy-me artifacts** — present only in a clone of this repo; copy them into your own project by hand:
 

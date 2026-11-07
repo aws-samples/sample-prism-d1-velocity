@@ -2,29 +2,29 @@
 
 Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md).
 
-`enable codewatch`, `dashboard` and `enable security` are on `main`. `security code-review` and `security findings` are on the unpushed branch `feat/security-code-review`.
+`enable codewatch`, `dashboard`, `enable security`, `security code-review` and `security findings` are on `main`. `version`, `enable codeburn` and `export otel` are on the unpushed branch `feat/codeburn-version`.
 
 ## Summary
 
 | Job | Command | Status |
 |---|---|---|
-| Observe | `prism-cli version` | Planned |
+| Observe | `prism-cli version` | **Built** (not merged) |
 | Observe | `prism-cli enable codewatch` | **Built** |
-| Observe | `prism-cli enable codeburn` | Planned (mostly reuse) |
-| Observe | `prism-cli enable security` | **Built** (not merged) |
+| Observe | `prism-cli enable codeburn` | **Built** (not merged) |
+| Observe | `prism-cli enable security` | **Built** |
 | Observe | `prism-cli dashboard` | **Built** |
-| Observe | `prism-cli export otel --endpoint` | Planned |
+| Observe | `prism-cli export otel` | **Built** (not merged; PRISM collector only, no `--endpoint` yet) |
 | Observe | `prism-cli install transformation-center` | Blocked: scope unknown |
 | Secure | `prism-cli security design-review` | Planned, API unknown |
 | Secure | `prism-cli security threat-model` | Planned, API unknown |
-| Secure | `prism-cli security code-review` | **Built** (not merged) |
+| Secure | `prism-cli security code-review` | **Built** |
 | Secure | `prism-cli security pentest` | Planned (reuse, guarded) |
-| Secure | `prism-cli security findings` | **Built** (not merged) |
+| Secure | `prism-cli security findings` | **Built** |
 | Advise | `prism-cli aws connect` | Planned |
 | Advise | `prism-cli aws check` | Planned (reuse) |
 | Advise | `prism-cli aws recommend` | Planned |
 
-So far 5 of the 15 are built, 9 are planned, and 1 is blocked until we know what it is. None of the slide's commands were dropped.
+So far 8 of the 15 are built, 6 are planned, and 1 is blocked until we know what it is. None of the slide's commands were dropped.
 
 ## Built
 
@@ -74,12 +74,30 @@ Run the Security Agent code review the CI gate runs, from a developer's machine,
 - **Results:** cached in `.prism/results/` as `kind: security-review`; the dashboard's Security findings panel shows them with no AWS calls.
 - **User docs:** [Running a Review from the CLI](../USER_GUIDE.md#running-a-review-from-the-cli).
 
-## Planned
+### `version`
+Prints the CLI version (from `package.json`) and the Node version.
 
-### Observe
-- **`version`:** prints the CLI version plus installed hooks, the reviewer and the codeburn status. Open: offline only, or check npm for updates?
-- **`enable codeburn`:** a new name for `bootstrapper setup-otel-sync`, which schedules `codeburn sync push`. Open: should `--attribution` stay on now that commit trailers are gone?
-- **`export otel --endpoint`:** sends usage to a team's own OTLP collector. Open: whether codeburn accepts a custom endpoint, and whether local codewatch results should be exported too.
+- **Update check:** `npm view @prism-d1/cli version` with a 5-second timeout. It never fails the command; a timeout or no network is reported as "not checked". `--offline` skips it. Decided: check npm, cheaply.
+- **PATH check:** lists every `prism-cli` on PATH (deduplicated by real path) and warns when another one shadows this one or has a different version, e.g. an old `/usr/bin/prism-cli` 1.0.16 from a system Node.
+- **`--json`:** the same report as `prism.version.v1`. `prism-cli --version` still prints only the version number.
+- **Not included:** the hooks, reviewer and codeburn status the design proposed; `dashboard` and `enable codeburn --status` show those.
+
+### `enable codeburn`
+Installs codeburn and connects its sync to the PRISM OTEL collector. It replaces `bootstrapper setup-otel-sync`, which stays as a deprecated alias with the same flags; the code moved, it was not rewritten.
+
+- **Steps:** installs codeburn with `npm install -g codeburn` when it is missing (prints the command and asks; `--yes` skips the question; no terminal and no `--yes` refuses), runs `codeburn sync setup <url>`, backfills 30 days on first setup, installs or refreshes the crontab / LaunchAgent / Scheduled Task that runs `codeburn sync push --since 7d --attribution` every 12 h, and prints `codeburn sync status`.
+- **URL:** `--url`, else the endpoint codeburn already syncs to, else a prompt.
+- **Idempotent:** a re-run with the same endpoint skips sync setup and the backfill and says so; the schedule is refreshed in place.
+- **`--dry-run`:** runs the read-only checks and prints each step with its exact command. `--status` and `--remove` are unchanged from `setup-otel-sync`.
+- **Dashboard:** the setup checklist's "codeburn installed" and "Scheduled codeburn sync push" rows now point to `prism-cli enable codeburn`.
+- **Decided:** "enable" also installs codeburn. Still open: whether `--attribution` stays on (see the questions below); it is on, as before.
+
+### `export otel`
+Pushes codeburn's unsent telemetry to the configured PRISM collector now: `codeburn sync push --since 7d --attribution`, the same argv the schedule runs. `--since <window>` changes the window. It streams codeburn's output and exits with codeburn's exit code. When codeburn is missing or its sync is not set up, it says so and points to `prism-cli enable codeburn`.
+
+- **Not yet:** `--endpoint` for a team's own OTLP collector, and exporting `.prism/results/`. Open: whether codeburn accepts a custom endpoint, and whether per-developer gate results should be exported.
+
+## Planned
 
 ### Secure (AWS Continuum)
 All of these call AWS and need credentials.
@@ -119,13 +137,14 @@ None of the slide's commands. These ideas came up during design and were dropped
 | Token tracker (`~/.prism/tokentracker`) | codeburn | No longer used. Nothing new reads it. |
 | `bootstrapper install-git-hooks` | `enable codewatch` | Kept as a deprecated alias. Its old flags (`--team-id`, `--max-tokens`, `--max-cost`, `--global`) are accepted and ignored. |
 | `git commit-trailers` | (none) | Kept, marked deprecated, because already-installed hooks still call it. Remove after one release. |
+| `bootstrapper setup-otel-sync` | `enable codeburn` | Kept as a deprecated alias with the same flags. |
 | The retired Bedrock eval-gate mode | kiro-cli eval gate | It was already retired before this work. `--mode bedrock` errors. |
 
 These existing commands get new names. The old names stay as deprecated aliases for at least one release:
 
 | Old | New |
 |---|---|
-| `bootstrapper setup-otel-sync` | `enable codeburn` |
+| `bootstrapper setup-otel-sync` | `enable codeburn` (done) |
 | `securityagent setup` | `enable security` (done) |
 | `workshop perform-pen-test` | `security pentest` (workshop target only) |
 | `bedrock-protection scan-account` | `aws check` (Bedrock section) |

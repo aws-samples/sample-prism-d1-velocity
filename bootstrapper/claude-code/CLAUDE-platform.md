@@ -18,7 +18,7 @@ This repository follows **spec-first development** for all infrastructure change
 ### 2. AI Origin Is Recorded Automatically
 
 Do not add `AI-Origin`, `AI-Model` or token trailers to commit messages. PRISM records AI origin and
-usage through codeburn attribution (`prism-cli bootstrapper setup-otel-sync`), so commits need no
+usage through codeburn attribution (`prism-cli enable codeburn`), so commits need no
 extra metadata. The commit-trailer hook that used to add them is retired.
 
 ### 3. CDK / IaC Patterns
@@ -99,7 +99,7 @@ This repo emits events to the `prism-d1-metrics` EventBridge bus:
 | `prism.d1.deploy` | Deployment to any environment |
 | `prism.d1.assessment` | Weekly DORA assessment |
 
-Commit-level AI attribution comes from codeburn (`prism-cli bootstrapper setup-otel-sync`, once per developer machine), and PR, eval and deploy events come from the GitHub workflows, so make sure both are set up. For local secret scanning and a pre-push review, run `prism-cli enable codewatch` (optional; it emits no metrics).
+Commit-level AI attribution comes from codeburn (`prism-cli enable codeburn`, once per developer machine), and PR, eval and deploy events come from the GitHub workflows, so make sure both are set up. For local secret scanning and a pre-push review, run `prism-cli enable codewatch` (optional; it emits no metrics).
 
 ## Quick Reference
 
