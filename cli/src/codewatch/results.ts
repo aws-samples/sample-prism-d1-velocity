@@ -31,7 +31,7 @@ export interface Finding {
   file: string;
   line: number | null;
   message: string;
-  /** security-review only: the Security Agent risk level (CRITICAL ... UNKNOWN), finding title, CWE and id. */
+  /** security-review / security-pentest: the Security Agent risk level (CRITICAL ... UNKNOWN), finding title, CWE and id. */
   risk_level?: string;
   title?: string;
   cwe?: string | null;
@@ -43,14 +43,17 @@ export interface Finding {
   stride?: string[];
   recommendation?: string;
   evidence?: string[];
+  /** security-pentest only: the agent's confidence (HIGH | MEDIUM | LOW | FALSE_POSITIVE). */
+  confidence?: string;
 }
 
 /**
  * `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code);
  * `security-review` = an AWS Security Agent code review job;
- * `security-threat-model` = an AWS Security Agent threat model job.
+ * `security-threat-model` = an AWS Security Agent threat model job;
+ * `security-pentest` = an AWS Security Agent penetration test job.
  */
-export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model';
+export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model' | 'security-pentest';
 
 /** security-threat-model only: the job behind the result. */
 export interface ThreatModelInfo {
@@ -98,14 +101,56 @@ export interface SecurityReviewInfo {
   /** Our wall time from starting the job to seeing it finish (code-review only; includes polling). */
   wall_s?: number | null;
 }
+
+/**
+ * security-pentest only: the penetration-test job behind the result, and the
+ * temporary environment it ran against. Mirrors SecurityReviewInfo; a pentest
+ * finding has no file/line, carries a `confidence`, and the environment handle
+ * is what `security pentest --cleanup` tears down.
+ */
+export interface PentestInfo {
+  job_id: string;
+  pentest_id: string;
+  agent_space_id: string;
+  /** True when this run created a dedicated agent space (teardown deletes it); false when it reused a shared one. */
+  agent_space_dedicated: boolean;
+  region: string;
+  /** The AWS account the job ran in, so findings only completes its own account's pending records. */
+  account?: string;
+  /** The verified target domain the pentest ran against (app.<zone>). */
+  target_host: string;
+  job_status: string;
+  /** Findings per Security Agent risk level, after dropping FALSE_POSITIVE confidence (unless --include-false-positives). */
+  counts: Record<string, number>;
+  /** First paragraph of the job's `overview` text, when the service reported one. */
+  overview?: string | null;
+  /** The CloudFormation stack and run slug of the temporary environment, for --cleanup. */
+  stack?: string | null;
+  slug?: string | null;
+  /** When the environment is set to auto-expire (the prism:expires-at tag), ISO. */
+  expires_at?: string | null;
+  /** The agent ENIs' security group id: teardown waits for its ENIs to drain before destroying the stack. */
+  agent_security_group_id?: string | null;
+  /** The app container's log group, for debugging hints. */
+  app_log_group?: string | null;
+  /** The PRIVATE_VPC target domain this run created; teardown deletes it. */
+  target_domain_id?: string | null;
+  /** Set when the last teardown left the stack up (destroy failed twice); --cleanup retries it. */
+  teardown_failed?: { at: string; reason: string } | null;
+  service_created_at?: string | null;
+  service_updated_at?: string | null;
+  service_duration_s?: number | null;
+  wall_s?: number | null;
+}
 export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual';
 /**
  * ok        ran, nothing found
  * findings  ran, found something
  * error     could not produce a verdict (tool missing, crashed, unparseable output)
  * skipped   did not run: no changes to review, or the hook was bypassed (`--no-verify`)
- * pending   security-review only: the job was started and has no verdict yet.
- *           finished_at equals started_at until the record is completed in place.
+ * pending   security-review / security-pentest: the job was started and has no
+ *           verdict yet. finished_at equals started_at until the record is
+ *           completed in place.
  */
 export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped' | 'pending';
 
@@ -145,6 +190,8 @@ export interface PrismResult {
   security?: SecurityReviewInfo;
   /** Present on kind security-threat-model. */
   threat_model?: ThreatModelInfo;
+  /** Present on kind security-pentest. */
+  pentest?: PentestInfo;
 }
 
 export type ResultInit = Omit<PrismResult, 'schema_version' | 'tool_version' | 'model' | 'commit' | 'tree' | 'branch' | 'upstream' | 'base' | 'summary' | 'score' | 'reason' | 'findings'>

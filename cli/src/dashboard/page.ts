@@ -304,8 +304,9 @@ function securityPanel(sec) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Security findings'));
   const rows = (sec && sec.repos) || [];
   const tms = (sec && sec.threat_models) || [];
-  if (!rows.length && !tms.length) {
-    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews or threat models yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ' or ', el('code', {}, 'prism-cli security threat-model'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
+  const pts = (sec && sec.pentests) || [];
+  if (!rows.length && !tms.length && !pts.length) {
+    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews, threat models or penetration tests yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ', ', el('code', {}, 'prism-cli security threat-model'), ' or ', el('code', {}, 'prism-cli security pentest'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
     return s;
   }
   for (const r of rows) {
@@ -345,6 +346,7 @@ function securityPanel(sec) {
     if (r.truncated) b.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings for all'));
     s.append(b);
   }
+  securityPentestRows(s, sec);
   if (tms.length) {
     s.append(el('h3', {}, 'Threat models'));
     for (const t of tms) s.append(threatModelBlock(t, (sec && sec.threats_hint) || 'prism-cli security threats'));
@@ -394,6 +396,50 @@ function threatModelBlock(t, hint) {
   }
   if (t.more) b.append(el('p', { class: 'note' }, t.more + ' more; run ' + hint + ' for all'));
   return b;
+}
+
+/** Penetration-test rows, in the same Security card below the code-review rows. */
+function securityPentestRows(s, sec) {
+  const rows = (sec && sec.pentests) || [];
+  if (!rows.length) return;
+  s.append(el('h3', {}, 'Penetration tests'));
+  for (const r of rows) {
+    const counts = r.counts || {};
+    const b = el('div', { class: 'sec-repo' });
+    b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(r.name)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
+    b.append(el('div', { class: 'fix' },
+      (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + txt(r.target_host) + ' · job ' + txt(r.job_id).slice(0, 12)));
+    const pills = el('div', { class: 'sec-pills' });
+    if (r.pending) {
+      pills.append(pill('warn', 'pentest running'));
+      if (r.stale) pills.append(pill('skipped', 'stale?'));
+      b.append(pills, el('p', { class: 'note' }, r.stale ? 'Started over 6 h ago and not refreshed. ' : '', 'Refresh with ', el('code', {}, (sec && sec.pentest_hint) || 'prism-cli security pentest --status'), '.'));
+      s.append(b);
+      continue;
+    }
+    if (r.status === 'error') pills.append(pill('error', txt(r.job_status).toLowerCase()));
+    else {
+      const shown = RISKS.filter((k) => (counts[k] || 0) > 0);
+      if (!shown.length) pills.append(pill('ok', 'no findings'));
+      for (const k of shown) pills.append(riskPill(k, counts[k] + ' ' + k.toLowerCase()));
+    }
+    if (r.teardown_failed) pills.append(pill('error', 'teardown failed'));
+    b.append(pills);
+    if (r.reason) b.append(el('p', { class: 'note' }, txt(r.reason)));
+    if (r.teardown_failed) b.append(el('p', { class: 'note' }, 'The environment is still up (' + txt(r.teardown_failed.reason) + '). Retry with ', el('code', {}, 'prism-cli security pentest --cleanup'), '.'));
+    if (r.findings.length) {
+      const list = el('ul', { class: 'sec-findings' });
+      for (const f of r.findings) {
+        list.append(el('li', {},
+          riskPill(f.risk_level, txt(f.risk_level).toLowerCase()), ' ',
+          el('span', { class: 'sec-title' }, txt(f.title)),
+          f.confidence ? el('div', { class: 'fix' }, txt(f.confidence).toLowerCase() + ' confidence') : null));
+      }
+      b.append(list);
+    }
+    if (r.truncated) b.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings --pentest for all'));
+    s.append(b);
+  }
 }
 
 async function load() {

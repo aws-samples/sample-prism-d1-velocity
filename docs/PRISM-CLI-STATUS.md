@@ -19,7 +19,7 @@ Status as of 2026-11-06. It covers the 15 commands on the roadmap slide ("prism-
 | Secure | `prism-cli security threat-model` | **Built** (not merged) |
 | Secure | `prism-cli security threats` | **Built** (not merged), not on the slide |
 | Secure | `prism-cli security code-review` | **Built** |
-| Secure | `prism-cli security pentest` | Planned (reuse, guarded) |
+| Secure | `prism-cli security pentest` | **Built** (not merged) |
 | Secure | `prism-cli security findings` | **Built** |
 | Advise | `prism-cli aws connect` | Planned |
 | Advise | `prism-cli aws check` | Planned (reuse) |
@@ -116,7 +116,7 @@ Pushes codeburn's unsent telemetry to the configured PRISM collector now: `codeb
 
 ### Secure (AWS Continuum)
 All of these call AWS and need credentials.
-- **`security pentest`:** reuses `workshop perform-pen-test`. It runs only against targets the customer owns and authorizes: the target must pass domain verification and the user confirms it by name, with no flag to skip that. Open: what authorization evidence is needed beyond domain verification.
+- **`security pentest`:** built on `feat/security-pentest`; see [the design](DESIGN-prism-cli-pentest.md). It deploys the repo's app into a temporary private VPC in the caller's account and tests only that, never an arbitrary URL. It does not wait by default; `--status`, `--cleanup` and `security findings --pentest` follow up.
 
 ### Advise (AWS account)
 - **`aws connect`:** read-only. It records which AWS profile to use and stores no credentials. Open: per repo or per user.
