@@ -84,7 +84,8 @@ Run a Security Agent threat model of the repo at HEAD, optionally focused by des
   - **Output:** threats by severity with STRIDE, recommendation and evidence paths, plus the overview's first paragraph.
   - **Flags:** `--fail-on`, `--no-wait` and `--json` work as in code-review.
 - **`security threats`:** read-only. It reads the pending job, `--job <id>`, or the latest job, with `--severity` and `--wait`.
-- **Open:** whether the scan bucket must be registered on the agent space, and the scope-doc limits. Both need one live run ([research](RESEARCH-threat-model-design-review.md), Q1 and Q2). On a client error the commands print a hint for both.
+- **Agent space setup:** threat models need the scan bucket in the agent space's `awsResources.s3Buckets`. The stack lists it, `security threat-model` checks it before any upload, and `enable security --status` reports it ([research](RESEARCH-threat-model-design-review.md), Q1).
+- **Open:** the scope-doc limits (Q2). On a client error the commands print a hint.
 
 User docs: [Running a Threat Model from the CLI](../USER_GUIDE.md#running-a-threat-model-from-the-cli).
 

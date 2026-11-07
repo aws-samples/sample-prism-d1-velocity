@@ -40,6 +40,8 @@ interface State {
   threats: Threat[];
   error?: { code: string; message: string };
   createError?: string;
+  /** awsResources.s3Buckets of agent space as-1. */
+  spaceBuckets: string[];
   models: { threatModelId: string; title: string; createdAt: string }[];
   jobs: Record<string, { threatModelJobId: string; createdAt: string }[]>;
 }
@@ -54,7 +56,7 @@ function state(o: Partial<State> = {}): State {
       { threatId: 't3', title: 'Audit log can be edited', severity: 'CRITICAL', stride: ['TAMPERING', 'REPUDIATION'], evidence: ['src/log.ts'] },
       { threatId: 't4', title: 'Version banner', severity: 'INFO', stride: ['INFORMATION_DISCLOSURE'] },
     ],
-    models: [], jobs: {}, ...o,
+    spaceBuckets: [`arn:aws:s3:::${BUCKET}`], models: [], jobs: {}, ...o,
   };
 }
 
@@ -86,6 +88,8 @@ function harness(s: State, o: { tree?: Tree; cwd?: (repo: string) => string; int
         case 'ssm get-parameter': { const v = s.params[arg(a, '--name')]; return v ? ok({ Parameter: { Value: v } }) : fail('ParameterNotFound', 'ParameterNotFound'); }
         case 's3api head-object': { const e = s.objects[arg(a, '--key')]; return e ? ok({ ETag: `"${e}"` }) : fail('404', 'An error occurred (404) when calling the HeadObject operation: Not Found'); }
         case 's3api put-object': s.objects[arg(a, '--key')] = createHash('md5').update(readFileSync(arg(a, '--body'))).digest('hex'); return ok({});
+        case 'securityagent batch-get-agent-spaces':
+          return ok({ agentSpaces: arg(a, '--agent-space-ids') === 'as-1' ? [{ agentSpaceId: 'as-1', name: 'prism-d1-security', awsResources: { s3Buckets: s.spaceBuckets } }] : [], notFound: [] });
         case 'securityagent create-threat-model':
           if (s.createError) return fail('', s.createError);
           return ok({ threatModelId: 'tm-1', title: arg(a, '--title') });
@@ -326,7 +330,6 @@ test('threat-model: a FAILED job with a client error saves an error result and p
     assert.equal(await securityThreatModel(tm(), h.deps), 1);
     const out = h.out();
     assert.match(out, /Error: job tmj-1 ended FAILED: Unable to access s3 location/);
-    assert.match(out, /awsResources\.s3Buckets in: aws securityagent batch-get-agent-spaces --agent-space-ids as-1/);
     assert.match(out, /Try fewer or smaller --doc files, or --no-docs/);
     const rs = h.results();
     assert.equal(rs.length, 1);
@@ -340,14 +343,41 @@ test('threat-model: create-threat-model errors get the hint, but not permission 
   try {
     assert.equal(await securityThreatModel(tm(), h.deps), 1);
     assert.match(h.out(), /create-threat-model failed: .*scopeDocs too large/);
-    assert.match(h.out(), /open questions Q1 and Q2/);
+    assert.match(h.out(), /open question Q2/);
     assert.equal(h.results().length, 0, 'no job, no record');
   } finally { h.cleanup(); }
+  const h3 = harness(state({ createError: 'An error occurred (ValidationException) when calling the CreateThreatModel operation: S3 bucket not found in agent instance S3 buckets' }));
+  try {
+    assert.equal(await securityThreatModel(tm(), h3.deps), 1);
+    assert.match(h3.out(), new RegExp(`Error: the Security Agent space doesn't list the scan bucket ${BUCKET}; run prism-cli enable security to update it\\.`));
+    assert.doesNotMatch(h3.out(), /open question/);
+  } finally { h3.cleanup(); }
   const h2 = harness(state({ createError: 'An error occurred (AccessDeniedException) when calling the CreateThreatModel operation: User is not authorized to perform: securityagent:CreateThreatModel' }));
   try {
     assert.equal(await securityThreatModel(tm(), h2.deps), 1);
     assert.doesNotMatch(h2.out(), /open questions/);
   } finally { h2.cleanup(); }
+});
+
+test('threat-model: an agent space that does not list the scan bucket stops before any write', async () => {
+  for (const buckets of [[], ['arn:aws:s3:::some-other-bucket']]) {
+    const h = harness(state({ spaceBuckets: buckets }));
+    try {
+      assert.equal(await securityThreatModel(tm(), h.deps), 1);
+      assert.match(h.out(), new RegExp(`Error: the Security Agent space doesn't list the scan bucket ${BUCKET}; run prism-cli enable security to update it\\.`));
+      assert.deepEqual(h.writes(), [], 'no upload, no create');
+      assert.ok(h.calls.some((c) => c[1] === 'batch-get-agent-spaces'));
+    } finally { h.cleanup(); }
+  }
+  const h2 = harness(state({ spaceBuckets: [BUCKET] }));
+  try { assert.equal(await securityThreatModel(tm(), h2.deps), 0, 'a bucket listed by name is fine'); } finally { h2.cleanup(); }
+  const s = state(); s.params['/prism/continuum/agent-space-id'] = 'as-gone';
+  const h3 = harness(s);
+  try {
+    assert.equal(await securityThreatModel(tm(), h3.deps), 1);
+    assert.match(h3.out(), /did not return agent space as-gone/);
+    assert.deepEqual(h3.writes(), []);
+  } finally { h3.cleanup(); }
 });
 
 test('threat-model: missing setup in SSM points at enable security', async () => {

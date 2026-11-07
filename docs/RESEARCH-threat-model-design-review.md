@@ -191,7 +191,7 @@ The [service authorization reference](https://docs.aws.amazon.com/service-author
 | `repo/<slug>/latest.zip` | `enable security`, `code-review`, CI | Possibly. See 3.2 |
 | CI managed policy `prism-d1-continuum-ci-scan` | stack | **No.** It grants only code-review actions. Threat model in CI would need the actions from 2.5 added. A local run on developer credentials does not need this |
 
-Open point: the MCP server registers each bucket in `AgentSpace.awsResources.s3Buckets` before using it, and the threat-model guide refers to S3 URIs in "connected" buckets. The PRISM agent space lists only `iamRoles`. Code review already reads `s3://security-agent-scans-.../repo/<slug>/latest.zip` without that registration. The threat-model preflight runs an explicit "S3 source access validation" check, so the registration may matter there (open question Q1). If it does, the fix belongs in the CDK construct (`awsResources.s3Buckets: [scanBucket.bucketArn]`), not in prism-cli.
+**Answered (Q1, live run 2026-11-07): the bucket must be registered.** The agent space needs the scan bucket in `awsResources.s3Buckets`. Code review reads `latest.zip` without that registration, but `create-threat-model` refuses an unlisted bucket with a ValidationException ("S3 bucket not found in agent instance S3 buckets"). The CDK construct now lists the bucket ARN; AWS::SecurityAgent::AgentSpace updates `AwsResources` with no interruption, so an existing agent space is kept. `security threat-model` checks the list with `batch-get-agent-spaces` before any upload, and `enable security --status` reports it.
 
 The MCP server uses a second bucket, `security-agent-threat-model-<acct>-<region>`, for threat models. Its source does not say why. Nothing in the API needs a separate bucket.
 
@@ -275,7 +275,7 @@ Recommendation: **drop it for now** and record why in PRISM-CLI-STATUS.
 
 | # | Question | Who can settle it |
 | --- | --- | --- |
-| Q1 | Does the threat-model preflight accept an S3 object in a bucket that is not in `awsResources.s3Buckets` (code review does)? | A live run in the test account |
+| Q1 | ~~Does the threat-model preflight accept an S3 object in a bucket that is not in `awsResources.s3Buckets`?~~ **Answered: no.** `create-threat-model` refuses it (see 2.6). | Settled by a live run, 2026-11-07 |
 | Q2 | What are the scope-doc count and size limits through the API? | A live run, or AWS |
 | Q3 | Does a code review with `controlsScanning=true` evaluate `assets.documents` against requirement packs? | A live run, or AWS |
 | Q4 | Do `evidence[].path` values carry the `/tmp/opt/source_code/code_sc-<id>/` sandbox prefix? What do `anchor.kind`/`packageId` look like? | A live run |

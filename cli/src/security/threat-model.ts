@@ -26,7 +26,7 @@ import {
   serviceSeconds, shortText, TERMINAL, upload, type Poller, type ReviewDeps, type Snapshot,
 } from './review.js';
 import {
-  Abort, call, getParam, PARAM_AGENT_SPACE, PARAM_SERVICE_ROLE, preflight, printIdentity, SERVICE_ROLE_NAME,
+  Abort, bucketNotListed, call, getParam, listsBucket, PARAM_AGENT_SPACE, PARAM_SERVICE_ROLE, preflight, printIdentity, SERVICE_ROLE_NAME, spaceBuckets,
   type Ctx, type Identity, type RepoCtx, type SecurityOptions,
 } from './setup.js';
 
@@ -119,21 +119,24 @@ function agentSpace(ctx: Ctx, id: Identity): string {
  * What a failed threat-model write or job might be about, since the API does
  * not document it yet (research doc, open questions Q1 and Q2).
  */
-export function unknownsHint(space: string): string[] {
+export function unknownsHint(): string[] {
   return [
-    'Hint: two things about the threat-model API are not documented yet:',
-    `  - The scan bucket may need to be registered on the agent space. Check awsResources.s3Buckets in: aws securityagent batch-get-agent-spaces --agent-space-ids ${space}`,
-    '  - Scope docs may have size or count limits. Try fewer or smaller --doc files, or --no-docs.',
-    '  See docs/RESEARCH-threat-model-design-review.md (open questions Q1 and Q2).',
+    'Hint: the threat-model API documents no scope-doc limits; they may be too large or too many. Try fewer or smaller --doc files, or --no-docs.',
+    '  See docs/RESEARCH-threat-model-design-review.md (open question Q2).',
   ];
 }
 
-/** A write call; an error that is not about credentials, permissions or the CLI gets the unknowns hint. */
-function writeCall(ctx: Ctx, args: string[], space: string) {
+/** The service's refusal of an S3 object in a bucket the agent space does not list. */
+const BUCKET_NOT_LISTED = /S3 bucket not found in agent instance S3 buckets/i;
+
+/** A write call; an error that is not about credentials, permissions or the CLI gets the scope-doc hint. */
+function writeCall(ctx: Ctx, args: string[], bucket: string) {
   const r = ctx.deps.aws(args, ctx.opts.region);
   if (r.ok) return r;
+  // The preflight checks this; the service saying so anyway (the list changed since) gets the same fix.
+  if (BUCKET_NOT_LISTED.test(r.raw)) throw new Abort(bucketNotListed(bucket));
   const why = explainAwsError(args, r.raw, ctx.cliVersion);
-  throw new Abort(why.kind === 'other' ? [why.message, ...unknownsHint(space)].join('\n') : why.message);
+  throw new Abort(why.kind === 'other' ? [why.message, ...unknownsHint()].join('\n') : why.message);
 }
 
 const threatsHint = (jobId: string) => `The job keeps running in AWS. Fetch its threats later with: prism-cli security threats --job ${jobId}`;
@@ -460,7 +463,7 @@ function saveFailed(ctx: Ctx, json: boolean, result: PrismResult, job: TmJob, re
   const path = writeResult(repo.root, result, id);
   if (json) deps.out(JSON.stringify(result, null, 2) + '\n');
   ctx.deps.log(`Error: job ${job.threatModelJobId} ended ${job.status}${job.reason ? `: ${redact(job.reason)}` : ''}`);
-  if (job.errorCode === 'CLIENT_ERROR') for (const l of unknownsHint(space)) ctx.deps.log(l);
+  if (job.errorCode === 'CLIENT_ERROR') for (const l of unknownsHint()) ctx.deps.log(l);
   ctx.deps.log(`Saved ${path}`);
   return 1;
 }
@@ -512,6 +515,10 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
     const role = getParam(ctx, PARAM_SERVICE_ROLE) || `arn:aws:iam::${id.account}:role/${SERVICE_ROLE_NAME}`;
     say(`Repo:        ${repo.id}`);
     say(`Agent space: ${space} (from SSM ${PARAM_AGENT_SPACE})`);
+    // Before any write: create-threat-model refuses S3 objects in a bucket the agent space does not list.
+    const listed = spaceBuckets(ctx, space);
+    if (listed === null) throw new Abort(`batch-get-agent-spaces did not return agent space ${space} (from SSM ${PARAM_AGENT_SPACE}); run prism-cli enable security --status.`);
+    if (!listsBucket(listed, bucket)) throw new Abort(bucketNotListed(bucket));
 
     const tipR = deps.git(['-C', root, 'rev-parse', 'HEAD']);
     const tip = tipR.ok ? tipR.stdout.trim() : '';
@@ -542,13 +549,13 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
       '--description', `prism-cli threat model of ${repo.id} at ${tip.slice(0, 12)}`,
       '--assets', JSON.stringify({ sourceCode: [{ s3Location: `s3://${bucket}/${source.key}` }] }),
       ...(docs.length ? ['--scope-docs', JSON.stringify(docs.map((d) => ({ s3Location: `s3://${bucket}/${d.key}` })))] : []),
-    ], space);
+    ], bucket);
     const threatModelId = String(created.json?.threatModelId || '');
     if (!threatModelId) throw new Abort('create-threat-model returned no threatModelId.');
     say(`Threat model: ${threatModelId} ("${title}")`);
 
     const startedAt = deps.now().getTime();
-    const started = toTmJob(writeCall(ctx, ['securityagent', 'start-threat-model-job', '--agent-space-id', space, '--threat-model-id', threatModelId], space).json);
+    const started = toTmJob(writeCall(ctx, ['securityagent', 'start-threat-model-job', '--agent-space-id', space, '--threat-model-id', threatModelId], bucket).json);
     if (!started.threatModelJobId) throw new Abort('start-threat-model-job returned no threatModelJobId.');
     const job: TmJob = { ...started, threatModelId, status: started.status === 'UNKNOWN' ? 'IN_PROGRESS' : started.status };
     say(`Started job ${job.threatModelJobId}`);
@@ -632,7 +639,7 @@ export async function securityThreats(input: ThreatsOptions, deps: ReviewDeps): 
     if (job.status !== 'COMPLETED') {
       if (pending) return saveFailed(ctx, !!input.json, toThreatModelResult({ ...base, threats: [] }), job, repo, space, pending.id);
       say(`Error: job ${job.threatModelJobId} ended ${job.status}${job.reason ? `: ${redact(job.reason)}` : ''}`);
-      if (job.errorCode === 'CLIENT_ERROR') for (const l of unknownsHint(space)) say(l);
+      if (job.errorCode === 'CLIENT_ERROR') for (const l of unknownsHint()) say(l);
       return 1;
     }
     const threats = fetchThreats(ctx, space, job.threatModelJobId, repo.root);

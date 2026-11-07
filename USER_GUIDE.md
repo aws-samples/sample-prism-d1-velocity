@@ -1536,12 +1536,16 @@ failed job 1). It differs in these ways:
    `kind: security-threat-model` and keeps the full overview in `threat_model.system_overview`.
 7. `--fail-on <level>` exits 1 on a threat at or above that level. INFO never fails.
 
-Two parts of the API are not documented yet. On a client error, the command prints a hint for each:
+The agent space must list the scan bucket in `awsResources.s3Buckets`, or `create-threat-model`
+refuses the upload. The stack lists it since this release. Before any upload, the command checks
+the list with `batch-get-agent-spaces` and stops with no writes when the bucket is missing:
+`the Security Agent space doesn't list the scan bucket <name>; run prism-cli enable security to
+update it.` On an older stack, `enable security` sees the drift and updates the agent space in
+place. `enable security --status` shows the same check as the `Scan bucket on agent space` row.
+The extra read permission is `securityagent:BatchGetAgentSpaces`.
 
-- The scan bucket may need to be listed in the agent space's `awsResources.s3Buckets`.
-- Scope docs may have size or count limits.
-
-It also warns when the docs exceed the web app's design-review limits: 5 files, 2 MB each
+The API documents no scope-doc limits, so on a client error the command prints a hint to trim the
+docs. It also warns when the docs exceed the web app's design-review limits: 5 files, 2 MB each
 (0.5 MB for `.md` and `.txt`), 6 MB in total.
 
 `security threats` is read-only and completes pending records like `security findings` does.
@@ -1549,13 +1553,14 @@ It also warns when the docs exceed the web app's design-review limits: 5 files, 
 **IAM.** Besides the `enable security` read permissions, the two commands need:
 
 - `securityagent:CreateThreatModel` and `StartThreatModelJob` (threat-model only);
+- `securityagent:BatchGetAgentSpaces` (threat-model's bucket check);
 - `securityagent:BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats`;
 - for `security threats` without a pending record, `ListThreatModels` and `ListThreatModelJobs`;
 - `iam:PassRole` on the service role, conditioned on `iam:PassedToService = securityagent.amazonaws.com`;
 - `s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
 
 The CI managed policy `prism-d1-continuum-ci-scan` grants only the code-review actions. Running a
-threat model from CI would need `CreateThreatModel`, `StartThreatModelJob`,
+threat model from CI would need `BatchGetAgentSpaces`, `CreateThreatModel`, `StartThreatModelJob`,
 `BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats` added to its `ContinuumScanAPIs`
 statement. Its PassRole, scan bucket and SSM statements already cover the rest.
 
