@@ -705,19 +705,31 @@ export function ciWorkflowStep(repoRoot: string): { mark: Mark; detail: string }
 
 function securityStatus(ctx: Ctx): number {
   const { deps, opts } = ctx;
-  const rows: [Mark, string, string][] = [];
+  const { rows, code } = collectSecurityStatus(ctx);
+  deps.log(`Security Agent status (region ${opts.region}, ${opts.regionSource}; credentials: ${credentialSource(opts, deps.env)}):`);
+  for (const [m, l, d] of rows) deps.log(`  [${m}] ${l}: ${d}`);
+  return code;
+}
+
+export type StatusMark = Mark;
+export type StatusRow = [Mark, string, string];
+
+/**
+ * The --status rows, without printing: also read by aws check (prism-setup).
+ * Read-only. code is 1 when the credentials failed or a read stopped the report.
+ */
+export function collectSecurityStatus(ctx: Ctx): { rows: StatusRow[]; code: number } {
+  const { deps, opts } = ctx;
+  const rows: StatusRow[] = [];
   const add = (m: Mark, label: string, detail: string) => rows.push([m, label, detail]);
-  const print = () => {
-    deps.log(`Security Agent status (region ${opts.region}, ${opts.regionSource}; credentials: ${credentialSource(opts, deps.env)}):`);
-    for (const [m, l, d] of rows) deps.log(`  [${m}] ${l}: ${d}`);
-  };
   let id: Identity;
   try { id = preflight(ctx); } catch (e) {
     add('missing', 'Credentials', e instanceof Abort ? redact(e.message).split('\n')[0] : String(e));
-    print();
-    return 1;
+    return { rows, code: 1 };
   }
   add('ok', 'Credentials', `account ${accountLabel(id)}, caller ${id.arn || 'unknown'}`);
+  const changed = accountChangeWarning(opts.connection, id.account);
+  if (changed) add('warn', 'Saved connection', changed.replace(/^Warning: /, ''));
   const repo = resolveRepo(opts, deps);
   try {
     const pipe = readStack(ctx, PIPELINE_STACK);
@@ -784,9 +796,7 @@ function securityStatus(ctx: Ctx): number {
   } catch (e) {
     if (!(e instanceof Abort)) throw e;
     add('unknown', 'Stopped', redact(e.message).split('\n')[0]);
-    print();
-    return 1;
+    return { rows, code: 1 };
   }
-  print();
-  return 0;
+  return { rows, code: 0 };
 }

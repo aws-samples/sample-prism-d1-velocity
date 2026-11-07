@@ -14,25 +14,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import scanAccount from '../src/commands/bedrock-protection/scan-account.js';
-import { withFakeAws, noDetectors, type AwsStub } from './helpers.js';
+import { withFakeAws, type AwsStub } from './helpers.js';
+import { SCAN_ACCOUNT_STUBS } from './aws-fixtures.js';
 
 const GOLDEN = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'scan-account', 'golden.txt');
 
-/** A mix of PASS, FAIL and INDETERMINATE outcomes; everything else is unstubbed and errors. */
-export const SCAN_ACCOUNT_STUBS: AwsStub[] = [
-  { match: ['sts', 'get-caller-identity'], stdout: { Account: '111111111111', Arn: 'arn:aws:sts::111111111111:assumed-role/ReadOnly/s' } },
-  { match: ['iam', 'get-account-summary'], stdout: { SummaryMap: { AccountMFAEnabled: 0, AccountAccessKeysPresent: 0 } } },
-  { match: ['iam', 'get-account-password-policy'], error: 'NoSuchEntity' },
-  { match: ['iam', 'get-credential-report'], error: 'AccessDenied' },
-  { match: ['iam', 'list-users'], stdout: ['alice'] },
-  { match: ['iam', 'list-attached-user-policies'], stdout: { AttachedPolicies: [{ PolicyName: 'AdministratorAccess' }] } },
-  { match: ['budgets', 'describe-budgets'], raw: '' },
-  { match: ['ce', 'get-anomaly-monitors'], error: 'AccessDeniedException' },
-  { match: ['cloudwatch', 'describe-alarms'], stdout: { MetricAlarms: [] } },
-  noDetectors(),
-  { match: ['bedrock', 'list-provisioned-model-throughputs'], stdout: { provisionedModelSummaries: [] } },
-  { match: ['bedrock', 'get-model-invocation-logging-configuration'], raw: '' },
-];
 
 /** Runs the command's action with console.log captured and a clean HOME and AWS env. */
 export async function captureScanAccount(opts: Record<string, unknown>, stubs: AwsStub[] = SCAN_ACCOUNT_STUBS): Promise<string> {
