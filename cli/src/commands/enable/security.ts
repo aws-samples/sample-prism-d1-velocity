@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { configuredRegion, connectionDefaults } from '../../aws/connection.js';
 import { aws } from '../../utils/aws.js';
 import { run } from '../../utils/exec.js';
 import { getAssetPath } from '../../utils/root.js';
@@ -64,10 +65,7 @@ export function defaultDeps(opts: SecurityOptions): Deps {
   const target = opts.profile ? { profile: opts.profile } : {};
   return {
     aws: (args, region) => aws([...args, '--region', region], { ...target, env: { AWS_PAGER: '' } }),
-    configRegion: (profile) => {
-      const r = run('aws', ['configure', 'get', 'region', ...(profile ? ['--profile', profile] : [])]);
-      return r.ok && r.stdout ? r.stdout : null;
-    },
+    configRegion: configuredRegion,
     env: process.env,
     awsVersion: () => { const r = run('aws', ['--version']); return r.ok ? r.stdout : null; },
     cdk: cdkRunner(opts),
@@ -86,8 +84,8 @@ export function defaultDeps(opts: SecurityOptions): Deps {
 const collect = (v: string, prev: string[] = []) => [...prev, v];
 
 export const SECURITY_OPTIONS: { flags: string; description: string; default?: string; parser?: (v: string, prev?: string[]) => string[] }[] = [
-  { flags: '--profile <name>', description: 'AWS CLI profile (default: none; the standard credential chain, e.g. AWS_PROFILE, env keys, SSO, instance role)' },
-  { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, else the profile\'s configured region; refuses when none is set)' },
+  { flags: '--profile <name>', description: 'AWS CLI profile (default: AWS_PROFILE or env credentials, else the profile saved by prism-cli aws connect, else the standard credential chain)' },
+  { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, the aws connect region, else the profile\'s configured region; refuses when none is set)' },
   { flags: '--yes', description: 'Approve the changes without a prompt (CI and other non-interactive use)' },
   { flags: '--dry-run', description: 'Run every read-only step and print the plan, including the exact calls; change nothing' },
   { flags: '--status', description: 'Read-only report: credentials, stack, agent space, application, code review, SSM, CI step' },
@@ -112,7 +110,7 @@ export interface RunHooks {
  */
 export async function runEnableSecurity(opts: SecurityOptions, hooks: RunHooks = {}): Promise<void> {
   await runGuarded(() => {
-    const o: SecurityOptions = { ...opts, profile: opts.profile || undefined, region: opts.region || undefined };
+    const o: SecurityOptions = connectionDefaults({ ...opts, profile: opts.profile || undefined, region: opts.region || undefined }, hooks.env);
     return enableSecurity(o, (hooks.deps ?? defaultDeps)(o));
   }, hooks);
 }

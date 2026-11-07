@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,8 @@ export interface AwsStub {
   raw?: string;
   /** An AWS error code, rendered in the real CLI's stderr shape. */
   error?: string;
+  /** With `error`: the message after the code (default "stubbed"). */
+  message?: string;
 }
 
 /**
@@ -26,15 +28,17 @@ export interface AwsStub {
  * node:test), and the restore happens in `finally` so one failing assertion
  * cannot leak a fake binary into the rest of the run.
  */
-export function withFakeAws<T>(stubs: AwsStub[], fn: () => T): T {
+export function withFakeAws<T>(stubs: AwsStub[], fn: () => T, calls?: string[][]): T {
   const dir = mkdtempSync(join(tmpdir(), 'prism-fake-aws-'));
   const responses = join(dir, 'responses.json');
+  const log = join(dir, 'calls.jsonl');
   writeFileSync(responses, JSON.stringify(stubs));
 
   const savedPath = process.env.PATH;
   const savedResponses = process.env.FAKE_AWS_RESPONSES;
   process.env.PATH = `${FIXTURES}:${savedPath ?? ''}`;
   process.env.FAKE_AWS_RESPONSES = responses;
+  if (calls) process.env.FAKE_AWS_LOG = log;
 
   try {
     return fn();
@@ -42,6 +46,10 @@ export function withFakeAws<T>(stubs: AwsStub[], fn: () => T): T {
     process.env.PATH = savedPath;
     if (savedResponses === undefined) delete process.env.FAKE_AWS_RESPONSES;
     else process.env.FAKE_AWS_RESPONSES = savedResponses;
+    if (calls) {
+      delete process.env.FAKE_AWS_LOG;
+      if (existsSync(log)) for (const l of readFileSync(log, 'utf8').split('\n').filter(Boolean)) calls.push(JSON.parse(l));
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -13,6 +13,7 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { dirname, join, resolve } from 'node:path';
 import { appendFileSync, existsSync as fileExists } from 'node:fs';
 import { run } from '../utils/exec.js';
+import type { Finding as AuditFinding, Severity as AuditSeverity } from '../utils/audit.js';
 
 export const RESULT_SCHEMA_VERSION = 1;
 export const RESULTS_DIR = '.prism/results';
@@ -53,7 +54,28 @@ export interface Finding {
  * `security-threat-model` = an AWS Security Agent threat model job;
  * `security-pentest` = an AWS Security Agent penetration test job.
  */
-export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model' | 'security-pentest';
+export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model' | 'security-pentest' | 'aws-check';
+
+/**
+ * aws-check only: one `prism-cli aws check` run. The audit findings live in
+ * `checks` (their shape differs from a code finding); `findings` stays empty.
+ */
+export interface AwsCheckInfo {
+  account: string;
+  alias: string | null;
+  region: string;
+  profile: string | null;
+  /** Where the profile came from, e.g. "--profile" or "aws connect, user". */
+  profile_source: string | null;
+  /** The sections that ran, in order. */
+  sections: string[];
+  /** PASS / FAIL / INDETERMINATE counts per section. */
+  section_counts: Record<string, { pass: number; fail: number; indeterminate: number }>;
+  counts: { pass: number; fail: number; indeterminate: number };
+  /** FAIL findings per severity. */
+  fail_by_severity: Record<AuditSeverity, number>;
+  checks: AuditFinding[];
+}
 
 /** security-threat-model only: the job behind the result. */
 export interface ThreatModelInfo {
@@ -192,6 +214,8 @@ export interface PrismResult {
   threat_model?: ThreatModelInfo;
   /** Present on kind security-pentest. */
   pentest?: PentestInfo;
+  /** Present on kind aws-check. */
+  aws_check?: AwsCheckInfo;
 }
 
 export type ResultInit = Omit<PrismResult, 'schema_version' | 'tool_version' | 'model' | 'commit' | 'tree' | 'branch' | 'upstream' | 'base' | 'summary' | 'score' | 'reason' | 'findings'>
@@ -230,6 +254,10 @@ export function compactTimestamp(iso: string): string {
  * no commit yet (pre-commit).
  */
 export function resultFileName(r: PrismResult): string {
+  // An account check is not tied to a commit: `aws-<account>-<region>-<time>-aws-check.json`.
+  if (r.kind === 'aws-check' && r.aws_check) {
+    return `aws-${safePart(r.aws_check.account)}-${safePart(r.aws_check.region)}-${compactTimestamp(r.started_at)}-${safePart(r.kind)}.json`;
+  }
   const id = r.commit ? safePart(r.commit.slice(0, 12)) : r.tree ? `tree-${safePart(r.tree.slice(0, 12))}` : 'nocommit';
   return `${id}-${compactTimestamp(r.started_at)}-${safePart(r.hook)}-${safePart(r.kind)}.json`;
 }

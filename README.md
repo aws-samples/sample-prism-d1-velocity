@@ -115,6 +115,16 @@ prism-cli security findings                  # the latest job's findings (read-o
 
 `code-review` uploads the snapshot (skipped when unchanged) and starts the job; those are its only AWS writes. It exits 0 unless you pass `--fail-on <level>`. Results are cached in `.prism/results/`, and the dashboard's Security findings panel shows them. Details: [Running a Review from the CLI](USER_GUIDE.md#running-a-review-from-the-cli).
 
+### Optional: check your AWS account (aws connect, check, recommend)
+
+```bash
+prism-cli aws connect          # choose, verify and save the default profile and region (no credentials stored)
+prism-cli aws check            # read-only checks: Bedrock protection, PRISM setup, account baseline
+prism-cli aws recommend        # a ranked fix list from the last check (no AWS calls)
+```
+
+All three are read-only against AWS. `aws connect` saves a profile name and region in `~/.prism/aws.json` (or, with `--repo`, a git-ignored `.prism/aws.local.json`), and the other AWS commands use it unless a flag or `AWS_PROFILE`/`AWS_REGION` says otherwise. `aws check` saves its result for `aws recommend` and the dashboard's AWS account panel. Details: [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend).
+
 ## Documentation
 
 | Guide | For | Contents |

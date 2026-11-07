@@ -116,14 +116,14 @@ export function writeSecurityMarker(repoRoot: string, m: Omit<SecurityMarker, 's
  * to `info/exclude` (resolved with `git rev-parse --git-path`, so linked
  * worktrees use the right file). Returns the exclude file when it was changed.
  */
-export function ensureMarkerIgnored(repoRoot: string, git: (args: string[]) => RunResult): string | null {
-  if (git(['-C', repoRoot, 'check-ignore', '-q', MARKER_PATH]).ok) return null;
+export function ensureMarkerIgnored(repoRoot: string, git: (args: string[]) => RunResult, path = MARKER_PATH, by = 'prism-cli enable security'): string | null {
+  if (git(['-C', repoRoot, 'check-ignore', '-q', path]).ok) return null;
   const r = git(['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude']);
   if (!r.ok || !r.stdout) return null;
   const exclude = r.stdout.trim();
   const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
-  if (text.split('\n').some((l) => l.trim() === MARKER_PATH || l.trim() === `/${MARKER_PATH}`)) return null;
+  if (text.split('\n').some((l) => l.trim() === path || l.trim() === `/${path}`)) return null;
   mkdirSync(dirname(exclude), { recursive: true });
-  appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}# prism-cli enable security: per-developer record, never committed\n${MARKER_PATH}\n`);
+  appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}# ${by}: per-developer record, never committed\n${path}\n`);
   return exclude;
 }
