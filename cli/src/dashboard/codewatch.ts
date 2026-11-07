@@ -160,7 +160,7 @@ const byTime = (a: PrismResult, b: PrismResult) => String(a.started_at).localeCo
 
 export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS, gitleaksAvailable = true): CodewatchPanel {
   // Security Agent reviews have their own panel; the codewatch panel is the git-hook gate only.
-  const entries = readResultEntries(repoRoot).filter((e) => e.result && typeof e.result.started_at === 'string' && e.result.kind !== 'security-review');
+  const entries = readResultEntries(repoRoot).filter((e) => e.result && typeof e.result.started_at === 'string' && e.result.kind !== 'security-review' && e.result.kind !== 'security-threat-model');
   const idOf = new Map(entries.map((e) => [e.result, e.id]));
   const all = entries.map((e) => e.result).sort(byTime);
   const latest = new Map<string, BranchLatest>();

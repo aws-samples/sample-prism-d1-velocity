@@ -153,6 +153,25 @@ export function roleExists(ctx: Ctx, roleArn: string): boolean | null {
 
 const roleName = (arn: string) => arn.split('/').pop() || arn;
 
+/**
+ * The agent space's awsResources.s3Buckets (ARNs or names, per the API), from
+ * batch-get-agent-spaces. null when the space was not returned.
+ */
+export function spaceBuckets(ctx: Ctx, spaceId: string): string[] | null {
+  const r = call(ctx, ['securityagent', 'batch-get-agent-spaces', '--agent-space-ids', spaceId]);
+  const space = (r.json?.agentSpaces || []).find((s: any) => s?.agentSpaceId === spaceId);
+  if (!space) return null;
+  const list = space.awsResources?.s3Buckets;
+  return Array.isArray(list) ? list.map((b: unknown) => String(b)) : [];
+}
+
+/** Whether `bucket` (a name) is in the list, given by name or by ARN (any partition). */
+export function listsBucket(buckets: string[], bucket: string): boolean {
+  return buckets.some((b) => b === bucket || /^arn:[a-z-]+:s3:::/.test(b) && b.replace(/^arn:[a-z-]+:s3:::/, '').replace(/\/.*$/, '') === bucket);
+}
+
+export const bucketNotListed = (bucket: string) => `the Security Agent space doesn't list the scan bucket ${bucket}; run prism-cli enable security to update it.`;
+
 export interface Identity { account: string; arn: string; alias: string | null }
 
 function identity(ctx: Ctx): Identity {
@@ -725,6 +744,16 @@ function securityStatus(ctx: Ctx): number {
     for (const [name, label] of [[PARAM_AGENT_SPACE, 'SSM agent-space-id'], [PARAM_SCAN_BUCKET, 'SSM scan-bucket'], [PARAM_SERVICE_ROLE, 'SSM service-role-arn']] as const) {
       const v = name === PARAM_AGENT_SPACE ? spaceParam : name === PARAM_SERVICE_ROLE ? roleParam : getParam(ctx, name);
       add(v ? 'ok' : 'missing', label, v ? `${name} = ${v}` : `${name} not set`);
+    }
+
+    // Threat models (create-threat-model) refuse S3 objects in a bucket the agent space does not list.
+    const bucket = getParam(ctx, PARAM_SCAN_BUCKET);
+    if (!space || !bucket) add('unknown', 'Scan bucket on agent space', 'needs the agent space and SSM scan-bucket first');
+    else {
+      const listed = spaceBuckets(ctx, space.agentSpaceId);
+      if (listed === null) add('unknown', 'Scan bucket on agent space', `batch-get-agent-spaces did not return ${space.agentSpaceId}`);
+      else if (listsBucket(listed, bucket)) add('ok', 'Scan bucket on agent space', `${bucket} is in awsResources.s3Buckets`);
+      else add('missing', 'Scan bucket on agent space', `${bucket} is not in awsResources.s3Buckets, so security threat-model fails; run prism-cli enable security to update the stack`);
     }
 
     if ('error' in repo) add('unknown', 'Code review', repo.error);
