@@ -133,6 +133,8 @@ export interface PentestInfo {
   agent_security_group_id?: string | null;
   /** The app container's log group, for debugging hints. */
   app_log_group?: string | null;
+  /** The PRIVATE_VPC target domain this run created; teardown deletes it. */
+  target_domain_id?: string | null;
   /** Set when the last teardown left the stack up (destroy failed twice); --cleanup retries it. */
   teardown_failed?: { at: string; reason: string } | null;
   service_created_at?: string | null;
