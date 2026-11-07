@@ -18,6 +18,8 @@ export interface CheckOptions extends Pick<SecurityOptions, 'profile' | 'region'
   section?: string[];
   failOn?: string;
   json?: boolean;
+  /** false: save the result but print no report (aws recommend --refresh --json). */
+  report?: boolean;
 }
 
 export interface CheckRunDeps {
@@ -86,7 +88,7 @@ export function awsCheck(input: CheckOptions, d: CheckRunDeps): CheckOutcome {
   });
   const path = writeResult(resultsRoot(d), result);
 
-  renderReport(findings, {
+  if (input.report !== false) renderReport(findings, {
     title: '☁️  AWS account check',
     subtitle: `Account: ${account}${alias ? ` (${alias})` : ''}    Region: ${region}`,
     groups: sections.map((s) => [s.name, s.heading]),
