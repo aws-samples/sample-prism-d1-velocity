@@ -422,7 +422,7 @@ export function toResult(o: ResultBase & {
 }
 
 /** updatedAt - createdAt of a finished job: the service's queue plus run time. null when not reported. */
-export function serviceSeconds(job: JobInfo): number | null {
+export function serviceSeconds(job: Pick<JobInfo, 'status' | 'createdAt' | 'updatedAt'>): number | null {
   if (!TERMINAL.has(job.status) || !job.createdAt || !job.updatedAt) return null;
   const a = Date.parse(job.createdAt), b = Date.parse(job.updatedAt);
   return Number.isFinite(a) && Number.isFinite(b) && b >= a ? Math.round((b - a) / 1000) : null;
