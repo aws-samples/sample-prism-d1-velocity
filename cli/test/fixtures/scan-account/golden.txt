@@ -1,0 +1,86 @@
+
+🛡️  Bedrock protection — account audit
+   Account: 111111111111    Region: us-east-1
+   Audit only — this command makes no changes.
+
+── Root user — unconstrainable by design ──
+
+  ❌ [CRITICAL] Root account MFA
+     Root user has NO MFA device. Root cannot be constrained by SCPs or permission boundaries, so a compromised root is unbounded.
+     → Attach a FIDO2 security key to root — phishing resistant, unlike TOTP. In Amazon-internal Isengard accounts root is managed for you and this may not be actionable; confirm before escalating.
+
+  ✅ [CRITICAL] Root access keys
+     No root access keys.
+
+── IAM users and access keys ──
+
+  ❓ [HIGH] Long-lived access keys
+     Credential report unavailable (AccessDenied).
+     → Grant iam:GenerateCredentialReport and iam:GetCredentialReport, then re-run.
+
+  ❓ [HIGH] Console users without MFA
+     Credential report unavailable (AccessDenied).
+     → Grant iam:GenerateCredentialReport and iam:GetCredentialReport, then re-run.
+
+  ❌ [HIGH] AdministratorAccess on IAM users
+     AdministratorAccess is attached directly to: alice. Any access key belonging to these users is an unbounded credential.
+     → Move admin access behind an assumable role gated on MFA, so no static key carries it.
+
+  ❓ [MEDIUM] Unused credentials
+     Credential report unavailable (AccessDenied).
+     → Grant iam:GenerateCredentialReport and iam:GetCredentialReport, then re-run.
+
+── Account-wide policy ──
+
+  ❌ [MEDIUM] Account password policy
+     No password policy is set, so only AWS defaults apply (minimum length 8, no complexity or reuse rules).
+     → Set MinimumPasswordLength >= 14 with complexity and reuse prevention — or remove console passwords entirely in favour of Identity Center.
+
+── Spend ceilings — both billing surfaces ──
+
+  ❌ [HIGH] Budget covering Bedrock services
+     No budgets exist in this account, so runaway Bedrock spend has no ceiling and raises no alert.
+     → Create a monthly budget filtered on Service contains "Bedrock", alerting at 50/80/100% to SNS.
+
+  ❌ [HIGH] Budget covering Marketplace (Bedrock Edition) models
+     No COST budget filters on AWS Marketplace. Third-party models invoked through Bedrock — Anthropic, Meta, Mistral, Cohere — bill as Marketplace subscription line items named "(Amazon Bedrock Edition)", NOT under Amazon Bedrock. A Bedrock-only budget misses them entirely, which is the most expensive blind spot here because Opus-class models are both the priciest and the likeliest target.
+     → Add a second COST budget filtered on Service = AWS Marketplace, or define a Cost Category grouping both surfaces and budget on that.
+
+  ❓ [HIGH] Bedrock budgets actually notify someone
+     No COST budget covers Bedrock or Marketplace, so there is no budget whose alerting could be checked (see bedrock-budget and marketplace-budget above).
+
+── Detection speed — how fast you find out ──
+
+  ❓ [HIGH] Cost Explorer enabled
+     Could not confirm Cost Explorer access (AccessDeniedException).
+
+  ❓ [MEDIUM] Cost anomaly monitor covering Bedrock, with an alert subscription
+     Could not list anomaly monitors (AccessDeniedException).
+
+  ❌ [MEDIUM] CloudWatch alarm on Bedrock invocation volume
+     No alarms on AWS/Bedrock metrics in us-east-1. Cost data lags 12–24h, so budgets and anomaly detection cannot catch a stolen key inside the first day. Token-count metrics are near real-time and are the only fast signal available.
+     → Alarm on AWS/Bedrock Invocations and InputTokenCount with a threshold above normal peak; it fires in minutes rather than hours.
+
+  ❌ [MEDIUM] GuardDuty AI Protection enabled (CostHarvesting detection)
+     GuardDuty is not enabled in us-east-1 at all, so no detector exists to carry AI Protection. Note that scp-detection-tamper (scan-org) asserts an SCP protects GuardDuty from teardown — that guardrail is moot where GuardDuty was never turned on.
+     → Enable GuardDuty in this region, then enable the AI_PROTECTION feature on the detector. Prefer enabling it org-wide from the delegated administrator so new accounts inherit it.
+
+── Standing commitments ──
+
+  ✅ [INFO] Provisioned Throughput commitments
+     No Provisioned Throughput commitments in us-east-1. NOTE: region-scoped — a commitment in another region will not appear here.
+
+── Forensics — can you answer "who?" ──
+
+  ❌ [MEDIUM] Bedrock model invocation logging
+     Off in us-east-1. CloudTrail records that InvokeModel was called but not the model, prompt or token counts, so during an incident you can see spend rose without being able to attribute it to a caller or workload.
+     → Enable model invocation logging to CloudWatch Logs or S3. Prompts and completions are captured, so treat the destination as sensitive and scope its access accordingly.
+
+── Summary ──
+
+  16 checks: 2 pass, 8 fail, 6 indeterminate
+  Findings by severity: CRITICAL 1, HIGH 3, MEDIUM 4, LOW 0
+
+  ❓ 6 check(s) could not run and are NOT passes: access-key-age, console-user-no-mfa, unused-credentials, budget-alerting, cost-explorer-enabled, anomaly-monitor
+     Treat the result as a floor, not a clean bill of health.
+

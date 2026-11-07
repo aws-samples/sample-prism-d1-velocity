@@ -1,0 +1,67 @@
+/**
+ * `bedrock-protection scan-account` must print exactly what it printed before
+ * its checks were moved into a shared function for `aws check`. The golden file
+ * was captured from the code on main before that refactor.
+ *
+ * Regenerate (only when a change to the report is intended):
+ *   PRISM_WRITE_GOLDEN=1 npm test
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import scanAccount from '../src/commands/bedrock-protection/scan-account.js';
+import { withFakeAws, noDetectors, type AwsStub } from './helpers.js';
+
+const GOLDEN = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'scan-account', 'golden.txt');
+
+/** A mix of PASS, FAIL and INDETERMINATE outcomes; everything else is unstubbed and errors. */
+export const SCAN_ACCOUNT_STUBS: AwsStub[] = [
+  { match: ['sts', 'get-caller-identity'], stdout: { Account: '111111111111', Arn: 'arn:aws:sts::111111111111:assumed-role/ReadOnly/s' } },
+  { match: ['iam', 'get-account-summary'], stdout: { SummaryMap: { AccountMFAEnabled: 0, AccountAccessKeysPresent: 0 } } },
+  { match: ['iam', 'get-account-password-policy'], error: 'NoSuchEntity' },
+  { match: ['iam', 'get-credential-report'], error: 'AccessDenied' },
+  { match: ['iam', 'list-users'], stdout: ['alice'] },
+  { match: ['iam', 'list-attached-user-policies'], stdout: { AttachedPolicies: [{ PolicyName: 'AdministratorAccess' }] } },
+  { match: ['budgets', 'describe-budgets'], raw: '' },
+  { match: ['ce', 'get-anomaly-monitors'], error: 'AccessDeniedException' },
+  { match: ['cloudwatch', 'describe-alarms'], stdout: { MetricAlarms: [] } },
+  noDetectors(),
+  { match: ['bedrock', 'list-provisioned-model-throughputs'], stdout: { provisionedModelSummaries: [] } },
+  { match: ['bedrock', 'get-model-invocation-logging-configuration'], raw: '' },
+];
+
+/** Runs the command's action with console.log captured and a clean HOME and AWS env. */
+export async function captureScanAccount(opts: Record<string, unknown>, stubs: AwsStub[] = SCAN_ACCOUNT_STUBS): Promise<string> {
+  const home = mkdtempSync(join(tmpdir(), 'prism-golden-home-'));
+  const saved = { ...process.env };
+  const log = console.log;
+  const err = console.error;
+  const lines: string[] = [];
+  process.env.HOME = home;
+  for (const k of ['AWS_PROFILE', 'AWS_DEFAULT_PROFILE', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_ACCESS_KEY_ID']) delete process.env[k];
+  console.log = (...a: unknown[]) => { lines.push(a.join(' ')); };
+  console.error = () => {};
+  try {
+    await withFakeAws(stubs, () => scanAccount.action(opts as any));
+  } finally {
+    console.log = log;
+    console.error = err;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    rmSync(home, { recursive: true, force: true });
+  }
+  return lines.join('\n') + '\n';
+}
+
+test('scan-account: text report is byte-for-byte what main printed', async () => {
+  const out = await captureScanAccount({ region: 'us-east-1', maxKeyAge: '90', unusedDays: '90', failOn: 'none' });
+  if (process.env.PRISM_WRITE_GOLDEN) {
+    mkdirSync(dirname(GOLDEN), { recursive: true });
+    writeFileSync(GOLDEN, out);
+  }
+  assert.equal(out, readFileSync(GOLDEN, 'utf8'));
+});
