@@ -17,6 +17,7 @@ export function tildeHome(p: string, home: string): string {
 }
 import { collectUsage, type CodeburnExport, type UsagePanel } from './usage.js';
 import { collectSecurity, type SecurityPanel } from './security.js';
+import { collectAws, type AwsPanel } from './aws.js';
 
 export const PAYLOAD_SCHEMA = 'prism.dashboard.v2';
 
@@ -108,6 +109,8 @@ export interface DashboardPayload {
   usage: UsagePanel;
   /** Cached Security Agent code review results (security-review), per repo. */
   security: SecurityPanel;
+  /** The latest cached aws check result per AWS account (repos and ~). */
+  aws: AwsPanel;
 }
 
 export interface PayloadOptions extends DiscoverOptions {
@@ -180,5 +183,6 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),
     usage,
     security: collectSecurity(repos),
+    aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
   };
 }

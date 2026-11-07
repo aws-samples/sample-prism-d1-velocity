@@ -442,6 +442,39 @@ function securityPentestRows(s, sec) {
   }
 }
 
+const AUDIT_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+
+/** The latest aws check per account, in the Security panel's compact style. Local results only. */
+function awsPanel(aws) {
+  const s = el('section', { class: 'card' }, el('h2', {}, 'AWS account'));
+  const rows = (aws && aws.accounts) || [];
+  if (!rows.length) {
+    s.append(el('p', { class: 'empty' }, 'No AWS account checks yet. Run ', el('code', {}, (aws && aws.hint) || 'prism-cli aws check'), ' (read-only).'));
+    return s;
+  }
+  for (const a of rows) {
+    const b = el('div', { class: 'sec-repo' });
+    b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(a.account)), a.alias ? el('span', { class: 'tag' }, txt(a.alias)) : null));
+    b.append(el('div', { class: 'fix' }, txt(a.region) + ' · ' + when(a.checked_at) + (a.profile ? ' · profile ' + txt(a.profile) + (a.profile_source ? ' (' + txt(a.profile_source) + ')' : '') : '')));
+    const c = a.counts || {}, pills = el('div', { class: 'sec-pills' });
+    pills.append(pill('ok', (c.pass || 0) + ' pass'));
+    if (c.fail) pills.append(pill('error', c.fail + ' fail'));
+    if (c.indeterminate) pills.append(pill('warn', c.indeterminate + ' not checked'));
+    for (const k of AUDIT_SEVERITIES) if ((a.fail_by_severity || {})[k]) pills.append(riskPill(k, a.fail_by_severity[k] + ' ' + k.toLowerCase()));
+    b.append(pills);
+    if ((a.top_failures || []).length) {
+      const list = el('ul', { class: 'sec-findings' });
+      for (const f of a.top_failures) list.append(el('li', {}, riskPill(f.severity, txt(f.severity).toLowerCase()), ' ', el('span', { class: 'sec-title' }, txt(f.title)), el('div', { class: 'fix' }, txt(f.section))));
+      b.append(list);
+    }
+    if (a.more) b.append(el('p', { class: 'note' }, a.more + ' more'));
+    if (c.indeterminate) b.append(el('p', { class: 'note' }, 'Checks that could not run are not passes.'));
+    s.append(b);
+  }
+  s.append(el('p', { class: 'note' }, 'Ranked fixes: run ', el('code', {}, (aws && aws.recommend_hint) || 'prism-cli aws recommend'), '.'));
+  return s;
+}
+
 async function load() {
   const main = document.getElementById('main'), meta = document.getElementById('meta');
   meta.textContent = 'loading...';
@@ -453,7 +486,7 @@ async function load() {
   } catch (e) { meta.textContent = 'failed to load: ' + e.message; return; }
   main.replaceChildren();
   if (data.scope.error) main.append(el('section', { class: 'card wide' }, pill('error'), ' ', data.scope.error));
-  main.append(codewatchPanel(data), usagePanel(data.usage), setupPanel(data), securityPanel(data.security));
+  main.append(codewatchPanel(data), usagePanel(data.usage), setupPanel(data), securityPanel(data.security), awsPanel(data.aws));
   const c = data.overview.counts;
   meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '') + ' · updated ' + when(data.generated_at);
 }

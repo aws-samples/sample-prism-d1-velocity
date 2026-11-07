@@ -454,7 +454,8 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'usage']);
+  assert.deepEqual(Object.keys(p).sort(), ['aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'usage']);
+  assert.deepEqual(p.aws.accounts, [], 'no aws check results in the fixtures');
   assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'root_display', 'scan_ms', 'truncated']);
   assert.equal(p.scope.root_display, '~');
   assert.deepEqual(Object.keys(p.repos[0]).sort(), ['codewatch', 'current', 'hasPrism', 'name', 'path', 'security', 'setup']);
@@ -613,8 +614,8 @@ test('the Security findings panel is a one-column card: compact blocks and wrapp
   assert.match(panel, /showing the first/, 'cap note kept');
   assert.match(panel, /No Security Agent code reviews, threat models or penetration tests yet/, 'empty state kept');
   assert.match(html, /ul\.sec-findings li \{[^}]*overflow-wrap:anywhere/, 'rows wrap');
-  // Order in the grid: Codewatch (full width), then Usage, Setup and Security side by side.
-  assert.match(html, /main\.append\(codewatchPanel\(data\), usagePanel\(data\.usage\), setupPanel\(data\), securityPanel\(data\.security\)\)/);
+  // Order in the grid: Codewatch (full width), then Usage, Setup, Security and AWS account side by side.
+  assert.match(html, /main\.append\(codewatchPanel\(data\), usagePanel\(data\.usage\), setupPanel\(data\), securityPanel\(data\.security\), awsPanel\(data\.aws\)\)/);
 });
 
 test('parsePort validates --port', () => {
