@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { checkTool } from '../utils/tool-check.js';
-import { lastSync, scheduleExists, schedulerName } from '../utils/otel-sync-schedule.js';
+import { ENABLE_CODEBURN_CMD, lastSync, scheduleExists, schedulerName } from '../utils/otel-sync-schedule.js';
 import { HOOK_MARKER, MANAGED_HOOKS } from '../codewatch/hooks.js';
 import { gitleaksInstallHint } from '../codewatch/gitleaks.js';
 import { globalHooksDir, globalStatus, isOptedOut, OPT_OUT_KEY, repoLocalHooksPath, type GlobalStatus } from '../codewatch/globalHooks.js';
@@ -69,7 +69,7 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
 
   const cb = checkTool('codeburn', { pathEnv: deps.pathEnv });
   out.push(item('codeburn', 'codeburn installed', cb.installed ? 'ok' : 'missing',
-    cb.installed ? (cb.version || 'version unknown') : 'not on PATH', 'npm install -g codeburn'));
+    cb.installed ? (cb.version || 'version unknown') : 'not on PATH', ENABLE_CODEBURN_CMD));
 
   const hasSchedule = (deps.scheduleExists || scheduleExists)();
   const sched = (deps.schedulerName || schedulerName)();
@@ -80,7 +80,7 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
       'Wait for the next run, or check ~/.prism/logs/otel-sync.log'));
   } else {
     out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'missing',
-      `no ${sched} entry${last ? `; last sync log write ${last.at}` : ''}`, 'prism-cli bootstrapper setup-otel-sync'));
+      `no ${sched} entry${last ? `; last sync log write ${last.at}` : ''}`, ENABLE_CODEBURN_CMD));
   }
 
   const gl = checkTool('gitleaks', { pathEnv: deps.pathEnv, versionArgs: ['version'] });

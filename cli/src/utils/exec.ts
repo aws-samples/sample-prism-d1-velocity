@@ -29,7 +29,7 @@
  * since each of those was also an injection vector.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 export interface RunResult {
   ok: boolean;
@@ -94,4 +94,15 @@ export function runInteractive(file: string, args: string[]): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Like runInteractive(), but returns the child's exit code so a wrapper can
+ * pass it through. A missing binary is 127, as a shell reports it; any other
+ * spawn failure or a signal kill is 1.
+ */
+export function runStreaming(file: string, args: string[]): number {
+  const r = spawnSync(file, args, { stdio: 'inherit', env: process.env });
+  if (r.error) return (r.error as NodeJS.ErrnoException).code === 'ENOENT' ? 127 : 1;
+  return r.status ?? 1;
 }

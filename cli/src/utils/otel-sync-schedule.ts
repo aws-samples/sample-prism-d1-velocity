@@ -1,7 +1,8 @@
 /**
  * Detection of the scheduled `codeburn sync push` installed by
- * `bootstrapper setup-otel-sync`. Shared so the dashboard's setup checklist
- * and setup-otel-sync's own --status agree on what "installed" means.
+ * `enable codeburn` (formerly `bootstrapper setup-otel-sync`). Shared so the
+ * dashboard's setup checklist, `enable codeburn --status` and `export otel`
+ * agree on what "installed" means and on what a sync push runs.
  *
  * Read-only: nothing here installs or removes a schedule.
  */
@@ -9,6 +10,31 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 import { run } from './exec.js';
+
+/** The command that installs codeburn and its scheduled sync. Fix hints point here. */
+export const ENABLE_CODEBURN_CMD = 'prism-cli enable codeburn';
+
+/** npm package and global install argv for codeburn (github.com/getagentseal/codeburn). */
+export const CODEBURN_NPM_PACKAGE = 'codeburn';
+export const CODEBURN_INSTALL_ARGS = ['install', '-g', CODEBURN_NPM_PACKAGE];
+
+/** Window the recurring sync pushes on every run, and the `export otel` default. */
+export const SYNC_SINCE = '7d';
+
+/**
+ * The argv of a sync push, shared by every schedule platform and `export otel`.
+ *
+ * This is the single source of truth on purpose. It previously existed only as
+ * a Linux helper, and the Windows branch open-coded its own command string
+ * that omitted --attribution. That silently reduced Windows machines to usage
+ * telemetry with no commit attribution, so those developers counted toward the
+ * Attribution Coverage denominator (CI sees their commits) while contributing
+ * nothing to the numerator -- indistinguishable on the dashboard from someone
+ * who never onboarded. Any new caller must use this.
+ */
+export function syncArgs(since: string): string[] {
+  return ['sync', 'push', '--since', since, '--attribution'];
+}
 
 export const CRON_MARKER = '# prism-otel-sync';
 export const PLIST_LABEL = 'com.prism.otel-sync';
