@@ -31,7 +31,7 @@ export interface CheckSection {
   run(c: CheckContext): Finding[];
 }
 
-/** `<section>.<id>`: one id space across sections (bedrock and baseline both check root MFA). */
+/** `<section>.<id>`: one id space across sections (a check appears in one section only). */
 export const checkId = (section: string, id: string): string => `${section}.${id}`;
 
 const call = (c: CheckContext, args: string[], region = c.region): AwsResult => aws([...args, '--region', region], c.target);
@@ -188,14 +188,8 @@ export function accessAnalyzer(c: CheckContext): Finding {
     : fail(b, `No active Access Analyzer in ${c.region}, so resources shared outside the account are not flagged.`, `Create one: aws accessanalyzer create-analyzer --analyzer-name prism --type ACCOUNT --region ${c.region}.`);
 }
 
-export function rootMfa(c: CheckContext): Finding {
-  const b = BL('root-mfa', 'Root account MFA', 'CRITICAL');
-  const r = call(c, ['iam', 'get-account-summary']);
-  const map = r.ok ? r.json?.SummaryMap : null;
-  if (!map) return unknown(b, r.ok ? 'no SummaryMap in the response' : r, 'iam:GetAccountSummary');
-  return map.AccountMFAEnabled === 1 ? pass(b, 'The root user has an MFA device.')
-    : fail(b, 'The root user has no MFA device.', 'Sign in as root and add an MFA device (a FIDO2 security key is phishing resistant).');
-}
+// Root MFA is not repeated here: the bedrock section's bedrock.root-mfa reads the same
+// iam get-account-summary, and a second copy listed the same fix twice.
 
 export function budget(c: CheckContext): Finding {
   const b = BL('budget', 'At least one AWS Budget', 'MEDIUM');
@@ -226,8 +220,8 @@ export function ebsEncryption(c: CheckContext): Finding {
 export const baselineSection: CheckSection = {
   name: 'baseline',
   heading: 'Account baseline',
-  ids: ['cloudtrail-multiregion', 'guardduty', 'securityhub', 'access-analyzer', 'root-mfa', 'budget', 's3-account-bpa', 'ebs-default-encryption'],
-  run: (c) => [cloudTrail(c), guardDuty(c), securityHub(c), accessAnalyzer(c), rootMfa(c), budget(c), s3PublicAccess(c), ebsEncryption(c)],
+  ids: ['cloudtrail-multiregion', 'guardduty', 'securityhub', 'access-analyzer', 'budget', 's3-account-bpa', 'ebs-default-encryption'],
+  run: (c) => [cloudTrail(c), guardDuty(c), securityHub(c), accessAnalyzer(c), budget(c), s3PublicAccess(c), ebsEncryption(c)],
 };
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ One function, `connectionDefaults(opts)`, used by every AWS command's action: `e
 
 ## aws check (`cli/src/aws/check.ts`, `run-check.ts`)
 
-- A section is `{name, heading, ids, run(ctx): Finding[]}`; `SECTIONS` is the registry. Check ids are `<section>.<id>` (bedrock and baseline both check root MFA, by different means).
+- A section is `{name, heading, ids, run(ctx): Finding[]}`; `SECTIONS` is the registry. Check ids are `<section>.<id>`. Each check lives in one section: root MFA only in `bedrock` (baseline dropped its copy, which repeated the same fix).
 - `bedrock` calls `auditAccount()`, the scan-account checks moved into `utils/audit-account.ts`. A golden test pins scan-account's output to what main printed. aws check passes `generateCredentialReport: false`, so it never calls `iam generate-credential-report` (the one non-read call in scan-account).
 - `prism-setup` reuses the `enable security --status` rows (`collectSecurityStatus`, split out of `securityStatus`) with a read-only context: write calls throw.
 - INDETERMINATE when a read is denied or fails; never a pass, and never trips `--fail-on`.

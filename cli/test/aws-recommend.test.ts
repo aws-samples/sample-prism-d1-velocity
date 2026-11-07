@@ -15,8 +15,8 @@ import { awsRecommend, buildRecommendations, rank, type Recommendation } from '.
 import { withFakeAws } from './helpers.js';
 import { ACCOUNT, BASELINE_FAIL, IDENTITY, REGION, captureConsole, checkDeps, gitRepo } from './aws-fixtures.js';
 
-const f = (id: string, status: Finding['status'], severity: Finding['severity'] = 'MEDIUM'): Finding => ({
-  id, category: id.split('.')[0], title: id, status, severity, detail: `${id} detail`, remediation: 'r',
+const f = (id: string, status: Finding['status'], severity: Finding['severity'] = 'MEDIUM', detail = `${id} detail`): Finding => ({
+  id, category: id.split('.')[0], title: id, status, severity, detail, remediation: 'r',
 });
 
 function saveCheck(root: string, checks: Finding[], o: { account?: string; region?: string; at?: string } = {}): string {
@@ -53,25 +53,102 @@ test('ranking: severity first, then quick wins, then id; grouped by section in a
     f('baseline.ebs-default-encryption', 'FAIL', 'MEDIUM'),        // quick
     f('baseline.cloudtrail-multiregion', 'FAIL', 'HIGH'),          // medium
     f('baseline.s3-account-bpa', 'FAIL', 'HIGH'),                  // quick
-    f('baseline.root-mfa', 'FAIL', 'CRITICAL'),
+    f('bedrock.root-mfa', 'FAIL', 'CRITICAL'),
     f('baseline.guardduty', 'PASS', 'HIGH'),
     f('bedrock.user-admin-policy', 'FAIL', 'HIGH'),               // large
-    f('bedrock.bedrock-budget', 'FAIL', 'HIGH'),                  // quick
+    f('bedrock.provisioned-throughput', 'FAIL', 'HIGH'),          // medium
   ]);
   assert.deepEqual(groups.map((g) => g.section), ['bedrock', 'baseline']);
-  assert.deepEqual(groups[0].fixes.map((r) => r.id), ['bedrock.bedrock-budget', 'bedrock.user-admin-policy']);
-  assert.deepEqual(groups[1].fixes.map((r) => r.id), ['baseline.root-mfa', 'baseline.s3-account-bpa', 'baseline.cloudtrail-multiregion', 'baseline.ebs-default-encryption']);
+  assert.deepEqual(groups[0].fixes.map((r) => r.id), ['bedrock.root-mfa', 'bedrock.provisioned-throughput', 'bedrock.user-admin-policy']);
+  assert.deepEqual(groups[1].fixes.map((r) => r.id), ['baseline.s3-account-bpa', 'baseline.cloudtrail-multiregion', 'baseline.ebs-default-encryption']);
+  // Numbered across sections, in display order.
+  assert.deepEqual(groups.flatMap((g) => g.fixes.map((x) => x.number)), [1, 2, 3, 4, 5, 6]);
   const r = (severity: Recommendation['severity'], effort: Recommendation['effort'], id: string) => ({ severity, effort, id }) as Recommendation;
   assert.ok(rank(r('LOW', 'quick', 'a'), r('HIGH', 'large', 'b')) > 0);
 });
 
-test('INDETERMINATE becomes a grant-read-access item naming the IAM action; startup-advisor says it is not integrated', () => {
-  const [g, sa] = buildRecommendations([f('baseline.guardduty', 'INDETERMINATE', 'HIGH'), f('startup-advisor.not-integrated', 'INDETERMINATE', 'INFO')]);
+test('INDETERMINATE from access denied becomes a grant item naming the IAM action; startup-advisor says it is not integrated', () => {
+  const [g, sa] = buildRecommendations([
+    f('baseline.guardduty', 'INDETERMINATE', 'HIGH', 'Could not check (AccessDeniedException). Needs guardduty:ListDetectors.'),
+    f('startup-advisor.not-integrated', 'INDETERMINATE', 'INFO'),
+  ]);
   assert.equal(g.fixes.length, 0);
-  assert.equal(g.access[0].kind, 'access');
+  assert.equal(g.access[0].cause, 'access-denied');
   assert.match(g.access[0].title, /^Grant read access to check:/);
   assert.match(g.access[0].steps[0], /guardduty:ListDetectors, guardduty:GetDetector/);
   assert.match(sa.access[0].steps[0], /Not integrated yet/);
+});
+
+test('INDETERMINATE for another reason never says "grant"', () => {
+  const [g] = buildRecommendations([f('baseline.guardduty', 'INDETERMINATE', 'HIGH', 'Could not check (NotStubbed).')]);
+  assert.equal(g.access[0].cause, 'other');
+  assert.doesNotMatch(g.access[0].steps[0], /Grant/);
+});
+
+test('budgets: the three budget checks become one fix that names each check and both filters', () => {
+  const groups = buildRecommendations([
+    f('baseline.budget', 'FAIL', 'MEDIUM'), f('bedrock.bedrock-budget', 'FAIL', 'HIGH'), f('bedrock.marketplace-budget', 'FAIL', 'HIGH'),
+  ]);
+  const all = groups.flatMap((g) => g.fixes);
+  assert.equal(all.length, 1);
+  const b = all[0];
+  assert.equal(b.id, 'budgets');
+  assert.equal(b.severity, 'HIGH');
+  assert.match(b.title, /Create AWS Budgets/);
+  assert.deepEqual(b.covers.map((c) => c.id).sort(), ['baseline.budget', 'bedrock.bedrock-budget', 'bedrock.marketplace-budget']);
+  assert.ok(b.steps.some((s) => /Bedrock/.test(s)) && b.steps.some((s) => /Marketplace/.test(s)) && b.steps.some((s) => /all services/.test(s)));
+});
+
+test('budget-alerting waiting on missing budgets points at the budgets item, not at access', () => {
+  const groups = buildRecommendations([
+    f('bedrock.root-mfa', 'FAIL', 'CRITICAL'),
+    f('bedrock.bedrock-budget', 'FAIL', 'HIGH'),
+    f('bedrock.budget-alerting', 'INDETERMINATE', 'HIGH', 'No COST budget covers Bedrock or Marketplace, so there is no budget whose alerting could be checked.'),
+  ]);
+  const budgets = groups[0].fixes.find((x) => x.id === 'budgets')!;
+  const alert = groups[0].access[0];
+  assert.equal(alert.cause, 'prerequisite');
+  assert.equal(alert.steps[0], `Create the budgets in item ${budgets.number} first, then re-run prism-cli aws check.`);
+  assert.doesNotMatch(alert.steps[0], /Grant/);
+  // Denied listing is still an access problem.
+  const [d] = buildRecommendations([f('bedrock.budget-alerting', 'INDETERMINATE', 'HIGH', 'Could not list budgets (AccessDeniedException), so it is unknown.')]);
+  assert.match(d.access[0].steps[0], /^Grant budgets:ViewBudget/);
+});
+
+test('a missing credential report says how to create one, once for the three checks, with no grant', () => {
+  const detail = 'Credential report unavailable (ReportNotPresent).';
+  const [g] = buildRecommendations(['bedrock.access-key-age', 'bedrock.console-user-no-mfa', 'bedrock.unused-credentials'].map((id) => f(id, 'INDETERMINATE', 'HIGH', detail)));
+  assert.equal(g.access.length, 1);
+  assert.equal(g.access[0].cause, 'no-credential-report');
+  assert.equal(g.access[0].covers.length, 3);
+  assert.match(g.access[0].steps[0], /^No credential report exists yet\. Run `prism-cli bedrock-protection scan-account` once \(it generates one, which is a write\) or `aws iam generate-credential-report`, then re-run aws check\.$/);
+  assert.doesNotMatch(g.access[0].steps[0], /Grant/);
+});
+
+test('the result\'s account and region fill the <account> and <region> placeholders', () => {
+  const groups = buildRecommendations([f('baseline.ebs-default-encryption', 'FAIL'), f('baseline.s3-account-bpa', 'FAIL', 'HIGH'), f('baseline.access-analyzer', 'FAIL')], { account: ACCOUNT, region: REGION });
+  const text = JSON.stringify(groups);
+  assert.doesNotMatch(text, /<region>|<account>/);
+  assert.match(text, /enable-ebs-encryption-by-default --region us-west-2/);
+  assert.match(text, new RegExp(`--account-id ${ACCOUNT}`));
+});
+
+test('root MFA advice carries the generic managed-account caveat; no internal tool is named', () => {
+  assert.ok(ADVICE['bedrock.root-mfa'].steps.some((s) => s === 'In some managed or organization accounts the root user is controlled centrally; check with your account owner.'));
+  const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]));
+  const src = join(import.meta.dirname, '..', 'src');
+  for (const p of [...files(src).filter((x) => x.endsWith('.ts')), join(import.meta.dirname, '..', '..', 'docs', 'BEDROCK-PROTECTION.md')]) {
+    assert.doesNotMatch(readFileSync(p, 'utf8'), /Isengard/, p);
+  }
+});
+
+test('a cached result from before the baseline root-MFA check was dropped still shows one root-MFA fix', () => {
+  const groups = buildRecommendations([f('baseline.root-mfa', 'FAIL', 'CRITICAL'), f('bedrock.root-mfa', 'FAIL', 'CRITICAL')]);
+  const all = groups.flatMap((g) => g.fixes);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].section, 'bedrock');
+  assert.equal(all[0].title, 'Add MFA to the root user');
+  assert.deepEqual(all[0].covers.map((c) => c.id), ['bedrock.root-mfa', 'baseline.root-mfa']);
 });
 
 test('an unmapped id (older result) falls back to the check\'s own remediation', () => {
@@ -89,7 +166,7 @@ test('recommend: reads the latest result for the account and region, makes no AW
   const repo = gitRepo();
   saveCheck(repo, [f('baseline.budget', 'FAIL')], { at: '2026-11-07T09:00:00.000Z' });
   saveCheck(repo, [f('baseline.guardduty', 'FAIL', 'HIGH')], { at: '2026-11-07T10:00:00.000Z' });
-  saveCheck(repo, [f('baseline.root-mfa', 'FAIL', 'CRITICAL')], { at: '2026-11-07T11:00:00.000Z', region: 'eu-west-1' });
+  saveCheck(repo, [f('bedrock.root-mfa', 'FAIL', 'CRITICAL')], { at: '2026-11-07T11:00:00.000Z', region: 'eu-west-1' });
   saveCheck(repo, [f('baseline.securityhub', 'FAIL')], { at: '2026-11-07T12:00:00.000Z', account: '210987654321' });
   const h = checkDeps({ cwd: repo });
   const calls: string[][] = [];
@@ -104,7 +181,8 @@ test('recommend: reads the latest result for the account and region, makes no AW
 
 test('recommend: the aws connect account is the default; --json and --markdown', () => {
   const repo = gitRepo();
-  const path = saveCheck(repo, [f('prism-setup.ci-oidc-role', 'FAIL'), f('baseline.budget', 'INDETERMINATE')]);
+  const path = saveCheck(repo, [f('prism-setup.ci-oidc-role', 'FAIL'), f('baseline.budget', 'INDETERMINATE', 'MEDIUM', 'Could not check (AccessDeniedException).')]);
+  assert.match(path, new RegExp(`/aws-${ACCOUNT}-${REGION}-\\d{8}T\\d+Z-aws-check\\.json$`), 'account checks are named by account and region, not commit');
   const conn = { profile: 'p', region: REGION, account: ACCOUNT, alias: null, verifiedAt: '', scope: 'user' as const, path: '' };
   const h = checkDeps({ cwd: repo });
   assert.equal(awsRecommend({ connection: conn, json: true, markdown: true }, h.deps), 0);
@@ -123,5 +201,6 @@ test('recommend --refresh runs aws check first and reads that result', () => {
   const { value } = captureConsole(() => withFakeAws([...IDENTITY, ...BASELINE_FAIL], () => awsRecommend({ region: REGION, refresh: true }, h.deps)));
   assert.equal(value, 0);
   assert.ok(readdirSync(join(repo, '.prism', 'results')).some((n) => n.endsWith('-aws-check.json')));
-  assert.match(h.lines.join('\n'), /Add MFA to the root user/);
+  assert.match(h.lines.join('\n'), /Turn on S3 Block Public Access for the account/);
+  assert.match(h.lines.join('\n'), new RegExp(`--account-id ${ACCOUNT}`), 'placeholders filled from the result');
 });

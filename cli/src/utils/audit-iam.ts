@@ -103,7 +103,7 @@ export function auditRoot(target?: AwsTarget): Finding[] {
     detail: rootMfa
       ? 'Root user has an MFA device.'
       : 'Root user has NO MFA device. Root cannot be constrained by SCPs or permission boundaries, so a compromised root is unbounded.',
-    remediation: 'Attach a FIDO2 security key to root — phishing resistant, unlike TOTP. In Amazon-internal Isengard accounts root is managed for you and this may not be actionable; confirm before escalating.',
+    remediation: 'Attach a FIDO2 security key to root — phishing resistant, unlike TOTP. In some managed or organization accounts the root user is controlled centrally; check with your account owner before escalating.',
   });
 
   const rootKeys = map.AccountAccessKeysPresent === 1;
@@ -170,7 +170,10 @@ export function auditUsers(target: AwsTarget | undefined, maxKeyAge: number, unu
         id, category: 'users', title,
         status: 'INDETERMINATE', severity: sev,
         detail: `Credential report unavailable (${report.error}).`,
-        remediation: 'Grant iam:GenerateCredentialReport and iam:GetCredentialReport, then re-run.',
+        // Read-only callers never generate the report, so a missing one is not an access problem.
+        remediation: !generateReport && report.error === 'ReportNotPresent'
+          ? 'No credential report exists yet. Run `prism-cli bedrock-protection scan-account` once (it generates one, which is a write) or `aws iam generate-credential-report`, then re-run aws check.'
+          : 'Grant iam:GenerateCredentialReport and iam:GetCredentialReport, then re-run.',
       });
     }
     return out;

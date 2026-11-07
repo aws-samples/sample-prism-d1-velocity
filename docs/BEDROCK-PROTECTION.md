@@ -396,8 +396,8 @@ key. LLMjacking is the most expensive consequence of leaking one, not a differen
 
 **Root is CRITICAL because it cannot be constrained.** SCPs and permission boundaries do not apply
 to the root user, so a compromised root is unbounded by construction. Prefer a FIDO2 security key
-over TOTP — it is phishing resistant. In Amazon-internal Isengard accounts root is managed for you
-and this finding may not be actionable; confirm before escalating.
+over TOTP — it is phishing resistant. In some managed or organization accounts the root user is
+controlled centrally; check with your account owner before escalating.
 
 **Key age is the strongest single predictor of exposure.** An old key has had more opportunities to
 leak, and is rarely missed when it does. **Idle** keys are worse still: a credential nobody uses is

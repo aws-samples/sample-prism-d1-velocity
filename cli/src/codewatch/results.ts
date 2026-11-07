@@ -254,6 +254,10 @@ export function compactTimestamp(iso: string): string {
  * no commit yet (pre-commit).
  */
 export function resultFileName(r: PrismResult): string {
+  // An account check is not tied to a commit: `aws-<account>-<region>-<time>-aws-check.json`.
+  if (r.kind === 'aws-check' && r.aws_check) {
+    return `aws-${safePart(r.aws_check.account)}-${safePart(r.aws_check.region)}-${compactTimestamp(r.started_at)}-${safePart(r.kind)}.json`;
+  }
   const id = r.commit ? safePart(r.commit.slice(0, 12)) : r.tree ? `tree-${safePart(r.tree.slice(0, 12))}` : 'nocommit';
   return `${id}-${compactTimestamp(r.started_at)}-${safePart(r.hook)}-${safePart(r.kind)}.json`;
 }

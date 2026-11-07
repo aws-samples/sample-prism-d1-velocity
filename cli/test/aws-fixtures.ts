@@ -24,7 +24,6 @@ export const BASELINE_PASS: AwsStub[] = [
   { match: ['guardduty', 'get-detector'], stdout: { Status: 'ENABLED' } },
   { match: ['securityhub', 'describe-hub'], stdout: { HubArn: 'h', SubscribedAt: '2026-01-01' } },
   { match: ['accessanalyzer', 'list-analyzers'], stdout: { analyzers: [{ name: 'acct', type: 'ACCOUNT', status: 'ACTIVE' }] } },
-  { match: ['iam', 'get-account-summary'], stdout: { SummaryMap: { AccountMFAEnabled: 1, AccountAccessKeysPresent: 0 } } },
   { match: ['budgets', 'describe-budgets'], stdout: { Budgets: [{ BudgetName: 'monthly' }] } },
   { match: ['s3control', 'get-public-access-block'], stdout: { PublicAccessBlockConfiguration: { BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: true, RestrictPublicBuckets: true } } },
   { match: ['ec2', 'get-ebs-encryption-by-default'], stdout: { EbsEncryptionByDefault: true } },
@@ -35,7 +34,6 @@ export const BASELINE_FAIL: AwsStub[] = [
   { match: ['guardduty', 'list-detectors'], raw: '' },
   { match: ['securityhub', 'describe-hub'], error: 'InvalidAccessException' },
   { match: ['accessanalyzer', 'list-analyzers'], stdout: { analyzers: [] } },
-  { match: ['iam', 'get-account-summary'], stdout: { SummaryMap: { AccountMFAEnabled: 0 } } },
   { match: ['budgets', 'describe-budgets'], raw: '' },
   { match: ['s3control', 'get-public-access-block'], error: 'NoSuchPublicAccessBlockConfiguration' },
   { match: ['ec2', 'get-ebs-encryption-by-default'], stdout: { EbsEncryptionByDefault: false } },
@@ -43,7 +41,7 @@ export const BASELINE_FAIL: AwsStub[] = [
 
 export const BASELINE_DENIED: AwsStub[] = [
   denied('cloudtrail'), denied('guardduty'), denied('securityhub'), denied('accessanalyzer'),
-  denied('iam', 'get-account-summary'), denied('budgets'), denied('s3control'), denied('ec2'),
+  denied('budgets'), denied('s3control'), denied('ec2'),
 ];
 
 const param = (name: string, value: string): AwsStub => ({ match: ['ssm', 'get-parameter', `/prism/continuum/${name}`], stdout: { Parameter: { Value: value } } });

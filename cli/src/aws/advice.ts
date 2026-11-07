@@ -19,7 +19,20 @@ export interface Advice {
   needs?: string[];
   /** Replaces the generic "grant read access" item when INDETERMINATE means something else. */
   indeterminate?: string;
+  /** Checks with the same key are one fix in aws recommend (default: the check id). */
+  key?: string;
+  /** The key of a fix this check can only be judged after (INDETERMINATE for that reason points at it). */
+  prerequisite?: string;
 }
+
+/** Title and wording for a key that several checks share. `first` names the fix when another check waits on it. */
+export const GROUPS: Record<string, { title: string; why: string; first: string }> = {
+  budgets: {
+    title: 'Create AWS Budgets: one for all spend, plus filters for Bedrock and AWS Marketplace',
+    why: 'Without budgets unexpected spend raises no alert, and Bedrock\'s third-party models bill under Marketplace, so a Bedrock-only filter misses them.',
+    first: 'Create the budgets',
+  },
+};
 
 const IAM = 'https://docs.aws.amazon.com/IAM/latest/UserGuide';
 const COST = 'https://docs.aws.amazon.com/cost-management/latest/userguide';
@@ -29,7 +42,10 @@ const CREDENTIAL_REPORT = ['iam:GetCredentialReport (the report must exist: run 
 
 const rootMfa: Advice = {
   title: 'Add MFA to the root user', why: 'Root cannot be limited by SCPs or permission boundaries; without MFA a leaked root password is a full account takeover.',
-  steps: ['Sign in as the root user.', 'Security credentials > Assign MFA device; prefer a FIDO2 security key.'],
+  steps: [
+    'Sign in as the root user.', 'Security credentials > Assign MFA device; prefer a FIDO2 security key.',
+    'In some managed or organization accounts the root user is controlled centrally; check with your account owner.',
+  ],
   doc: `${IAM}/enable-mfa-for-root.html`, effort: 'quick', needs: ['iam:GetAccountSummary'],
 };
 
@@ -69,17 +85,17 @@ export const ADVICE: Record<string, Advice> = {
   'bedrock.bedrock-budget': {
     title: 'Add a budget that covers Bedrock', why: 'Runaway inference from a stolen key has no ceiling and raises no alert.',
     steps: ['Billing > Budgets > Create a monthly COST budget filtered on Service contains "Bedrock".', 'Alert at 50/80/100% to an SNS topic.'],
-    doc: `${COST}/budgets-create.html`, effort: 'quick', needs: ['budgets:ViewBudget'],
+    doc: `${COST}/budgets-create.html`, effort: 'quick', needs: ['budgets:ViewBudget'], key: 'budgets',
   },
   'bedrock.marketplace-budget': {
     title: 'Add a budget that covers AWS Marketplace (Bedrock Edition models)', why: 'Third-party models bill under Marketplace, so a Bedrock-only budget misses them.',
     steps: ['Create a second COST budget filtered on Service = AWS Marketplace, or one Cost Category covering both.'],
-    doc: `${COST}/budgets-create.html`, effort: 'quick', needs: ['budgets:ViewBudget'],
+    doc: `${COST}/budgets-create.html`, effort: 'quick', needs: ['budgets:ViewBudget'], key: 'budgets',
   },
   'bedrock.budget-alerting': {
     title: 'Make the Bedrock budgets notify someone', why: 'A budget with no subscriber records the overspend without telling anyone.',
     steps: ['Add 50/80/100% notification thresholds with an SNS topic (or email) subscriber to each covering budget.'],
-    doc: `${COST}/budgets-sns-policy.html`, effort: 'quick', needs: ['budgets:ViewBudget'],
+    doc: `${COST}/budgets-sns-policy.html`, effort: 'quick', needs: ['budgets:ViewBudget'], prerequisite: 'budgets',
   },
   'bedrock.cost-explorer-enabled': {
     title: 'Enable Cost Explorer', why: 'Anomaly detection and cost checks need it, and it stays off until someone turns it on.',
@@ -165,11 +181,10 @@ export const ADVICE: Record<string, Advice> = {
     steps: ['aws accessanalyzer create-analyzer --analyzer-name prism --type ACCOUNT --region <region>'],
     doc: `${IAM}/access-analyzer-getting-started.html`, effort: 'quick', needs: ['access-analyzer:ListAnalyzers'],
   },
-  'baseline.root-mfa': rootMfa,
   'baseline.budget': {
     title: 'Create an AWS Budget', why: 'Without a budget, unexpected spend raises no alert.',
-    steps: ['Billing > Budgets > Create a monthly cost budget with 80% and 100% alerts.'],
-    doc: `${COST}/budgets-create.html`, effort: 'quick', needs: ['budgets:ViewBudget'],
+    steps: ['Billing > Budgets > Create a monthly cost budget for all services with 80% and 100% alerts.'],
+    doc: `${COST}/budgets-create.html`, effort: 'quick', needs: ['budgets:ViewBudget'], key: 'budgets',
   },
   'baseline.s3-account-bpa': {
     title: 'Turn on S3 Block Public Access for the account', why: 'One misconfigured bucket policy or ACL is otherwise enough to publish data.',

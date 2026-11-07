@@ -7,7 +7,7 @@
 
   ❌ [CRITICAL] Root account MFA
      Root user has NO MFA device. Root cannot be constrained by SCPs or permission boundaries, so a compromised root is unbounded.
-     → Attach a FIDO2 security key to root — phishing resistant, unlike TOTP. In Amazon-internal Isengard accounts root is managed for you and this may not be actionable; confirm before escalating.
+     → Attach a FIDO2 security key to root — phishing resistant, unlike TOTP. In some managed or organization accounts the root user is controlled centrally; check with your account owner before escalating.
 
   ✅ [CRITICAL] Root access keys
      No root access keys.

@@ -44,7 +44,9 @@ const assertReadOnly = (calls: string[][]) => {
 
 test('baseline: every check passes on a configured account', () => {
   const { findings, calls } = runSection(baselineSection, BASELINE_PASS);
-  assert.equal(findings.length, 8);
+  assert.equal(findings.length, 7);
+  assert.ok(!findings.some((x) => /root-mfa/.test(x.id)), 'root MFA is checked once, in bedrock');
+  assert.ok(!calls.some((c) => c.includes('get-account-summary')));
   assertAll(findings, 'PASS');
   assertReadOnly(calls);
   // The trail status is read in the trail's home region, not the checked one.
@@ -108,6 +110,9 @@ test('bedrock: the scan-account checks, prefixed, with no credential report gene
   assert.equal(statuses(findings)['bedrock.root-mfa'], 'FAIL');
   assert.equal(statuses(findings)['bedrock.access-key-age'], 'INDETERMINATE');
   assert.ok(!calls.some((c) => c.includes('generate-credential-report')), 'aws check must not generate a credential report');
+  const report = findings.find((x) => x.id === 'bedrock.access-key-age')!;
+  assert.match(report.remediation!, /^No credential report exists yet\. Run `prism-cli bedrock-protection scan-account` once/);
+  assert.doesNotMatch(report.remediation!, /Grant/);
 });
 
 test('startup-advisor: a placeholder that is INDETERMINATE, not a pass', () => {
@@ -140,8 +145,9 @@ test('awsCheck: read-only notice first, identity header, result saved with per-s
   assert.equal(r.kind, 'aws-check');
   assert.equal(r.aws_check!.account, ACCOUNT);
   assert.equal(r.aws_check!.region, REGION);
-  assert.deepEqual(r.aws_check!.section_counts, { baseline: { pass: 0, fail: 8, indeterminate: 0 }, 'startup-advisor': { pass: 0, fail: 0, indeterminate: 1 } });
-  assert.equal(r.aws_check!.fail_by_severity.CRITICAL, 1);
+  assert.deepEqual(r.aws_check!.section_counts, { baseline: { pass: 0, fail: 7, indeterminate: 0 }, 'startup-advisor': { pass: 0, fail: 0, indeterminate: 1 } });
+  assert.equal(r.aws_check!.fail_by_severity.HIGH, 3);
+  assert.match(value.path!, new RegExp(`/\\.prism/results/aws-${ACCOUNT}-${REGION}-\\d{8}T\\d+Z-aws-check\\.json$`));
   assert.equal(r.aws_check!.profile_source, 'aws connect, user');
 });
 
@@ -151,12 +157,13 @@ test('awsCheck: --fail-on exits 1 only on FAIL at or above it; --json keeps stdo
     const c = captureConsole(() => withFakeAws([...IDENTITY, ...stubs], () => awsCheck({ region: REGION, section: ['baseline'], failOn, json }, h.deps)));
     return { ...c, h };
   };
-  assert.equal(run('critical', BASELINE_FAIL).value.code, 1);
-  assert.equal(run('critical', BASELINE_DENIED).value.code, 0, 'INDETERMINATE never breaches --fail-on');
+  assert.equal(run('high', BASELINE_FAIL).value.code, 1);
+  assert.equal(run('critical', BASELINE_FAIL).value.code, 0, 'no CRITICAL in the baseline section');
+  assert.equal(run('high', BASELINE_DENIED).value.code, 0, 'INDETERMINATE never breaches --fail-on');
   const j = run('none', BASELINE_PASS, true);
   const parsed = JSON.parse(j.out);
   assert.equal(parsed.account, ACCOUNT);
-  assert.equal(parsed.findings.length, 8);
+  assert.equal(parsed.findings.length, 7);
   assert.match(j.h.errs[0], /^Read-only/);
 });
 
