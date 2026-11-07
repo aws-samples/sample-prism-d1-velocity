@@ -54,6 +54,8 @@ export interface SecurityPentestRow {
   truncated: boolean;
   reason: string | null;
   overview: string | null;
+  /** The last teardown left the stack up; --cleanup retries it. */
+  teardown_failed: { at: string; reason: string } | null;
   pending: boolean;
   stale: boolean;
 }
@@ -133,13 +135,15 @@ export function latestSecurityReview(results: PrismResult[]): PrismResult | null
 export function latestPentest(results: PrismResult[]): PrismResult | null {
   const byJob = new Map<string, PrismResult>();
   for (const r of results) {
-    if (r.kind !== 'security-pentest' || !r.pentest?.job_id) continue;
-    const prev = byJob.get(r.pentest.job_id);
+    // A run that never started a job (the app never became healthy) has no job id but may still have a stack up.
+    const key = r.kind === 'security-pentest' ? (r.pentest?.job_id || r.pentest?.stack) : null;
+    if (!key) continue;
+    const prev = byJob.get(key);
     if (prev && (prev.status === 'pending') !== (r.status === 'pending')) {
-      if (prev.status === 'pending') byJob.set(r.pentest.job_id, r);
+      if (prev.status === 'pending') byJob.set(key, r);
       continue;
     }
-    if (!prev || r.finished_at > prev.finished_at) byJob.set(r.pentest.job_id, r);
+    if (!prev || r.finished_at > prev.finished_at) byJob.set(key, r);
   }
   const all = [...byJob.values()].sort((a, b) => b.started_at.localeCompare(a.started_at));
   return all[0] ?? null;
@@ -175,6 +179,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         target_host: p.pentest.target_host, started_at: p.started_at, finished_at: p.finished_at,
         counts: p.pentest.counts || {}, findings: pf.slice(0, MAX_PANEL_FINDINGS), truncated: pf.length > MAX_PANEL_FINDINGS,
         reason: p.reason ?? null, overview: p.pentest.overview ?? null,
+        teardown_failed: p.pentest.teardown_failed ?? null,
         pending: p.status === 'pending',
         stale: p.status === 'pending' && now.getTime() - Date.parse(p.started_at) > PENTEST_PENDING_STALE_MS,
       });

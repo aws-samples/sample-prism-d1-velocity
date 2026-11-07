@@ -129,6 +129,12 @@ export interface PentestInfo {
   slug?: string | null;
   /** When the environment is set to auto-expire (the prism:expires-at tag), ISO. */
   expires_at?: string | null;
+  /** The agent ENIs' security group id: teardown waits for its ENIs to drain before destroying the stack. */
+  agent_security_group_id?: string | null;
+  /** The app container's log group, for debugging hints. */
+  app_log_group?: string | null;
+  /** Set when the last teardown left the stack up (destroy failed twice); --cleanup retries it. */
+  teardown_failed?: { at: string; reason: string } | null;
   service_created_at?: string | null;
   service_updated_at?: string | null;
   service_duration_s?: number | null;

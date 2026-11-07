@@ -423,8 +423,10 @@ function securityPentestRows(s, sec) {
       if (!shown.length) pills.append(pill('ok', 'no findings'));
       for (const k of shown) pills.append(riskPill(k, counts[k] + ' ' + k.toLowerCase()));
     }
+    if (r.teardown_failed) pills.append(pill('error', 'teardown failed'));
     b.append(pills);
     if (r.reason) b.append(el('p', { class: 'note' }, txt(r.reason)));
+    if (r.teardown_failed) b.append(el('p', { class: 'note' }, 'The environment is still up (' + txt(r.teardown_failed.reason) + '). Retry with ', el('code', {}, 'prism-cli security pentest --cleanup'), '.'));
     if (r.findings.length) {
       const list = el('ul', { class: 'sec-findings' });
       for (const f of r.findings) {
