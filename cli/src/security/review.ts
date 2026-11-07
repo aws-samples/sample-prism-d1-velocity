@@ -154,7 +154,7 @@ export function resolveSetup(ctx: Ctx, id: Identity, repo: RepoCtx): Setup {
   throw new Abort(`No Security Agent code review for ${repo.id} in account ${id.account}, region ${ctx.opts.region}: ${NOT_SET_UP}.`);
 }
 
-function begin(input: SecurityOptions, deps: Deps, readOnly: boolean, say: (l?: string) => void): Ctx | null {
+export function begin(input: SecurityOptions, deps: Deps, readOnly: boolean, say: (l?: string) => void): Ctx | null {
   const r = resolveRegion(input, deps);
   if (!r) { say(`Error: ${NO_REGION_MESSAGE}`); return null; }
   const opts: Resolved = { ...input, region: r.region, regionSource: r.source };
@@ -188,14 +188,14 @@ export function resolveRepoRoot(deps: Pick<Deps, 'git'> & { cwd(): string }, pat
  * The repo root, checked before anything else runs: a wrong directory prints
  * one Error line and makes no AWS call (no notice, no region lookup, no STS).
  */
-function checkedRoot(deps: ReviewDeps, path: string | undefined, say: (l?: string) => void): string | null {
+export function checkedRoot(deps: ReviewDeps, path: string | undefined, say: (l?: string) => void): string | null {
   try { return resolveRepoRoot(deps, path); } catch (e) {
     if (e instanceof Abort) { say(`Error: ${redact(e.message)}`); return null; }
     throw e;
   }
 }
 
-function needRepo(ctx: Ctx, root: string): RepoCtx {
+export function needRepo(ctx: Ctx, root: string): RepoCtx {
   const repo = resolveRepo(ctx.opts, ctx.deps, root);
   if ('error' in repo) throw new Abort(repo.error);
   return repo;
@@ -234,7 +234,7 @@ export function getJob(ctx: Ctx, setup: Setup, jobId: string): JobInfo {
 }
 
 /** Every page of `--max-items` results, following NextToken (the CLI's) or nextToken (the API's). */
-function paged(ctx: Ctx, args: string[], key: string): any[] {
+export function paged(ctx: Ctx, args: string[], key: string): any[] {
   const out: any[] = [];
   let token: string | undefined;
   for (let page = 0; page < 1000; page++) {
@@ -314,7 +314,7 @@ export function sortFindings(fs: ReviewFinding[]): ReviewFinding[] {
   return [...fs].sort((a, b) => riskRank(b.riskLevel) - riskRank(a.riskLevel) || a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0));
 }
 
-function shortText(s: string): string {
+export function shortText(s: string): string {
   const one = redact(s).replace(/\s+/g, ' ').trim();
   return one.length > DESCRIPTION_CHARS ? `${one.slice(0, DESCRIPTION_CHARS - 1)}...` : one;
 }
@@ -434,14 +434,14 @@ export function failOnHit(fs: ReviewFinding[], failOn: string | undefined): bool
   return fs.some((f) => riskRank(f.riskLevel) >= min && riskRank(f.riskLevel) > 0);
 }
 
-function parseLevel(flag: string, v: string | undefined): string | undefined {
+export function parseLevel(flag: string, v: string | undefined): string | undefined {
   if (v === undefined) return undefined;
   if (!(FAIL_ON_LEVELS as readonly string[]).includes(v.toLowerCase())) throw new Abort(`${flag} must be one of: ${FAIL_ON_LEVELS.join(', ')}`);
   return v.toLowerCase();
 }
 
-function parseTimeout(v: string | number | undefined): number {
-  if (v === undefined) return DEFAULT_TIMEOUT_MIN;
+export function parseTimeout(v: string | number | undefined, fallback: number = DEFAULT_TIMEOUT_MIN): number {
+  if (v === undefined) return fallback;
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) throw new Abort(`--timeout must be a positive number of minutes, got "${v}"`);
   return n;
@@ -453,7 +453,19 @@ const fetchLaterHint = (jobId: string) => `The job keeps running in AWS. Fetch i
 // Polling
 // ---------------------------------------------------------------------------
 
-export type PollOutcome = { kind: 'done'; job: JobInfo } | { kind: 'timeout'; job: JobInfo } | { kind: 'interrupted'; job: JobInfo };
+export type PollOutcome<J = JobInfo> = { kind: 'done'; job: J } | { kind: 'timeout'; job: J } | { kind: 'interrupted'; job: J };
+
+/** What a poll loop needs to know about one job: how to read it, and what to tell the user when it cannot. */
+export interface Poller<J> {
+  /** The read call (`batch-get-...-jobs`). */
+  args: string[];
+  parse(json: any): J;
+  /** Printed after a final poll failure: how to fetch the results later. */
+  hint: string;
+}
+
+/** The status fields every polled job has. */
+export interface PolledJob { status: string; step?: string | null }
 
 const mmss = (ms: number) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 
@@ -466,16 +478,16 @@ const NOT_TRANSIENT = /ResourceNotFound|ValidationException|NotFound/;
  * non-zero exit that is not about credentials, permissions or the request).
  * A final failure aborts with the fetch-later hint. null: Ctrl-C during a backoff.
  */
-async function getJobRetrying(ctx: Ctx, setup: Setup, jobId: string, signal: AbortSignal): Promise<JobInfo | null> {
+async function getJobRetrying<J>(ctx: Ctx, p: Poller<J>, signal: AbortSignal): Promise<J | null> {
   const deps = ctx.deps as ReviewDeps;
-  const args = jobArgs(setup, jobId);
+  const args = p.args;
   for (let attempt = 0; ; attempt++) {
     const r = ctx.deps.aws(args, ctx.opts.region);
-    if (r.ok) return parseJob(r.json, setup, jobId);
+    if (r.ok) return p.parse(r.json);
     const why = explainAwsError(args, r.raw, ctx.cliVersion);
     if (why.kind !== 'other' || NOT_TRANSIENT.test(r.raw) || attempt >= POLL_RETRIES) {
       const tries = attempt ? ` (after ${attempt} ${attempt === 1 ? 'retry' : 'retries'})` : '';
-      throw new Abort(`${why.message}${tries}\n${fetchLaterHint(jobId)}`);
+      throw new Abort(`${why.message}${tries}\n${p.hint}`);
     }
     const wait = RETRY_FIRST_MS * 2 ** attempt;
     if (deps.isTTY) deps.ticker('');
@@ -485,8 +497,14 @@ async function getJobRetrying(ctx: Ctx, setup: Setup, jobId: string, signal: Abo
   }
 }
 
-/** Polls until a terminal state, the timeout, or Ctrl-C (which never cancels the job). */
-export async function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin: number): Promise<PollOutcome> {
+/** Polls a code review job until a terminal state, the timeout, or Ctrl-C (which never cancels the job). */
+export function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin: number): Promise<PollOutcome> {
+  const jobId = first.codeReviewJobId;
+  return pollUntilDone(ctx, { args: jobArgs(setup, jobId), parse: (j) => parseJob(j, setup, jobId), hint: fetchLaterHint(jobId) }, first, timeoutMin);
+}
+
+/** Polls any job until a terminal state, the timeout, or Ctrl-C (which never cancels the job). */
+export async function pollUntilDone<J extends PolledJob>(ctx: Ctx, p: Poller<J>, first: J, timeoutMin: number): Promise<PollOutcome<J>> {
   const deps = ctx.deps as ReviewDeps;
   const start = deps.now().getTime();
   const limit = timeoutMin * 60_000;
@@ -502,7 +520,7 @@ export async function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin
       await deps.sleep(Math.min(delay, limit - elapsed), ac.signal);
       if (interrupted) return { kind: 'interrupted', job };
       delay = Math.min(delay * 2, POLL_MAX_MS);
-      const next = await getJobRetrying(ctx, setup, job.codeReviewJobId, ac.signal);
+      const next = await getJobRetrying(ctx, p, ac.signal);
       if (!next) return { kind: 'interrupted', job };
       job = next;
       const line = `[${mmss(deps.now().getTime() - start)}] ${job.status}${job.step ? ` (${job.step})` : ''}`;
@@ -519,7 +537,7 @@ export async function pollJob(ctx: Ctx, setup: Setup, first: JobInfo, timeoutMin
 // Scope and upload
 // ---------------------------------------------------------------------------
 
-interface Snapshot { file: string; key: string }
+export interface Snapshot { file: string; key: string }
 /**
  * `context` is `git archive HEAD` for the code review's own source asset
  * (repo/<slug>/latest.zip). A diff job reads it as the code around the patch,
@@ -574,7 +592,7 @@ function buildScope(ctx: Ctx, repo: RepoCtx, full: boolean): Scope {
 }
 
 /** Uploads a snapshot unless the object already has the same MD5. Returns whether it uploaded. */
-function upload(ctx: Ctx, bucket: string, s: Snapshot): boolean {
+export function upload(ctx: Ctx, bucket: string, s: Snapshot): boolean {
   const sum = md5(s.file);
   const head = call(ctx, ['s3api', 'head-object', '--bucket', bucket, '--key', s.key], ['404', 'NotFound', 'NoSuchKey']);
   if (head.ok && String(head.json?.ETag || '').replace(/"/g, '') === sum) return false;
