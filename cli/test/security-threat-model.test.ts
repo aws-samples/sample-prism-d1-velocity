@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
+import { run } from '../src/utils/exec.js';
 import { POLL_FIRST_MS, type ReviewDeps } from '../src/security/review.js';
 import {
   DEFAULT_TM_TIMEOUT_MIN, docLimitWarnings, firstParagraph, securityThreatModel, securityThreats, strideLabel, THREAT_MODEL_NOTICE, TINY_DOCS_BYTES, tinyDocsHint, titlePrefix,
@@ -72,9 +73,20 @@ interface H {
   out: () => string; writes: () => string[]; results: () => any[]; cleanup: () => void;
 }
 
-function harness(s: State, o: { tree?: Tree; cwd?: (repo: string) => string; interruptOnSleep?: number } = {}): H {
+/** `realGit`: the repo is a real git repo with `tree` committed, and the scope docs are written by real git. */
+function harness(s: State, o: { tree?: Tree; cwd?: (repo: string) => string; interruptOnSleep?: number; realGit?: boolean } = {}): H {
   const repo = mkdtempSync(join(tmpdir(), 'prism-tm-repo-'));
   const tree = o.tree ?? DEFAULT_TREE;
+  if (o.realGit) {
+    const g = (...a: string[]) => { const r = run('git', ['-C', repo, ...a]); if (!r.ok) throw new Error(`git ${a.join(' ')}: ${r.stderr}`); };
+    g('init', '-q');
+    for (const [p, e] of Object.entries(tree)) {
+      if (typeof e !== 'string') continue;
+      mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), e);
+    }
+    g('add', '-A');
+    g('-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'docs');
+  }
   const calls: string[][] = []; const lines: string[] = []; const errs: string[] = []; const outs: string[] = []; const sleeps: number[] = [];
   let clock = Date.parse('2026-11-07T10:00:00Z');
   let polls = 0; let interrupt: (() => void) | null = null;
@@ -140,11 +152,15 @@ function harness(s: State, o: { tree?: Tree; cwd?: (repo: string) => string; int
         const isDir = Object.keys(tree).some((k) => k.startsWith(p + '/'));
         return { ok: true, stdout: isDir ? `040000 tree ${'e'.repeat(40)}\t${p}` : '', stderr: '' };
       }
-      if (has('show')) {
-        const file = a.find((x) => x.startsWith('--output='))!.slice('--output='.length);
-        const e = entry(a[a.length - 1].replace(/^HEAD:/, ''));
-        if (!e) return { ok: false, stdout: '', stderr: 'fatal: path not in HEAD' };
-        writeFileSync(file, e.content); return { ok: true, stdout: '', stderr: '' };
+      if (has('restore')) {
+        if (o.realGit) return run('git', a);
+        const dir = a.find((x) => x.startsWith('--work-tree='))!.slice('--work-tree='.length);
+        for (const spec of a.slice(a.indexOf('--') + 1)) {
+          const p = spec.replace(/^:\(top,literal\)/, ''); const e = entry(p);
+          if (!e) return { ok: false, stdout: '', stderr: `error: pathspec '${spec}' did not match any file(s) known to git` };
+          mkdirSync(dirname(join(dir, p)), { recursive: true }); writeFileSync(join(dir, p), e.content);
+        }
+        return { ok: true, stdout: '', stderr: '' };
       }
       if (has('archive')) { writeFileSync(arg(a, '-o'), ZIP); return { ok: true, stdout: '', stderr: '' }; }
       if (has('cat-file')) {
@@ -451,6 +467,22 @@ test('threat-model: tiny scope docs warn up front, and again when the job finds 
     assert.doesNotMatch(big.out(), /scope docs are only/);
   } finally { big.cleanup(); }
   assert.equal(tinyDocsHint([]), null, '--no-docs: the source alone, no warning');
+});
+
+test('threat-model: a committed doc is written by real git at its size; the pre-upload warning and the upload use that content', async () => {
+  const note = `${'n'.repeat(78)}\n`;
+  assert.equal(Buffer.byteLength(note), 79);
+  const s = state({ threats: [] });
+  const h = harness(s, { tree: { 'src/auth.ts': 'x', 'docs/test-note.md': note }, realGit: true });
+  try {
+    assert.equal(await securityThreatModel(tm({ doc: ['docs/test-note.md'] }), h.deps), 0);
+    const warn = /Warning: the scope docs are only (\d+) bytes in total \(docs\/test-note\.md\)/g;
+    assert.deepEqual([...h.out().matchAll(warn)].map((m) => m[1]), ['79', '79'], h.out());
+    assert.ok(h.out().indexOf('Warning: the scope docs') < h.out().indexOf('Uploaded '), 'warned before the upload');
+    // The uploaded object is the doc's content, not an empty file.
+    assert.equal(s.objects[`${PREFIX}/docs/docs/test-note.md`], createHash('md5').update(note).digest('hex'));
+    assert.equal(run('git', ['-C', h.repo, 'status', '--porcelain', '--untracked-files=no']).stdout, '', 'working tree and index untouched');
+  } finally { h.cleanup(); }
 });
 
 test('threats: read-only, completes the pending record in place with its commit and docs', async () => {
