@@ -133,6 +133,7 @@ All three are read-only against AWS. `aws connect` saves a profile name and regi
 | **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the attribution pipeline, metrics catalog with known gaps, alarms, dashboard design decisions |
 | **[Bedrock Protection](docs/BEDROCK-PROTECTION.md)** | Engineers and security leaders | Layered defence against LLMjacking: gitleaks in CI and full-history repo scans, IAM credential hygiene, Bedrock spend guardrails across both billing surfaces |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
+| **[prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md)** | Engineering managers | The local prism-cli commands by job, what each costs and touches in AWS, safety defaults, open questions |
 | **[Assessment Guide](assessment/ASSESSMENT_GUIDE.md)** | Solutions Architects | Scanner categories, interview questions and rubrics, scoring, qualification matrix |
 | **[Customer Onboarding](assessment/ONBOARDING.md)** | Solutions Architects | Onboarding tracks, email templates, per-track pre-work |
 | **[Roadmap](docs/ROADMAP.md)** | Contributors | Prioritized backlog |
