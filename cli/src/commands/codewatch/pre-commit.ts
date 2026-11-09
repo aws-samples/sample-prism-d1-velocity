@@ -1,13 +1,15 @@
 import { run } from '../../utils/exec.js';
 import { gitleaksInstallHint, runPreCommit } from '../../codewatch/gitleaks.js';
 import { REASON_GITLEAKS_MISSING } from '../../codewatch/results.js';
+import { isOptedOut } from '../../codewatch/hooks.js';
 
 /** Called by the pre-commit hook installed by `prism-cli enable codewatch`. */
 export default {
   description: 'pre-commit hook: gitleaks scan of staged changes (blocks on a finding; installed by enable codewatch)',
   action() {
     const top = run('git', ['rev-parse', '--show-toplevel']);
-    if (!top.ok) process.exit(0);
+    // Hooks installed before 1.4.1 do not check the opt-out themselves.
+    if (!top.ok || isOptedOut(top.stdout)) process.exit(0);
     const out = runPreCommit(top.stdout);
     const r = out.result;
     if (r.status === 'findings') {

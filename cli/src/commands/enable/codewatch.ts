@@ -42,7 +42,7 @@ async function chooseReviewer(flag: string | undefined, existing: string | undef
 }
 
 export default {
-  description: 'Install codewatch git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code)',
+  description: `Install codewatch git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code). Turn them off in a repo with "git config ${OPT_OUT_KEY} false"`,
   options: [
     { flags: '--reviewer <tool>', description: `Team default reviewer: ${REVIEWER_IDS.join(' | ')} (skips detection)` },
     { flags: '--uninstall', description: 'Remove the hooks and restore any hooks they replaced' },
@@ -119,6 +119,7 @@ export default {
     console.log('  pre-push    reviews the branch diff against its upstream. Report only; never blocks.');
     console.log(`  Results     .prism/results/*.json (gitignored)`);
     console.log(`  Override    git config ${REVIEWER_GIT_CONFIG_KEY} <kiro|claude>   (this clone only)`);
+    console.log(`  Opt out     git config ${OPT_OUT_KEY} false   (this repo; add --global for every repo)`);
     console.log('  Remove      prism-cli enable codewatch --uninstall');
   },
 };

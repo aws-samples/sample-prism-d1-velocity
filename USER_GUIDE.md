@@ -519,7 +519,7 @@ exit code passes through. Results are excluded locally through `.git/info/exclud
 | Option | Effect |
 |---|---|
 | `--force` | With `--global` only. If another tool already set a global `core.hooksPath`, the install is refused; `--force` saves that value, replaces it, and runs that directory's hooks after codewatch. `--global --uninstall` restores it |
-| `git config prism.codewatch false` | Run in a repo to opt it out of the global hooks. Its own `.git/hooks` still run. Applies to `--global` only; for a per-repo install, uninstall instead |
+| `git config prism.codewatch false` | Run in a repo to opt it out of codewatch, with the per-repo or the global hooks. Its own `.git/hooks` still run. `git config --global prism.codewatch false` turns codewatch off everywhere unless a repo sets it back to `true` |
 
 Running `enable codewatch` in a repo that the global hooks already cover installs the per-repo hooks
 into `.git/hooks`. git does not run them while the global `core.hooksPath` is set, so nothing runs

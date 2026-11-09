@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { run } from '../../utils/exec.js';
 import { runPrePush } from '../../codewatch/prepush.js';
+import { isOptedOut } from '../../codewatch/hooks.js';
 
 /**
  * Called by the pre-push hook installed by `prism-cli enable codewatch`.
@@ -12,7 +13,8 @@ export default {
   action(opts: { remote?: string }) {
     try {
       const top = run('git', ['rev-parse', '--show-toplevel']);
-      if (top.ok) {
+      // Hooks installed before 1.4.1 do not check the opt-out themselves.
+      if (top.ok && !isOptedOut(top.stdout)) {
         let stdin = '';
         try { stdin = readFileSync(0, 'utf8'); } catch { /* no stdin */ }
         runPrePush({ repoRoot: top.stdout, stdin, remote: opts.remote || null });

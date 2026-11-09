@@ -237,6 +237,30 @@ export function docLimitWarnings(docs: { path: string; size: number }[]): string
   return [`Warning: ${out.join('; ')}. The web app's design review allows 5 files, 2 MB each (0.5 MB for .md and .txt), 6 MB in total; the threat-model API documents no limits. If the job fails, trim the docs.`];
 }
 
+/** shortcut: "tiny" is a guess (a few lines); tune it once runs show how much a model needs. */
+export const TINY_DOCS_BYTES = 1024;
+
+/** A warning when the scope docs are so small the threat model may come back empty; null otherwise. */
+export function tinyDocsHint(docs: { path: string; size: number }[]): string | null {
+  const total = docs.reduce((a, d) => a + d.size, 0);
+  if (!docs.length || total >= TINY_DOCS_BYTES) return null;
+  return `Warning: the scope docs are only ${total} bytes in total (${docs.map((d) => d.path).join(', ')}), so the threat model may find no threats. `
+    + 'Pass a fuller design doc with --doc, or commit the Kiro spec docs (.kiro/specs/<feature>/design.md and requirements.md), which are used when no --doc is given.';
+}
+
+/** Sizes of a recorded run's scope docs at its commit, or null when git cannot tell. */
+function recordedDocSizes(deps: ReviewDeps, root: string, commit: string | null, paths: string[]): { path: string; size: number }[] | null {
+  if (!commit || !paths.length) return null;
+  const out: { path: string; size: number }[] = [];
+  for (const path of paths) {
+    const r = deps.git(['-C', root, 'cat-file', '-s', `${commit}:${path}`]);
+    const size = Number(r.stdout.trim());
+    if (!r.ok || !Number.isFinite(size)) return null;
+    out.push({ path, size });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Jobs and threats (reads)
 // ---------------------------------------------------------------------------
@@ -470,16 +494,19 @@ function saveFailed(ctx: Ctx, json: boolean, result: PrismResult, job: TmJob, re
   return 1;
 }
 
-function finishThreats(ctx: Ctx, json: boolean, result: PrismResult, threats: ThreatRow[], repo: RepoCtx, job: TmJob, minLevel?: string, id?: string): void {
+/** `tinyDocs`: the tiny-docs warning, repeated when the job found no threats. */
+function finishThreats(ctx: Ctx, json: boolean, result: PrismResult, threats: ThreatRow[], repo: RepoCtx, job: TmJob, minLevel?: string, id?: string, tinyDocs?: string | null): void {
   const deps = ctx.deps as ReviewDeps;
   const shown = minLevel ? threats.filter((t) => sevRank(t.severity) >= sevRank(minLevel.toUpperCase()) && sevRank(t.severity) > 0) : threats;
   const path = writeResult(repo.root, result, id);
-  if (json) { deps.out(JSON.stringify(result, null, 2) + '\n'); deps.err(`Saved ${path}`); return; }
+  const emptyHint = !threats.length && tinyDocs ? tinyDocs : null;
+  if (json) { deps.out(JSON.stringify(result, null, 2) + '\n'); if (emptyHint) deps.err(emptyHint); deps.err(`Saved ${path}`); return; }
   const say = ctx.deps.log;
   const overview = firstParagraph(job.systemOverview);
   say('');
   if (overview) { say('System overview:'); say(`  ${overview}`); say('  (the full overview is in the saved result, field threat_model.system_overview)'); say(''); }
   if (shown.length) printThreats(say, shown); else say(minLevel ? `No threats at ${minLevel} or above.` : 'No threats.');
+  if (emptyHint) say(emptyHint);
   if (minLevel && shown.length !== threats.length) say(`(${threats.length - shown.length} below ${minLevel} not shown; ${threatTotals(countBySeverity(threats))})`);
   say(`Saved ${path}`);
 }
@@ -538,6 +565,8 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
       ? `Scope docs:  ${docs.map((d) => d.path).join(', ')}`
       : `Scope docs:  none (${input.docs === false ? '--no-docs' : 'no --doc and no .kiro/specs/*/design.md or requirements.md in HEAD'}); the source alone is modeled`);
     for (const w of docLimitWarnings(docs)) say(w);
+    const tinyDocs = tinyDocsHint(docs);
+    if (tinyDocs) say(tinyDocs);
 
     const source = { file: zip, key: `${prefix}/source.zip` };
     for (const s of [source, ...docs]) {
@@ -583,7 +612,7 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
     const base = { ...kept, job: out.job, now: deps.now() };
     if (out.job.status !== 'COMPLETED') return saveFailed(ctx, !!input.json, toThreatModelResult({ ...base, threats: [] }), out.job, repo, space, pendingId);
     const threats = fetchThreats(ctx, space, out.job.threatModelJobId, repo.root);
-    finishThreats(ctx, !!input.json, toThreatModelResult({ ...base, threats }), threats, repo, out.job, undefined, pendingId);
+    finishThreats(ctx, !!input.json, toThreatModelResult({ ...base, threats }), threats, repo, out.job, undefined, pendingId, tinyDocs);
     if (failOnThreat(threats, failOn)) { say(`--fail-on ${failOn}: threats at or above ${failOn}.`); return 1; }
     return 0;
   } catch (e) {
@@ -645,7 +674,8 @@ export async function securityThreats(input: ThreatsOptions, deps: ReviewDeps): 
       return 1;
     }
     const threats = fetchThreats(ctx, space, job.threatModelJobId, repo.root);
-    finishThreats(ctx, !!input.json, toThreatModelResult({ ...base, threats }), threats, repo, job, min, pending?.id);
+    const sizes = pending ? recordedDocSizes(deps, root, pending.result.commit, base.scopeDocs) : null;
+    finishThreats(ctx, !!input.json, toThreatModelResult({ ...base, threats }), threats, repo, job, min, pending?.id, sizes && tinyDocsHint(sizes));
     return 0;
   } catch (e) {
     if (e instanceof Abort) { say(`Error: ${redact(e.message)}`); return 1; }

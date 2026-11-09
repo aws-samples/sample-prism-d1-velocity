@@ -394,6 +394,19 @@ test('an existing code review with the CI title is reused (the gate may have cre
   } finally { h.cleanup(); }
 });
 
+test('--status with no credentials prints the same sign-in hint as the other commands', async () => {
+  const h = harness(fullySetUp());
+  const real = h.deps.aws;
+  h.deps.aws = (args, region) => args[0] === 'sts'
+    ? { ok: false, json: null, errorCode: '', raw: 'Unable to locate credentials. You can configure credentials by running "aws configure".' }
+    : real(args, region);
+  try {
+    assert.equal(await enableSecurity(opts({ status: true }), h.deps), 1);
+    const out = h.out();
+    assert.match(out, /\[missing\] Credentials: Failed to get account ID\. Check your AWS credentials\.\n {2}Configure them with "aws configure" or "aws sso login", or pass --profile <name>\./);
+  } finally { h.cleanup(); }
+});
+
 test('--status is read-only and reports every item', async () => {
   const s = fullySetUp(); s.params['/prism/continuum/code-review-id'] = 'cr-old';
   const h = harness(s);

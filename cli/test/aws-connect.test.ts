@@ -92,6 +92,22 @@ test('connect: no terminal and no --profile refuses; an unknown profile refuses;
   assert.equal(existsSync(userConnectionPath(a.home)) || existsSync(userConnectionPath(b.home)), false);
 });
 
+test('connect: a missing profile is named as missing, not as a region or sign-in problem', async () => {
+  // No profiles configured at all, no --region: previously "has no configured region".
+  const none = harness({ profiles: [] });
+  assert.equal(await awsConnect({ profile: 'nosuchprof' }, none.deps), 1);
+  assert.match(none.out(), /Error: profile nosuchprof is not configured here \(aws configure list-profiles lists no profiles\)\. Check the name, or create it with aws configure sso --profile nosuchprof/);
+  assert.doesNotMatch(none.lines.filter((l) => l.startsWith('Error:')).join('\n'), /region|sso login/);
+  assert.equal(none.calls.length, 0);
+
+  // The AWS CLI itself reports the profile missing: no sign-in hint.
+  const raw = 'aws: [ERROR]: The config profile (default) could not be found';
+  const gone = harness({ table: { 'sts get-caller-identity': { ok: false, json: null, errorCode: '', raw } } });
+  assert.equal(await awsConnect({ profile: 'default', region: 'us-west-2' }, gone.deps), 1);
+  assert.match(gone.out(), /could not be found\. Check the name, or create it with aws configure sso --profile default.*Nothing was saved/);
+  assert.doesNotMatch(gone.out(), /sso login/);
+});
+
 test('connect: a profile that does not validate saves nothing', async () => {
   const h = harness({ table: { 'sts get-caller-identity': err('ExpiredToken') } });
   assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2' }, h.deps), 1);

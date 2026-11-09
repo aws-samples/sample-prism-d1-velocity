@@ -30,7 +30,7 @@ export default {
   description: 'Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage and setup checklist. No AWS calls.',
   options: [
     { flags: '--json', description: 'Print the dashboard data as JSON and exit (no server)' },
-    { flags: '--root <dir>', description: 'Where to look for repos with .prism/, 3 levels deep (default: your home directory)' },
+    { flags: '--root <dir>', description: 'Where to look for git repos, 3 levels deep (default: your home directory)' },
     { flags: '--all', description: '[deprecated, no effect] every repo under --root is now shown by default' },
     { flags: '--port <n>', description: 'Port on 127.0.0.1 (default: a random free port)' },
     { flags: '--no-open', description: 'Do not open a browser' },

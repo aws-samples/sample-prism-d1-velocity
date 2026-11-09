@@ -106,6 +106,13 @@ export function accessLevel(d: ConnectDeps, profile: string, region: string, arn
   return { level: 'unknown', basis: why };
 }
 
+const createHint = (profile: string) => `Check the name, or create it with aws configure sso --profile ${profile} (or aws configure --profile ${profile}).`;
+
+/** Signing in cannot fix a profile the AWS CLI cannot find, so that case gets the create hint instead. */
+function fixHint(profile: string, error: string, signIn: string): string {
+  return /config profile .* could not be found/i.test(error) ? createHint(profile) : signIn.replace('<p>', profile);
+}
+
 const orgText = (o: OrgRole) => o.kind === 'management' ? `yes, the management account of ${o.orgId}`
   : o.kind === 'member' ? `no, a member account of ${o.orgId}` : o.kind === 'none' ? 'no, not in an organization' : `unknown (${o.reason})`;
 
@@ -176,7 +183,7 @@ function status(d: ConnectDeps): number {
   }
   if (d.env.AWS_REGION || d.env.AWS_DEFAULT_REGION) d.log(`Region note: ${d.env.AWS_REGION ? 'AWS_REGION' : 'AWS_DEFAULT_REGION'} is set and wins over the saved region.`);
   const id = callerIdentity(d, saved.profile, saved.region);
-  if ('error' in id) { d.log(`Validation: FAILED for profile ${saved.profile}: ${id.error}. Sign in again (e.g. aws sso login --profile ${saved.profile}) or re-run prism-cli aws connect.`); return 1; }
+  if ('error' in id) { d.log(`Validation: FAILED for profile ${saved.profile}: ${id.error}. ${fixHint(saved.profile, id.error, 'Sign in again (e.g. aws sso login --profile <p>) or re-run prism-cli aws connect.')}`); return 1; }
   const w = accountChangeWarning(saved, id.account);
   d.log(w ?? `Validation: ok, profile ${saved.profile} is account ${id.account} as saved (caller ${id.arn}).`);
   return w ? 1 : 0;
@@ -197,14 +204,17 @@ export async function awsConnect(o: ConnectOptions, d: ConnectDeps): Promise<num
   if (typeof profile !== 'string') { d.log(`Error: ${profile.error}`); return 1; }
   if (!PROFILE_RE.test(profile)) { d.log(`Error: "${profile}" is not a valid profile name.`); return 1; }
   const known = d.listProfiles();
-  if (known.length && !known.includes(profile)) { d.log(`Error: profile ${profile} is not configured here (aws configure list-profiles lists: ${known.join(', ')}).`); return 1; }
+  if (!known.includes(profile)) {
+    d.log(`Error: profile ${profile} is not configured here (aws configure list-profiles lists ${known.length ? known.join(', ') : 'no profiles'}). ${createHint(profile)}`);
+    return 1;
+  }
   const region = await chooseRegion(o, d, profile);
   if (typeof region !== 'string') { d.log(`Error: ${region.error}`); return 1; }
   if (!REGION_RE.test(region)) { d.log(`Error: "${region}" is not a valid AWS region name (e.g. us-west-2).`); return 1; }
 
   const id = callerIdentity(d, profile, region);
   if ('error' in id) {
-    d.log(`Error: profile ${profile} does not validate: ${id.error}. Sign in (e.g. aws sso login --profile ${profile}) and re-run. Nothing was saved.`);
+    d.log(`Error: profile ${profile} does not validate: ${id.error}. ${fixHint(profile, id.error, 'Sign in (e.g. aws sso login --profile <p>) and re-run.')} Nothing was saved.`);
     return 1;
   }
   const alias = accountAlias(d, profile, region);

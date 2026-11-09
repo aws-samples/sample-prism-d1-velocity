@@ -7,6 +7,7 @@ import type { RunResult } from '../src/utils/exec.js';
 import { codeburnVersionOk, enableCodeburn, INSTALL_CMD, runEnableCodeburn, type CodeburnDeps } from '../src/commands/enable/codeburn.js';
 import alias, { DEPRECATION } from '../src/commands/bootstrapper/setup-otel-sync.js';
 import { machineChecks } from '../src/dashboard/setup.js';
+import { crontabLines } from '../src/utils/otel-sync-schedule.js';
 
 const URL = 'https://otel.example.com';
 const CB = '/fake/bin/codeburn';
@@ -184,13 +185,14 @@ test('enable codeburn: an unexpected error is one line and exit 1, not a stack',
 
 test('bootstrapper setup-otel-sync is a deprecated alias that delegates', async () => {
   const m = fakeMachine();
+  // The notice goes to stdout, so it stays ahead of the plan when output is piped.
   const warned: string[] = [];
-  const saved = console.warn;
-  console.warn = (l: string) => { warned.push(l); };
+  const saved = console.log;
+  console.log = (l: string) => { warned.push(l); };
   try {
     await alias.action({ url: URL }, { deps: () => m.deps, exit: () => assert.fail('no exit expected') });
   } finally {
-    console.warn = saved;
+    console.log = saved;
   }
   assert.match(DEPRECATION[0], /use "prism-cli enable codeburn"/);
   assert.equal(warned[0], DEPRECATION[0]);
@@ -203,4 +205,14 @@ test('dashboard setup checklist points codeburn fixes at enable codeburn', () =>
   const by = Object.fromEntries(items.map((i) => [i.id, i]));
   assert.equal(by.codeburn.fix, 'prism-cli enable codeburn');
   assert.equal(by['codeburn-sync'].fix, 'prism-cli enable codeburn');
+});
+
+test('crontabLines: only "no crontab for" is empty; an unreadable crontab throws instead of being overwritten', () => {
+  assert.deepEqual(crontabLines({ ok: true, stdout: '0 1 * * * backup\n# x', stderr: '' }), ['0 1 * * * backup', '# x']);
+  assert.deepEqual(crontabLines({ ok: false, stdout: '', stderr: 'no crontab for alice' }), []);
+  assert.throws(
+    () => crontabLines({ ok: false, stdout: '', stderr: 'You (alice) are not allowed to access to (crontab) because of pam configuration.' }),
+    /cannot read your crontab \(crontab -l: You \(alice\) are not allowed.*\); it was not changed/,
+  );
+  assert.throws(() => crontabLines({ ok: false, stdout: '', stderr: '' }), /crontab -l: unknown error/);
 });

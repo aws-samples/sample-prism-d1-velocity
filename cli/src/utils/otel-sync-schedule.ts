@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { run } from './exec.js';
+import { run, type RunResult } from './exec.js';
 
 /** The command that installs codeburn and its scheduled sync. Fix hints point here. */
 export const ENABLE_CODEBURN_CMD = 'prism-cli enable codeburn';
@@ -54,6 +54,22 @@ export function codeburnSyncConfigPath(home = homedir()): string {
 
 export function linuxCrontabAvailable(): boolean {
   return run('which', ['crontab']).ok;
+}
+
+/** What `crontab -l` prints (on stderr, exit 1) when the user has no crontab yet. */
+const NO_CRONTAB = /no crontab for/i;
+
+/**
+ * The current crontab lines from a `crontab -l` result. `crontab -l` exits
+ * non-zero both when the user has no crontab and when it cannot read it (PAM
+ * denial, permissions). Only the first is an empty crontab; treating the second
+ * as empty and writing would replace the user's cron jobs, so it throws.
+ */
+export function crontabLines(r: RunResult): string[] {
+  if (r.ok) return r.stdout.split('\n');
+  if (NO_CRONTAB.test(r.stderr)) return [];
+  const reason = r.stderr.split('\n').map((l) => l.trim()).find(Boolean) || 'unknown error';
+  throw new Error(`cannot read your crontab (crontab -l: ${reason}); it was not changed, so your existing cron jobs are kept. Fix crontab access, or run "prism-cli export otel" yourself.`);
 }
 
 export function linuxScheduleExists(): boolean {

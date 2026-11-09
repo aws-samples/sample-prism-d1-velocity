@@ -14,15 +14,14 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { run } from '../utils/exec.js';
-import { BACKUP_SUFFIX, HOOK_MARKER, MANAGED_HOOKS, type ManagedHook } from './hooks.js';
+import { BACKUP_SUFFIX, HOOK_MARKER, MANAGED_HOOKS, OPT_OUT_KEY, type ManagedHook } from './hooks.js';
 
 export const GLOBAL_MARKER = '# prism-codewatch-global';
 /** Saved value of the global core.hooksPath that --global replaced. Absent when there was none. */
 export const PREVIOUS_FILE = '.previous-hookspath';
 /** With --force, the replaced hooks directory, whose hooks are chained after ours. */
 export const CHAIN_FILE = '.chain-hookspath';
-/** `git config prism.codewatch false` in a repo skips codewatch there (repo-local hooks still run). */
-export const OPT_OUT_KEY = 'prism.codewatch';
+export { OPT_OUT_KEY, isOptedOut } from './hooks.js';
 
 export function globalHooksDir(home: string = homedir()): string {
   return join(home, '.prism', 'hooks');
@@ -239,9 +238,4 @@ export function globalStatus(home: string = homedir()): GlobalStatus {
 export function repoLocalHooksPath(repo: string): string | null {
   const r = run('git', ['-C', repo, 'config', '--local', '--get', 'core.hooksPath']);
   return r.ok && r.stdout ? r.stdout : null;
-}
-
-export function isOptedOut(repo: string): boolean {
-  const r = run('git', ['-C', repo, 'config', '--bool', '--get', OPT_OUT_KEY]);
-  return r.ok && r.stdout === 'false';
 }
