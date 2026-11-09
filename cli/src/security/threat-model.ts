@@ -210,14 +210,23 @@ export function selectDocs(deps: ReviewDeps, root: string, input: ThreatModelOpt
 
 interface DocFile extends Snapshot { path: string; size: number }
 
-/** Writes each doc's blob from HEAD to a temp file (binary-safe: git writes the file itself). */
+/**
+ * Writes each doc from HEAD into a temp directory (binary-safe: git writes the files itself; the
+ * index and working tree are not touched). `size` is the size of the file that is uploaded.
+ * Not `git show --output`: it ignores --output for a blob and writes an empty file.
+ * shortcut: checkout filters (.gitattributes eol, LFS) apply, so a filtered doc's size can differ
+ * from its blob size; read the blob raw if that shows up.
+ */
 function materializeDocs(ctx: Ctx, root: string, paths: string[], prefix: string): DocFile[] {
+  if (!paths.length) return [];
   const dir = ctx.deps.makeTempDir();
-  return paths.map((path, i) => {
-    const file = join(dir, `${i}-${basename(path)}`);
-    if (!ctx.deps.git(['-C', root, 'show', `--output=${file}`, `HEAD:${path}`]).ok) throw new Abort(`git show HEAD:${path} failed.`);
+  const r = ctx.deps.git(['-C', root, `--work-tree=${dir}`, 'restore', '--source=HEAD', '--worktree', '--ignore-skip-worktree-bits', '--',
+    ...paths.map((p) => `:(top,literal)${p}`)]);
+  if (!r.ok) throw new Abort(`git restore --source=HEAD of the scope docs failed${r.stderr ? `: ${r.stderr.split('\n')[0]}` : ''}.`);
+  return paths.map((path) => {
+    const file = join(dir, ...path.split('/'));
     let size = 0;
-    try { size = statSync(file).size; } catch { throw new Abort(`git show wrote no file for ${path}.`); }
+    try { size = statSync(file).size; } catch { throw new Abort(`git restore wrote no file for ${path}.`); }
     return { path, file, size, key: `${prefix}/docs/${path}` };
   });
 }

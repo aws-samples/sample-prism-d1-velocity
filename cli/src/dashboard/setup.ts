@@ -71,12 +71,15 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   out.push(item('codeburn', 'codeburn installed', cb.installed ? 'ok' : 'missing',
     cb.installed ? (cb.version || 'version unknown') : 'not on PATH', ENABLE_CODEBURN_CMD));
 
-  let hasSchedule = false;
-  // shortcut: an unreadable crontab still shows here as no entry; show the read error if users hit it.
-  try { hasSchedule = (deps.scheduleExists || scheduleExists)(); } catch { /* reported by enable codeburn --status */ }
+  // An unreadable crontab (scheduleExists throws) is its own state, not "no entry".
+  let hasSchedule: boolean | Error;
+  try { hasSchedule = (deps.scheduleExists || scheduleExists)(); } catch (e) { hasSchedule = e instanceof Error ? e : new Error(String(e)); }
   const sched = (deps.schedulerName || schedulerName)();
   const last = lastSync(home);
-  if (hasSchedule) {
+  if (hasSchedule instanceof Error) {
+    out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'warn',
+      hasSchedule.message, 'Fix crontab access (crontab -l must work), then re-check'));
+  } else if (hasSchedule) {
     out.push(item('codeburn-sync', 'Scheduled codeburn sync push', last ? 'ok' : 'warn',
       last ? `${sched} entry installed; last sync log write ${last.at}` : `${sched} entry installed; no sync log yet in ~/.prism/logs`,
       'Wait for the next run, or check ~/.prism/logs/otel-sync.log'));

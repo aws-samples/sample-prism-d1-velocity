@@ -506,8 +506,12 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
 
   // 4. One-time backfill, only when sync or the schedule is new: the push is
   // incremental, so a re-run of an installed setup has nothing to backfill.
-  // An unreadable crontab counts as no schedule here; installing one then stops with the read error.
+  // An unreadable crontab stops the install here, before the backfill uploads anything.
   const schedule = probeSchedule(d);
+  if (schedule instanceof Error && !dry) {
+    d.error(`Error: ${schedule.message}`);
+    return 1;
+  }
   const hadSchedule = schedule === true;
   const sched = d.schedulerName();
   if (needsSetup || !hadSchedule) {

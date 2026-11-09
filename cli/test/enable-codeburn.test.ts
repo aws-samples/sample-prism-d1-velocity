@@ -187,6 +187,36 @@ test('enable codeburn --status and --dry-run: an unreadable crontab is reported 
   }
 });
 
+test('enable codeburn: an unreadable crontab stops the install with its error before the backfill uploads anything', async () => {
+  const PAM = 'You (alice) are not allowed to access to (crontab) because of pam configuration.';
+  const m = fakeMachine({ syncUrl: URL });
+  m.deps.scheduleExists = () => crontabLines({ ok: false, stdout: '', stderr: PAM }).some((l) => l.includes('prism'));
+  assert.equal(await enableCodeburn({}, m.deps), 1);
+  assert.match(m.err.join('\n'), /^Error: cannot read your crontab \(crontab -l: You \(alice\) are not allowed/);
+  assert.ok(!m.calls.some((c) => c.includes('sync push')), `no backfill: ${m.calls.join('; ')}`);
+  assert.deepEqual(m.scheduleCalls, []);
+});
+
+test('enable codeburn: no crontab yet still installs normally, backfill and schedule', async () => {
+  const m = fakeMachine({ syncUrl: URL });
+  m.deps.scheduleExists = () => crontabLines({ ok: false, stdout: '', stderr: 'no crontab for alice' }).some((l) => l.includes('prism'));
+  assert.equal(await enableCodeburn({}, m.deps), 0);
+  assert.ok(m.calls.includes(`run ${CB} sync push --since 30d --attribution`), m.calls.join('; '));
+  assert.deepEqual(m.scheduleCalls, [`install ${CB} 12`]);
+  assert.deepEqual(m.err, []);
+});
+
+test('dashboard setup checklist: an unreadable crontab is its own state with the read error, not "no entry"', () => {
+  const PAM = 'You (alice) are not allowed to access to (crontab) because of pam configuration.';
+  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {},
+    scheduleExists: () => crontabLines({ ok: false, stdout: '', stderr: PAM }).length > 0, schedulerName: () => 'crontab', global: { state: 'not-installed', hooksPath: null, dir: '' } });
+  const sync = items.find((i) => i.id === 'codeburn-sync')!;
+  assert.equal(sync.status, 'warn');
+  assert.match(sync.detail, /^cannot read your crontab \(crontab -l: You \(alice\) are not allowed/);
+  assert.doesNotMatch(sync.detail, /no crontab entry/);
+  assert.ok(sync.fix);
+});
+
 test('enable codeburn: an unexpected error is one line and exit 1, not a stack', async () => {
   const m = fakeMachine();
   m.deps.installSchedule = () => { throw new Error('Failed to install crontab: boom'); };
