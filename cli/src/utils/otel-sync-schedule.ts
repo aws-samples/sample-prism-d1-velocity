@@ -72,10 +72,10 @@ export function crontabLines(r: RunResult): string[] {
   throw new Error(`cannot read your crontab (crontab -l: ${reason}); it was not changed, so your existing cron jobs are kept. Fix crontab access, or run "prism-cli export otel" yourself.`);
 }
 
+/** Throws (via crontabLines) when the crontab cannot be read, rather than calling the schedule missing. */
 export function linuxScheduleExists(): boolean {
   if (!linuxCrontabAvailable()) return false;
-  const result = run('crontab', ['-l']);
-  return result.ok && result.stdout.includes(CRON_MARKER);
+  return crontabLines(run('crontab', ['-l'])).some((l) => l.includes(CRON_MARKER));
 }
 
 export function darwinPlistPath(home = homedir()): string {

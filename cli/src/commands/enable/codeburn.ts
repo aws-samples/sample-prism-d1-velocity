@@ -301,6 +301,15 @@ function reportSyncStatus(cb: string, d: CodeburnDeps): void {
   for (const line of text.slice(0, 20)) d.log(`    ${line}`);
 }
 
+/** Whether the schedule exists, or the error when that cannot be told (an unreadable crontab). */
+function probeSchedule(d: CodeburnDeps): boolean | Error {
+  try {
+    return d.scheduleExists();
+  } catch (e) {
+    return e instanceof Error ? e : new Error(String(e));
+  }
+}
+
 // ---- Status ----
 
 function showStatus(d: CodeburnDeps): void {
@@ -320,7 +329,9 @@ function showStatus(d: CodeburnDeps): void {
   else if (url) d.log(`  ✓ sync configured: ${url}`);
   else d.log(`  ✓ sync config exists: ${codeburnSyncConfigPath(d.home)}`);
 
-  if (d.scheduleExists()) d.log(`  ✓ ${d.schedulerName()} schedule active`);
+  const schedule = probeSchedule(d);
+  if (schedule instanceof Error) d.log(`  ⚠ ${schedule.message}`);
+  else if (schedule) d.log(`  ✓ ${d.schedulerName()} schedule active`);
   else d.log(`  ✗ no ${d.schedulerName()} schedule found`);
 
   const logFile = otelLogFile(d.home);
@@ -495,7 +506,9 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
 
   // 4. One-time backfill, only when sync or the schedule is new: the push is
   // incremental, so a re-run of an installed setup has nothing to backfill.
-  const hadSchedule = d.scheduleExists();
+  // An unreadable crontab counts as no schedule here; installing one then stops with the read error.
+  const schedule = probeSchedule(d);
+  const hadSchedule = schedule === true;
   const sched = d.schedulerName();
   if (needsSetup || !hadSchedule) {
     const backfillArgs = syncArgs(BACKFILL_SINCE);
@@ -520,7 +533,9 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
   // are current (an older Windows entry lacked --attribution).
   const pushCmd = cmdLine(syncArgs(SYNC_SINCE));
   let scheduled = true;
-  if (dry) {
+  if (dry && schedule instanceof Error) {
+    d.log(`  ⚠ would not install the ${sched} schedule: ${schedule.message}`);
+  } else if (dry) {
     d.log(`  → would ${hadSchedule ? 'refresh the existing' : 'install a'} ${sched} schedule: ${pushCmd}, every ${intervalHours}h`);
   } else {
     if (hadSchedule) {

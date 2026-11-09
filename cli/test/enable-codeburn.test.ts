@@ -173,6 +173,20 @@ test('enable codeburn --status reports codeburn, sync, schedule and codeburn syn
   assert.match(t, /codeburn sync status:/);
 });
 
+test('enable codeburn --status and --dry-run: an unreadable crontab is reported with its error, not as a missing schedule', async () => {
+  const PAM = 'You (alice) are not allowed to access to (crontab) because of pam configuration.';
+  const unreadable = () => crontabLines({ ok: false, stdout: '', stderr: PAM }).length > 0;
+  for (const opts of [{ status: true }, { url: URL, dryRun: true }]) {
+    const m = fakeMachine({ syncUrl: URL });
+    m.deps.scheduleExists = unreadable;
+    assert.equal(await enableCodeburn(opts, m.deps), 0);
+    const t = m.text();
+    assert.match(t, /cannot read your crontab \(crontab -l: You \(alice\) are not allowed/, JSON.stringify(opts));
+    assert.doesNotMatch(t, /no crontab schedule found|would install a crontab schedule/, JSON.stringify(opts));
+    assert.deepEqual(m.scheduleCalls, []);
+  }
+});
+
 test('enable codeburn: an unexpected error is one line and exit 1, not a stack', async () => {
   const m = fakeMachine();
   m.deps.installSchedule = () => { throw new Error('Failed to install crontab: boom'); };

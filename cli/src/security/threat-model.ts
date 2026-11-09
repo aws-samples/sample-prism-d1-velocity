@@ -465,10 +465,10 @@ export function toThreatModelResult(o: TmBase & { job: TmJob; threats: ThreatRow
   });
 }
 
-/** Pending records in this repo for this account, region and agent space, newest first. */
-export function pendingThreatModels(root: string, account: string, region: string, space: string): ResultEntry[] {
+/** Records (pending, completed or failed) in this repo for this account, region and agent space, newest first. */
+export function threatModelRecords(root: string, account: string, region: string, space: string): ResultEntry[] {
   return readResultEntries(root)
-    .filter(({ result: r }) => r.kind === 'security-threat-model' && r.status === 'pending' && r.threat_model?.job_id
+    .filter(({ result: r }) => r.kind === 'security-threat-model' && r.threat_model?.job_id
       && r.threat_model.account === account && r.threat_model.region === region && r.threat_model.agent_space_id === space)
     .sort((a, b) => b.result.started_at.localeCompare(a.result.started_at));
 }
@@ -637,12 +637,15 @@ export async function securityThreats(input: ThreatsOptions, deps: ReviewDeps): 
     printIdentity(ctx, id);
     const repo = needRepo(ctx, root);
     const space = agentSpace(ctx, id);
-    const pendings = pendingThreatModels(repo.root, id.account, ctx.opts.region, space);
+    const records = threatModelRecords(repo.root, id.account, ctx.opts.region, space);
+    const pendings = records.filter((e) => e.result.status === 'pending');
+    // A job already on record (pending or completed) is updated in place, keeping its scope docs and commit.
+    const recordOf = (jobId: string) => records.find((e) => e.result.threat_model!.job_id === jobId) ?? null;
     let pending: ResultEntry | null = null;
     let job: TmJob | null;
     if (input.job) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.job)) throw new Abort(`--job must be a job id, got "${input.job}"`);
-      pending = pendings.find((e) => e.result.threat_model!.job_id === input.job) ?? null;
+      pending = recordOf(input.job);
       job = getTmJob(ctx, space, input.job);
     } else if (pendings.length) {
       pending = pendings[0];
@@ -653,8 +656,9 @@ export async function securityThreats(input: ThreatsOptions, deps: ReviewDeps): 
     } else {
       job = latestTmJob(ctx, space, repo.slug);
       if (!job) { say(`No threat models yet for ${repo.id}. Start one with: prism-cli security threat-model`); return 0; }
+      pending = recordOf(job.threatModelJobId);
     }
-    if (pending) say(`Pending:     recorded by threat-model at ${pending.result.started_at} (commit ${(pending.result.commit || '').slice(0, 12)})`);
+    if (pending) say(`${pending.result.status === 'pending' ? 'Pending: ' : 'Recorded:'}    recorded by threat-model at ${pending.result.started_at} (commit ${(pending.result.commit || '').slice(0, 12)})`);
     say(`Job:         ${job.threatModelJobId} (${job.status}${job.createdAt ? `, started ${job.createdAt}` : ''})`);
     if (!TERMINAL.has(job.status)) {
       if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return 2; }

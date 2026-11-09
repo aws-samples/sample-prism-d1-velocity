@@ -470,6 +470,21 @@ test('threats: read-only, completes the pending record in place with its commit 
   } finally { h.cleanup(); }
 });
 
+test('threats --job for a job that already has a completed record updates it in place, keeping its commit (no nocommit copy)', async () => {
+  const h = harness(state());
+  try {
+    assert.equal(await securityThreatModel(tm({ wait: false }), h.deps), 0);
+    assert.equal(await securityThreats(th(), h.deps), 0);
+    assert.deepEqual(h.results().map((r) => r.status), ['findings']);
+    h.lines.length = 0;
+    assert.equal(await securityThreats(th({ job: 'tmj-1' }), h.deps), 0);
+    assert.match(h.out(), /Recorded: {4}recorded by threat-model at 2026-11-07T10:00:00\.000Z \(commit aaaaaaaaaaaa\)/);
+    const rs = h.results();
+    assert.equal(rs.length, 1, 'one result file');
+    assert.deepEqual([rs[0].commit, rs[0].threat_model.scope_docs.length, rs[0].findings.length], [TIP, 2, 4]);
+  } finally { h.cleanup(); }
+});
+
 test('threats: --severity filters the printout, not the saved result', async () => {
   const h = harness(state());
   try {
