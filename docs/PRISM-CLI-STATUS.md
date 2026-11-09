@@ -1,31 +1,31 @@
 # prism-cli: status of the "one tool, three jobs" commands
 
-Status as of 2026-11-07. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md).
+Status as of 2026-11-08. It covers the 15 commands on the roadmap slide ("prism-cli: one tool, three jobs"), plus the existing features that this work made obsolete. Design detail for each command is in [DESIGN-prism-cli-local.md](DESIGN-prism-cli-local.md). A shorter summary for managers is in [PRISM-CLI-OVERVIEW.md](PRISM-CLI-OVERVIEW.md).
 
-`enable codewatch`, `dashboard`, `enable security`, `security code-review` and `security findings` are on `main`. `version`, `enable codeburn` and `export otel` are on the unpushed branch `feat/codeburn-version`. `aws connect`, `aws check` and `aws recommend` are on the unpushed branch `feat/aws-advise`.
+Every built command is merged to `main` and published to npm as `@prism-d1/cli`. The current version is 1.4.0.
 
 ## Summary
 
-| Job | Command | Status |
-|---|---|---|
-| Observe | `prism-cli version` | **Built** (not merged) |
-| Observe | `prism-cli enable codewatch` | **Built** |
-| Observe | `prism-cli enable codeburn` | **Built** (not merged) |
-| Observe | `prism-cli enable security` | **Built** |
-| Observe | `prism-cli dashboard` | **Built** |
-| Observe | `prism-cli export otel` | **Built** (not merged; PRISM collector only, no `--endpoint` yet) |
-| Observe | `prism-cli install transformation-center` | Blocked: scope unknown |
-| Secure | `prism-cli security design-review` | **Dropped**: no public API |
-| Secure | `prism-cli security threat-model` | **Built** (not merged) |
-| Secure | `prism-cli security threats` | **Built** (not merged), not on the slide |
-| Secure | `prism-cli security code-review` | **Built** |
-| Secure | `prism-cli security pentest` | **Built** (not merged) |
-| Secure | `prism-cli security findings` | **Built** |
-| Advise | `prism-cli aws connect` | **Built** (not merged) |
-| Advise | `prism-cli aws check` | **Built** (not merged; Startup Advisor section is a placeholder) |
-| Advise | `prism-cli aws recommend` | **Built** (not merged; fixed mapping) |
+| Job | Command | Status | Release |
+|---|---|---|---|
+| Observe | `prism-cli version` | **Released** | 1.3.0 |
+| Observe | `prism-cli enable codewatch` | **Released** | 1.2.0 |
+| Observe | `prism-cli enable codeburn` | **Released** | 1.3.0 |
+| Observe | `prism-cli enable security` | **Released** | 1.3.0 |
+| Observe | `prism-cli dashboard` | **Released** | 1.2.0 |
+| Observe | `prism-cli export otel` | **Released** (PRISM collector only, no `--endpoint` yet) | 1.3.0 |
+| Observe | `prism-cli install transformation-center` | Blocked: scope unknown | |
+| Secure | `prism-cli security design-review` | **Dropped**: no public API | |
+| Secure | `prism-cli security threat-model` | **Released** | 1.3.0 |
+| Secure | `prism-cli security threats` | **Released**, not on the slide | 1.3.0 |
+| Secure | `prism-cli security code-review` | **Released** | 1.3.0 |
+| Secure | `prism-cli security pentest` | **Released** | 1.3.0 |
+| Secure | `prism-cli security findings` | **Released** | 1.3.0 |
+| Advise | `prism-cli aws connect` | **Released** | 1.4.0 |
+| Advise | `prism-cli aws check` | **Released** (Startup Advisor section is a placeholder) | 1.4.0 |
+| Advise | `prism-cli aws recommend` | **Released** (fixed mapping) | 1.4.0 |
 
-So far 13 of the 15 are built (several not merged yet), 1 is blocked until we know what it is, and 1 (`security design-review`) was dropped because no public API backs it.
+13 of the 15 slide commands are released, plus `security threats`. 1 is blocked until we know what it is, and 1 (`security design-review`) was dropped because no public API backs it.
 
 ## Built
 
@@ -114,7 +114,7 @@ Pushes codeburn's unsent telemetry to the configured PRISM collector now: `codeb
 
 ### `aws connect`, `aws check` and `aws recommend` (Advise)
 
-Built on `feat/aws-advise`; design in [DESIGN-prism-cli-aws-advise.md](DESIGN-prism-cli-aws-advise.md), user docs in [AWS Account Advice](../USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend). All three are read-only against AWS and say so first.
+Released in 1.4.0; design in [DESIGN-prism-cli-aws-advise.md](DESIGN-prism-cli-aws-advise.md), user docs in [AWS Account Advice](../USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend). All three are read-only against AWS and say so first.
 
 - **`aws connect`:** picks a profile and region (flags, or a choice from `aws configure list-profiles` on a terminal), validates them with STS, and reports the account, alias, whether it is an Organizations management account and whether the identity looks admin or read-only. Stores no credentials: `{profile, region, account, alias, verifiedAt}` in `~/.prism/aws.json`, or with `--repo` in a git-ignored `.prism/aws.local.json`. `--status`, `--clear`.
   - **Decided:** both per user and per repo (repo wins).
@@ -124,11 +124,14 @@ Built on `feat/aws-advise`; design in [DESIGN-prism-cli-aws-advise.md](DESIGN-pr
 - **`aws recommend`:** reads the latest `aws-check` result (no AWS calls; `--refresh` runs the check first) and maps each FAIL to a fix with steps, the `prism-cli` command when there is one, and a doc link; ranked by severity, then effort. INDETERMINATE checks become "grant read access" items. `--json`, `--markdown`.
   - **Decided:** a fixed mapping, no model calls. A later `--explain` could use the codewatch reviewer adapters (TODO in the design doc).
 
-## Planned
+### `security pentest`
+Released in 1.3.0; design in [DESIGN-prism-cli-pentest.md](DESIGN-prism-cli-pentest.md). It builds the repo's app from its Dockerfile, deploys it into a temporary private VPC in the caller's account (no public subnet, internet gateway or NAT; an internal load balancer reachable only from the pentest agent) and tests only that, never an arbitrary URL.
 
-### Secure (AWS Continuum)
-All of these call AWS and need credentials.
-- **`security pentest`:** built on `feat/security-pentest`; see [the design](DESIGN-prism-cli-pentest.md). It deploys the repo's app into a temporary private VPC in the caller's account and tests only that, never an arbitrary URL. It does not wait by default; `--status`, `--cleanup` and `security findings --pentest` follow up.
+- **Asks first:** shows the plan, target and cost, then asks; `--yes` approves for CI, and with no terminal and no `--yes` it refuses. `--dry-run` changes nothing.
+- **Health wait:** it starts the job only after the app passes its load-balancer health check, waiting up to 10 minutes. Added after a live run failed at preflight because the app was not healthy yet.
+- **Follow-up:** it does not wait by default (a reference run took about 2 h 50 min); `--status`, `--wait`, `--cleanup` and `security findings --pentest` follow up. The environment is torn down once the job has finished, unless `--keep`.
+- **Cost:** billed in task-hours, publicly reported at $50 per task-hour, plus the environment while it is up.
+- **User docs:** [Running a Penetration Test from the CLI](../USER_GUIDE.md#running-a-penetration-test-from-the-cli).
 
 ## Blocked
 
@@ -177,5 +180,5 @@ These existing commands get new names. The old names stay as deprecated aliases 
 2. `enable security` now wraps the Security Agent setup (decided). Does it belong under Observe or Secure on the slide? It is the only Observe command that needs AWS credentials.
 3. ~~Which Security Agent APIs back `design-review` and `threat-model`?~~ Answered in [the research doc](RESEARCH-threat-model-design-review.md): threat model has an API, design review does not.
 4. How do we consume Startup Advisor's checks, and under what license? (`aws check` has a placeholder section for it.)
-5. ~~Should `aws recommend` be a fixed mapping or model-generated?~~ Decided: a fixed mapping; a model `--explain` may come later.
+5. ~~Should `aws recommend` be a fixed mapping or model-generated?~~ Answered: a fixed mapping, released in 1.4.0; a model `--explain` may come later.
 6. With commit trailers gone, should codeburn's `--attribution` stay on?
