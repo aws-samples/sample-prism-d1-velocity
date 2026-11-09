@@ -71,7 +71,9 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   out.push(item('codeburn', 'codeburn installed', cb.installed ? 'ok' : 'missing',
     cb.installed ? (cb.version || 'version unknown') : 'not on PATH', ENABLE_CODEBURN_CMD));
 
-  const hasSchedule = (deps.scheduleExists || scheduleExists)();
+  let hasSchedule = false;
+  // shortcut: an unreadable crontab still shows here as no entry; show the read error if users hit it.
+  try { hasSchedule = (deps.scheduleExists || scheduleExists)(); } catch { /* reported by enable codeburn --status */ }
   const sched = (deps.schedulerName || schedulerName)();
   const last = lastSync(home);
   if (hasSchedule) {
