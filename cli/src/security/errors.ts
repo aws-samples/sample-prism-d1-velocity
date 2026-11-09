@@ -13,6 +13,7 @@ export const MIN_AWS_CLI = [2, 36] as const;
 export const MIN_AWS_CLI_TEXT = `v${MIN_AWS_CLI.join('.')}`;
 
 export const NO_CREDENTIALS_MESSAGE = 'Failed to get account ID. Check your AWS credentials.';
+export const CREDENTIALS_HINT = 'Configure them with "aws configure" or "aws sso login", or pass --profile <name>.';
 
 const CREDENTIAL_ERRORS = /Unable to locate credentials|could not be found|ExpiredToken|InvalidClientTokenId|SignatureDoesNotMatch|Token has expired|The SSO session|NoCredentialProviders|Error loading SSO Token|security token included in the request is (invalid|expired)/i;
 const ACCESS_DENIED = /AccessDenied|UnauthorizedOperation|not authorized to perform|UnauthorizedException/i;
@@ -67,7 +68,7 @@ export function explainAwsError(args: string[], stderr: string, cliVersion?: str
   if (CREDENTIAL_ERRORS.test(raw)) {
     return {
       kind: 'no-credentials',
-      message: `${NO_CREDENTIALS_MESSAGE}\n  ${lastLine}\n  Configure them with "aws configure" or "aws sso login", or pass --profile <name>.`,
+      message: `${NO_CREDENTIALS_MESSAGE}\n  ${lastLine}\n  ${CREDENTIALS_HINT}`,
     };
   }
   if (ACCESS_DENIED.test(raw)) {

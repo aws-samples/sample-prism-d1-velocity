@@ -83,6 +83,7 @@ prism-cli enable codewatch                     # this repo
 prism-cli enable codewatch --global            # every repo on this machine
 prism-cli enable codewatch --reviewer claude   # pick the reviewer: kiro | claude
 prism-cli enable codewatch --uninstall         # remove (add --global for the global hooks)
+git config prism.codewatch false               # turn codewatch off in one repo (per-repo or global hooks)
 ```
 
 It needs gitleaks plus kiro-cli or Claude Code; telemetry does not depend on it. It replaces the retired commit-trailer hook, and `bootstrapper install-git-hooks` is now an alias for it. Details: [Codewatch (Local Git Hooks)](USER_GUIDE.md#codewatch-local-git-hooks).

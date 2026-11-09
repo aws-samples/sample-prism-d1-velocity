@@ -19,10 +19,10 @@ const f = (id: string, status: Finding['status'], severity: Finding['severity'] 
   id, category: id.split('.')[0], title: id, status, severity, detail, remediation: 'r',
 });
 
-function saveCheck(root: string, checks: Finding[], o: { account?: string; region?: string; at?: string } = {}): string {
+function saveCheck(root: string, checks: Finding[], o: { account?: string; region?: string; at?: string; sections?: string[] } = {}): string {
   const info: AwsCheckInfo = {
     account: o.account ?? ACCOUNT, alias: 'sandbox', region: o.region ?? REGION, profile: 'p', profile_source: '--profile',
-    sections: ['baseline'], section_counts: {}, counts: { pass: 0, fail: 0, indeterminate: 0 },
+    sections: o.sections ?? ['baseline'], section_counts: {}, counts: { pass: 0, fail: 0, indeterminate: 0 },
     fail_by_severity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 }, checks,
   };
   const at = o.at ?? '2026-11-07T10:00:00.000Z';
@@ -193,6 +193,31 @@ test('recommend: the aws connect account is the default; --json and --markdown',
   const md = path.replace(/\.json$/, '.recommend.md');
   assert.match(readFileSync(md, 'utf8'), /^# AWS recommendations[\s\S]*### 1\. Create the CI OIDC provider and role[\s\S]*Run `prism-cli bootstrapper setup-github-oidc`/);
   assert.match(h.errs.join('\n'), /Wrote .*\.recommend\.md/);
+});
+
+test('recommend: prefers the newest full run over a newer --section run; a section-only run never says every check passed', () => {
+  const ALL = ['bedrock', 'prism-setup', 'baseline', 'startup-advisor'];
+  const repo = gitRepo();
+  saveCheck(repo, [f('baseline.guardduty', 'FAIL', 'HIGH')], { at: '2026-11-07T09:00:00.000Z', sections: ALL });
+  saveCheck(repo, [f('prism-setup.ci-oidc-role', 'PASS')], { at: '2026-11-07T10:00:00.000Z', sections: ['prism-setup'] });
+  const full = checkDeps({ cwd: repo });
+  assert.equal(awsRecommend({ region: REGION, account: ACCOUNT }, full.deps), 0);
+  assert.match(full.lines.join('\n'), /Enable GuardDuty/);
+  assert.match(full.lines.join('\n'), /From aws check at 2026-11-07T09:00:00/);
+  assert.doesNotMatch(full.lines.join('\n'), /every check passed|covered only/);
+
+  const only = gitRepo();
+  saveCheck(only, [f('prism-setup.ci-oidc-role', 'PASS')], { sections: ['prism-setup'] });
+  const part = checkDeps({ cwd: only });
+  assert.equal(awsRecommend({ region: REGION, account: ACCOUNT, markdown: true }, part.deps), 0);
+  const out = part.lines.join('\n');
+  assert.match(out, /This aws check covered only prism-setup \(a --section run\); run prism-cli aws check for every section\./);
+  assert.match(out, /Nothing to fix in prism-setup; the other sections were not checked\./);
+  assert.doesNotMatch(out, /every check passed/);
+  const md = readdirSync(join(only, '.prism', 'results')).find((n) => n.endsWith('.recommend.md'))!;
+  const mdText = readFileSync(join(only, '.prism', 'results', md), 'utf8');
+  assert.match(mdText, /covered only prism-setup/);
+  assert.doesNotMatch(mdText, /every check passed/);
 });
 
 test('recommend --refresh runs aws check first and reads that result', () => {

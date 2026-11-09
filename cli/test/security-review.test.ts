@@ -717,6 +717,22 @@ test('findings with no --job completes the pending record and keeps its scope an
   } finally { h.cleanup(); }
 });
 
+test('findings for a job that already has a completed record updates it in place, keeping its commit (no nocommit copy)', async () => {
+  const h = harness(state({ statuses: ['COMPLETED'], jobs: [{ codeReviewJobId: 'job-1', status: 'COMPLETED', createdAt: '2026-11-08T00:00:00Z' }] }));
+  try {
+    assert.equal(await securityCodeReview(cr(), h.deps), 0);
+    assert.deepEqual(h.results().map((r) => r.status), ['findings']);
+    for (const o of [fo({ job: 'job-1' }), fo()]) {
+      h.lines.length = 0;
+      assert.equal(await securityFindings(o, h.deps), 0);
+      assert.match(h.out(), /Recorded: {4}recorded by code-review at 2026-11-07T10:00:00\.000Z/);
+      const rs = h.results();
+      assert.equal(rs.length, 1, `one file after findings ${JSON.stringify(o)}`);
+      assert.deepEqual([rs[0].commit, rs[0].security.scope, rs[0].findings.length], [TIP, 'diff', 3]);
+    }
+  } finally { h.cleanup(); }
+});
+
 test('findings on a pending job that is still running says so (exit 2) and keeps the record', async () => {
   const h = harness(state({ statuses: ['IN_PROGRESS'] }));
   try {

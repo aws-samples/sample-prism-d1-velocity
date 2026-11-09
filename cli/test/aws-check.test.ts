@@ -174,8 +174,14 @@ test('awsCheck: no region refuses before any AWS call; bad --section and --fail-
   assert.equal(r.code, 1);
   assert.match(h.lines.join('\n'), /No AWS region is set.*aws connect/);
   assert.equal(calls.length, 0);
-  assert.equal(awsCheck({ region: REGION, section: ['x'] }, checkDeps().deps).code, 1);
-  assert.equal(awsCheck({ region: REGION, failOn: 'loud' }, checkDeps().deps).code, 1);
+  // Bad flags print only the Error line: no read-only notice first.
+  const bad = checkDeps();
+  assert.equal(awsCheck({ region: REGION, section: ['x'] }, bad.deps).code, 1);
+  assert.deepEqual(bad.lines, ['Error: unknown --section x; choose from bedrock, prism-setup, baseline, startup-advisor']);
+  const loud = checkDeps();
+  assert.equal(awsCheck({ region: REGION, failOn: 'loud' }, loud.deps).code, 1);
+  assert.equal(loud.lines.length, 1);
+  assert.match(loud.lines[0], /^Error: --fail-on must be one of/);
 });
 
 test('awsCheck: outside a git repo the result goes to ~/.prism/results', () => {

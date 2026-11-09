@@ -15,7 +15,7 @@ import { run, runInteractive, type RunResult } from '../../utils/exec.js';
 import { withPrivateTemp } from '../../utils/tempfile.js';
 import {
   CRON_MARKER, PLIST_LABEL, SCHTASK_NAME, otelLogDir, otelLogFile, codeburnSyncConfigPath,
-  linuxCrontabAvailable, darwinPlistPath, scheduleExists, schedulerName,
+  linuxCrontabAvailable, crontabLines, darwinPlistPath, scheduleExists, schedulerName,
   CODEBURN_INSTALL_ARGS, ENABLE_CODEBURN_CMD, SYNC_SINCE, syncArgs,
 } from '../../utils/otel-sync-schedule.js';
 import { runGuarded } from './security.js';
@@ -66,8 +66,7 @@ function linuxInstallSchedule(codeburnPath: string, intervalHours: number): bool
     console.warn('   sudo yum install cronie -y  # then re-run this command\n');
     return false;
   }
-  const existing = run('crontab', ['-l']);
-  const lines = existing.ok ? existing.stdout.split('\n').filter(l => !l.includes(CRON_MARKER)) : [];
+  const lines = crontabLines(run('crontab', ['-l'])).filter(l => !l.includes(CRON_MARKER));
   const logFile = join(LOG_DIR, 'otel-sync.log');
   const cronExpr = `0 */${intervalHours} * * *`;
   const command = [shQuote(codeburnPath), ...syncArgs(SYNC_SINCE)].join(' ');

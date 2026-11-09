@@ -369,6 +369,36 @@ test('pre-commit hook script blocks when gitleaks (no prism-cli) reports a leak'
   assert.equal(clean.status, 0);
 });
 
+test('per-repo hooks honour git config prism.codewatch false, set in the repo or --global', () => {
+  const repo = makeRepo();
+  const hooks = join(repo.dir, '.git', 'hooks');
+  installHooks(hooks);
+  const calls = join(tmp('calls'), 'calls');
+  const bin = tmp('optbin');
+  exe(bin, 'prism-cli', `echo "$*" >> '${calls}'; cat >/dev/null; exit 1`);
+  exe(bin, 'gitleaks', `echo gitleaks >> '${calls}'; exit 1`);
+  const globalCfg = join(tmp('gcfg'), 'gitconfig');
+  writeFileSync(globalCfg, '');
+  const env = { PATH: `${bin}:/usr/bin:/bin`, GIT_CONFIG_GLOBAL: globalCfg, GIT_CONFIG_NOSYSTEM: '1' };
+  const runHook = (hook: string) => spawnSync(join(hooks, hook), ['origin'], { cwd: repo.dir, encoding: 'utf8', input: pushLine(repo), env });
+
+  assert.equal(runHook('pre-commit').status, 1, 'not opted out: the leak blocks');
+
+  git(repo.dir, 'config', 'prism.codewatch', 'false');
+  rmSync(calls, { force: true });
+  assert.equal(runHook('pre-commit').status, 0);
+  assert.equal(runHook('pre-push').status, 0);
+  assert.ok(!existsSync(calls), 'repo opt-out: neither prism-cli nor gitleaks ran');
+
+  git(repo.dir, 'config', '--unset', 'prism.codewatch');
+  spawnSync('git', ['config', '--global', 'prism.codewatch', 'false'], { env });
+  assert.equal(runHook('pre-commit').status, 0);
+  assert.ok(!existsSync(calls), 'global opt-out applies to per-repo hooks too');
+
+  git(repo.dir, 'config', 'prism.codewatch', 'true');
+  assert.equal(runHook('pre-commit').status, 1, 'the repo value wins over --global');
+});
+
 // ---------------------------------------------------------------- install / uninstall
 
 test('installHooks backs up and chains a foreign hook; uninstall restores it', () => {

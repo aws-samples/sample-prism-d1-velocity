@@ -43,12 +43,13 @@ export function resultsRoot(d: Pick<CheckRunDeps, 'cwd' | 'git' | 'home'>): stri
 
 export function awsCheck(input: CheckOptions, d: CheckRunDeps): CheckOutcome {
   const say = input.json ? d.err : d.log;
-  say(CHECK_NOTICE);
-  say('');
+  // Bad flags print only the Error line, before the notice.
   let failOn;
   try { failOn = parseFailOn(input.failOn); } catch (e) { say(`Error: ${(e as Error).message}`); return { code: 1 }; }
   const sections = selectSections(input.section);
   if ('error' in sections) { say(`Error: ${sections.error}`); return { code: 1 }; }
+  say(CHECK_NOTICE);
+  say('');
   const r = resolveRegion(input, d);
   if (!r) { say(`Error: ${NO_REGION_MESSAGE} Or save one with prism-cli aws connect.`); return { code: 1 }; }
   const region = r.region;

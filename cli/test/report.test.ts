@@ -236,3 +236,18 @@ test('prism-cli codewatch report: md by default, html and json to a file, by com
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /no result/);
 });
+
+test('prism-cli codewatch report --commit resolves refs; --id of a secret scan says what it is, once', () => {
+  const fx = fixture();
+  const tsx = import.meta.resolve('tsx');
+  const cli = (...args: string[]) => spawnSync(process.execPath, ['--import', tsx, CLI, 'codewatch', 'report', '--repo', fx.dir, ...args], { encoding: 'utf8' });
+  for (const ref of ['HEAD', 'HEAD~1', 'work']) {
+    const r = cli('--commit', ref, '--format', 'json');
+    assert.equal(r.status, 0, `${ref}: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).id, fx.id, ref);
+  }
+  const secretId = readResultEntries(fx.dir).find((e) => e.result.kind === 'secrets')!.id;
+  const notReview = cli('--id', secretId);
+  assert.equal(notReview.status, 1);
+  assert.equal(notReview.stderr.trim(), `Error: ${secretId} is a pre-commit secrets result, not a pre-push review; pass the id of a pre-push review (ends in -pre-push-review).`);
+});

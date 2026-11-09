@@ -13,10 +13,26 @@ function addOption(cmd: any, opt: any) {
   else cmd.option(opt.flags, opt.description, opt.default);
 }
 
+/** What each command group is for, in `prism-cli --help`. A group missing here falls back to "<group> commands". */
+export const GROUP_DESCRIPTIONS: Record<string, string> = {
+  assessment: 'Run the PRISM D1 Velocity assessment: scan a repo, or run or deploy the assessment web app',
+  aws: 'Connect an AWS profile, run read-only account checks and turn them into a fix list',
+  'bedrock-protection': 'Audit an AWS account, organization or repo for LLMjacking exposure',
+  bootstrapper: 'Install PRISM CI workflows, the eval harness and the coding agent, and set up CI OIDC roles',
+  codewatch: 'Git hook entry points and scan reports for the local codewatch hooks',
+  enable: 'Turn on a PRISM feature on this machine or repo: codewatch hooks, codeburn sync, Security Agent',
+  export: 'Push local usage data to PRISM now',
+  git: 'Claude Code session hook, and the retired AI-origin commit trailers',
+  'parse-code-tool': 'Parse Kiro CLI and Kiro IDE sessions into codeburn-compatible token usage',
+  security: 'AWS Security Agent code reviews, threat models and pentests of this repo, and their results',
+  securityagent: '[deprecated] securityagent setup is now prism-cli enable security',
+  workshop: 'Workshop helpers: check prerequisites, deploy infrastructure, generate demo data, run the sample agent and pen test',
+};
+
 function attach(program: any, category: string, command: string, def: any) {
   // Reuse an existing category command if it was already created
   let categoryCmd = program.commands.find((c: any) => c.name() === category);
-  if (!categoryCmd) categoryCmd = program.command(category).description(`${category} commands`);
+  if (!categoryCmd) categoryCmd = program.command(category).description(GROUP_DESCRIPTIONS[category] ?? `${category} commands`);
   const sub = categoryCmd.command(command).description(def.description || command);
   if (def.options) {
     for (const opt of def.options) addOption(sub, opt);

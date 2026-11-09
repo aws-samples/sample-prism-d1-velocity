@@ -26,6 +26,19 @@ export const MANAGED_HOOKS = ['pre-commit', 'pre-push'] as const;
 export type ManagedHook = typeof MANAGED_HOOKS[number];
 
 /**
+ * `git config prism.codewatch false` skips codewatch in a repo, with the
+ * per-repo and the global hooks alike (a hook it backed up or chains still
+ * runs). git reads the effective value: the repo's own setting, else --global.
+ */
+export const OPT_OUT_KEY = 'prism.codewatch';
+const OPT_OUT_CHECK = `if [ "$(git config --bool --get ${OPT_OUT_KEY} 2>/dev/null)" = "false" ]; then exit 0; fi`;
+
+export function isOptedOut(repo: string): boolean {
+  const r = run('git', ['-C', repo, 'config', '--bool', '--get', OPT_OUT_KEY]);
+  return r.ok && r.stdout === 'false';
+}
+
+/**
  * pre-commit: blocks on a gitleaks finding.
  *
  * Prefers `prism-cli codewatch pre-commit` (writes a result file). Without prism-cli
@@ -39,6 +52,7 @@ HOOK_DIR=$(dirname "$0")
 if [ -x "$HOOK_DIR/pre-commit${BACKUP_SUFFIX}" ]; then
   "$HOOK_DIR/pre-commit${BACKUP_SUFFIX}" "$@" || exit $?
 fi
+${OPT_OUT_CHECK}
 # Probe first: an older prism-cli on PATH has no "codewatch pre-commit" and would
 # fail every commit with "unknown command". Its --help exits 0 with the root help,
 # so the probe checks that the subcommand's own usage line is printed.
@@ -72,6 +86,7 @@ PRISM_PUSH_INPUT=$(cat)
 if [ -x "$HOOK_DIR/pre-push${BACKUP_SUFFIX}" ]; then
   printf '%s\\n' "$PRISM_PUSH_INPUT" | "$HOOK_DIR/pre-push${BACKUP_SUFFIX}" "$@" || exit $?
 fi
+${OPT_OUT_CHECK}
 if command -v prism-cli >/dev/null 2>&1 && prism-cli codewatch pre-push --help 2>/dev/null | grep -q 'codewatch pre-push'; then
   printf '%s\\n' "$PRISM_PUSH_INPUT" | prism-cli codewatch pre-push --remote "\${1:-}" || true
 else

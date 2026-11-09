@@ -18,8 +18,9 @@ export default {
   options: CODEBURN_OPTIONS,
   /** Errors are handled once, in runEnableCodeburn, for this alias too. `hooks` is for tests. */
   async action(opts: CodeburnOptions, hooks?: CodeburnHooks) {
-    for (const l of DEPRECATION) console.warn(l);
-    console.warn('');
+    // stdout, like the plan: on a pipe stdout and stderr are flushed apart, so a stderr notice landed mid-plan.
+    for (const l of DEPRECATION) console.log(l);
+    console.log('');
     await runEnableCodeburn(opts, hooks);
   },
 };

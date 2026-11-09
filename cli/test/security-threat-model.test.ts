@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { AwsResult } from '../src/utils/aws.js';
 import { POLL_FIRST_MS, type ReviewDeps } from '../src/security/review.js';
 import {
-  DEFAULT_TM_TIMEOUT_MIN, docLimitWarnings, firstParagraph, securityThreatModel, securityThreats, strideLabel, THREAT_MODEL_NOTICE, titlePrefix,
+  DEFAULT_TM_TIMEOUT_MIN, docLimitWarnings, firstParagraph, securityThreatModel, securityThreats, strideLabel, THREAT_MODEL_NOTICE, TINY_DOCS_BYTES, tinyDocsHint, titlePrefix,
   type ThreatModelOptions, type ThreatsOptions,
 } from '../src/security/threat-model.js';
 import { collectSecurity } from '../src/dashboard/security.js';
@@ -147,6 +147,10 @@ function harness(s: State, o: { tree?: Tree; cwd?: (repo: string) => string; int
         writeFileSync(file, e.content); return { ok: true, stdout: '', stderr: '' };
       }
       if (has('archive')) { writeFileSync(arg(a, '-o'), ZIP); return { ok: true, stdout: '', stderr: '' }; }
+      if (has('cat-file')) {
+        const e = entry(a[a.length - 1].replace(/^[0-9a-f]+:/, ''));
+        return e ? { ok: true, stdout: String(Buffer.byteLength(e.content)), stderr: '' } : { ok: false, stdout: '', stderr: 'fatal: path not in commit' };
+      }
       return { ok: false, stdout: '', stderr: `fake git: ${a.join(' ')}` };
     },
     makeTempDir: () => mkdtempSync(join(tmpdir(), 'prism-tm-tmp-')),
@@ -420,6 +424,34 @@ test('threat-model: not the repo root prints one Error line before the notice', 
 // ---------------------------------------------------------------------------
 // threats
 // ---------------------------------------------------------------------------
+
+test('threat-model: tiny scope docs warn up front, and again when the job finds no threats', async () => {
+  const tiny = /Warning: the scope docs are only 4 bytes in total \(docs\/NOTE\.md\), so the threat model may find no threats\. Pass a fuller design doc with --doc, or commit the Kiro spec docs \(\.kiro\/specs\/<feature>\/design\.md and requirements\.md\)/g;
+  const tree: Tree = { ...DEFAULT_TREE, 'docs/NOTE.md': 'hi\n\n' };
+  const h = harness(state({ threats: [] }), { tree });
+  try {
+    assert.equal(await securityThreatModel(tm({ doc: ['docs/NOTE.md'] }), h.deps), 0);
+    assert.equal(h.out().match(tiny)?.length, 2, h.out());
+    assert.match(h.out(), /No threats\.\nWarning: the scope docs are only/);
+  } finally { h.cleanup(); }
+
+  // The same hint from security threats completing a --no-wait run (sizes read from the recorded commit).
+  const w = harness(state({ threats: [] }), { tree });
+  try {
+    assert.equal(await securityThreatModel(tm({ doc: ['docs/NOTE.md'], wait: false }), w.deps), 0);
+    w.lines.length = 0;
+    assert.equal(await securityThreats(th(), w.deps), 0);
+    assert.equal(w.out().match(tiny)?.length, 1, w.out());
+  } finally { w.cleanup(); }
+
+  // Large enough docs, or threats found: no hint.
+  const big = harness(state({ threats: [] }), { tree: { ...DEFAULT_TREE, 'docs/ARCH.md': 'x'.repeat(TINY_DOCS_BYTES) } });
+  try {
+    assert.equal(await securityThreatModel(tm({ doc: ['docs/ARCH.md'] }), big.deps), 0);
+    assert.doesNotMatch(big.out(), /scope docs are only/);
+  } finally { big.cleanup(); }
+  assert.equal(tinyDocsHint([]), null, '--no-docs: the source alone, no warning');
+});
 
 test('threats: read-only, completes the pending record in place with its commit and docs', async () => {
   const s = state();

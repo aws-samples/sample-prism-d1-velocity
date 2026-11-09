@@ -380,13 +380,13 @@ function fromPending(p: PrismResult): Omit<ResultBase, 'setup' | 'region' | 'acc
 }
 
 /**
- * Pending records in this repo for this account, region and code review,
- * newest first. Records from another account or code review are never
- * completed with this one's findings.
+ * Records (pending, completed or failed) in this repo for this account,
+ * region and code review, newest first. Records from another account or code
+ * review are never completed with this one's findings.
  */
-export function pendingReviews(root: string, account: string, region: string, codeReviewId: string): ResultEntry[] {
+export function reviewRecords(root: string, account: string, region: string, codeReviewId: string): ResultEntry[] {
   return readResultEntries(root)
-    .filter(({ result: r }) => r.kind === 'security-review' && r.status === 'pending' && r.security?.job_id
+    .filter(({ result: r }) => r.kind === 'security-review' && r.security?.job_id
       && r.security.account === account && r.security.region === region && r.security.code_review_id === codeReviewId)
     .sort((a, b) => b.result.started_at.localeCompare(a.result.started_at));
 }
@@ -721,12 +721,15 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
     printIdentity(ctx, id);
     const repo = needRepo(ctx, root);
     const setup = resolveSetup(ctx, id, repo);
-    const pendings = pendingReviews(repo.root, id.account, ctx.opts.region, setup.codeReviewId);
+    const records = reviewRecords(repo.root, id.account, ctx.opts.region, setup.codeReviewId);
+    const pendings = records.filter((e) => e.result.status === 'pending');
+    // A job already on record (pending or completed) is updated in place, keeping its scope and commit.
+    const recordOf = (jobId: string) => records.find((e) => e.result.security!.job_id === jobId) ?? null;
     let pending: ResultEntry | null = null;
     let job: JobInfo | null;
     if (input.job) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(input.job)) throw new Abort(`--job must be a job id, got "${input.job}"`);
-      pending = pendings.find((e) => e.result.security!.job_id === input.job) ?? null;
+      pending = recordOf(input.job);
       job = getJob(ctx, setup, input.job);
     } else if (pendings.length) {
       // A job code-review started and did not see finish: the newest one, completed in place with its scope and commits.
@@ -738,8 +741,9 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
     } else {
       job = latestJob(ctx, setup);
       if (!job) { say(`No code review jobs yet for ${repo.id}. Start one with: prism-cli security code-review`); return 0; }
+      pending = recordOf(job.codeReviewJobId);
     }
-    if (pending) say(`Pending:     recorded by code-review at ${pending.result.started_at} (${scopeText(pending.result)})`);
+    if (pending) say(`${pending.result.status === 'pending' ? 'Pending: ' : 'Recorded:'}    recorded by code-review at ${pending.result.started_at} (${scopeText(pending.result)})`);
     say(`Job:         ${job.codeReviewJobId} (${job.status}${job.createdAt ? `, started ${job.createdAt}` : ''})`);
     if (!TERMINAL.has(job.status)) {
       if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return 2; }

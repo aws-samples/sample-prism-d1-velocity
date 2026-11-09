@@ -15,7 +15,7 @@ export default {
   options: [
     { flags: '--repo <path>', description: 'Repository (default: the current one)' },
     { flags: '--id <result-id>', description: 'Result id (file name in .prism/results/ without .json)' },
-    { flags: '--commit <sha>', description: 'Report on the newest review whose pushed range includes this commit' },
+    { flags: '--commit <rev>', description: 'Report on the newest review whose pushed range includes this commit (a sha, short sha, HEAD or branch)' },
     { flags: '--format <fmt>', description: `Output format: ${FORMATS.join(' | ')}`, default: 'md' },
     { flags: '--output <file>', description: 'Write to a file instead of stdout' },
   ],
@@ -36,7 +36,10 @@ export default {
       entry = findResultById(repo, opts.id, entries);
       if (!entry) fail(`no result "${opts.id}" in ${repo}/.prism/results/`);
     } else if (opts.commit) {
-      entry = reviewForCommit(entries, opts.commit, log);
+      // HEAD, a branch or a short sha. A value git cannot resolve (or one that
+      // looks like an option) is matched as given, as a sha prefix.
+      const rev = opts.commit.startsWith('-') ? null : run('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${opts.commit}^{commit}`]);
+      entry = reviewForCommit(entries, rev?.ok ? rev.stdout : opts.commit, log);
       if (!entry) fail(`no recorded pre-push review covers commit ${opts.commit}`);
     } else {
       entry = reviewEntries(entries)[0];
@@ -46,7 +49,9 @@ export default {
     try {
       report = buildReport(repo, entry!, entries, { log });
     } catch (e: any) {
-      return fail(`${opts.id} is not a pre-push review (${e.message})`);
+      const r = entry!.result;
+      if (r.kind === 'review' && r.hook === 'pre-push' && r.commit) return fail(e.message);
+      return fail(`${opts.id} is a ${r.hook} ${r.kind} result, not a pre-push review; pass the id of a pre-push review (ends in -pre-push-review).`);
     }
     const out = format === 'json' ? renderReportJson(report) : format === 'html' ? renderReportHtml(report) : renderReportMarkdown(report);
     if (opts.output) {

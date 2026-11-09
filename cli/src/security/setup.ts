@@ -21,7 +21,7 @@ import { join, resolve } from 'node:path';
 import type { AwsResult } from '../utils/aws.js';
 import type { RunResult } from '../utils/exec.js';
 import { diffTemplates, formatDiff, type CfnTemplate, type TemplateDiff } from './cfn-diff.js';
-import { cliVersionOk, explainAwsError, MIN_AWS_CLI_TEXT, redact } from './errors.js';
+import { cliVersionOk, CREDENTIALS_HINT, explainAwsError, MIN_AWS_CLI_TEXT, NO_CREDENTIALS_MESSAGE, redact } from './errors.js';
 import { ensureMarkerIgnored, MARKER_PATH, readSecurityMarkerWithSource, writeSecurityMarker } from './marker.js';
 import { codeReviewParam, codeReviewTitle, repoIdFromRemote, repoSlug, repoZipKey, SSM_PREFIX } from './repo.js';
 import { accountChangeWarning, connectionLabel, type SavedConnection } from '../aws/connection.js';
@@ -182,7 +182,7 @@ export interface Identity { account: string; arn: string; alias: string | null }
 function identity(ctx: Ctx): Identity {
   const r = call(ctx, ['sts', 'get-caller-identity']);
   const account = String(r.json?.Account || '');
-  if (!account) throw new Abort('Failed to get account ID. Check your AWS credentials.');
+  if (!account) throw new Abort(NO_CREDENTIALS_MESSAGE);
   // The alias is a nicety for the confirmation; a caller without iam:ListAccountAliases still proceeds.
   const a = ctx.deps.aws(['iam', 'list-account-aliases'], ctx.opts.region);
   const alias = a.ok && Array.isArray(a.json?.AccountAliases) && a.json.AccountAliases[0] ? String(a.json.AccountAliases[0]) : null;
@@ -708,6 +708,7 @@ function securityStatus(ctx: Ctx): number {
   const { rows, code } = collectSecurityStatus(ctx);
   deps.log(`Security Agent status (region ${opts.region}, ${opts.regionSource}; credentials: ${credentialSource(opts, deps.env)}):`);
   for (const [m, l, d] of rows) deps.log(`  [${m}] ${l}: ${d}`);
+  if (rows.some(([m, l, d]) => m === 'missing' && l === 'Credentials' && d === NO_CREDENTIALS_MESSAGE)) deps.log(`  ${CREDENTIALS_HINT}`);
   return code;
 }
 
