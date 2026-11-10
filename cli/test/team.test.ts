@@ -39,9 +39,9 @@ test('team info: prints both outputs and the developer line; read-only notice; -
   const text = t.all();
   assert.match(text, /^Read-only \(team info\)/);
   assert.match(text, new RegExp(`Account: +${ACCOUNT}`));
-  assert.match(text, new RegExp(`OtelCollectorUrl: ${COLLECTOR}`));
+  assert.ok(text.includes(`OtelCollectorUrl: ${COLLECTOR}`));
   assert.match(text, new RegExp(`OtelUserPoolId: +${POOL}`));
-  assert.match(text, new RegExp(`  prism-cli enable codeburn --url ${COLLECTOR.replace(/\./g, '\\.')}`));
+  assert.ok(text.includes(`  prism-cli enable codeburn --url ${COLLECTOR}`));
   assert.ok(calls.every((c) => /^(sts|cloudformation)$/.test(c[0])), `reads only: ${JSON.stringify(calls)}`);
 
   const j = deps();
@@ -68,7 +68,7 @@ test('team info: no stack and no outputs are clear errors', () => {
 // ---------------------------------------------------------------- team add-developer
 
 test('team add-developer: an invalid email is refused before any AWS call', async () => {
-  for (const email of ['', 'dev', 'dev@', '@example.com', 'a b@example.com', 'dev@example.com; rm -rf x', '$(id)@example.com', 'x,Name=email_verified,Value=true@example.com']) {
+  for (const email of ['', 'dev', 'dev@', '@example.com', 'a b@example.com', 'dev@example.com; rm -rf x', '$(id)@example.com', 'x,Name=email_verified,Value=true@example.com', '-foo@example.com', '--profile@example.com']) {
     const t = deps();
     const calls: string[][] = [];
     assert.equal(await withFakeAws([...IDENTITY, FOUND, CREATED], () => addDeveloper({ email, region: REGION, yes: true }, t.d), calls), 1, email);

@@ -25,8 +25,9 @@ export const ADD_PERMISSIONS = 'cloudformation:DescribeStacks (unless --user-poo
 /**
  * shortcut: a practical shape check, not RFC 5322; Cognito does its own validation on create.
  * ',' and '=' are rejected too: they are separators in AWS CLI shorthand (attributes are also passed as JSON).
+ * A leading '-' is rejected so the value can never be read as an AWS CLI option.
  */
-export const EMAIL_RE = /^[^\s@<>"'`;|&$\\,=]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+export const EMAIL_RE = /^(?!-)[^\s@<>"'`;|&$\\,=]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 const POOL_RE = /^[\w-]+_[0-9a-zA-Z]+$/;
 const ACCESS_DENIED = /AccessDenied|UnauthorizedOperation|NotAuthorized/;
 

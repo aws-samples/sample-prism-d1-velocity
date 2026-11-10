@@ -587,12 +587,13 @@ function installedSchedules(d: CodeburnDeps): string[] {
 
 /** Local only: codeburn keeps working here; no endpoint is set up and no schedule installed. */
 async function localOnly(opts: CodeburnOptions, d: CodeburnDeps, dry: boolean): Promise<number> {
-  const ensured = await ensureCodeburn(opts, d);
-  if (typeof ensured === 'number') return ensured;
+  // Removal first: taking the schedule off never needs codeburn installed.
   if (opts.remove) {
     const code = removeSchedules(opts, d);
     if (code) return code;
   }
+  const ensured = await ensureCodeburn(opts, d);
+  if (typeof ensured === 'number') return ensured;
   saveMode('local', d, dry);
   const url = configuredSyncUrl(d.home);
   const left = dry && opts.remove ? [] : installedSchedules(d);

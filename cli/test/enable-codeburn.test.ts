@@ -531,6 +531,9 @@ test('moving to local leaves the endpoint and schedule in place and says so; --l
   const rm = fakeMachine({ syncUrl: URL, schedule: true });
   assert.equal(await enableCodeburn({ local: true, remove: true }, rm.deps), 0);
   assert.deepEqual(rm.scheduleCalls, ['remove']);
+  const noCb = fakeMachine({ syncUrl: URL, schedule: true, installed: false, tty: false });
+  assert.equal(await enableCodeburn({ local: true, remove: true }, noCb.deps), 1, 'codeburn missing and no terminal to confirm its install');
+  assert.deepEqual(noCb.scheduleCalls, ['remove'], 'the schedule is removed before codeburn is needed');
   assert.match(rm.text(), /Local only: codeburn usage stays on this machine/);
   assert.match(rm.text(), /Left in place: codeburn's sync config/);
 });
