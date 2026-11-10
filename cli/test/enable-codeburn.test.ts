@@ -8,6 +8,7 @@ import { codeburnVersionOk, enableCodeburn, INSTALL_CMD, runEnableCodeburn, syst
 import alias, { DEPRECATION } from '../src/commands/bootstrapper/setup-otel-sync.js';
 import { machineChecks } from '../src/dashboard/setup.js';
 import { crontabLines, systemdTimerExists } from '../src/utils/otel-sync-schedule.js';
+import { readSavedMode, writeSyncMode } from '../src/utils/sync-mode.js';
 
 const URL = 'https://otel.example.com';
 /** A home whose codeburn sync endpoint is configured, so the checklist shows the self-fix states. */
@@ -419,4 +420,124 @@ test('dashboard setup checklist: an unreadable crontab with systemctl --user poi
   const withTimer = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: syncedHome(), env: {},
     scheduleExists: () => true, schedulerName: () => 'systemd user timer', global: { state: 'not-installed', hooksPath: null, dir: '' } });
   assert.match(withTimer.find((i) => i.id === 'codeburn-sync')!.detail, /^systemd user timer entry installed/);
+});
+
+// ---------------------------------------------------------------- sync modes (~/.prism/codeburn.json)
+
+const syncSetup = (m: ReturnType<typeof fakeMachine>) => m.calls.some((c) => c.includes(' sync setup '));
+
+test('sync mode prompt on a TTY: 1 is local only, saved, with no endpoint and no schedule', async () => {
+  const m = fakeMachine({ answers: ['1'] });
+  assert.equal(await enableCodeburn({}, m.deps), 0);
+  assert.match(m.text(), /Where should your usage go\?\n {4}1\) just me, keep it on this machine\n {4}2\) my team's PRISM \(I have the collector URL from my platform team\)\n {4}3\) I'm the platform team setting up PRISM/);
+  assert.equal(readSavedMode(m.home), 'local');
+  assert.match(m.text(), /Local only: codeburn usage stays on this machine\. No sync endpoint is set up and no schedule is installed\./);
+  assert.match(m.text(), /ask your platform team for the collector URL/);
+  assert.equal(syncSetup(m), false);
+  assert.deepEqual(m.scheduleCalls, []);
+});
+
+test('sync mode prompt: an empty answer is local; 2 asks for the URL and syncs as team; a bad answer exits 1', async () => {
+  const empty = fakeMachine({ answers: [''] });
+  assert.equal(await enableCodeburn({}, empty.deps), 0);
+  assert.equal(readSavedMode(empty.home), 'local');
+
+  const team = fakeMachine({ answers: ['2', URL] });
+  assert.equal(await enableCodeburn({}, team.deps), 0);
+  assert.match(team.asked[1], /Collector URL \(from your platform team/);
+  assert.ok(syncSetup(team));
+  assert.equal(readSavedMode(team.home), 'team');
+
+  const bad = fakeMachine({ answers: ['7'] });
+  assert.equal(await enableCodeburn({}, bad.deps), 1);
+  assert.match(bad.err.join('\n'), /"7" is not 1, 2 or 3/);
+  assert.equal(readSavedMode(bad.home), null);
+});
+
+test('sync mode 3 / --admin prints the platform-team steps and helpers, makes no AWS call and installs nothing', async () => {
+  for (const [opts, answers] of [[{}, ['3']], [{ admin: true }, []]] as const) {
+    const m = fakeMachine({ answers: [...answers] });
+    assert.equal(await enableCodeburn(opts, m.deps), 0);
+    const t = m.text();
+    assert.match(t, /1\. Deploy the PRISM stack[\s\S]*2\. Note the stack outputs OtelCollectorUrl and OtelUserPoolId[\s\S]*3\. Add each developer[\s\S]*4\. Share the collector URL/);
+    assert.match(t, /prism-cli team info/);
+    assert.match(t, /prism-cli team add-developer <email>/);
+    assert.match(t, /Platform team guide: https:\/\/github\.com\/aws-samples\/sample-prism-d1-velocity\/blob\/main\/USER_GUIDE\.md#administrator-setup/);
+    assert.ok(!m.calls.some((c) => /\baws\b/.test(c)), 'no AWS call');
+    assert.equal(syncSetup(m), false);
+    assert.deepEqual(m.scheduleCalls, []);
+    assert.equal(readSavedMode(m.home), 'admin');
+  }
+});
+
+test('no TTY and no flag: local, without a question', async () => {
+  const m = fakeMachine({ tty: false });
+  assert.equal(await enableCodeburn({}, m.deps), 0);
+  assert.deepEqual(m.asked, []);
+  assert.equal(readSavedMode(m.home), 'local');
+  assert.match(m.text(), /No terminal and no --local, --url or --admin: local only\./);
+});
+
+test('flags pick the mode without a question; two mode flags are refused', async () => {
+  const local = fakeMachine();
+  assert.equal(await enableCodeburn({ local: true }, local.deps), 0);
+  assert.deepEqual(local.asked, []);
+  const team = fakeMachine();
+  assert.equal(await enableCodeburn({ url: URL }, team.deps), 0);
+  assert.deepEqual(team.asked, []);
+  assert.equal(readSavedMode(team.home), 'team');
+  const both = fakeMachine();
+  assert.equal(await enableCodeburn({ local: true, url: URL }, both.deps), 1);
+  assert.match(both.err.join('\n'), /--local and --url choose different sync modes/);
+  const dry = fakeMachine();
+  assert.equal(await enableCodeburn({ local: true, dryRun: true }, dry.deps), 0);
+  assert.equal(readSavedMode(dry.home), null, 'a dry run saves nothing');
+});
+
+test('migration: no mode saved but an endpoint configured is team; no question, no "local only"', async () => {
+  const m = fakeMachine({ syncUrl: URL, schedule: true });
+  assert.equal(await enableCodeburn({}, m.deps), 0);
+  assert.deepEqual(m.asked, []);
+  assert.match(m.text(), /Sync mode: team \(no mode saved; a codeburn sync endpoint is configured, so team/);
+  assert.doesNotMatch(m.text(), /local only/i);
+  assert.equal(readSavedMode(m.home), 'team');
+  const s = fakeMachine({ syncUrl: URL });
+  assert.equal(await enableCodeburn({ status: true }, s.deps), 0);
+  assert.match(s.text(), /Sync mode: team \(no mode saved; a codeburn sync endpoint is configured, so team\)/);
+  assert.equal(readSavedMode(s.home), null, '--status changes nothing');
+});
+
+test('--status shows a saved mode; a fresh machine is local by default', async () => {
+  const fresh = fakeMachine();
+  assert.equal(await enableCodeburn({ status: true }, fresh.deps), 0);
+  assert.match(fresh.text(), /Sync mode: local \(no mode saved and no sync endpoint, so local\)/);
+  assert.match(fresh.text(), /no sync endpoint \(usage stays on this machine\)/);
+  writeSyncMode(fresh.home, 'admin');
+  const again = fakeMachine();
+  again.deps.home = fresh.home;
+  assert.equal(await enableCodeburn({ status: true }, again.deps), 0);
+  assert.match(again.text(), /Sync mode: admin \(saved in ~\/\.prism\/codeburn\.json\)/);
+});
+
+test('moving to local leaves the endpoint and schedule in place and says so; --local --remove removes the schedule', async () => {
+  const keep = fakeMachine({ syncUrl: URL, schedule: true });
+  assert.equal(await enableCodeburn({ local: true }, keep.deps), 0);
+  assert.deepEqual(keep.scheduleCalls, []);
+  assert.equal(readSavedMode(keep.home), 'local');
+  assert.match(keep.text(), /Sync mode is local, but the crontab schedule is still installed and still pushes usage\.\n {4}Remove it: prism-cli enable codeburn --local --remove/);
+  assert.match(keep.text(), /Left in place: codeburn's sync config for https:\/\/otel\.example\.com/);
+  assert.doesNotMatch(keep.text(), /stays on this machine\. No sync endpoint/);
+
+  const rm = fakeMachine({ syncUrl: URL, schedule: true });
+  assert.equal(await enableCodeburn({ local: true, remove: true }, rm.deps), 0);
+  assert.deepEqual(rm.scheduleCalls, ['remove']);
+  assert.match(rm.text(), /Local only: codeburn usage stays on this machine/);
+  assert.match(rm.text(), /Left in place: codeburn's sync config/);
+});
+
+test('team mode with no URL and no terminal says to ask the platform team', async () => {
+  const m = fakeMachine({ tty: false });
+  writeSyncMode(m.home, 'team');
+  assert.equal(await enableCodeburn({}, m.deps), 1);
+  assert.match(m.err.join('\n'), /the collector URL is required\. Ask your platform team for it, then run prism-cli enable codeburn --url <collector URL>\./);
 });

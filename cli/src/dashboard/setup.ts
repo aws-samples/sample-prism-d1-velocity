@@ -16,40 +16,23 @@ import { realpathSync } from 'node:fs';
 import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
 import { readSecurityMarker } from '../security/marker.js';
-import { configuredSyncUrl } from '../commands/enable/codeburn.js';
+import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
+import { effectiveMode, LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, TEAM_NO_URL_HELP, TEAM_URL_CMD, type CheckHelp } from '../utils/sync-mode.js';
 
-export type CheckStatus = 'ok' | 'warn' | 'missing';
+/** info: nothing to fix (a choice, like local-only sync); counted as neither ok nor a warning. */
+export type CheckStatus = 'ok' | 'info' | 'warn' | 'missing';
 export interface CheckItem {
   id: string;
   label: string;
   status: CheckStatus;
   detail: string;
-  /** One-line fix; empty when status is ok. */
+  /** One-line fix; empty when status is ok or info. */
   fix: string;
-  /** Set when the fix needs someone else (an administrator): plain text plus documentation links. */
+  /** Guidance with doc links: a fix that needs the platform team, or what a chosen mode means. */
   help?: CheckHelp;
 }
 
-export interface CheckHelp {
-  text: string;
-  links: { label: string; url: string }[];
-}
-
-/** Public setup docs the dashboard links to. The one place these URLs live. */
-export const SETUP_DOCS = {
-  telemetryAccount: 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/README.md#2-give-each-developer-a-telemetry-account',
-  adminGuide: 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/USER_GUIDE.md#administrator-setup',
-} as const;
-
-/** No codeburn sync endpoint here: only an administrator can supply the collector URL and telemetry account. */
-export const CODEBURN_ADMIN_HELP: CheckHelp = {
-  text: 'codeburn sync is not set up on this machine. Ask your PRISM administrator for the collector URL and a telemetry account for your email, then run '
-    + `${ENABLE_CODEBURN_CMD} --url <collector URL>.`,
-  links: [
-    { label: 'Setup instructions', url: SETUP_DOCS.telemetryAccount },
-    { label: 'Administrator guide', url: SETUP_DOCS.adminGuide },
-  ],
-};
+export type { CheckHelp };
 
 export interface MachineDeps {
   pathEnv?: string;
@@ -84,9 +67,46 @@ export function globalHooksCheck(g: GlobalStatus): CheckItem {
 // Shared with enable codewatch and the pre-commit warning so the three cannot drift.
 export { gitleaksInstallHint };
 
-const item = (id: string, label: string, status: CheckStatus, detail: string, fix = ''): CheckItem => ({ id, label, status, detail, fix: status === 'ok' ? '' : fix });
+const item = (id: string, label: string, status: CheckStatus, detail: string, fix = ''): CheckItem => ({ id, label, status, detail, fix: status === 'ok' || status === 'info' ? '' : fix });
 
 const AWS_ENV_VARS = ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+
+const SYNC_LABEL = 'Scheduled codeburn sync push';
+
+/** The codeburn sync row, by sync mode (utils/sync-mode.ts). */
+export function codeburnSyncCheck(home: string, deps: MachineDeps = {}): CheckItem {
+  // Same read as `aws check` and `enable codeburn`: null means no sync config at all ('' is an unreadable one).
+  const url = configuredSyncUrl(home);
+  const { mode } = effectiveMode(home, url);
+  // An unreadable crontab (scheduleExists throws) is its own state, not "no entry".
+  let hasSchedule: boolean | Error;
+  try { hasSchedule = (deps.scheduleExists || scheduleExists)(); } catch (e) { hasSchedule = e instanceof Error ? e : new Error(String(e)); }
+  const sched = (deps.schedulerName || schedulerName)();
+  if (mode === 'admin') {
+    return { ...item('codeburn-sync', SYNC_LABEL, 'info', 'platform team: set up PRISM for your developers'), help: PLATFORM_TEAM_HELP };
+  }
+  if (mode === 'local') {
+    // Left in place by a move to local without --remove: say it still pushes rather than claim local only.
+    const left = hasSchedule === true ? `; a ${sched} sync schedule is still installed and still pushes usage (remove it: ${ENABLE_CODEBURN_CMD} --local --remove)` : '';
+    return { ...item('codeburn-sync', SYNC_LABEL, 'info', `local only: codeburn usage stays on this machine${left}`), help: LOCAL_MODE_HELP };
+  }
+  if (url === null) {
+    return { ...item('codeburn-sync', SYNC_LABEL, 'missing', 'no codeburn sync endpoint configured on this machine', TEAM_URL_CMD), help: TEAM_NO_URL_HELP };
+  }
+  const last = lastSync(home);
+  if (hasSchedule instanceof Error) {
+    return item('codeburn-sync', SYNC_LABEL, 'warn', hasSchedule.message,
+      (deps.systemdAvailable || systemdUserAvailable)()
+        ? `${ENABLE_CODEBURN_CMD} --schedule systemd (a systemd user timer; your crontab is not touched)`
+        : 'Fix crontab access (crontab -l must work), then re-check');
+  }
+  if (hasSchedule) {
+    return item('codeburn-sync', SYNC_LABEL, last ? 'ok' : 'warn',
+      last ? `${sched} entry installed; last sync log write ${last.at}` : `${sched} entry installed; no sync log yet in ~/.prism/logs`,
+      'Wait for the next run, or check ~/.prism/logs/otel-sync.log');
+  }
+  return item('codeburn-sync', SYNC_LABEL, 'missing', `no ${sched} entry${last ? `; last sync log write ${last.at}` : ''}`, ENABLE_CODEBURN_CMD);
+}
 
 /** Checks that do not depend on a repository. */
 export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
@@ -98,28 +118,7 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   out.push(item('codeburn', 'codeburn installed', cb.installed ? 'ok' : 'missing',
     cb.installed ? (cb.version || 'version unknown') : 'not on PATH', ENABLE_CODEBURN_CMD));
 
-  // An unreadable crontab (scheduleExists throws) is its own state, not "no entry".
-  let hasSchedule: boolean | Error;
-  try { hasSchedule = (deps.scheduleExists || scheduleExists)(); } catch (e) { hasSchedule = e instanceof Error ? e : new Error(String(e)); }
-  const sched = (deps.schedulerName || schedulerName)();
-  const last = lastSync(home);
-  // Same read as `aws check` and `enable codeburn`: null means no sync config at all ('' is an unreadable one).
-  if (configuredSyncUrl(home) === null) {
-    out.push({ ...item('codeburn-sync', 'Scheduled codeburn sync push', 'missing', 'no codeburn sync endpoint configured on this machine',
-      `${ENABLE_CODEBURN_CMD} --url <collector URL>`), help: CODEBURN_ADMIN_HELP });
-  } else if (hasSchedule instanceof Error) {
-    out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'warn', hasSchedule.message,
-      (deps.systemdAvailable || systemdUserAvailable)()
-        ? `${ENABLE_CODEBURN_CMD} --schedule systemd (a systemd user timer; your crontab is not touched)`
-        : 'Fix crontab access (crontab -l must work), then re-check'));
-  } else if (hasSchedule) {
-    out.push(item('codeburn-sync', 'Scheduled codeburn sync push', last ? 'ok' : 'warn',
-      last ? `${sched} entry installed; last sync log write ${last.at}` : `${sched} entry installed; no sync log yet in ~/.prism/logs`,
-      'Wait for the next run, or check ~/.prism/logs/otel-sync.log'));
-  } else {
-    out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'missing',
-      `no ${sched} entry${last ? `; last sync log write ${last.at}` : ''}`, ENABLE_CODEBURN_CMD));
-  }
+  out.push(codeburnSyncCheck(home, deps));
 
   const gl = checkTool('gitleaks', { pathEnv: deps.pathEnv, versionArgs: ['version'] });
   // warn, not missing: commits are still allowed, just not secret-scanned (decided).

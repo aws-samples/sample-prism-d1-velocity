@@ -198,8 +198,8 @@ test('setup (machine): ok when tools, schedule, sync log and AWS profile are pre
 
 test('setup (machine): missing items each carry a one-line fix; AWS uses presence only', () => {
   const items = machineChecks({ pathEnv: tmp('none'), home: tmp('home2'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', global: NOT_INSTALLED });
-  assert.deepEqual(items.map((i) => i.status), ['missing', 'missing', 'warn', 'missing', 'missing'], 'gitleaks absent is a warning, not missing');
-  for (const i of items) { assert.ok(i.fix.length > 0); assert.ok(!i.fix.includes('\n')); }
+  assert.deepEqual(items.map((i) => i.status), ['missing', 'info', 'warn', 'missing', 'missing'], 'gitleaks absent is a warning; no sync mode and no endpoint is local only (info)');
+  for (const i of items.filter((x) => x.status !== 'info')) { assert.ok(i.fix.length > 0); assert.ok(!i.fix.includes('\n')); }
   // an existing config file counts, without its contents being needed
   const home = tmp('home3');
   mkdirSync(join(home, '.aws'));

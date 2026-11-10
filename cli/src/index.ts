@@ -25,6 +25,7 @@ export const GROUP_DESCRIPTIONS: Record<string, string> = {
   git: 'Claude Code session hook, and the retired AI-origin commit trailers',
   'parse-code-tool': 'Parse Kiro CLI and Kiro IDE sessions into codeburn-compatible token usage',
   security: 'AWS Security Agent code reviews, threat models and pentests of this repo, and their results',
+  team: 'Platform-team helpers: read the PRISM stack outputs, add developer telemetry accounts',
   securityagent: '[deprecated] securityagent setup is now prism-cli enable security',
   workshop: 'Workshop helpers: check prerequisites, deploy infrastructure, generate demo data, run the sample agent and pen test',
 };
@@ -36,6 +37,12 @@ function attach(program: any, category: string, command: string, def: any) {
   const sub = categoryCmd.command(command).description(def.description || command);
   if (def.options) {
     for (const opt of def.options) addOption(sub, opt);
+  }
+  // One optional positional argument (e.g. team add-developer <email>), passed to the action as opts[name].
+  if (def.argument) {
+    sub.argument(def.argument.spec, def.argument.description);
+    sub.action((value: string, opts: any) => def.action({ ...opts, [def.argument.name]: value }));
+    return;
   }
   sub.action((opts: any) => def.action(opts));
 }

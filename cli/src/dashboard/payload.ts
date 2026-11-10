@@ -7,6 +7,7 @@ import { collectCodewatch, combineSecretScanning, type CodewatchPanel, type Secr
 import { discoverRepos, repoLabels, type DiscoverOptions } from './repos.js';
 import { codewatchSetup, GLOBAL_FORCE_CMD, GLOBAL_INSTALL_CMD, machineChecks, SECURITY_RESULT_KINDS, securitySetup, type CheckItem, type CodewatchSetup, type MachineDeps, type SecuritySetup } from './setup.js';
 import { buildSummary, type DashboardSummary } from './summary.js';
+import { effectiveMode, type CheckHelp, type SyncMode, type SyncModeSource } from '../utils/sync-mode.js';
 import { readResults } from '../codewatch/results.js';
 import { globalStatus, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { findOnPath } from '../utils/tool-check.js';
@@ -123,7 +124,11 @@ export interface DashboardPayload {
   scope: { root: string; /** root with the home directory shown as ~ */ root_display: string; current_repo: string | null; scan_ms: number; truncated: boolean; error: string | null };
   repos: RepoPayload[];
   overview: { counts: { repos: number; codewatch: number }; setup: SetupRow[]; codewatch: CodewatchRow[] };
-  machine: { setup: CheckItem[]; secretScanning: SecretScanning; globalHooks: GlobalStatus };
+  machine: {
+    setup: CheckItem[]; secretScanning: SecretScanning; globalHooks: GlobalStatus;
+    /** Where codeburn usage goes (utils/sync-mode.ts), and the help shown on the codeburn-sync row. */
+    codeburnSync: { mode: SyncMode; source: SyncModeSource; help: CheckHelp | null };
+  };
   suggestions: Suggestion[];
   usage: UsagePanel;
   /** Cached Security Agent code review results (security-review), per repo. */
@@ -213,6 +218,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     machine: {
       setup: machineSetup,
       globalHooks: g,
+      codeburnSync: { ...effectiveMode(opts.machineDeps?.home || homedir()), help: machineSetup.find((i) => i.id === 'codeburn-sync')?.help ?? null },
       secretScanning: combineSecretScanning(repos.map((r) => r.codewatch.secretScanning), gitleaksAvailable),
     },
     suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),

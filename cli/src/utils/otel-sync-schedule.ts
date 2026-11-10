@@ -51,6 +51,17 @@ export function otelLogFile(home = homedir()): string {
 export function codeburnSyncConfigPath(home = homedir()): string {
   return join(home, '.config', 'codeburn', 'sync.json');
 }
+/** The sync endpoint codeburn has stored, or null when sync is not set up. '' when the file is unreadable. */
+export function configuredSyncUrl(home: string): string | null {
+  const configPath = codeburnSyncConfigPath(home);
+  if (!existsSync(configPath)) return null;
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    return String(cfg.baseUrl || cfg.endpoint || cfg.url || '');
+  } catch {
+    return '';
+  }
+}
 
 export function linuxCrontabAvailable(): boolean {
   return run('which', ['crontab']).ok;

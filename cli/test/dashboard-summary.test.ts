@@ -16,7 +16,8 @@ import { collectCodewatch } from '../src/dashboard/codewatch.js';
 import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
 import { renderPage } from '../src/dashboard/page.js';
 import { repoLabels } from '../src/dashboard/repos.js';
-import { CODEBURN_ADMIN_HELP, machineChecks, securitySetup, SETUP_DOCS, type CheckItem } from '../src/dashboard/setup.js';
+import { machineChecks, securitySetup, type CheckItem } from '../src/dashboard/setup.js';
+import { LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, SETUP_DOCS, TEAM_NO_URL_HELP } from '../src/utils/sync-mode.js';
 import { buildSummary } from '../src/dashboard/summary.js';
 import { emptyUsage, spendByRepo, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
 
@@ -70,7 +71,7 @@ test('summary: newest review across repos, spend, and setup warnings with the fi
   const s = buildSummary(repos, usage, machine);
   assert.deepEqual(s.review, { repo: 'work/b', path: '/r/b', at: '2026-11-09T00:00:00Z', status: 'skipped', reason: 'no changes against upstream', high: 0, medium: 1, low: 2, reviewer: 'kiro', id: 'b2' });
   assert.deepEqual(s.spend, { status: 'ok', currency: 'USD', today: 1.25, month: 40, message: null });
-  assert.deepEqual(s.warnings, { count: 2, first: 'Scheduled codeburn sync push: cannot read your crontab' });
+  assert.deepEqual(s.warnings, { count: 3, first: 'Scheduled codeburn sync push: cannot read your crontab' }, 'warn, missing and the repo warn');
 
   const none = buildSummary([], emptyUsage('not-installed', 'codeburn is not installed.'), []);
   assert.equal(none.review, null);
@@ -229,7 +230,7 @@ test('page: summary on top, collapsed repo lines, labels, trend note and one-lin
   assert.match(t, /Latest codewatch reviewSkippedcw · .* · kiro · no changes against upstream/);
   assert.match(t, /Spend today\$1\.50codeburn, all projects/);
   assert.match(t, /Spend this month\$9\.00codeburn, this calendar month/);
-  assert.match(t, /Setup warnings1gitleaks available: not on PATH/);
+  assert.match(t, /Setup warnings5codeburn installed: not on PATH/, 'every missing or warn machine item counts');
   assert.match(t, /5 other repos: not set up/, 'setup checklist');
   assert.match(t, /7 other repos: no codewatch/, 'codewatch per-repo section');
   assert.match(t, /workplace\/dup/);
@@ -299,47 +300,104 @@ test('page: low counts have their own colour, apart from muted text, in both the
 });
 
 
-// ---------------------------------------------------------------- codeburn sync: ask your administrator
+// ---------------------------------------------------------------- codeburn sync rows by mode
 
-const syncRow = (home: string, scheduleExists: () => boolean) =>
+/** A home with an optional saved sync mode and an optional configured sync endpoint. */
+function modeHome(p: string, o: { mode?: string; url?: boolean } = {}): string {
+  const home = o.url ? syncedHome(p) : tmp(p);
+  if (o.mode) { mkdirSync(join(home, '.prism'), { recursive: true }); writeFileSync(join(home, '.prism', 'codeburn.json'), JSON.stringify({ mode: o.mode })); }
+  return home;
+}
+const syncRow = (home: string, scheduleExists: () => boolean = () => false) =>
   machineChecks({ pathEnv: tmp('none'), home, env: {}, scheduleExists, schedulerName: () => 'crontab', systemdAvailable: () => false, global: { state: 'not-installed', hooksPath: null, dir: '' } })
     .find((i) => i.id === 'codeburn-sync')!;
+const pageLinks = (page: Awaited<ReturnType<typeof runPage>>) => page.dom.byId.main.querySelectorAll('a')
+  .filter((a) => (a.getAttribute('href') || '').startsWith('https://github.com/aws-samples/'))
+  .map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]);
 
-test('codeburn sync: no endpoint shows the ask-your-administrator hint with both links and counts as the first warning', async () => {
-  const row = syncRow(tmp('noep'), () => true);
+test('sync mode local (no mode, no endpoint): info row, one setup link, not a warning; mode and help in --json', async () => {
+  const row = syncRow(modeHome('loc'));
+  assert.equal(row.status, 'info');
+  assert.equal(row.fix, '');
+  assert.match(row.detail, /^local only: codeburn usage stays on this machine$/);
+  assert.deepEqual(row.help, LOCAL_MODE_HELP);
+  assert.match(row.help!.text, /^If your team uses PRISM, ask your platform team for the collector URL and a telemetry account, then run prism-cli enable codeburn --url <collector URL>\.$/);
+  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), [row]).warnings, { count: 0, first: null });
+
+  const { p } = await payloadFixture(machineDeps(modeHome('loc2')));
+  const json = JSON.parse(JSON.stringify(p));
+  assert.deepEqual(json.machine.codeburnSync, { mode: 'local', source: 'default', help: LOCAL_MODE_HELP });
+  assert.ok(!json.summary.warnings.first?.includes('collector URL'), 'local is not a warning');
+  const page = await runPage([p]);
+  assert.match(page.text(), /Scheduled codeburn sync pushlocal only: codeburn usage stays on this machineIf your team uses PRISM/);
+  assert.deepEqual(pageLinks(page), [['Setup instructions', SETUP_DOCS.telemetryAccount, '_blank', 'noopener noreferrer']]);
+});
+
+test('sync mode local with a schedule left in place says it still pushes', () => {
+  const row = syncRow(modeHome('locs', { mode: 'local', url: true }), () => true);
+  assert.equal(row.status, 'info');
+  assert.match(row.detail, /crontab sync schedule is still installed and still pushes usage \(remove it: prism-cli enable codeburn --local --remove\)/);
+});
+
+test('sync mode team without a URL: the platform-team hint with both links, counted as the first warning', async () => {
+  const row = syncRow(modeHome('tnu', { mode: 'team' }), () => true);
   assert.equal(row.status, 'missing');
-  assert.deepEqual(row.help, CODEBURN_ADMIN_HELP);
-  assert.match(row.help!.text, /^codeburn sync is not set up on this machine\. Ask your PRISM administrator .* prism-cli enable codeburn --url <collector URL>\.$/);
+  assert.deepEqual(row.help, TEAM_NO_URL_HELP);
+  assert.match(row.help!.text, /^codeburn sync is not set up on this machine\. Ask your platform team for the collector URL and a telemetry account for your email, then run prism-cli enable codeburn --url <collector URL>\.$/);
+  assert.doesNotMatch([row.detail, row.help!.text, ...row.help!.links.map((l) => l.label)].join(' '), /administrator/i, 'platform team, not administrator (the URL anchor keeps its heading slug)');
   assert.deepEqual(row.help!.links.map((l) => [l.label, l.url]), [
     ['Setup instructions', 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/README.md#2-give-each-developer-a-telemetry-account'],
-    ['Administrator guide', 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/USER_GUIDE.md#administrator-setup'],
+    ['Platform team guide', 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/USER_GUIDE.md#administrator-setup'],
   ]);
-
-  const { p } = await payloadFixture(machineDeps(tmp('noep2')));
-  assert.deepEqual(p.summary.warnings, { count: 2, first: CODEBURN_ADMIN_HELP.text }, 'the hint, then gitleaks');
-  const json = JSON.parse(JSON.stringify(p));
-  assert.deepEqual(json.machine.setup.find((i: CheckItem) => i.id === 'codeburn-sync').help, CODEBURN_ADMIN_HELP, '--json carries the hint');
-
+  const { p } = await payloadFixture(machineDeps(modeHome('tnu2', { mode: 'team' })));
+  assert.equal(p.summary.warnings.first, 'codeburn installed: not on PATH', 'codeburn missing is listed first');
+  const sum = buildSummary([], emptyUsage('ok', ''), [row]);
+  assert.deepEqual(sum.warnings, { count: 1, first: TEAM_NO_URL_HELP.text }, 'the hint is the first warning when it is the first one');
+  assert.deepEqual(JSON.parse(JSON.stringify(p)).machine.codeburnSync, { mode: 'team', source: 'saved', help: TEAM_NO_URL_HELP });
   const page = await runPage([p]);
-  assert.match(page.text(), /Setup warnings2codeburn sync is not set up on this machine\. Ask your PRISM administrator/);
-  const links = page.dom.byId.main.querySelectorAll('a').filter((a) => (a.getAttribute('href') || '').startsWith('https://github.com/aws-samples/'));
-  assert.deepEqual(links.map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]), [
+  assert.deepEqual(pageLinks(page), [
     ['Setup instructions', SETUP_DOCS.telemetryAccount, '_blank', 'noopener noreferrer'],
-    ['Administrator guide', SETUP_DOCS.adminGuide, '_blank', 'noopener noreferrer'],
+    ['Platform team guide', SETUP_DOCS.platformTeamGuide, '_blank', 'noopener noreferrer'],
   ]);
 });
 
-test('codeburn sync: endpoint plus schedule shows no admin hint', () => {
-  const row = syncRow(syncedHome('ep'), () => true);
-  assert.equal(row.help, undefined);
-  assert.match(row.detail, /^crontab entry installed/);
-  assert.equal(buildSummary([], emptyUsage('ok', ''), [row]).warnings.first?.includes('administrator') ?? false, false);
+test('sync mode team with a URL keeps the existing states: schedule ok, no schedule self-fix; no hint', () => {
+  const ok = syncRow(modeHome('tu', { mode: 'team', url: true }), () => true);
+  assert.equal(ok.help, undefined);
+  assert.match(ok.detail, /^crontab entry installed/);
+  const none = syncRow(modeHome('tu2', { mode: 'team', url: true }), () => false);
+  assert.equal(none.status, 'missing');
+  assert.equal(none.fix, 'prism-cli enable codeburn');
+  assert.equal(none.help, undefined);
+  const unreadable = syncRow(modeHome('tu3', { mode: 'team', url: true }), () => { throw new Error('cannot read your crontab'); });
+  assert.equal(unreadable.status, 'warn');
+  assert.equal(unreadable.help, undefined);
 });
 
-test('codeburn sync: endpoint but no schedule keeps the self-fix and no admin hint', () => {
-  const row = syncRow(syncedHome('ep2'), () => false);
-  assert.equal(row.status, 'missing');
-  assert.equal(row.help, undefined);
-  assert.equal(row.fix, 'prism-cli enable codeburn');
-  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), [row]).warnings, { count: 0, first: null });
+test('migration: no mode saved but a sync endpoint configured is team, not local only', () => {
+  const home = modeHome('mig', { url: true });
+  const row = syncRow(home, () => true);
+  assert.notEqual(row.status, 'info');
+  assert.doesNotMatch(row.detail, /local only/);
+  assert.match(row.detail, /^crontab entry installed/);
+});
+
+test('sync mode admin: info row with the platform-team steps, the team commands and the guide link', async () => {
+  const row = syncRow(modeHome('adm', { mode: 'admin' }));
+  assert.equal(row.status, 'info');
+  assert.deepEqual(row.help, PLATFORM_TEAM_HELP);
+  assert.equal(row.help!.steps!.length, 4);
+  assert.match(row.help!.steps!.join(' '), /Deploy the PRISM stack.*OtelCollectorUrl and OtelUserPoolId.*Add each developer.*Share the collector URL/);
+  assert.deepEqual(row.help!.commands, ['prism-cli team info', 'prism-cli team add-developer <email>']);
+  const { p } = await payloadFixture(machineDeps(modeHome('adm2', { mode: 'admin' })));
+  const page = await runPage([p]);
+  assert.match(page.text(), /platform team: set up PRISM for your developersYou are the platform team: set up PRISM so developers can sync\.Deploy the PRISM stack/);
+  assert.match(page.text(), /Commands: prism-cli team info, prism-cli team add-developer <email>/);
+  assert.deepEqual(pageLinks(page), [['Platform team guide', SETUP_DOCS.platformTeamGuide, '_blank', 'noopener noreferrer']]);
+});
+
+test('setup warnings count every missing or warn item in the checklist, never ok or info', () => {
+  const it = (id: string, status: CheckItem['status']): CheckItem => ({ id, label: id, status, detail: 'd', fix: status === 'ok' || status === 'info' ? '' : 'f' });
+  const machine = [it('a', 'missing'), it('b', 'info'), it('c', 'warn'), it('d', 'missing'), it('e', 'missing'), it('f', 'ok'), it('g', 'missing')];
+  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), machine).warnings, { count: 5, first: 'a: d' });
 });

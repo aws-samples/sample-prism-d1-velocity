@@ -193,14 +193,25 @@ No repository **variables** are required — the workflows read none. Team ident
 
 ### Step 5: Create Developer Accounts
 
-After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector:
+After deploying, create a Cognito user for each developer so they can authenticate with the OTEL collector. `prism-cli team` does this for the platform team:
+
+```bash
+prism-cli team info                                  # read-only: OtelCollectorUrl, OtelUserPoolId, and the line to send developers
+prism-cli team add-developer dev@example.com --dry-run   # the plan: account, region, user pool, email
+prism-cli team add-developer dev@example.com             # asks, then creates the user (--yes for scripts)
+```
+
+- **`team info`** is read-only. It finds the `PrismD1MetricsPipeline` stack with the same AWS profile and region resolution as `aws check` (`--profile`, `--region`, then `prism-cli aws connect`), and prints its `OtelCollectorUrl` and `OtelUserPoolId` outputs plus a copy-paste line for developers: `prism-cli enable codeburn --url <url>`. `--json` prints the same as JSON. Needs `cloudformation:DescribeStacks`.
+- **`team add-developer <email>`** is an AWS write: one Cognito `AdminCreateUser` on the stack's `OtelUserPoolId` (or `--user-pool-id`), with the email as the username. It prints the account, region, pool and email, and asks before creating; `--dry-run` changes nothing. A user that already exists is reported as "already exists, nothing changed". Cognito emails the invite with a temporary password; prism-cli never sees, prints or stores it. Needs `cloudformation:DescribeStacks` (unless `--user-pool-id`) and `cognito-idp:AdminCreateUser`.
+
+The same with the AWS CLI:
 
 ```bash
 # Create a user (username MUST be the developer's email)
 aws cognito-idp admin-create-user --user-pool-id <OtelUserPoolId output> --username dev@example.com
 ```
 
-Then share the **OtelCollectorUrl** stack output with your developers — they'll need it for setup below.
+Then share the **OtelCollectorUrl** stack output with your developers — they'll need it for setup below. `prism-cli enable codeburn --admin` prints these platform-team steps on any machine without calling AWS.
 
 **Bring your own IdP** (Okta, Entra ID) instead of Cognito:
 
@@ -393,10 +404,26 @@ npm install -g @prism-d1/cli
 prism-cli enable codeburn --url <OtelCollectorUrl>
 ```
 
-`<OtelCollectorUrl>` is the CDK stack output from Step 1. Your administrator creates your telemetry
-account in Step 5, using your email address as the username.
+`<OtelCollectorUrl>` is the CDK stack output from Step 1; get it from your platform team. Your platform
+team creates your telemetry account in Step 5, using your email address as the username.
 
-The command takes these steps, and a re-run reports the ones already done:
+**Sync modes.** `enable codeburn` saves where your usage goes, once per user, in `~/.prism/codeburn.json`.
+Without a flag it asks "Where should your usage go?" on a terminal:
+
+1. **local** (the default): just me, keep it on this machine. codeburn still works locally (the
+   dashboard's usage panel, `codeburn web`); no sync endpoint is set up and no schedule is installed.
+   With no terminal and no flag, this is the mode.
+2. **team**: my team's PRISM, with the collector URL from the platform team. The steps below.
+3. **admin**: I'm the platform team setting up PRISM. It prints the platform-team steps and the
+   `prism-cli team` commands, and makes no AWS calls.
+
+`--local`, `--url <url>` (team) and `--admin` choose the mode without the question, and a re-run
+with a different flag changes it. A machine that already syncs (an endpoint is configured but no
+mode is saved) is treated as team. Moving to local leaves an existing endpoint and schedule in place
+and says so, because the schedule still pushes; `--local --remove` also removes the schedule.
+`--status` shows the mode.
+
+In team mode the command takes these steps, and a re-run reports the ones already done:
 
 1. **Installs codeburn** when it is not on PATH. It prints the exact command
    (`npm install -g codeburn`) and asks first; `--yes` skips the question. With no terminal and no
@@ -413,12 +440,14 @@ The command takes these steps, and a re-run reports the ones already done:
 
 | Flag | Purpose |
 |---|---|
-| `--url <url>` | OTEL collector URL (the `OtelCollectorUrl` stack output); default: the URL codeburn already syncs to |
+| `--local` | Local only (the default): usage stays on this machine |
+| `--url <url>` | Team: the collector URL (the `OtelCollectorUrl` stack output, from your platform team); default: the URL codeburn already syncs to |
+| `--admin` | Platform team: print the setup steps and the `prism-cli team` commands (no AWS calls) |
 | `--interval <hours>` | Sync interval, default `12` |
 | `--yes` | Install codeburn, and reconfigure a different endpoint, without asking |
 | `--dry-run` | Print the plan with the exact commands; change nothing |
 | `--status` | Show codeburn, the sync config, the schedule, the last sync log lines and `codeburn sync status` |
-| `--remove` | Remove the schedule |
+| `--remove` | Remove the schedule; with `--local`, switch to local and remove it |
 
 `prism-cli bootstrapper setup-otel-sync` is the old name of this command. It still works, takes the
 same flags and prints a deprecation notice.
@@ -666,7 +695,9 @@ scanned. Under **Per repo**, each repo expands to:
 codeburn data. For full charts it points you to `codeburn web`.
 
 **Setup checklist.** For this machine: codeburn installed, the scheduled sync from `enable codeburn`
-and its last run, gitleaks, AWS credentials, and the global codewatch hooks. Then one row per repo:
+and its last run (by sync mode: local shows "local only" as info with how to join a team; team without
+a collector URL says to ask your platform team, with Setup instructions and Platform team guide links;
+admin lists the platform-team steps and `prism-cli team` commands), gitleaks, AWS credentials, and the global codewatch hooks. Then one row per repo:
 codewatch installed (ok); warn, when the global hooks are installed but the repo's own
 `core.hooksPath` (husky and similar) bypasses them; missing, including only one hook installed or
 hooks from before the codewatch rename; or opted out with `git config prism.codewatch false`. Repos covered by the global hooks are

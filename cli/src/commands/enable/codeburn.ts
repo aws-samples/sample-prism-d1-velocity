@@ -18,9 +18,12 @@ import {
   linuxCrontabAvailable, crontabLines, darwinPlistPath, scheduleExists, schedulerName,
   CODEBURN_INSTALL_ARGS, ENABLE_CODEBURN_CMD, SYNC_SINCE, syncArgs,
   linuxCronScheduleExists, SYSTEMD_SCHEDULER_NAME, SYSTEMD_UNIT, systemdServicePath, systemdTimerExists,
-  systemdTimerPath, systemdUserAvailable, systemdUserDir,
+  systemdTimerPath, systemdUserAvailable, systemdUserDir, configuredSyncUrl,
 } from '../../utils/otel-sync-schedule.js';
 import { runGuarded } from './security.js';
+import {
+  effectiveMode, LOCAL_MODE_HELP, MODE_SOURCE_TEXT, PLATFORM_TEAM_HELP, SETUP_DOCS, SYNC_MODE_PATH, TEAM_URL_CMD, writeSyncMode, type SyncMode,
+} from '../../utils/sync-mode.js';
 
 // ---- Constants ----
 
@@ -424,17 +427,8 @@ function removeSchedules(opts: CodeburnOptions, d: CodeburnDeps): number {
   return 0;
 }
 
-/** The sync endpoint codeburn has stored, or null when sync is not set up. '' when the file is unreadable. */
-export function configuredSyncUrl(home: string): string | null {
-  const configPath = codeburnSyncConfigPath(home);
-  if (!existsSync(configPath)) return null;
-  try {
-    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-    return String(cfg.baseUrl || cfg.endpoint || cfg.url || '');
-  } catch {
-    return '';
-  }
-}
+// Lives in utils/otel-sync-schedule.ts (shared with the dashboard and aws check); re-exported for existing importers.
+export { configuredSyncUrl };
 
 /** True when `version` (e.g. "0.9.24") is at least MIN_CODEBURN. */
 export function codeburnVersionOk(version: string): boolean {
@@ -489,7 +483,9 @@ function showStatus(d: CodeburnDeps): void {
   }
 
   const url = configuredSyncUrl(d.home);
-  if (url === null) d.log(`  ✗ sync not configured (run ${ENABLE_CODEBURN_CMD})`);
+  const m = effectiveMode(d.home, url);
+  d.log(`  Sync mode: ${m.mode} (${MODE_SOURCE_TEXT[m.source]})`);
+  if (url === null) d.log(m.mode === 'team' ? `  ✗ sync not configured (run ${TEAM_URL_CMD})` : '  - no sync endpoint (usage stays on this machine)');
   else if (url) d.log(`  ✓ sync configured: ${url}`);
   else d.log(`  ✓ sync config exists: ${codeburnSyncConfigPath(d.home)}`);
 
@@ -532,6 +528,98 @@ export interface CodeburnOptions {
   dryRun?: boolean;
   /** Linux: systemd or cron. */
   schedule?: string;
+  /** Sync mode local: usage stays on this machine. */
+  local?: boolean;
+  /** Sync mode admin: print the platform-team steps; no AWS calls. */
+  admin?: boolean;
+}
+
+const MODE_CHOICES: [string, SyncMode, string][] = [
+  ['1', 'local', 'just me, keep it on this machine'],
+  ['2', 'team', "my team's PRISM (I have the collector URL from my platform team)"],
+  ['3', 'admin', "I'm the platform team setting up PRISM"],
+];
+
+/**
+ * The sync mode for this run: a flag, else the mode already in effect (saved,
+ * or team for a machine with a sync endpoint), else the question on a TTY,
+ * else local. Returns an exit code on a bad answer.
+ */
+async function chooseMode(opts: CodeburnOptions, d: CodeburnDeps, dry: boolean): Promise<SyncMode | number> {
+  if (opts.local) return 'local';
+  if (opts.admin) return 'admin';
+  if (opts.url) return 'team';
+  const cur = effectiveMode(d.home);
+  if (cur.source !== 'default') {
+    d.log(`  Sync mode: ${cur.mode} (${MODE_SOURCE_TEXT[cur.source]}; --local, --url or --admin changes it)`);
+    return cur.mode;
+  }
+  if (!d.isTTY) {
+    d.log('  No terminal and no --local, --url or --admin: local only.');
+    return 'local';
+  }
+  if (dry) {
+    d.log('  → would ask where your usage should go; this plan is for local only (--url or --admin plans the others)');
+    return 'local';
+  }
+  d.log('  Where should your usage go?');
+  for (const [n, , text] of MODE_CHOICES) d.log(`    ${n}) ${text}`);
+  const answer = (await d.ask('  Choose 1, 2 or 3 [1]: ')).trim() || '1';
+  const picked = MODE_CHOICES.find(([n]) => n === answer);
+  if (!picked) {
+    d.error(`Error: "${answer}" is not 1, 2 or 3. Or pass --local, --url <collector URL> or --admin.`);
+    return 1;
+  }
+  return picked[1];
+}
+
+function saveMode(mode: SyncMode, d: CodeburnDeps, dry: boolean): void {
+  if (dry) { d.log(`  → would save sync mode ${mode} in ${SYNC_MODE_PATH}`); return; }
+  writeSyncMode(d.home, mode);
+  d.log(`  ✓ Sync mode ${mode} saved in ${SYNC_MODE_PATH}`);
+}
+
+/** Every installed sync schedule's name; an unreadable crontab is skipped (it cannot be told). */
+function installedSchedules(d: CodeburnDeps): string[] {
+  const all = d.linux ? [nativeSchedule(d), systemdSchedule(d)] : [nativeSchedule(d)];
+  return all.filter((s) => probeSchedule(s) === true).map((s) => s.name);
+}
+
+/** Local only: codeburn keeps working here; no endpoint is set up and no schedule installed. */
+async function localOnly(opts: CodeburnOptions, d: CodeburnDeps, dry: boolean): Promise<number> {
+  const ensured = await ensureCodeburn(opts, d);
+  if (typeof ensured === 'number') return ensured;
+  if (opts.remove) {
+    const code = removeSchedules(opts, d);
+    if (code) return code;
+  }
+  saveMode('local', d, dry);
+  const url = configuredSyncUrl(d.home);
+  const left = dry && opts.remove ? [] : installedSchedules(d);
+  d.log('');
+  if (left.length) {
+    d.log(`  ⚠ Sync mode is local, but the ${left.join(' and ')} schedule is still installed and still pushes usage.`);
+    d.log(`    Remove it: ${ENABLE_CODEBURN_CMD} --local --remove`);
+  } else {
+    d.log('  ✅ Local only: codeburn usage stays on this machine. No sync endpoint is set up and no schedule is installed.');
+  }
+  if (url !== null) d.log(`  Left in place: codeburn's sync config${url ? ` for ${url}` : ''} (${codeburnSyncConfigPath(d.home)}). Nothing pushes to it without a schedule.`);
+  d.log(`\n  ${LOCAL_MODE_HELP.text}`);
+  d.log(`  Setup instructions: ${SETUP_DOCS.telemetryAccount}\n`);
+  return 0;
+}
+
+/** Admin: the platform-team steps and helper commands. No AWS call is made. */
+function platformTeam(d: CodeburnDeps, dry: boolean): number {
+  d.log('  Platform team setup (this prints steps only; no AWS calls are made):\n');
+  PLATFORM_TEAM_HELP.steps!.forEach((step, i) => d.log(`    ${i + 1}. ${step}`));
+  d.log('\n  Helper commands:');
+  d.log('    prism-cli team info                      read-only: prints OtelCollectorUrl and OtelUserPoolId');
+  d.log('    prism-cli team add-developer <email>     creates the developer\'s telemetry account (asks first; --dry-run shows the plan)');
+  d.log(`\n  Platform team guide: ${SETUP_DOCS.platformTeamGuide}\n`);
+  saveMode('admin', d, dry);
+  d.log(`  To sync your own usage as well, run ${TEAM_URL_CMD}.\n`);
+  return 0;
 }
 
 /**
@@ -593,7 +681,12 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
     return 0;
   }
 
-  if (opts.remove) return removeSchedules(opts, d);
+  const modes = [opts.local && '--local', opts.url && '--url', opts.admin && '--admin'].filter(Boolean);
+  if (modes.length > 1) {
+    d.error(`Error: ${modes.join(' and ')} choose different sync modes; pass one of them.`);
+    return 1;
+  }
+  if (opts.remove && !opts.local) return removeSchedules(opts, d);
 
   const dry = !!opts.dryRun;
   const intervalHours = opts.interval ? parseInt(opts.interval, 10) : 12;
@@ -603,6 +696,11 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
   }
 
   d.log(dry ? '\n🔄 enable codeburn — dry run, nothing is changed\n' : '\n🔄 enable codeburn\n');
+
+  const mode = await chooseMode(opts, d, dry);
+  if (typeof mode === 'number') return mode;
+  if (mode === 'admin') return platformTeam(d, dry);
+  if (mode === 'local') return localOnly(opts, d, dry);
 
   // 1. codeburn installed, and new enough for --attribution
   const ensured = await ensureCodeburn(opts, d);
@@ -628,9 +726,13 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
     if (dry) {
       d.log('  → would ask for the OTEL collector URL (pass --url <OtelCollectorUrl> to skip)');
     } else {
-      otelUrl = await d.ask('  OTEL collector URL (from CDK deploy output OtelCollectorUrl): ');
+      if (!d.isTTY) {
+        d.error(`Error: the collector URL is required. Ask your platform team for it, then run ${TEAM_URL_CMD}.`);
+        return 1;
+      }
+      otelUrl = await d.ask('  Collector URL (from your platform team; the OtelCollectorUrl stack output): ');
       if (!otelUrl) {
-        d.error('Error: OTEL collector URL is required. Pass --url <OtelCollectorUrl>.');
+        d.error(`Error: the collector URL is required. Ask your platform team for it, then run ${TEAM_URL_CMD}.`);
         return 1;
       }
     }
@@ -729,6 +831,7 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
   }
 
   // 6. What codeburn itself reports.
+  saveMode('team', d, dry);
   if (dry) {
     d.log('  → would run: codeburn sync status');
     d.log('\n  Dry run complete. Re-run without --dry-run to apply.\n');
@@ -752,12 +855,14 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
 }
 
 export const CODEBURN_OPTIONS = [
-  { flags: '--url <url>', description: 'OTEL collector URL (from CDK deploy output OtelCollectorUrl; default: the URL codeburn already syncs to)' },
+  { flags: '--local', description: 'Sync mode local (the default): codeburn usage stays on this machine; no endpoint, no schedule. Leaves an existing endpoint and schedule in place unless --remove' },
+  { flags: '--url <url>', description: "Sync mode team: your team's collector URL (the OtelCollectorUrl stack output, from your platform team; default: the URL codeburn already syncs to)" },
+  { flags: '--admin', description: 'Sync mode admin: print the platform-team setup steps and the prism-cli team helper commands (no AWS calls)' },
   { flags: '--interval <hours>', description: 'Sync interval in hours (default: 12)' },
   { flags: '--yes', description: `Install codeburn (${INSTALL_CMD}), reconfigure a different endpoint, and accept an offered systemd user timer without a prompt` },
   { flags: '--dry-run', description: 'Print the plan with the exact commands; change nothing' },
   { flags: '--status', description: 'Show codeburn, sync and schedule status' },
-  { flags: '--remove', description: 'Remove the sync schedule (both kinds on Linux, unless --schedule picks one)' },
+  { flags: '--remove', description: 'Remove the sync schedule (both kinds on Linux, unless --schedule picks one); with --local, switch to local and remove it' },
   { flags: '--schedule <kind>', description: 'Linux: systemd (a systemd user timer) or cron (your crontab). Default: cron; when the crontab cannot be read, a systemd user timer is offered' },
 ];
 
@@ -775,7 +880,7 @@ export async function runEnableCodeburn(opts: CodeburnOptions, hooks: CodeburnHo
 }
 
 export default {
-  description: 'Install codeburn and schedule its OTEL sync (pushes AI usage and commit attribution every 12h)',
+  description: "Set up codeburn: local only (default), sync to your team's PRISM every 12h (--url), or the platform-team steps (--admin)",
   options: CODEBURN_OPTIONS,
   action: runEnableCodeburn,
 };
