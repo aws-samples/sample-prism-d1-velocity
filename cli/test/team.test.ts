@@ -68,7 +68,7 @@ test('team info: no stack and no outputs are clear errors', () => {
 // ---------------------------------------------------------------- team add-developer
 
 test('team add-developer: an invalid email is refused before any AWS call', async () => {
-  for (const email of ['', 'dev', 'dev@', '@example.com', 'a b@example.com', 'dev@example.com; rm -rf x', '$(id)@example.com']) {
+  for (const email of ['', 'dev', 'dev@', '@example.com', 'a b@example.com', 'dev@example.com; rm -rf x', '$(id)@example.com', 'x,Name=email_verified,Value=true@example.com']) {
     const t = deps();
     const calls: string[][] = [];
     assert.equal(await withFakeAws([...IDENTITY, FOUND, CREATED], () => addDeveloper({ email, region: REGION, yes: true }, t.d), calls), 1, email);
@@ -116,7 +116,7 @@ test('team add-developer: confirmed, creates the user with the email as username
   const at = (flag: string) => create[create.indexOf(flag) + 1];
   assert.equal(at('--user-pool-id'), POOL);
   assert.equal(at('--username'), 'dev@example.com');
-  assert.equal(at('--user-attributes'), 'Name=email,Value=dev@example.com');
+  assert.deepEqual(JSON.parse(at('--user-attributes')), [{ Name: 'email', Value: 'dev@example.com' }], 'JSON, not shorthand');
   assert.ok(!create.includes('--temporary-password'), 'Cognito generates and emails the password');
   assert.match(t.all(), /✓ Created dev@example\.com in us-west-2_AbC123\. Cognito emailed the invite/);
   assert.ok(!t.all().includes(FAKE_PASSWORD), 'the temporary password is never printed');

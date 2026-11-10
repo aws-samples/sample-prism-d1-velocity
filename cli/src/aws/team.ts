@@ -22,8 +22,11 @@ export const ADD_DEVELOPER_NOTICE = 'AWS write (team add-developer): creates one
 export const INFO_PERMISSIONS = 'cloudformation:DescribeStacks';
 export const ADD_PERMISSIONS = 'cloudformation:DescribeStacks (unless --user-pool-id) and cognito-idp:AdminCreateUser';
 
-/** shortcut: a practical shape check, not RFC 5322; Cognito does its own validation on create. */
-export const EMAIL_RE = /^[^\s@<>"'`;|&$\\]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+/**
+ * shortcut: a practical shape check, not RFC 5322; Cognito does its own validation on create.
+ * ',' and '=' are rejected too: they are separators in AWS CLI shorthand (attributes are also passed as JSON).
+ */
+export const EMAIL_RE = /^[^\s@<>"'`;|&$\\,=]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 const POOL_RE = /^[\w-]+_[0-9a-zA-Z]+$/;
 const ACCESS_DENIED = /AccessDenied|UnauthorizedOperation|NotAuthorized/;
 
@@ -80,7 +83,7 @@ function readStack(t: Target): StackInfo | { error: string } {
     if (ACCESS_DENIED.test(r.errorCode || r.raw)) return { error: `access denied reading ${PIPELINE_STACK} (${lastLine(r)}). team info needs ${INFO_PERMISSIONS}.` };
     return { error: `cannot read ${PIPELINE_STACK}: ${lastLine(r)}. team info needs ${INFO_PERMISSIONS}.` };
   }
-  const outputs: any[] = r.json?.Stacks?.[0]?.Outputs || [];
+  const outputs: { OutputKey?: string; OutputValue?: unknown }[] = r.json?.Stacks?.[0]?.Outputs || [];
   const out = (k: string) => { const v = outputs.find((o) => o?.OutputKey === k)?.OutputValue; return typeof v === 'string' && v ? v : null; };
   return { account: t.account, region: t.region, stack: PIPELINE_STACK, otelCollectorUrl: out('OtelCollectorUrl'), otelUserPoolId: out('OtelUserPoolId') };
 }
@@ -153,14 +156,14 @@ export async function addDeveloper(o: AddDeveloperOptions, d: TeamDeps): Promise
   }
   // No --temporary-password: Cognito generates one and emails it; it never passes through here.
   const r = aws(['cognito-idp', 'admin-create-user', '--user-pool-id', pool, '--username', email,
-    '--user-attributes', `Name=email,Value=${email}`, '--desired-delivery-mediums', 'EMAIL', '--region', t.region], t.target);
+    '--user-attributes', JSON.stringify([{ Name: 'email', Value: email }]), '--desired-delivery-mediums', 'EMAIL', '--region', t.region], t.target);
   if (r.ok) {
     d.log(`✓ Created ${email} in ${pool}. Cognito emailed the invite with a temporary password.`);
     return 0;
   }
   // Only the error code is shown: AWS error text can echo request values.
   if (r.errorCode === 'UsernameExistsException') { d.log(`✓ ${email} already exists in ${pool}; nothing changed.`); return 0; }
-  if (ACCESS_DENIED.test(r.errorCode)) { d.err(`Error: access denied (${r.errorCode}). team add-developer needs ${ADD_PERMISSIONS}.`); return 1; }
+  if (ACCESS_DENIED.test(r.errorCode || '')) { d.err(`Error: access denied (${r.errorCode}). team add-developer needs ${ADD_PERMISSIONS}.`); return 1; }
   d.err(`Error: AdminCreateUser failed (${r.errorCode || 'unknown error'}). Nothing was created.`);
   return 1;
 }

@@ -38,9 +38,10 @@ function attach(program: any, category: string, command: string, def: any) {
   if (def.options) {
     for (const opt of def.options) addOption(sub, opt);
   }
-  // One optional positional argument (e.g. team add-developer <email>), passed to the action as opts[name].
+  // One positional argument (spec '<x>' required, '[x]' optional; e.g. team add-developer <email>), passed to the action as opts[name].
   if (def.argument) {
     sub.argument(def.argument.spec, def.argument.description);
+    // any: commander's parsed options, typed by each command module (as in the existing actions below).
     sub.action((value: string, opts: any) => def.action({ ...opts, [def.argument.name]: value }));
     return;
   }
