@@ -1,25 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RunResult } from '../src/utils/exec.js';
-import { codeburnVersionOk, enableCodeburn, INSTALL_CMD, runEnableCodeburn, type CodeburnDeps } from '../src/commands/enable/codeburn.js';
+import { codeburnVersionOk, enableCodeburn, INSTALL_CMD, runEnableCodeburn, systemdInstallSchedule, systemdRemoveSchedule, systemdUnits, type CodeburnDeps } from '../src/commands/enable/codeburn.js';
 import alias, { DEPRECATION } from '../src/commands/bootstrapper/setup-otel-sync.js';
 import { machineChecks } from '../src/dashboard/setup.js';
-import { crontabLines } from '../src/utils/otel-sync-schedule.js';
+import { crontabLines, systemdTimerExists } from '../src/utils/otel-sync-schedule.js';
 
 const URL = 'https://otel.example.com';
 const CB = '/fake/bin/codeburn';
 
 /** A fake machine: codeburn presence, its sync config, the schedule, and a log of every command. */
-function fakeMachine(o: { installed?: boolean; installWorks?: boolean; syncUrl?: string; schedule?: boolean; tty?: boolean; answers?: string[]; version?: string } = {}) {
+function fakeMachine(o: { installed?: boolean; installWorks?: boolean; syncUrl?: string; schedule?: boolean; tty?: boolean; answers?: string[]; version?: string; linux?: boolean; systemdAvailable?: boolean; timer?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'prism-cb-home-'));
   if (o.syncUrl) {
     mkdirSync(join(home, '.config', 'codeburn'), { recursive: true });
     writeFileSync(join(home, '.config', 'codeburn', 'sync.json'), JSON.stringify({ baseUrl: o.syncUrl }));
   }
-  const state = { installed: o.installed ?? true, schedule: o.schedule ?? false };
+  const state = { installed: o.installed ?? true, schedule: o.schedule ?? false, timer: o.timer ?? false };
   const calls: string[] = [];
   const out: string[] = [];
   const err: string[] = [];
@@ -31,6 +31,7 @@ function fakeMachine(o: { installed?: boolean; installWorks?: boolean; syncUrl?:
       calls.push(`run ${file} ${args.join(' ')}`);
       if (args[0] === '--version') return { ok: true, stdout: o.version ?? 'codeburn 0.9.24', stderr: '' };
       if (args.join(' ') === 'sync status') return { ok: true, stdout: `endpoint: ${URL}\nauth: ok`, stderr: '' };
+      if (file === 'systemctl') return { ok: state.timer, stdout: state.timer ? 'active' : '', stderr: state.timer ? '' : 'inactive' };
       return { ok: true, stdout: 'pushed 3 records', stderr: '' };
     },
     runInteractive: (file, args) => {
@@ -51,6 +52,13 @@ function fakeMachine(o: { installed?: boolean; installWorks?: boolean; syncUrl?:
     schedulerName: () => 'crontab',
     installSchedule: (path, hours) => { scheduleCalls.push(`install ${path} ${hours}`); state.schedule = true; return true; },
     removeSchedule: () => { scheduleCalls.push('remove'); state.schedule = false; },
+    linux: o.linux ?? true,
+    systemd: {
+      available: () => o.systemdAvailable ?? false,
+      exists: () => state.timer,
+      install: (path, hours) => { scheduleCalls.push(`systemd install ${path} ${hours}`); state.timer = true; },
+      remove: () => { scheduleCalls.push('systemd remove'); state.timer = false; },
+    },
   };
   return { deps, calls, out, err, asked, scheduleCalls, home, text: () => out.join('\n') };
 }
@@ -259,4 +267,149 @@ test('crontabLines: only "no crontab for" is empty; an unreadable crontab throws
     /cannot read your crontab \(crontab -l: You \(alice\) are not allowed.*\); it was not changed/,
   );
   assert.throws(() => crontabLines({ ok: false, stdout: '', stderr: '' }), /crontab -l: unknown error/);
+});
+
+// ---------------------------------------------------------------- systemd user timer (unreadable crontab)
+
+const PAM_ERR = 'You (alice) are not allowed to access to (crontab) because of pam configuration.';
+/** A crontab that cannot be read; any call to it is recorded so a test can prove it was not touched. */
+function pamCrontab(m: ReturnType<typeof fakeMachine>) {
+  m.deps.scheduleExists = () => { m.scheduleCalls.push('crontab read'); return crontabLines({ ok: false, stdout: '', stderr: PAM_ERR }).length > 0; };
+}
+
+test('enable codeburn: unreadable crontab + systemctl --user offers a systemd timer, asks, and never touches the crontab', async () => {
+  const m = fakeMachine({ syncUrl: URL, systemdAvailable: true, answers: ['y'] });
+  pamCrontab(m);
+  assert.equal(await enableCodeburn({}, m.deps), 0);
+  assert.match(m.asked[0], /Install a systemd user timer \(prism-otel-sync\.timer\) instead\? \[y\/N\]/);
+  assert.deepEqual(m.scheduleCalls, ['crontab read', `systemd install ${CB} 12`], 'the crontab is only probed, never written or removed');
+  assert.ok(m.calls.includes(`run ${CB} sync push --since 30d --attribution`), 'backfill after the yes');
+  assert.match(m.text(), /systemd user timer schedule installed \(every 12h\)/);
+  assert.match(m.text(), /Your crontab is not touched/);
+});
+
+test('enable codeburn: declining the systemd timer exits 1 before the backfill; no terminal points at --schedule systemd', async () => {
+  const no = fakeMachine({ syncUrl: URL, systemdAvailable: true, answers: ['n'] });
+  pamCrontab(no);
+  assert.equal(await enableCodeburn({}, no.deps), 1);
+  assert.ok(!no.calls.some((c) => c.includes('sync push')));
+  assert.deepEqual(no.scheduleCalls, ['crontab read']);
+  assert.match(no.err.join('\n'), /--schedule systemd/);
+
+  const ci = fakeMachine({ syncUrl: URL, systemdAvailable: true, tty: false });
+  pamCrontab(ci);
+  assert.equal(await enableCodeburn({}, ci.deps), 1);
+  assert.deepEqual(ci.asked, []);
+  assert.match(ci.err.join('\n'), /Re-run with: prism-cli enable codeburn --schedule systemd/);
+
+  const yes = fakeMachine({ syncUrl: URL, systemdAvailable: true, tty: false });
+  pamCrontab(yes);
+  assert.equal(await enableCodeburn({ yes: true }, yes.deps), 0, '--yes accepts the offer');
+  assert.deepEqual(yes.scheduleCalls, ['crontab read', `systemd install ${CB} 12`]);
+});
+
+test('enable codeburn --schedule: systemd skips the question and the crontab; cron keeps the crontab path; bad values fail', async () => {
+  const sd = fakeMachine({ syncUrl: URL, systemdAvailable: true });
+  pamCrontab(sd);
+  assert.equal(await enableCodeburn({ schedule: 'systemd', interval: '6' }, sd.deps), 0);
+  assert.deepEqual(sd.asked, []);
+  assert.deepEqual(sd.scheduleCalls, [`systemd install ${CB} 6`], 'crontab not even read');
+
+  const cron = fakeMachine({ syncUrl: URL, systemdAvailable: true });
+  pamCrontab(cron);
+  assert.equal(await enableCodeburn({ schedule: 'cron' }, cron.deps), 1, 'explicit cron with an unreadable crontab is the 1.4.3 error');
+  assert.match(cron.err.join('\n'), /cannot read your crontab/);
+
+  const noSd = fakeMachine({ systemdAvailable: false });
+  assert.equal(await enableCodeburn({ schedule: 'systemd', url: URL }, noSd.deps), 1);
+  assert.match(noSd.err.join('\n'), /systemctl --user" is not available/);
+  const bad = fakeMachine();
+  assert.equal(await enableCodeburn({ schedule: 'at', url: URL }, bad.deps), 1);
+  assert.match(bad.err.join('\n'), /must be systemd or cron/);
+  const mac = fakeMachine({ linux: false });
+  assert.equal(await enableCodeburn({ schedule: 'cron', url: URL }, mac.deps), 1);
+  assert.match(mac.err.join('\n'), /Linux only/);
+  assert.deepEqual([noSd.calls, bad.calls, mac.calls], [[], [], []], 'rejected before any command');
+});
+
+test('enable codeburn: --dry-run with an unreadable crontab plans the systemd timer and changes nothing', async () => {
+  const m = fakeMachine({ syncUrl: URL, systemdAvailable: true });
+  pamCrontab(m);
+  assert.equal(await enableCodeburn({ dryRun: true }, m.deps), 0);
+  assert.deepEqual(m.calls, [`run ${CB} --version`], 'only the read-only version check');
+  assert.deepEqual(m.asked, []);
+  assert.deepEqual(m.scheduleCalls, ['crontab read']);
+  assert.match(m.text(), /would ask to install a systemd user timer instead/);
+  assert.match(m.text(), /would install a systemd user timer schedule/);
+});
+
+test('enable codeburn --status and --remove handle the systemd timer next to an unreadable crontab', async () => {
+  const st = fakeMachine({ syncUrl: URL, systemdAvailable: true, timer: true });
+  pamCrontab(st);
+  assert.equal(await enableCodeburn({ status: true }, st.deps), 0);
+  assert.match(st.text(), /✓ systemd user timer schedule active \(prism-otel-sync\.timer\)/);
+  assert.match(st.text(), /crontab not used: cannot read your crontab/);
+
+  const hint = fakeMachine({ syncUrl: URL, systemdAvailable: true });
+  pamCrontab(hint);
+  await enableCodeburn({ status: true }, hint.deps);
+  assert.match(hint.text(), /schedule it with a systemd user timer instead: prism-cli enable codeburn --schedule systemd/);
+
+  const rm = fakeMachine({ systemdAvailable: true, timer: true });
+  pamCrontab(rm);
+  assert.equal(await enableCodeburn({ remove: true }, rm.deps), 0);
+  assert.deepEqual(rm.scheduleCalls, ['systemd remove', 'crontab read'], 'timer removed; crontab only probed');
+  assert.match(rm.text(), /systemd user timer schedule removed/);
+  assert.match(rm.text(), /⚠ cannot read your crontab/);
+
+  const only = fakeMachine({ systemdAvailable: true, timer: true, schedule: true });
+  assert.equal(await enableCodeburn({ remove: true, schedule: 'systemd' }, only.deps), 0);
+  assert.deepEqual(only.scheduleCalls, ['systemd remove'], '--schedule systemd leaves the crontab entry alone');
+
+  const both = fakeMachine({ systemdAvailable: true, timer: true, schedule: true });
+  assert.equal(await enableCodeburn({ remove: true }, both.deps), 0);
+  assert.deepEqual(both.scheduleCalls, ['systemd remove', 'remove']);
+
+  const nothing = fakeMachine({ systemdAvailable: true });
+  pamCrontab(nothing);
+  assert.equal(await enableCodeburn({ remove: true }, nothing.deps), 1, 'nothing removable and the crontab unreadable');
+  assert.match(nothing.err.join('\n'), /cannot read your crontab/);
+});
+
+test('systemd units: quoted ExecStart, log append, same hours as the cron entry; install and remove use only systemctl --user', () => {
+  const u = systemdUnits('/opt/my tools/codeburn%x', 12, '/home/a/.prism/logs/otel-sync.log');
+  assert.match(u.service, /^ExecStart="\/opt\/my tools\/codeburn%%x" "sync" "push" "--since" "7d" "--attribution"$/m);
+  assert.match(u.service, /^StandardOutput=append:\/home\/a\/\.prism\/logs\/otel-sync\.log$/m);
+  assert.match(u.service, /^Type=oneshot$/m);
+  assert.match(u.timer, /^OnCalendar=\*-\*-\* 00\/12:00:00$/m);
+  assert.match(u.timer, /^Persistent=true$/m);
+  assert.match(u.timer, /^WantedBy=timers\.target$/m);
+
+  const home = mkdtempSync(join(tmpdir(), 'prism-sd-'));
+  const ran: string[] = [];
+  const fakeRun = (file: string, args: string[]): RunResult => { ran.push(`${file} ${args.join(' ')}`); return { ok: true, stdout: '', stderr: '' }; };
+  systemdInstallSchedule(CB, 8, home, fakeRun);
+  assert.ok(systemdTimerExists(home));
+  assert.match(readFileSync(join(home, '.config', 'systemd', 'user', 'prism-otel-sync.service'), 'utf8'), /ExecStart="\/fake\/bin\/codeburn" "sync" "push"/);
+  assert.deepEqual(ran, ['systemctl --user daemon-reload', 'systemctl --user enable --now prism-otel-sync.timer']);
+  systemdRemoveSchedule(home, fakeRun);
+  assert.equal(systemdTimerExists(home), false);
+  assert.ok(!existsSync(join(home, '.config', 'systemd', 'user', 'prism-otel-sync.service')));
+  assert.deepEqual(ran.slice(2), ['systemctl --user disable --now prism-otel-sync.timer', 'systemctl --user daemon-reload']);
+  assert.ok(ran.every((c) => !c.startsWith('crontab')));
+
+  const failing = (file: string, args: string[]): RunResult => ({ ok: args[1] !== 'enable', stdout: '', stderr: 'Failed to connect to bus' });
+  assert.throws(() => systemdInstallSchedule(CB, 8, mkdtempSync(join(tmpdir(), 'prism-sd2-')), failing), /systemctl --user enable --now prism-otel-sync\.timer\): Failed to connect to bus/);
+});
+
+test('dashboard setup checklist: an unreadable crontab with systemctl --user points at --schedule systemd', () => {
+  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {},
+    scheduleExists: () => crontabLines({ ok: false, stdout: '', stderr: PAM_ERR }).length > 0, schedulerName: () => 'crontab', systemdAvailable: () => true,
+    global: { state: 'not-installed', hooksPath: null, dir: '' } });
+  const sync = items.find((i) => i.id === 'codeburn-sync')!;
+  assert.equal(sync.status, 'warn');
+  assert.match(sync.fix, /^prism-cli enable codeburn --schedule systemd \(a systemd user timer; your crontab is not touched\)$/);
+  const withTimer = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {},
+    scheduleExists: () => true, schedulerName: () => 'systemd user timer', global: { state: 'not-installed', hooksPath: null, dir: '' } });
+  assert.match(withTimer.find((i) => i.id === 'codeburn-sync')!.detail, /^systemd user timer entry installed/);
 });

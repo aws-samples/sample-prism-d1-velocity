@@ -74,8 +74,10 @@ export interface CodewatchPanel {
   gitleaksBlocks: RunSummary[];
   /** Commits pushed without a pre-commit scan (`--no-verify`, rebase, ...). */
   skipped: RunSummary[];
-  /** Last N runs, oldest first. */
+  /** Last N runs that were not skipped, oldest first. A skipped run (nothing to review, no gitleaks) has no findings to chart. */
   trend: RunSummary[];
+  /** Runs left out of the trend because they were skipped. */
+  skippedRuns: number;
   secretScanning: SecretScanning;
   /** Results mapped onto commits, newest first. */
   commits: CommitsPanel;
@@ -206,6 +208,7 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
     // --no-verify and other unhooked commits; gitleaks-missing ones are counted in secretScanning.
     skipped: all.filter((r) => r.kind === 'secrets' && r.status === 'skipped' && !isMissingSkip(r)).map(summarize).reverse(),
     trend: all.filter((r) => r.status !== 'skipped').slice(-trendRuns).map(summarize),
+    skippedRuns: all.filter((r) => r.status === 'skipped').length,
     secretScanning: secretScanning(all, gitleaksAvailable),
     commits: all.length ? collectCommits(repoRoot, all, { idOf: (r) => idOf.get(r) ?? null }) : { rows: [], total: 0, truncated: false, timing: { logMs: 0, blameMs: 0, blameCalls: 0 } },
   };

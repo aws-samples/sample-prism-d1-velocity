@@ -7,9 +7,9 @@
  * codeburn's own charts are not rebuilt; the panel points at `codeburn web`.
  */
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { findOnPath } from '../utils/tool-check.js';
 
@@ -27,6 +27,8 @@ export interface UsagePanel {
   topModels: { name: string; cost: number; calls: number }[];
   /** `name` is the folder name; `path` is codeburn's full project path, for a tooltip. */
   topProjects: { name: string; path: string; cost: number; sessions: number }[];
+  /** Every project this month (symlinks resolved), for matching spend to repos. */
+  projects: { path: string; cost: number; sessions: number }[];
   generated: string | null;
   /** Shown as a note, never a link: codeburn web is a CLI command. */
   fullView: string;
@@ -61,7 +63,30 @@ export function localDate(d: Date): string {
 }
 
 export function emptyUsage(status: UsagePanel['status'], message: string): UsagePanel {
-  return { status, message, currency: 'USD', today: null, month: null, topModels: [], topProjects: [], generated: null, fullView: 'codeburn web' };
+  return { status, message, currency: 'USD', today: null, month: null, topModels: [], topProjects: [], projects: [], generated: null, fullView: 'codeburn web' };
+}
+
+function real(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
+export interface RepoSpend { cost: number; sessions: number }
+
+/**
+ * This month's spend per repo path. Each codeburn project is counted once, for
+ * the deepest repo whose path is the project's path or contains it; projects
+ * outside every repo are not counted.
+ */
+export function spendByRepo(projects: UsagePanel['projects'], repoPaths: string[]): Map<string, RepoSpend> {
+  const out = new Map<string, RepoSpend>();
+  const deepestFirst = [...repoPaths].sort((a, b) => b.length - a.length);
+  for (const p of projects) {
+    const repo = deepestFirst.find((r) => p.path === r || p.path.startsWith(r + sep));
+    if (!repo) continue;
+    const s = out.get(repo) || { cost: 0, sessions: 0 };
+    out.set(repo, { cost: s.cost + p.cost, sessions: s.sessions + p.sessions });
+  }
+  return out;
 }
 
 export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string } = {}): Promise<UsagePanel> {
@@ -101,6 +126,9 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
     topProjects: monthProjects
       .map((p) => { const path = String(p?.Project || 'unknown'); return { name: basename(path.replace(/[\\/]+$/, '')) || path, path, cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) }; })
       .sort((a, b) => b.cost - a.cost).slice(0, TOP_N),
+    projects: monthProjects
+      .filter((p) => typeof p?.Project === 'string' && p.Project)
+      .map((p) => ({ path: real(String(p.Project).replace(/[\\/]+$/, '')), cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) })),
     generated: typeof base?.generated === 'string' ? base.generated : null,
     fullView: 'codeburn web',
   };

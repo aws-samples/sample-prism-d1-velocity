@@ -7,7 +7,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { checkTool } from '../utils/tool-check.js';
-import { ENABLE_CODEBURN_CMD, lastSync, scheduleExists, schedulerName } from '../utils/otel-sync-schedule.js';
+import { ENABLE_CODEBURN_CMD, lastSync, scheduleExists, schedulerName, systemdUserAvailable } from '../utils/otel-sync-schedule.js';
+import { type PrismResult } from '../codewatch/results.js';
 import { HOOK_MARKER, MANAGED_HOOKS } from '../codewatch/hooks.js';
 import { gitleaksInstallHint } from '../codewatch/gitleaks.js';
 import { globalHooksDir, globalStatus, isOptedOut, OPT_OUT_KEY, repoLocalHooksPath, type GlobalStatus } from '../codewatch/globalHooks.js';
@@ -32,6 +33,8 @@ export interface MachineDeps {
   env?: NodeJS.ProcessEnv;
   scheduleExists?: () => boolean;
   schedulerName?: () => string;
+  /** `systemctl --user` works: an unreadable crontab's fix is then the systemd user timer. */
+  systemdAvailable?: () => boolean;
   /** Global codewatch hooks state; computed once by the payload builder. */
   global?: GlobalStatus;
 }
@@ -77,8 +80,10 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   const sched = (deps.schedulerName || schedulerName)();
   const last = lastSync(home);
   if (hasSchedule instanceof Error) {
-    out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'warn',
-      hasSchedule.message, 'Fix crontab access (crontab -l must work), then re-check'));
+    out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'warn', hasSchedule.message,
+      (deps.systemdAvailable || systemdUserAvailable)()
+        ? `${ENABLE_CODEBURN_CMD} --schedule systemd (a systemd user timer; your crontab is not touched)`
+        : 'Fix crontab access (crontab -l must work), then re-check'));
   } else if (hasSchedule) {
     out.push(item('codeburn-sync', 'Scheduled codeburn sync push', last ? 'ok' : 'warn',
       last ? `${sched} entry installed; last sync log write ${last.at}` : `${sched} entry installed; no sync log yet in ~/.prism/logs`,
@@ -186,12 +191,21 @@ export function codewatchSetup(repo: string, deps: { pathEnv?: string; global?: 
 }
 
 export interface SecuritySetup {
-  /** ok: `prism-cli enable security` finished here (.prism/security.local.json, or a legacy .prism/config.json block). missing: no marker. */
-  status: 'ok' | 'missing';
+  /**
+   * ok: `prism-cli enable security` finished here (.prism/security.local.json, or a legacy .prism/config.json block).
+   * in-use: no marker, but saved Security Agent results (code review, threat model or pentest) are in .prism/results/.
+   * missing: neither.
+   */
+  status: 'ok' | 'in-use' | 'missing';
   detail: string;
   /** Empty when ok. */
   fix: string;
 }
+
+/** Result kinds the Security Agent commands save, with their label. */
+export const SECURITY_RESULT_KINDS: [PrismResult['kind'], string][] = [
+  ['security-review', 'code review'], ['security-threat-model', 'threat model'], ['security-pentest', 'pentest'],
+];
 
 export function enableSecurityFix(repo: string): string {
   return `cd ${shellPath(repo)} && prism-cli enable security`;
@@ -203,9 +217,14 @@ export function enableSecurityFix(repo: string): string {
  * evidence only: the dashboard makes no AWS calls, so this says the setup ran
  * here, not that the AWS resources still exist (`enable security --status` checks those).
  */
-export function securitySetup(repo: string): SecuritySetup {
+export function securitySetup(repo: string, results: PrismResult[] = []): SecuritySetup {
   const m = readSecurityMarker(repo);
-  if (!m) return { status: 'missing', detail: 'not set up', fix: enableSecurityFix(repo) };
+  if (!m) {
+    // Saved results prove the Security Agent was used for this repo (from another checkout, or before the marker existed).
+    const kinds = SECURITY_RESULT_KINDS.filter(([k]) => results.some((r) => r.kind === k)).map(([, label]) => label);
+    if (kinds.length) return { status: 'in-use', detail: `in use (${kinds.join(', ')} results found; no local marker)`, fix: '' };
+    return { status: 'missing', detail: 'not set up', fix: enableSecurityFix(repo) };
+  }
   const when = m.setupAt ? `, set up ${m.setupAt.slice(0, 10)}` : '';
   return { status: 'ok', detail: `code review ${m.codeReviewId} in account ${m.account} (${m.region})${when}`, fix: '' };
 }

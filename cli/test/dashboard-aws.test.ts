@@ -56,6 +56,6 @@ test('page: has the AWS account panel and places values as text', () => {
   const html = renderPage('n0nce');
   assert.match(html, /function awsPanel\(aws\)/);
   assert.match(html, /awsPanel\(data\.aws\)/);
-  assert.match(html, /No AWS account checks yet/);
+  assert.match(html, /emptyLine\('AWS account', 'no checks yet\. Run '/);
   assert.doesNotMatch(html.slice(html.indexOf('function awsPanel'), html.indexOf('async function load')), /innerHTML/);
 });

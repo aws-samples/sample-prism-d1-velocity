@@ -127,3 +127,27 @@ export function discoverRepos(opts: DiscoverOptions): Discovery {
   for (const r of scan.repos) if (r.path !== currentRepo) out.push(r);
   return { repos: out, scannedRoot, currentRepo, scanMs: Date.now() - t0, truncated: scan.truncated, error: null };
 }
+
+/**
+ * Display labels per repo path: the folder name, or, for a name several repos
+ * share, the shortest trailing part of the path that no other repo with that
+ * name ends in (`workplace/app` and `old/app`).
+ */
+export function repoLabels(paths: string[]): Map<string, string> {
+  const parts = new Map(paths.map((p) => [p, p.split(/[\\/]+/).filter(Boolean)]));
+  const tail = (p: string, n: number) => parts.get(p)!.slice(-n).join('/');
+  const byName = new Map<string, string[]>();
+  for (const p of paths) {
+    const name = tail(p, 1) || p;
+    byName.set(name, [...(byName.get(name) || []), p]);
+  }
+  const out = new Map<string, string>();
+  for (const [name, group] of byName) {
+    for (const p of group) {
+      let n = 1;
+      while (n < parts.get(p)!.length && group.some((q) => q !== p && tail(q, n) === tail(p, n))) n++;
+      out.set(p, n === 1 ? name : tail(p, n));
+    }
+  }
+  return out;
+}
