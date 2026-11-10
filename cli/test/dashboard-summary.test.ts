@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,7 +16,7 @@ import { collectCodewatch } from '../src/dashboard/codewatch.js';
 import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
 import { renderPage } from '../src/dashboard/page.js';
 import { repoLabels } from '../src/dashboard/repos.js';
-import { securitySetup, type CheckItem } from '../src/dashboard/setup.js';
+import { CODEBURN_ADMIN_HELP, machineChecks, securitySetup, SETUP_DOCS, type CheckItem } from '../src/dashboard/setup.js';
 import { buildSummary } from '../src/dashboard/summary.js';
 import { emptyUsage, spendByRepo, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
 
@@ -42,7 +42,15 @@ function exporter(projects: Record<string, number>): CodeburnExport {
     : { schema: 'codeburn.export.v2', currency: { code: 'USD' }, summary: [{ Period: 'Today', 'Cost (USD)': 1.5, 'API Calls': 2, Sessions: 1 }] };
 }
 
-const machineDeps = () => ({ home: tmp('mh'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', systemdAvailable: () => false });
+/** A home whose codeburn sync endpoint is configured (codeburn's ~/.config/codeburn/sync.json). */
+function syncedHome(p: string): string {
+  const home = tmp(p);
+  mkdirSync(join(home, '.config', 'codeburn'), { recursive: true });
+  writeFileSync(join(home, '.config', 'codeburn', 'sync.json'), JSON.stringify({ baseUrl: 'https://otel.example.com' }));
+  return home;
+}
+
+const machineDeps = (home = syncedHome('mh')) => ({ home, env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', systemdAvailable: () => false });
 
 // ---------------------------------------------------------------- summary
 
@@ -131,13 +139,13 @@ test('spend: each codeburn project counts once, for the deepest repo containing 
 
 // ---------------------------------------------------------------- payload ordering and collapsing
 
-async function payloadFixture(): Promise<{ home: string; p: DashboardPayload }> {
+async function payloadFixture(deps = machineDeps()): Promise<{ home: string; p: DashboardPayload }> {
   const home = tmp('home');
   const names = ['quiet1', 'quiet2', 'quiet3', 'spender', 'sec', 'cw', 'workplace/dup', 'old/dup'];
   for (const n of names) gitRepo(join(home, n));
   writeResult(join(home, 'cw'), review('2026-11-09T00:00:00Z', 'skipped', { reason: 'no changes against upstream' }));
   writeResult(join(home, 'sec'), makeResult({ kind: 'security-threat-model', hook: 'manual', status: 'findings', tool: 'security-agent', started_at: '2026-11-09T00:00:00Z', finished_at: '2026-11-09T01:00:00Z' }));
-  const p = await buildPayload({ cwd: tmp('nowhere'), home, exporter: exporter({ [join(home, 'spender')]: 12.5, [join(home, 'cw', 'pkg')]: 2 }), pathEnv: tmp('path'), machineDeps: machineDeps() });
+  const p = await buildPayload({ cwd: tmp('nowhere'), home, exporter: exporter({ [join(home, 'spender')]: 12.5, [join(home, 'cw', 'pkg')]: 2 }), pathEnv: tmp('path'), machineDeps: deps });
   return { home, p };
 }
 
@@ -290,3 +298,48 @@ test('page: low counts have their own colour, apart from muted text, in both the
   assert.match(html, /class: rv\.low \? 'sev-low' : ''/, 'a zero low count keeps the default colour');
 });
 
+
+// ---------------------------------------------------------------- codeburn sync: ask your administrator
+
+const syncRow = (home: string, scheduleExists: () => boolean) =>
+  machineChecks({ pathEnv: tmp('none'), home, env: {}, scheduleExists, schedulerName: () => 'crontab', systemdAvailable: () => false, global: { state: 'not-installed', hooksPath: null, dir: '' } })
+    .find((i) => i.id === 'codeburn-sync')!;
+
+test('codeburn sync: no endpoint shows the ask-your-administrator hint with both links and counts as the first warning', async () => {
+  const row = syncRow(tmp('noep'), () => true);
+  assert.equal(row.status, 'missing');
+  assert.deepEqual(row.help, CODEBURN_ADMIN_HELP);
+  assert.match(row.help!.text, /^codeburn sync is not set up on this machine\. Ask your PRISM administrator .* prism-cli enable codeburn --url <collector URL>\.$/);
+  assert.deepEqual(row.help!.links.map((l) => [l.label, l.url]), [
+    ['Setup instructions', 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/README.md#2-give-each-developer-a-telemetry-account'],
+    ['Administrator guide', 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/USER_GUIDE.md#administrator-setup'],
+  ]);
+
+  const { p } = await payloadFixture(machineDeps(tmp('noep2')));
+  assert.deepEqual(p.summary.warnings, { count: 2, first: CODEBURN_ADMIN_HELP.text }, 'the hint, then gitleaks');
+  const json = JSON.parse(JSON.stringify(p));
+  assert.deepEqual(json.machine.setup.find((i: CheckItem) => i.id === 'codeburn-sync').help, CODEBURN_ADMIN_HELP, '--json carries the hint');
+
+  const page = await runPage([p]);
+  assert.match(page.text(), /Setup warnings2codeburn sync is not set up on this machine\. Ask your PRISM administrator/);
+  const links = page.dom.byId.main.querySelectorAll('a').filter((a) => (a.getAttribute('href') || '').startsWith('https://github.com/aws-samples/'));
+  assert.deepEqual(links.map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]), [
+    ['Setup instructions', SETUP_DOCS.telemetryAccount, '_blank', 'noopener noreferrer'],
+    ['Administrator guide', SETUP_DOCS.adminGuide, '_blank', 'noopener noreferrer'],
+  ]);
+});
+
+test('codeburn sync: endpoint plus schedule shows no admin hint', () => {
+  const row = syncRow(syncedHome('ep'), () => true);
+  assert.equal(row.help, undefined);
+  assert.match(row.detail, /^crontab entry installed/);
+  assert.equal(buildSummary([], emptyUsage('ok', ''), [row]).warnings.first?.includes('administrator') ?? false, false);
+});
+
+test('codeburn sync: endpoint but no schedule keeps the self-fix and no admin hint', () => {
+  const row = syncRow(syncedHome('ep2'), () => false);
+  assert.equal(row.status, 'missing');
+  assert.equal(row.help, undefined);
+  assert.equal(row.fix, 'prism-cli enable codeburn');
+  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), [row]).warnings, { count: 0, first: null });
+});

@@ -43,6 +43,7 @@ details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo >
 .chead { color:var(--muted); font-weight:600; } summary.crow { cursor:pointer; list-style:none; } summary.crow::-webkit-details-marker { display:none; } details.cdetails[open] > summary.crow { background:var(--bg); } details.cdetails > .tablewrap { padding:4px 0 8px 18px; }
 @media (max-width: 760px) { .crow { grid-template-columns: 1fr 1fr; } .chead { display:none; } }
 a.rlink { color:var(--accent); } a.rlink:hover { text-decoration:underline; }
+.help { font-size:12px; margin-top:4px; overflow-wrap:anywhere; } .help-links { margin-top:2px; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
@@ -360,9 +361,17 @@ function suggestionCallout(sg) {
     el('div', { class: 'fix' }, 'Applies to every repo on this machine, including new clones. Repos can opt out with ', el('code', {}, 'git config prism.codewatch false'), '.'));
 }
 
+/** A fix that needs an administrator: the hint, then its doc links (https only), each opening in a new tab. */
+function helpBlock(h) {
+  const links = (h.links || []).filter((l) => /^https:\\/\\//.test(txt(l.url)))
+    .map((l) => el('a', { href: txt(l.url), class: 'rlink', target: '_blank', rel: 'noopener noreferrer' }, txt(l.label)));
+  return el('div', { class: 'help' }, txt(h.text), links.length ? el('div', { class: 'help-links' }, links.flatMap((a, n) => n ? [' · ', a] : [a])) : null);
+}
+
 function setupPanel(data) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Setup checklist'));
-  const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail, i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
+  const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail,
+    i.help ? helpBlock(i.help) : i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
   s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(data.machine.setup)));
   const repos = data.overview.setup, c = data.overview.counts;
   s.append(el('h3', {}, 'Per repo: codewatch (' + c.codewatch + ' of ' + c.repos + ' installed)'));

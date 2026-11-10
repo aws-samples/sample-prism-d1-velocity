@@ -16,6 +16,7 @@ import { realpathSync } from 'node:fs';
 import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
 import { readSecurityMarker } from '../security/marker.js';
+import { configuredSyncUrl } from '../commands/enable/codeburn.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'missing';
 export interface CheckItem {
@@ -25,7 +26,30 @@ export interface CheckItem {
   detail: string;
   /** One-line fix; empty when status is ok. */
   fix: string;
+  /** Set when the fix needs someone else (an administrator): plain text plus documentation links. */
+  help?: CheckHelp;
 }
+
+export interface CheckHelp {
+  text: string;
+  links: { label: string; url: string }[];
+}
+
+/** Public setup docs the dashboard links to. The one place these URLs live. */
+export const SETUP_DOCS = {
+  telemetryAccount: 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/README.md#2-give-each-developer-a-telemetry-account',
+  adminGuide: 'https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/USER_GUIDE.md#administrator-setup',
+} as const;
+
+/** No codeburn sync endpoint here: only an administrator can supply the collector URL and telemetry account. */
+export const CODEBURN_ADMIN_HELP: CheckHelp = {
+  text: 'codeburn sync is not set up on this machine. Ask your PRISM administrator for the collector URL and a telemetry account for your email, then run '
+    + `${ENABLE_CODEBURN_CMD} --url <collector URL>.`,
+  links: [
+    { label: 'Setup instructions', url: SETUP_DOCS.telemetryAccount },
+    { label: 'Administrator guide', url: SETUP_DOCS.adminGuide },
+  ],
+};
 
 export interface MachineDeps {
   pathEnv?: string;
@@ -79,7 +103,11 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   try { hasSchedule = (deps.scheduleExists || scheduleExists)(); } catch (e) { hasSchedule = e instanceof Error ? e : new Error(String(e)); }
   const sched = (deps.schedulerName || schedulerName)();
   const last = lastSync(home);
-  if (hasSchedule instanceof Error) {
+  // Same read as `aws check` and `enable codeburn`: null means no sync config at all ('' is an unreadable one).
+  if (configuredSyncUrl(home) === null) {
+    out.push({ ...item('codeburn-sync', 'Scheduled codeburn sync push', 'missing', 'no codeburn sync endpoint configured on this machine',
+      `${ENABLE_CODEBURN_CMD} --url <collector URL>`), help: CODEBURN_ADMIN_HELP });
+  } else if (hasSchedule instanceof Error) {
     out.push(item('codeburn-sync', 'Scheduled codeburn sync push', 'warn', hasSchedule.message,
       (deps.systemdAvailable || systemdUserAvailable)()
         ? `${ENABLE_CODEBURN_CMD} --schedule systemd (a systemd user timer; your crontab is not touched)`

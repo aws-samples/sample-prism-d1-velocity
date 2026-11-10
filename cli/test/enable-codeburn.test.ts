@@ -10,6 +10,13 @@ import { machineChecks } from '../src/dashboard/setup.js';
 import { crontabLines, systemdTimerExists } from '../src/utils/otel-sync-schedule.js';
 
 const URL = 'https://otel.example.com';
+/** A home whose codeburn sync endpoint is configured, so the checklist shows the self-fix states. */
+function syncedHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'prism-h-'));
+  mkdirSync(join(home, '.config', 'codeburn'), { recursive: true });
+  writeFileSync(join(home, '.config', 'codeburn', 'sync.json'), JSON.stringify({ baseUrl: URL }));
+  return home;
+}
 const CB = '/fake/bin/codeburn';
 
 /** A fake machine: codeburn presence, its sync config, the schedule, and a log of every command. */
@@ -216,7 +223,7 @@ test('enable codeburn: no crontab yet still installs normally, backfill and sche
 
 test('dashboard setup checklist: an unreadable crontab is its own state with the read error, not "no entry"', () => {
   const PAM = 'You (alice) are not allowed to access to (crontab) because of pam configuration.';
-  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {},
+  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: syncedHome(), env: {},
     scheduleExists: () => crontabLines({ ok: false, stdout: '', stderr: PAM }).length > 0, schedulerName: () => 'crontab', global: { state: 'not-installed', hooksPath: null, dir: '' } });
   const sync = items.find((i) => i.id === 'codeburn-sync')!;
   assert.equal(sync.status, 'warn');
@@ -253,7 +260,7 @@ test('bootstrapper setup-otel-sync is a deprecated alias that delegates', async 
 });
 
 test('dashboard setup checklist points codeburn fixes at enable codeburn', () => {
-  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', global: { state: 'not-installed', hooksPath: null, dir: '' } });
+  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: syncedHome(), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', global: { state: 'not-installed', hooksPath: null, dir: '' } });
   const by = Object.fromEntries(items.map((i) => [i.id, i]));
   assert.equal(by.codeburn.fix, 'prism-cli enable codeburn');
   assert.equal(by['codeburn-sync'].fix, 'prism-cli enable codeburn');
@@ -403,13 +410,13 @@ test('systemd units: quoted ExecStart, log append, same hours as the cron entry;
 });
 
 test('dashboard setup checklist: an unreadable crontab with systemctl --user points at --schedule systemd', () => {
-  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {},
+  const items = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: syncedHome(), env: {},
     scheduleExists: () => crontabLines({ ok: false, stdout: '', stderr: PAM_ERR }).length > 0, schedulerName: () => 'crontab', systemdAvailable: () => true,
     global: { state: 'not-installed', hooksPath: null, dir: '' } });
   const sync = items.find((i) => i.id === 'codeburn-sync')!;
   assert.equal(sync.status, 'warn');
   assert.match(sync.fix, /^prism-cli enable codeburn --schedule systemd \(a systemd user timer; your crontab is not touched\)$/);
-  const withTimer = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: mkdtempSync(join(tmpdir(), 'prism-h-')), env: {},
+  const withTimer = machineChecks({ pathEnv: mkdtempSync(join(tmpdir(), 'prism-none-')), home: syncedHome(), env: {},
     scheduleExists: () => true, schedulerName: () => 'systemd user timer', global: { state: 'not-installed', hooksPath: null, dir: '' } });
   assert.match(withTimer.find((i) => i.id === 'codeburn-sync')!.detail, /^systemd user timer entry installed/);
 });

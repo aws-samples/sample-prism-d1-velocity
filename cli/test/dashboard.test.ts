@@ -185,6 +185,8 @@ test('setup (machine): ok when tools, schedule, sync log and AWS profile are pre
   const home = tmp('home');
   mkdirSync(join(home, '.prism', 'logs'), { recursive: true });
   writeFileSync(join(home, '.prism', 'logs', 'otel-sync.log'), 'pushed 12 records\n');
+  mkdirSync(join(home, '.config', 'codeburn'), { recursive: true });
+  writeFileSync(join(home, '.config', 'codeburn', 'sync.json'), JSON.stringify({ baseUrl: 'https://otel.example.com' }));
   const items = machineChecks({ pathEnv: bin, home, env: { AWS_PROFILE: 'dev' }, scheduleExists: () => true, schedulerName: () => 'crontab', global: { state: 'installed', hooksPath: '~/.prism/hooks', dir: '' } });
   const by = Object.fromEntries(items.map((i) => [i.id, i]));
   assert.deepEqual(items.map((i) => i.status), ['ok', 'ok', 'ok', 'ok', 'ok']);

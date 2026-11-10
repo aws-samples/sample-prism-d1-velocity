@@ -24,7 +24,7 @@ export interface DashboardSummary {
     id: string;
   } | null;
   spend: { status: UsagePanel['status']; currency: string; today: number | null; month: number | null; message: string | null };
-  /** Checks in the warn state: machine checks, then repos whose own hooks bypass codewatch. */
+  /** Checks in the warn state or needing an administrator (help set): machine checks, then repos whose own hooks bypass codewatch. */
   warnings: { count: number; first: string | null };
 }
 
@@ -44,7 +44,8 @@ export function buildSummary(repos: SummaryRepo[], usage: UsagePanel, machine: C
     }
   }
   const warnings = [
-    ...machine.filter((i) => i.status === 'warn').map((i) => `${i.label}: ${i.detail}`),
+    // A check with help (it needs an administrator) counts whatever its status, and its hint is the warning text.
+    ...machine.filter((i) => i.help || i.status === 'warn').map((i) => i.help ? i.help.text : `${i.label}: ${i.detail}`),
     ...repos.filter((r) => r.setup.status === 'warn').map((r) => `${r.label}: ${r.setup.detail}`),
   ];
   return {
