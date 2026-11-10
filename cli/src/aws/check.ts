@@ -9,7 +9,7 @@
 import { aws, type AwsResult, type AwsTarget } from '../utils/aws.js';
 import { severityRank, type Finding, type Severity } from '../utils/audit.js';
 import { auditAccount, ACCOUNT_AUDIT_IDS } from '../utils/audit-account.js';
-import { configuredSyncUrl } from '../commands/enable/codeburn.js';
+import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
 import {
   collectSecurityStatus, PIPELINE_STACK, type Ctx, type Deps, type Resolved, type StatusRow,
 } from '../security/setup.js';

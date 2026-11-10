@@ -30,7 +30,7 @@ table { width:100%; border-collapse:collapse; font-size:13px; } th, td { text-al
 th { white-space:nowrap; } td.msg { min-width:280px; } td.count { font-variant-numeric:tabular-nums; font-weight:600; } td code { white-space:normal; overflow-wrap:anywhere; }
 th { color:var(--muted); font-weight:600; } td.num { text-align:right; font-variant-numeric: tabular-nums; }
 .pill { white-space:nowrap; display:inline-block; padding:0 7px; border-radius:10px; font-size:12px; font-weight:600; border:1px solid currentColor; }
-.s-ok { color:var(--ok); } .s-warn, .s-findings, .s-skipped { color:var(--warn); } .s-missing, .s-error { color:var(--bad); }
+.s-ok { color:var(--ok); } .s-info { color:var(--accent); } .s-warn, .s-findings, .s-skipped { color:var(--warn); } .s-missing, .s-error { color:var(--bad); }
 .sev-high { color:var(--high); } .sev-medium { color:var(--medium); } .sev-low { color:var(--low); }
 .stats { display:flex; gap:18px; flex-wrap:wrap; margin:6px 0; } .stat b { display:block; font-size:20px; } .stat span { color:var(--muted); font-size:12px; }
 .fix { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
@@ -43,6 +43,7 @@ details.repo { border-top:1px solid var(--line); padding:8px 0; } details.repo >
 .chead { color:var(--muted); font-weight:600; } summary.crow { cursor:pointer; list-style:none; } summary.crow::-webkit-details-marker { display:none; } details.cdetails[open] > summary.crow { background:var(--bg); } details.cdetails > .tablewrap { padding:4px 0 8px 18px; }
 @media (max-width: 760px) { .crow { grid-template-columns: 1fr 1fr; } .chead { display:none; } }
 a.rlink { color:var(--accent); } a.rlink:hover { text-decoration:underline; }
+.help { font-size:12px; margin-top:4px; overflow-wrap:anywhere; } .help-links { margin-top:2px; } .help-steps { margin:4px 0; padding-left:18px; } .help code { white-space:normal; overflow-wrap:anywhere; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
@@ -360,9 +361,19 @@ function suggestionCallout(sg) {
     el('div', { class: 'fix' }, 'Applies to every repo on this machine, including new clones. Repos can opt out with ', el('code', {}, 'git config prism.codewatch false'), '.'));
 }
 
+/** A row's help: the text, any steps and commands, then its doc links (https only), each opening in a new tab. */
+function helpBlock(h) {
+  const links = (h.links || []).filter((l) => /^https:\\/\\//.test(txt(l.url)))
+    .map((l) => el('a', { href: txt(l.url), class: 'rlink', target: '_blank', rel: 'noopener noreferrer' }, txt(l.label)));
+  const steps = (h.steps || []).length ? el('ol', { class: 'help-steps' }, h.steps.map((x) => el('li', {}, txt(x)))) : null;
+  const cmds = (h.commands || []).length ? el('div', { class: 'help-links' }, 'Commands: ', h.commands.flatMap((c, n) => n ? [', ', el('code', {}, txt(c))] : [el('code', {}, txt(c))])) : null;
+  return el('div', { class: 'help' }, txt(h.text), steps, cmds, links.length ? el('div', { class: 'help-links' }, links.flatMap((a, n) => n ? [' · ', a] : [a])) : null);
+}
+
 function setupPanel(data) {
   const s = el('section', { class: 'card' }, el('h2', {}, 'Setup checklist'));
-  const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail, i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
+  const rows = (items) => items.map((i) => [pill(i.status), i.label, el('div', {}, i.detail,
+    i.help ? helpBlock(i.help) : i.fix ? el('div', { class: 'fix' }, 'Fix: ' + i.fix) : null)]);
   s.append(el('h3', {}, 'This machine'), table(['', 'Check', 'Detail'], rows(data.machine.setup)));
   const repos = data.overview.setup, c = data.overview.counts;
   s.append(el('h3', {}, 'Per repo: codewatch (' + c.codewatch + ' of ' + c.repos + ' installed)'));

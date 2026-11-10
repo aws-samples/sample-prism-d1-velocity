@@ -40,9 +40,7 @@ export function withFakeAws<T>(stubs: AwsStub[], fn: () => T, calls?: string[][]
   process.env.FAKE_AWS_RESPONSES = responses;
   if (calls) process.env.FAKE_AWS_LOG = log;
 
-  try {
-    return fn();
-  } finally {
+  const restore = () => {
     process.env.PATH = savedPath;
     if (savedResponses === undefined) delete process.env.FAKE_AWS_RESPONSES;
     else process.env.FAKE_AWS_RESPONSES = savedResponses;
@@ -51,6 +49,15 @@ export function withFakeAws<T>(stubs: AwsStub[], fn: () => T, calls?: string[][]
       if (existsSync(log)) for (const l of readFileSync(log, 'utf8').split('\n').filter(Boolean)) calls.push(JSON.parse(l));
     }
     rmSync(dir, { recursive: true, force: true });
+  };
+  // An async fn keeps the fake on PATH until its promise settles.
+  let pending = false;
+  try {
+    const r = fn();
+    if (r instanceof Promise) { pending = true; return r.finally(restore) as T; }
+    return r;
+  } finally {
+    if (!pending) restore();
   }
 }
 

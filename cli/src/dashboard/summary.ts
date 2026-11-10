@@ -24,7 +24,7 @@ export interface DashboardSummary {
     id: string;
   } | null;
   spend: { status: UsagePanel['status']; currency: string; today: number | null; month: number | null; message: string | null };
-  /** Checks in the warn state: machine checks, then repos whose own hooks bypass codewatch. */
+  /** Machine checks that are missing or warn (as in the checklist), then repos whose own hooks bypass codewatch. */
   warnings: { count: number; first: string | null };
 }
 
@@ -44,7 +44,8 @@ export function buildSummary(repos: SummaryRepo[], usage: UsagePanel, machine: C
     }
   }
   const warnings = [
-    ...machine.filter((i) => i.status === 'warn').map((i) => `${i.label}: ${i.detail}`),
+    // Same as the checklist: every missing or warn item counts; ok and info never do. A hint, when there is one, is the text.
+    ...machine.filter((i) => i.status === 'missing' || i.status === 'warn').map((i) => i.help ? i.help.text : `${i.label}: ${i.detail}`),
     ...repos.filter((r) => r.setup.status === 'warn').map((r) => `${r.label}: ${r.setup.detail}`),
   ];
   return {
