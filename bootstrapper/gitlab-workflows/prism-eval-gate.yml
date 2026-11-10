@@ -222,8 +222,29 @@ prism-eval-gate:
               "Review /tmp/mr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}")
             set -e
 
+            # Extract the LAST JSON object that parses and has a numeric score
+            # and a findings array. kiro-cli writes reasoning notes first, and
+            # they quote code with braces, so a greedy first-brace-to-last-brace
+            # match is not the verdict.
             CLEANED=$(printf '%s' "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
-            REVIEW_JSON=$(printf '%s' "${CLEANED}" | tr '\n' ' ' | grep -o '{.*}' || true)
+            REVIEW_JSON=$(printf '%s' "${CLEANED}" | python3 -c 'if True:
+                import json, math, sys
+                text = sys.stdin.read()
+                dec = json.JSONDecoder(strict=False)
+                pos = text.rfind("{")
+                while pos != -1:
+                    try:
+                        obj = dec.raw_decode(text, pos)[0]
+                    except ValueError:
+                        obj = None
+                    score = obj.get("score") if isinstance(obj, dict) else None
+                    if (isinstance(score, (int, float)) and not isinstance(score, bool)
+                            and math.isfinite(score) and isinstance(obj.get("findings"), list)):
+                        print(json.dumps(obj))
+                        sys.exit(0)
+                    pos = text.rfind("{", 0, pos)
+                sys.exit(1)
+            ' || true)
 
             if [ -z "${REVIEW_JSON}" ] || ! printf '%s' "${REVIEW_JSON}" | jq -e '.score' >/dev/null 2>&1; then
               echo "❌ Could not parse kiro-cli review output — failing closed."
