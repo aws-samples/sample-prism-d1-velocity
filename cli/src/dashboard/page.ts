@@ -47,6 +47,13 @@ a.rlink { color:var(--accent); } a.rlink:hover { text-decoration:underline; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
 svg.trend line { stroke:var(--line); }
 .repo-title { font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-all; }
+.summary { display:flex; gap:12px 28px; flex-wrap:wrap; align-items:flex-start; } .summary .item { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+.summary .k { display:block; color:var(--muted); font-size:12px; } .summary .v { font-size:15px; font-weight:600; }
+.slim-line { padding:5px 0; border-top:1px solid var(--line); font-size:13px; overflow-wrap:anywhere; } .slim-line:first-of-type { border-top:none; } .slim-line code { white-space:normal; overflow-wrap:anywhere; }
+.empty-line { color:var(--muted); margin:10px 0 4px; font-size:13px; overflow-wrap:anywhere; } .empty-line b { color:var(--text); }
+.changed { outline:2px solid var(--accent); outline-offset:1px; border-radius:4px; }
+@keyframes prism-flash { from { background-color:color-mix(in srgb, var(--accent) 35%, transparent); } to { background-color:transparent; } }
+@media (prefers-reduced-motion: no-preference) { .changed { animation:prism-flash 2.5s ease-out 1; } }
 `;
 
 const SCRIPT = `
@@ -69,6 +76,21 @@ function table(head, rows) {
     el('tbody', {}, rows.map((r) => el('tr', {}, r.map((c) => (c instanceof Node && c.nodeName === 'TD') ? c : el('td', {}, c)))))));
 }
 const num = (v) => el('td', { class: 'num' }, txt(v));
+
+/** Repo labels (a parent path when two repos share a name), set on each load from data.repos. */
+let LABELS = new Map();
+const labelOf = (r) => LABELS.get(r.path) || txt(r.name);
+
+/** Sections with no data, each collected as one line into the "Nothing recorded yet" card. */
+let EMPTY = [];
+function emptyLine(title, ...parts) { EMPTY.push(el('div', { class: 'slim-line' }, el('b', {}, title), ': ', ...parts)); return null; }
+/** The same one line, inside a card that has other content. */
+const inlineEmpty = (title, ...parts) => el('p', { class: 'empty-line' }, el('b', {}, title), ': ', ...parts);
+
+/** Values compared between loads: key -> text. A changed value is outlined. */
+let PREV = null, CUR = {};
+function track(key, value, node) { CUR[key] = txt(value); node.setAttribute('data-track', key); return node; }
+function changedKeys(prev, cur) { return prev ? Object.keys(cur).filter((k) => k in prev && prev[k] !== cur[k]) : []; }
 
 function trendSvg(trend) {
   const w = Math.max(trend.length * 14, 140), h = 48, svg = document.createElementNS(SVG, 'svg');
@@ -100,7 +122,41 @@ function scanBanner(ss) {
 }
 
 function repoName(r) {
-  return el('span', { title: r.path }, r.name, r.current ? el('span', { class: 'tag' }, 'this repo') : null);
+  return el('span', { title: r.path }, labelOf(r), r.current ? el('span', { class: 'tag' }, 'this repo') : null);
+}
+
+const REVIEW_STATUS = { ok: 'clean', findings: 'findings', error: 'failed', skipped: 'skipped' };
+
+/** The summary strip: latest review, spend, setup warnings. Same object as summary in --json. */
+function summaryPanel(sum, data) {
+  const s = el('section', { class: 'card wide' }, el('h2', {}, 'Summary'));
+  const box = el('div', { class: 'summary' });
+  const item = (k, ...v) => el('div', { class: 'item' }, el('span', { class: 'k' }, k), ...v);
+  const rv = sum && sum.review;
+  if (rv) {
+    const counts = rv.status === 'skipped' || rv.status === 'error' ? txt(REVIEW_STATUS[rv.status] || rv.status) + (rv.reason ? ': ' + txt(rv.reason) : '')
+      : rv.high + ' high · ' + rv.medium + ' medium · ' + rv.low + ' low';
+    box.append(item('Latest codewatch review',
+      el('div', { class: 'v' }, el('span', { title: rv.path }, txt(rv.repo)), ' · ', reportLink(rv.id, when(rv.at))),
+      track('sum:review', rv.id + ' ' + counts, el('div', {}, counts)),
+      el('div', { class: 'fix' }, 'reviewer ' + txt(rv.reviewer))));
+  } else {
+    box.append(item('Latest codewatch review', el('div', { class: 'v' }, 'none yet')));
+  }
+  const sp = sum && sum.spend;
+  if (sp && sp.status === 'ok') {
+    box.append(item('Spend (codeburn)',
+      el('div', { class: 'v' }, track('sum:today', sp.today, el('span', {}, money(sp.today, sp.currency))), ' today'),
+      el('div', {}, track('sum:month', sp.month, el('span', {}, money(sp.month, sp.currency))), ' this month')));
+  } else {
+    box.append(item('Spend (codeburn)', el('div', { class: 'v' }, sp ? txt(sp.status) : '-'), el('div', { class: 'fix' }, txt(sp && sp.message))));
+  }
+  const w = (sum && sum.warnings) || { count: 0, first: null };
+  box.append(item('Setup warnings',
+    el('div', { class: 'v' }, track('sum:warnings', w.count, el('span', { class: w.count ? 's-warn' : 's-ok' }, String(w.count)))),
+    w.first ? el('div', { class: 'fix' }, txt(w.first)) : el('div', { class: 'fix' }, 'none')));
+  s.append(box);
+  return s;
 }
 
 const SCAN_LABEL = { ok: ['ok', 'ok'], 'not-scanned': ['warn', 'not scanned'], 'no-verify': ['warn', 'no-verify'], flagged: ['missing', 'secrets found'], none: ['skipped', '-'] };
@@ -172,68 +228,96 @@ function codewatchDetail(repo) {
     el('div', { class: 'stat' }, el('b', {}, cw.gitleaksBlocks.length), el('span', {}, 'gitleaks blocks')),
     el('div', { class: 'stat' }, el('b', {}, cw.skipped.length), el('span', {}, 'pushed without a scan'))));
 
-  s.append(el('h3', {}, 'Commits'));
-  s.append(commitsList(cw.commits));
+  if (!cw.commits || !cw.commits.rows.length) s.append(inlineEmpty('Commits', 'none recorded yet; commits appear after a pre-commit scan or a pre-push review that runs.'));
+  else s.append(el('h3', {}, 'Commits'), commitsList(cw.commits));
 
-  s.append(el('h3', {}, 'Scans (last ' + cw.scans.length + ')'));
-  s.append(scansList(cw.scans));
+  if (!cw.scans.length) s.append(inlineEmpty('Scans', 'no pre-push reviews yet.'));
+  else s.append(el('h3', {}, 'Scans (last ' + cw.scans.length + ')'), scansList(cw.scans));
 
-  s.append(el('h3', {}, 'Trend (last ' + cw.trend.length + ' runs)'));
-  s.append(trendSvg(cw.trend));
+  const skipped = cw.skippedRuns || 0;
+  if (!cw.trend.length) {
+    // By design: a skipped run (nothing new to review, or no gitleaks) has no findings, so it is not charted.
+    s.append(inlineEmpty('Trend', 'nothing to chart. ' + (skipped
+      ? 'All ' + skipped + ' run' + (skipped === 1 ? ' was' : 's were') + ' skipped (for example a push with no changes against upstream), and skipped runs have no findings to chart.'
+      : 'No run has finished yet.')));
+  } else {
+    s.append(el('h3', {}, 'Trend (last ' + cw.trend.length + ' runs)'), trendSvg(cw.trend));
+    if (skipped) s.append(el('p', { class: 'note' }, skipped + ' skipped run' + (skipped === 1 ? ' is' : 's are') + ' not charted: they have no findings.'));
+  }
 
-  s.append(el('h3', {}, 'Gitleaks blocks'));
-  if (!cw.gitleaksBlocks.length) s.append(el('p', { class: 'empty' }, 'No commits blocked.'));
-  else s.append(table(['When', 'Branch', 'Result', 'Secrets'], cw.gitleaksBlocks.slice(0, 20).map((r) => [when(r.started_at), txt(r.branch), pill(r.status), r.status === 'findings' ? r.high : txt(r.reason)])));
+  if (!cw.gitleaksBlocks.length) s.append(inlineEmpty('Gitleaks blocks', 'no commits blocked.'));
+  else s.append(el('h3', {}, 'Gitleaks blocks'), table(['When', 'Branch', 'Result', 'Secrets'], cw.gitleaksBlocks.slice(0, 20).map((r) => [when(r.started_at), txt(r.branch), pill(r.status), r.status === 'findings' ? r.high : txt(r.reason)])));
 
-  s.append(el('h3', {}, 'Commits pushed without a pre-commit scan'));
-  if (!cw.skipped.length) s.append(el('p', { class: 'empty' }, 'None.'));
+  if (!cw.skipped.length) s.append(inlineEmpty('Commits pushed without a pre-commit scan', 'none.'));
   else {
+    s.append(el('h3', {}, 'Commits pushed without a pre-commit scan'));
     s.append(table(['Commit', 'Branch', 'Recorded'], cw.skipped.slice(0, 20).map((r) => [el('code', {}, short(r.commit)), txt(r.branch), when(r.started_at)])));
     s.append(el('p', { class: 'note' }, 'Usually git commit --no-verify; rebases and cherry-picks also show up here.'));
   }
   return s;
 }
 
+/** "29 other repos: not set up", expanding to one line per repo. key keeps it open across refreshes. */
+function otherRepos(key, list, what, line) {
+  if (!list.length) return null;
+  return el('details', { class: 'missing-group', 'data-key': key },
+    el('summary', {}, list.length + ' other repo' + (list.length === 1 ? '' : 's') + ': ' + what),
+    el('ul', { class: 'sec-findings' }, list.map((r) => el('li', {}, repoName(r), line(r)))));
+}
+
 function codewatchPanel(data) {
-  const s = el('section', { class: 'card wide' }, el('h2', {}, 'Codewatch'));
-  const banner = scanBanner(data.machine.secretScanning);
-  if (banner) s.append(banner);
   const rows = data.overview.codewatch;
-  if (!rows.length) {
+  const banner = scanBanner(data.machine.secretScanning);
+  if (!rows.length && !banner) {
     const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
-    if (sg) s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Cover every repo at once: ", el('code', {}, sg.command), ', or run ', el('code', {}, 'prism-cli enable codewatch'), ' inside one repo.'));
-    else s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.'));
+    if (sg) return emptyLine('Codewatch', "isn't enabled in any repo yet. Cover every repo at once: ", el('code', {}, sg.command), ', or run ', el('code', {}, 'prism-cli enable codewatch'), ' inside one repo.');
+    return emptyLine('Codewatch', "isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.');
+  }
+  const s = el('section', { class: 'card wide' }, el('h2', {}, 'Codewatch'));
+  if (banner) s.append(banner);
+  if (!rows.length) {
+    s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.'));
     return s;
   }
-  const count = (n, cls) => el('td', { class: 'count' + (n ? ' ' + cls : '') }, n);
-  s.append(table(['Repo', 'High', 'Medium', 'Low', 'Last run', 'Reviewer', 'Unscanned', 'Gitleaks'], rows.map((r) => [
-    repoName(r), count(r.high, 'sev-high'), count(r.medium, 'sev-medium'), count(r.low, 'sev-low'),
-    r.lastRunAt ? (r.lastReviewId ? reportLink(r.lastReviewId, when(r.lastRunAt)) : when(r.lastRunAt)) : 'never', txt(r.reviewer || '-'), count(r.unscannedCommits, 'sev-medium'),
+  const cur = data.usage && data.usage.currency;
+  const count = (key, n, cls) => track(key, n, el('td', { class: 'count' + (n ? ' ' + cls : '') }, n));
+  s.append(table(['Repo', 'High', 'Medium', 'Low', 'Last run', 'Reviewer', 'Unscanned', 'Gitleaks', 'Spend (month)'], rows.map((r) => [
+    repoName(r), count('cw:h:' + r.path, r.high, 'sev-high'), count('cw:m:' + r.path, r.medium, 'sev-medium'), count('cw:l:' + r.path, r.low, 'sev-low'),
+    track('cw:last:' + r.path, r.lastRunAt, el('td', {}, r.lastRunAt ? (r.lastReviewId ? reportLink(r.lastReviewId, when(r.lastRunAt)) : when(r.lastRunAt)) : 'never')),
+    txt(r.reviewer || '-'), count('cw:u:' + r.path, r.unscannedCommits, 'sev-medium'),
     r.gitleaksWarning ? pill('warn', 'not scanned') : '-',
+    track('cw:spend:' + r.path, r.spendMonth, el('td', { class: 'num', title: 'codeburn projects at or under this repo' }, r.spendMonth === null || r.spendMonth === undefined ? '-' : money(r.spendMonth, cur))),
   ])));
   const byPath = Object.fromEntries(data.repos.map((r) => [r.path, r]));
   s.append(el('h3', {}, 'Per repo'));
   for (const row of rows) {
     const repo = byPath[row.path]; if (!repo) continue;
     const total = row.high + row.medium + row.low;
-    const d = el('details', repo.current ? { class: 'repo', open: '' } : { class: 'repo' },
-      el('summary', {}, el('b', {}, repo.name), ' ', el('span', { class: 'fix' }, repo.codewatch.hasResults ? total + ' finding' + (total === 1 ? '' : 's') + ' in the latest reviews' : 'no results yet'),
+    const d = el('details', repo.current ? { class: 'repo', open: '', 'data-key': 'cw:' + repo.path } : { class: 'repo', 'data-key': 'cw:' + repo.path },
+      el('summary', {}, el('b', {}, labelOf(repo)), ' ', el('span', { class: 'fix' }, repo.codewatch.hasResults ? total + ' finding' + (total === 1 ? '' : 's') + ' in the latest reviews' : 'no results yet'),
         repo.current ? el('span', { class: 'tag' }, 'this repo') : null),
       el('div', { class: 'repo-title' }, repo.path));
     d.append(codewatchDetail(repo));
     s.append(d);
   }
+  const shown = new Set(rows.map((r) => r.path));
+  const rest = data.overview.setup.filter((r) => !shown.has(r.path));
+  const other = otherRepos('cw:other', rest, 'no codewatch', (r) => r.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, r.fix)) : el('div', { class: 'fix' }, txt(r.detail)));
+  if (other) s.append(other);
   return s;
 }
 
 function usagePanel(u) {
+  if (u.status === 'not-installed' || u.status === 'no-data') {
+    return emptyLine('Usage (codeburn)', txt(u.message), u.status === 'not-installed' ? '' : el('span', {}, ' Usage appears once a coding tool records sessions; full charts: ', el('code', {}, txt(u.fullView)), '.'));
+  }
   const s = el('section', { class: 'card' }, el('h2', {}, 'Usage (codeburn)'));
   if (u.status !== 'ok') {
-    s.append(el('p', { class: 'empty' }, pill(u.status === 'no-data' ? 'warn' : 'missing', u.status), ' ', txt(u.message)));
+    s.append(el('p', { class: 'empty' }, pill('missing', u.status), ' ', txt(u.message)));
   } else {
     s.append(el('div', { class: 'stats' },
-      el('div', { class: 'stat' }, el('b', {}, money(u.today.cost, u.currency)), el('span', {}, 'today, ' + u.today.calls + ' calls')),
-      el('div', { class: 'stat' }, el('b', {}, money(u.month.cost, u.currency)), el('span', {}, 'this month, ' + u.month.calls + ' calls, ' + u.month.sessions + ' sessions'))));
+      el('div', { class: 'stat' }, track('use:today', u.today.cost, el('b', {}, money(u.today.cost, u.currency))), el('span', {}, 'today, ' + u.today.calls + ' calls')),
+      el('div', { class: 'stat' }, track('use:month', u.month.cost, el('b', {}, money(u.month.cost, u.currency))), el('span', {}, 'this month, ' + u.month.calls + ' calls, ' + u.month.sessions + ' sessions'))));
     s.append(el('h3', {}, 'Top models this month'));
     s.append(table(['Model', 'Cost', 'Calls'], u.topModels.map((m) => [m.name, num(money(m.cost, u.currency)), num(m.calls)])));
     s.append(el('h3', {}, 'Top projects this month'));
@@ -273,23 +357,25 @@ function setupPanel(data) {
   ];
   const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
   if (sg) s.append(suggestionCallout(sg));
-  // Always shown: the current repo (installed or not) and every installed repo.
+  // Shown: the current repo, repos with activity (listed first), and repos with something set up.
   const shown = repos.filter((r) => !r.collapsed);
   const hidden = repos.filter((r) => r.collapsed);
   if (shown.length) s.append(table(['Repo', 'Codewatch', 'Security Agent'], shown.map(rowOf)));
   else if (!hidden.length) s.append(el('p', { class: 'empty' }, 'No git repositories found under ' + txt(data.scope.root_display) + '.'));
-  if (hidden.length) {
-    s.append(el('details', { class: 'missing-group' },
-      el('summary', {}, hidden.length + ' repo' + (hidden.length === 1 ? '' : 's') + ' without codewatch'),
-      table(['Repo', 'Codewatch', 'Security Agent'], hidden.map(rowOf))));
-  }
+  const optedOut = hidden.filter((r) => r.status === 'opted-out').length;
+  const group = el('details', { class: 'missing-group', 'data-key': 'setup:other' },
+    el('summary', {}, hidden.length + ' other repo' + (hidden.length === 1 ? '' : 's') + ': not set up' + (optedOut ? ' (' + optedOut + ' opted out of codewatch)' : '')),
+    table(['Repo', 'Codewatch', 'Security Agent'], hidden.map(rowOf)));
+  if (hidden.length) s.append(group);
   return s;
 }
 
-/** Security Agent per repo, from the enable security marker (local evidence; the page makes no AWS calls). */
+const SEC_LABEL = { ok: 'ok', 'in-use': 'in use', missing: 'missing' };
+
+/** Security Agent per repo: the enable security marker, else saved results (local evidence; the page makes no AWS calls). */
 function securityCell(sec) {
   if (!sec) return el('span', { class: 'fix' }, '-');
-  return el('div', {}, pill(sec.status === 'ok' ? 'ok' : 'missing', sec.status), ' ', sec.status === 'ok' ? txt(sec.detail) : '',
+  return el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', SEC_LABEL[sec.status] || sec.status), ' ', sec.status === 'missing' ? '' : txt(sec.detail).replace(/^in use /, ''),
     sec.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, sec.fix)) : null);
 }
 
@@ -306,13 +392,13 @@ function securityPanel(sec) {
   const tms = (sec && sec.threat_models) || [];
   const pts = (sec && sec.pentests) || [];
   if (!rows.length && !tms.length && !pts.length) {
-    s.append(el('p', { class: 'empty' }, 'No Security Agent code reviews, threat models or penetration tests yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ', ', el('code', {}, 'prism-cli security threat-model'), ' or ', el('code', {}, 'prism-cli security pentest'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.'));
-    return s;
+    return emptyLine('Security findings', 'No Security Agent code reviews, threat models or penetration tests yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), ', ', el('code', {}, 'prism-cli security threat-model'), ' or ', el('code', {}, 'prism-cli security pentest'), ' in a repo set up with ', el('code', {}, 'prism-cli enable security'), '.');
   }
+  if (!rows.length) s.append(inlineEmpty('Code reviews', 'none yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), '.'));
   for (const r of rows) {
     const counts = r.counts || {};
     const b = el('div', { class: 'sec-repo' });
-    b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(r.name)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
+    b.append(el('div', { class: 'sec-head' }, el('b', {}, labelOf(r)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
     b.append(el('div', { class: 'fix' },
       (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + (r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched') + ' · job ' + txt(r.job_id).slice(0, 12)));
     const pills = el('div', { class: 'sec-pills' });
@@ -350,7 +436,7 @@ function securityPanel(sec) {
   if (tms.length) {
     s.append(el('h3', {}, 'Threat models'));
     for (const t of tms) s.append(threatModelBlock(t, (sec && sec.threats_hint) || 'prism-cli security threats'));
-  }
+  } else s.append(inlineEmpty('Threat models', 'none yet. Run ', el('code', {}, 'prism-cli security threat-model'), '.'));
   return s;
 }
 
@@ -361,7 +447,7 @@ const strideText = (list) => (list || []).map((x) => txt(x).toLowerCase().replac
 /** One cached threat model per repo, in the code review blocks' compact style. */
 function threatModelBlock(t, hint) {
   const b = el('div', { class: 'sec-repo' });
-  b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(t.name)), t.current ? el('span', { class: 'tag' }, 'this repo') : null));
+  b.append(el('div', { class: 'sec-head' }, el('b', {}, labelOf(t)), t.current ? el('span', { class: 'tag' }, 'this repo') : null));
   const docs = (t.scope_docs || []).length;
   b.append(el('div', { class: 'fix' },
     (t.pending ? 'started ' + when(t.started_at) : when(t.finished_at)) + ' · commit ' + txt(t.commit).slice(0, 12)
@@ -401,12 +487,12 @@ function threatModelBlock(t, hint) {
 /** Penetration-test rows, in the same Security card below the code-review rows. */
 function securityPentestRows(s, sec) {
   const rows = (sec && sec.pentests) || [];
-  if (!rows.length) return;
+  if (!rows.length) { s.append(inlineEmpty('Penetration tests', 'none yet. Run ', el('code', {}, 'prism-cli security pentest'), '.')); return; }
   s.append(el('h3', {}, 'Penetration tests'));
   for (const r of rows) {
     const counts = r.counts || {};
     const b = el('div', { class: 'sec-repo' });
-    b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(r.name)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
+    b.append(el('div', { class: 'sec-head' }, el('b', {}, labelOf(r)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
     b.append(el('div', { class: 'fix' },
       (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + txt(r.target_host) + ' · job ' + txt(r.job_id).slice(0, 12)));
     const pills = el('div', { class: 'sec-pills' });
@@ -446,12 +532,9 @@ const AUDIT_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
 /** The latest aws check per account, in the Security panel's compact style. Local results only. */
 function awsPanel(aws) {
-  const s = el('section', { class: 'card' }, el('h2', {}, 'AWS account'));
   const rows = (aws && aws.accounts) || [];
-  if (!rows.length) {
-    s.append(el('p', { class: 'empty' }, 'No AWS account checks yet. Run ', el('code', {}, (aws && aws.hint) || 'prism-cli aws check'), ' (read-only).'));
-    return s;
-  }
+  if (!rows.length) return emptyLine('AWS account', 'no checks yet. Run ', el('code', {}, (aws && aws.hint) || 'prism-cli aws check'), ' (read-only).');
+  const s = el('section', { class: 'card' }, el('h2', {}, 'AWS account'));
   for (const a of rows) {
     const b = el('div', { class: 'sec-repo' });
     b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(a.account)), a.alias ? el('span', { class: 'tag' }, txt(a.alias)) : null));
@@ -475,22 +558,56 @@ function awsPanel(aws) {
   return s;
 }
 
+/** Auto-refresh period while the tab is visible; paused while hidden. */
+const AUTO_REFRESH_MS = 60000;
+let lastLoad = 0, loading = false;
+
 async function load() {
+  if (loading) return;
+  loading = true;
+  try { await render(); } finally { loading = false; lastLoad = Date.now(); }
+}
+
+async function render() {
   const main = document.getElementById('main'), meta = document.getElementById('meta');
+  const before = meta.textContent;
   meta.textContent = 'loading...';
   let data;
   try {
     const res = await fetch('/api/data', { credentials: 'same-origin', cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     data = await res.json();
-  } catch (e) { meta.textContent = 'failed to load: ' + e.message; return; }
+  } catch (e) {
+    // Keep the last good view; say the refresh failed.
+    meta.textContent = 'failed to load: ' + e.message + (before && before !== 'loading...' ? ' · showing ' + before : '');
+    return;
+  }
+  // Open/closed state of keyed <details> survives the redraw.
+  const openState = new Map([...main.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
+  LABELS = new Map((data.repos || []).map((r) => [r.path, r.label || r.name]));
+  EMPTY = []; CUR = {};
   main.replaceChildren();
   if (data.scope.error) main.append(el('section', { class: 'card wide' }, pill('error'), ' ', data.scope.error));
-  main.append(codewatchPanel(data), usagePanel(data.usage), setupPanel(data), securityPanel(data.security), awsPanel(data.aws));
+  const panels = [summaryPanel(data.summary), codewatchPanel(data), usagePanel(data.usage), setupPanel(data), securityPanel(data.security), awsPanel(data.aws)];
+  main.append(...panels.filter(Boolean));
+  if (EMPTY.length) main.append(el('section', { class: 'card wide' }, el('h2', {}, 'Nothing recorded yet'), ...EMPTY));
+  for (const d of main.querySelectorAll('details[data-key]')) {
+    const k = d.getAttribute('data-key');
+    if (openState.has(k)) d.open = openState.get(k);
+  }
+  const changed = new Set(changedKeys(PREV, CUR));
+  for (const n of main.querySelectorAll('[data-track]')) {
+    const k = n.getAttribute('data-track');
+    if (changed.has(k)) { n.classList.add('changed'); n.setAttribute('title', 'changed since the previous load (was ' + PREV[k] + ')'); }
+  }
+  PREV = CUR;
   const c = data.overview.counts;
-  meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '') + ' · updated ' + when(data.generated_at);
+  meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '')
+    + ' · updated ' + when(data.generated_at) + (changed.size ? ' · ' + changed.size + ' value' + (changed.size === 1 ? '' : 's') + ' changed (outlined)' : '') + ' · refreshes every minute while visible';
 }
 document.getElementById('refresh').addEventListener('click', load);
+setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS - 1000) load(); }, AUTO_REFRESH_MS / 4);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS) load(); });
 load();
 `;
 

@@ -72,10 +72,45 @@ export function crontabLines(r: RunResult): string[] {
   throw new Error(`cannot read your crontab (crontab -l: ${reason}); it was not changed, so your existing cron jobs are kept. Fix crontab access, or run "prism-cli export otel" yourself.`);
 }
 
-/** Throws (via crontabLines) when the crontab cannot be read, rather than calling the schedule missing. */
-export function linuxScheduleExists(): boolean {
+/** The crontab entry only. Throws (via crontabLines) when the crontab cannot be read, rather than calling the schedule missing. */
+export function linuxCronScheduleExists(): boolean {
   if (!linuxCrontabAvailable()) return false;
   return crontabLines(run('crontab', ['-l'])).some((l) => l.includes(CRON_MARKER));
+}
+
+/**
+ * The systemd user timer `enable codeburn --schedule systemd` installs, the
+ * Linux schedule for machines whose crontab cannot be read (a PAM denial).
+ */
+export const SYSTEMD_UNIT = 'prism-otel-sync';
+export const SYSTEMD_SCHEDULER_NAME = 'systemd user timer';
+
+// shortcut: ignores $XDG_CONFIG_HOME, which systemd honours; add it if someone relocates their config dir.
+export function systemdUserDir(home = homedir()): string {
+  return join(home, '.config', 'systemd', 'user');
+}
+
+export function systemdTimerPath(home = homedir()): string {
+  return join(systemdUserDir(home), `${SYSTEMD_UNIT}.timer`);
+}
+
+export function systemdServicePath(home = homedir()): string {
+  return join(systemdUserDir(home), `${SYSTEMD_UNIT}.service`);
+}
+
+/** The timer unit file is present. A file check only: nothing is run. */
+export function systemdTimerExists(home = homedir()): boolean {
+  return existsSync(systemdTimerPath(home));
+}
+
+/** `systemctl --user` reaches a user manager on this machine. */
+export function systemdUserAvailable(): boolean {
+  return platform() === 'linux' && run('systemctl', ['--user', 'show-environment']).ok;
+}
+
+/** The systemd timer, else the crontab entry: an unreadable crontab does not hide an installed timer. */
+export function linuxScheduleExists(): boolean {
+  return systemdTimerExists() || linuxCronScheduleExists();
 }
 
 export function darwinPlistPath(home = homedir()): string {
@@ -102,7 +137,7 @@ export function schedulerName(): string {
   switch (platform()) {
     case 'darwin': return 'LaunchAgent';
     case 'win32': return 'Scheduled Task';
-    default: return 'crontab';
+    default: return systemdTimerExists() ? SYSTEMD_SCHEDULER_NAME : 'crontab';
   }
 }
 
