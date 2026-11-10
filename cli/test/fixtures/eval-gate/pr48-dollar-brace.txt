@@ -1,0 +1,15 @@
+The file is truncated. Let me read the rest.
+I've read the full diff. Now I'll analyze it for code quality issues per the review rules and output the JSON.
+
+The diff adds a new `codewatch` module (git-hook gate with gitleaks pre-commit and report-only pre-push review) and deprecates the old `install-git-hooks`. The code is well-structured with good error handling. Let me assess against the hard failures and warnings.
+
+Key observations:
+- No SQL/command injection: `spawnSync`/`run` use array args, not shell strings. Good.
+- No hardcoded secrets.
+- Async/error handling is thorough — try/catch everywhere, hooks never throw.
+- `readResults` is called 3x in `recordUnscannedCommits` (reads the directory 3 times) — minor performance issue.
+- `parseGitleaksReport` uses `any` without justifying comments (several `any` uses across adapters/parsers, mostly reasonable for external JSON).
+- No unbounded queries, no eval/exec with user input.
+- The shell hook scripts build commands but with fixed args; interpolated values (`${1:-}`) are git-provided remote names, quoted.
+
+{"findings": [{"file": "cli/src/example.ts", "line": 1, "severity": "low", "category": "maintainability", "message": "Example finding with braces {} and a quote \" inside."}], "score": 0.9, "summary": "Recorded notes from a failed run, JSON completed for the fixture."}
