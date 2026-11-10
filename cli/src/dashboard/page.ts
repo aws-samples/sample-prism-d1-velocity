@@ -9,9 +9,9 @@
 
 const STYLE = `
 :root { color-scheme: light dark; --bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#6b6b73; --line:#e3e3e8;
-  --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --high:#cf222e; --medium:#bf8700; --low:#57606a; --accent:#0969da; }
+  --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --high:#cf222e; --medium:#bf8700; --low:#3d6fa8; --accent:#0969da; --raised:var(--bg); }
 @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d;
-  --ok:#3fb950; --warn:#d29922; --bad:#f85149; --high:#f85149; --medium:#d29922; --low:#8b949e; --accent:#58a6ff; } }
+  --ok:#3fb950; --warn:#d29922; --bad:#f85149; --high:#f85149; --medium:#d29922; --low:#a5d6ff; --accent:#58a6ff; --raised:#21262d; } }
 * { box-sizing: border-box; }
 body { margin:0; font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
 header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
@@ -51,7 +51,7 @@ svg.trend line { stroke:var(--line); }
 .summary { display:grid; gap:14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 @media (min-width: 641px) and (max-width: 1040px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .summary { grid-template-columns: 1fr; gap:10px; } }
-.scard { min-width:0; display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+.scard { min-width:0; display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--raised); }
 .scard .k { color:var(--muted); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 .scard .v { font-size:28px; font-weight:700; line-height:1.15; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .scard .v .unit { font-size:13px; font-weight:600; color:var(--muted); margin:0 10px 0 4px; }
@@ -157,7 +157,7 @@ function summaryPanel(sum) {
     const value = ran
       ? el('div', { class: 'v' }, el('span', { class: rv.high ? 'sev-high' : '' }, String(rv.high)), el('span', { class: 'unit' }, 'high'),
         el('span', { class: rv.medium ? 'sev-medium' : '' }, String(rv.medium)), el('span', { class: 'unit' }, 'med'),
-        el('span', {}, String(rv.low)), el('span', { class: 'unit' }, 'low'))
+        el('span', { class: rv.low ? 'sev-low' : '' }, String(rv.low)), el('span', { class: 'unit' }, 'low'))
       : el('div', { class: 'v' }, counts.charAt(0).toUpperCase() + counts.slice(1));
     box.append(scard('Latest codewatch review', track('sum:review', rv.id + ' ' + counts, value),
       detail(el('span', { title: rv.path }, txt(rv.repo)), ' · ', reportLink(rv.id, when(rv.at)), ' · ' + txt(rv.reviewer) + (rv.reason ? ' · ' + txt(rv.reason) : ''))));

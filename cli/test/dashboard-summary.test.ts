@@ -277,3 +277,16 @@ test('page: the summary is a full-width card grid that stacks below 640px; long 
   assert.equal((cards[3].childNodes[1] as any).textContent, '2');
   assert.equal((cards[1].childNodes[2] as any).getAttribute('title'), null, 'short details get no title');
 });
+
+test('page: low counts have their own colour, apart from muted text, in both themes; dark summary cards are raised', () => {
+  const html = renderPage('N');
+  const light = /:root \{ color-scheme: light dark;[^}]*\}/.exec(html)![0];
+  const dark = /@media \(prefers-color-scheme: dark\) \{ :root \{[^}]*\}/.exec(html)![0];
+  const v = (block: string, name: string) => new RegExp(`--${name}:([^;]+);`).exec(block)![1];
+  for (const b of [light, dark]) assert.notEqual(v(b, 'low'), v(b, 'muted'), 'low differs from muted');
+  assert.notEqual(v(dark, 'raised'), v(dark, 'card'), 'dark cards differ from the panel');
+  assert.notEqual(v(dark, 'raised'), v(dark, 'bg'));
+  assert.match(html, /\.scard \{[^}]*background:var\(--raised\)/);
+  assert.match(html, /class: rv\.low \? 'sev-low' : ''/, 'a zero low count keeps the default colour');
+});
+
