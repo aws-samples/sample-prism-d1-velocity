@@ -218,7 +218,10 @@ test('page: summary on top, collapsed repo lines, labels, trend note and one-lin
   const t = page.text();
   assert.ok(t.startsWith('Summary'), t.slice(0, 80));
   assert.match(t, /Latest codewatch review/);
-  assert.match(t, /skipped: no changes against upstream/);
+  assert.match(t, /Latest codewatch reviewSkippedcw · .* · kiro · no changes against upstream/);
+  assert.match(t, /Spend today\$1\.50codeburn, all projects/);
+  assert.match(t, /Spend this month\$9\.00codeburn, this calendar month/);
+  assert.match(t, /Setup warnings1gitleaks available: not on PATH/);
   assert.match(t, /5 other repos: not set up/, 'setup checklist');
   assert.match(t, /7 other repos: no codewatch/, 'codewatch per-repo section');
   assert.match(t, /workplace\/dup/);
@@ -239,7 +242,7 @@ test('page: a refresh outlines values that changed since the previous load and k
   const group = page.dom.byId.main.querySelectorAll('details').find((d) => d.getAttribute('data-key') === 'setup:other')!;
   group.open = true;
   await page.reload();
-  const changed = page.dom.byId.main.querySelectorAll('span').filter((e) => (e.getAttribute('class') || '').includes('changed'));
+  const changed = page.dom.byId.main.querySelectorAll('').filter((e) => (e.getAttribute('class') || '').includes('changed'));
   assert.deepEqual(changed.map((e) => e.getAttribute('data-track')), ['sum:today']);
   assert.match(changed[0].getAttribute('title') || '', /was 1\.5/);
   assert.match(page.meta(), /1 value changed \(outlined\)/);
@@ -248,4 +251,29 @@ test('page: a refresh outlines values that changed since the previous load and k
   assert.match(html, /document\.visibilityState === 'visible'/, 'auto-refresh pauses while hidden');
   assert.match(html, /AUTO_REFRESH_MS = 60000/);
   assert.match(html, /@media \(prefers-reduced-motion: no-preference\) \{ \.changed \{ animation/, 'motion only when not reduced');
+});
+
+test('page: the summary is a full-width card grid that stacks below 640px; long details are clamped with a title', async () => {
+  const html = renderPage('N');
+  assert.match(html, /\.summary \{ display:grid; gap:14px; grid-template-columns: repeat\(auto-fit, minmax\(220px, 1fr\)\); \}/);
+  assert.match(html, /@media \(max-width: 640px\) \{ \.summary \{ grid-template-columns: 1fr;/);
+  assert.match(html, /\.scard \.v \{[^}]*font-variant-numeric:tabular-nums/);
+  assert.match(html, /\.scard \.d \{[^}]*overflow-wrap:anywhere[^}]*-webkit-line-clamp:3/);
+  assert.match(html, /minmax\(min\(420px, 100%\), 1fr\)/, 'columns never force sideways scroll on a narrow screen');
+  assert.match(html, /const s = el\('section', \{ class: 'card wide' \}, el\('h2', \{\}, 'Summary'\)\)/, 'spans every column');
+
+  const { p } = await payloadFixture();
+  const long = 'Scheduled codeburn sync push: ' + 'cannot read your crontab '.repeat(10);
+  p.summary.warnings = { count: 2, first: long };
+  p.summary.review = { ...p.summary.review!, status: 'findings', reason: null, high: 3, medium: 1, low: 0 };
+  const page = await runPage([p]);
+  const cards = page.dom.byId.main.querySelectorAll('div').filter((d) => d.getAttribute('class') === 'scard');
+  assert.deepEqual(cards.map((c) => (c.childNodes[0] as any).textContent), ['Latest codewatch review', 'Spend today', 'Spend this month', 'Setup warnings']);
+  for (const c of cards) assert.equal(c.childNodes.length, 3, 'label, value, one detail line');
+  assert.equal((cards[0].childNodes[1] as any).textContent, '3high1med0low');
+  const warnDetail = cards[3].childNodes[2] as any;
+  assert.equal(warnDetail.getAttribute('class'), 'd');
+  assert.equal(warnDetail.getAttribute('title'), long, 'full text in the title');
+  assert.equal((cards[3].childNodes[1] as any).textContent, '2');
+  assert.equal((cards[1].childNodes[2] as any).getAttribute('title'), null, 'short details get no title');
 });

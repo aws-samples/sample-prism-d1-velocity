@@ -14,10 +14,11 @@ const STYLE = `
   --ok:#3fb950; --warn:#d29922; --bad:#f85149; --high:#f85149; --medium:#d29922; --low:#8b949e; --accent:#58a6ff; } }
 * { box-sizing: border-box; }
 body { margin:0; font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
-header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
 header h1 { font-size:17px; margin:0; } header .meta { color:var(--muted); font-size:12px; margin-left:auto; }
 button { font:inherit; padding:4px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); cursor:pointer; }
-main { padding:16px 20px; display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+main { padding:16px 20px; display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); }
+@media (max-width: 640px) { main { padding:12px; gap:12px; } header { padding:12px; } header .meta { margin-left:0; flex-basis:100%; } }
 section.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; min-width:0; }
 section.wide { grid-column: 1 / -1; }
 .sec-repo { border-top:1px solid var(--line); padding:10px 0; } .sec-repo:first-of-type { border-top:none; padding-top:0; } .sec-head { display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; overflow-wrap:anywhere; }
@@ -47,8 +48,14 @@ a.rlink { color:var(--accent); } a.rlink:hover { text-decoration:underline; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
 svg.trend line { stroke:var(--line); }
 .repo-title { font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-all; }
-.summary { display:flex; gap:12px 28px; flex-wrap:wrap; align-items:flex-start; } .summary .item { min-width:0; max-width:100%; overflow-wrap:anywhere; }
-.summary .k { display:block; color:var(--muted); font-size:12px; } .summary .v { font-size:15px; font-weight:600; }
+.summary { display:grid; gap:14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+@media (min-width: 641px) and (max-width: 1040px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .summary { grid-template-columns: 1fr; gap:10px; } }
+.scard { min-width:0; display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+.scard .k { color:var(--muted); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+.scard .v { font-size:28px; font-weight:700; line-height:1.15; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.scard .v .unit { font-size:13px; font-weight:600; color:var(--muted); margin:0 10px 0 4px; }
+.scard .d { color:var(--muted); font-size:13px; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 .slim-line { padding:5px 0; border-top:1px solid var(--line); font-size:13px; overflow-wrap:anywhere; } .slim-line:first-of-type { border-top:none; } .slim-line code { white-space:normal; overflow-wrap:anywhere; }
 .empty-line { color:var(--muted); margin:10px 0 4px; font-size:13px; overflow-wrap:anywhere; } .empty-line b { color:var(--text); }
 .changed { outline:2px solid var(--accent); outline-offset:1px; border-radius:4px; }
@@ -128,33 +135,46 @@ function repoName(r) {
 const REVIEW_STATUS = { ok: 'clean', findings: 'findings', error: 'failed', skipped: 'skipped' };
 
 /** The summary strip: latest review, spend, setup warnings. Same object as summary in --json. */
-function summaryPanel(sum, data) {
+/** Long detail text is clamped to three lines by CSS; the full text stays in the title. */
+const DETAIL_TITLE_MIN = 80;
+const detail = (...parts) => {
+  const d = el('div', { class: 'd' }, ...parts);
+  const full = d.textContent;
+  if (full.length > DETAIL_TITLE_MIN) d.setAttribute('title', full);
+  return d;
+};
+/** One summary card: label, large value, one detail line. */
+const scard = (label, value, det) => el('div', { class: 'scard' }, el('div', { class: 'k' }, label), value, det);
+
+/** The summary cards: latest review, spend today, spend this month, setup warnings. Same object as summary in --json. */
+function summaryPanel(sum) {
   const s = el('section', { class: 'card wide' }, el('h2', {}, 'Summary'));
   const box = el('div', { class: 'summary' });
-  const item = (k, ...v) => el('div', { class: 'item' }, el('span', { class: 'k' }, k), ...v);
   const rv = sum && sum.review;
   if (rv) {
-    const counts = rv.status === 'skipped' || rv.status === 'error' ? txt(REVIEW_STATUS[rv.status] || rv.status) + (rv.reason ? ': ' + txt(rv.reason) : '')
-      : rv.high + ' high · ' + rv.medium + ' medium · ' + rv.low + ' low';
-    box.append(item('Latest codewatch review',
-      el('div', { class: 'v' }, el('span', { title: rv.path }, txt(rv.repo)), ' · ', reportLink(rv.id, when(rv.at))),
-      track('sum:review', rv.id + ' ' + counts, el('div', {}, counts)),
-      el('div', { class: 'fix' }, 'reviewer ' + txt(rv.reviewer))));
+    const ran = rv.status !== 'skipped' && rv.status !== 'error';
+    const counts = ran ? rv.high + ' high · ' + rv.medium + ' medium · ' + rv.low + ' low' : txt(REVIEW_STATUS[rv.status] || rv.status);
+    const value = ran
+      ? el('div', { class: 'v' }, el('span', { class: rv.high ? 'sev-high' : '' }, String(rv.high)), el('span', { class: 'unit' }, 'high'),
+        el('span', { class: rv.medium ? 'sev-medium' : '' }, String(rv.medium)), el('span', { class: 'unit' }, 'med'),
+        el('span', {}, String(rv.low)), el('span', { class: 'unit' }, 'low'))
+      : el('div', { class: 'v' }, counts.charAt(0).toUpperCase() + counts.slice(1));
+    box.append(scard('Latest codewatch review', track('sum:review', rv.id + ' ' + counts, value),
+      detail(el('span', { title: rv.path }, txt(rv.repo)), ' · ', reportLink(rv.id, when(rv.at)), ' · ' + txt(rv.reviewer) + (rv.reason ? ' · ' + txt(rv.reason) : ''))));
   } else {
-    box.append(item('Latest codewatch review', el('div', { class: 'v' }, 'none yet')));
+    box.append(scard('Latest codewatch review', el('div', { class: 'v' }, 'none'), detail('No pre-push review recorded yet.')));
   }
   const sp = sum && sum.spend;
-  if (sp && sp.status === 'ok') {
-    box.append(item('Spend (codeburn)',
-      el('div', { class: 'v' }, track('sum:today', sp.today, el('span', {}, money(sp.today, sp.currency))), ' today'),
-      el('div', {}, track('sum:month', sp.month, el('span', {}, money(sp.month, sp.currency))), ' this month')));
-  } else {
-    box.append(item('Spend (codeburn)', el('div', { class: 'v' }, sp ? txt(sp.status) : '-'), el('div', { class: 'fix' }, txt(sp && sp.message))));
-  }
+  const ok = sp && sp.status === 'ok';
+  const spendCard = (label, key, n, det) => scard(label,
+    ok ? track(key, n, el('div', { class: 'v' }, money(n, sp.currency))) : el('div', { class: 'v' }, '-'),
+    detail(ok ? det : txt((sp && sp.message) || (sp && sp.status) || 'no codeburn data')));
+  box.append(spendCard('Spend today', 'sum:today', sp && sp.today, 'codeburn, all projects'));
+  box.append(spendCard('Spend this month', 'sum:month', sp && sp.month, 'codeburn, this calendar month'));
   const w = (sum && sum.warnings) || { count: 0, first: null };
-  box.append(item('Setup warnings',
-    el('div', { class: 'v' }, track('sum:warnings', w.count, el('span', { class: w.count ? 's-warn' : 's-ok' }, String(w.count)))),
-    w.first ? el('div', { class: 'fix' }, txt(w.first)) : el('div', { class: 'fix' }, 'none')));
+  box.append(scard('Setup warnings',
+    track('sum:warnings', w.count, el('div', { class: 'v' + (w.count ? ' s-warn' : ' s-ok') }, String(w.count))),
+    detail(w.first ? txt(w.first) : 'Nothing needs attention.')));
   s.append(box);
   return s;
 }
