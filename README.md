@@ -96,7 +96,7 @@ It needs gitleaks plus kiro-cli or Claude Code; telemetry does not depend on it.
 prism-cli dashboard
 ```
 
-Starts a local web page with codewatch results for every repo it finds under your home directory (3 levels deep), per-commit results and a report for each scan, a codeburn usage summary, and a setup checklist. It listens on `127.0.0.1` only, behind a per-run token in the printed URL, is read-only, and makes no AWS calls. On a remote host, forward the port with `ssh -L <port>:127.0.0.1:<port>`. `prism-cli codewatch report` exports a scan report without the server. Details: [Local Dashboard](USER_GUIDE.md#local-dashboard).
+Starts a local web page with codewatch results for every repo it finds under your home directory (3 levels deep), per-commit results and a report for each scan, a codeburn usage summary, and a Setup page. It listens on `127.0.0.1` only, behind a per-run token in the printed URL. The Setup page can run a fixed set of local setup commands (each shown in a confirm dialog first) and one read-only AWS identity check; nothing on the page writes to AWS. On a remote host, forward the port with `ssh -L <port>:127.0.0.1:<port>`. `prism-cli codewatch report` exports a scan report without the server. Details: [Local Dashboard](USER_GUIDE.md#local-dashboard).
 
 ### Optional: AWS Security Agent scans in CI (enable security)
 

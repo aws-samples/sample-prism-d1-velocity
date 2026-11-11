@@ -187,6 +187,7 @@ function fakeDom() {
     setAttribute(k: string, v: string) { this.attrs.set(k, String(v)); }
     getAttribute(k: string) { return this.attrs.has(k) ? this.attrs.get(k)! : null; }
     hasAttribute(k: string) { return this.attrs.has(k); }
+    removeAttribute(k: string) { this.attrs.delete(k); }
     get open() { return this.attrs.has('open'); } set open(v: boolean) { if (v) this.attrs.set('open', ''); else this.attrs.delete('open'); }
     get classList() { return { add: (c: string) => this.setAttribute('class', ((this.getAttribute('class') || '') + ' ' + c).trim()) }; }
     addEventListener(t: string, f: () => void) { this.listeners[t] = f; }
@@ -197,13 +198,17 @@ function fakeDom() {
       return this.all().filter((e) => (!m[1] || e.nodeName === m[1].toUpperCase()) && attrs.every((a) => e.hasAttribute(a)));
     }
   }
-  const byId: Record<string, Element> = { main: new Element('main'), meta: new Element('span'), refresh: new Element('button') };
+  const byId: Record<string, Element> = { main: new Element('main'), setup: new Element('main'), meta: new Element('span'), refresh: new Element('button') };
   const document = {
     visibilityState: 'visible',
     createElement: (t: string) => new Element(t),
     createElementNS: (_: string, t: string) => new Element(t),
     createTextNode: (s: string) => new Text(s),
     getElementById: (id: string) => byId[id],
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    documentElement: new Element('html'),
+    body: new Element('body'),
     addEventListener: () => {},
   };
   return { Node, document, byId };
@@ -211,11 +216,18 @@ function fakeDom() {
 
 async function runPage(payloads: unknown[]) {
   const html = renderPage('N');
-  const js = html.slice(html.indexOf('<script nonce="N">') + '<script nonce="N">'.length, html.lastIndexOf('</script>'));
+  // The last script is the page; the first (in <head>) only applies a saved theme.
+  const js = html.slice(html.lastIndexOf('<script nonce="N">') + '<script nonce="N">'.length, html.lastIndexOf('</script>'));
   const dom = fakeDom();
   let i = 0;
-  const fetch = async () => ({ ok: true, json: async () => JSON.parse(JSON.stringify(payloads[Math.min(i++, payloads.length - 1)])) });
-  new Function('document', 'Node', 'fetch', 'setInterval', js)(dom.document, dom.Node, fetch, () => 0);
+  // /api/data gets the payloads in turn; the Setup view's routes answer 404 here (tested in dashboard-setup.test.ts).
+  const fetch = async (url: string) => url === '/api/data'
+    ? { ok: true, json: async () => JSON.parse(JSON.stringify(payloads[Math.min(i++, payloads.length - 1)])) }
+    : { ok: false, status: 404, json: async () => ({}) };
+  const window = { addEventListener: () => {} };
+  const location = { hash: '' };
+  const localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  new Function('document', 'Node', 'fetch', 'setInterval', 'window', 'location', 'localStorage', js)(dom.document, dom.Node, fetch, () => 0, window, location, localStorage);
   const settle = () => new Promise((r) => setTimeout(r, 20));
   await settle();
   return { dom, reload: async () => { dom.byId.refresh.listeners.click(); await settle(); }, text: () => dom.byId.main.textContent, meta: () => dom.byId.meta.textContent };
@@ -289,8 +301,11 @@ test('page: the summary is a full-width card grid that stacks below 640px; long 
 
 test('page: low counts have their own colour, apart from muted text, in both themes; dark summary cards are raised', () => {
   const html = renderPage('N');
-  const light = /:root \{ color-scheme: light dark;[^}]*\}/.exec(html)![0];
-  const dark = /@media \(prefers-color-scheme: dark\) \{ :root \{[^}]*\}/.exec(html)![0];
+  const light = /:root \{ color-scheme: light;[^}]*\}/.exec(html)![0];
+  // The same dark tokens apply for System on a dark OS and for the Dark toggle.
+  const dark = /@media \(prefers-color-scheme: dark\) \{ :root:not\(\[data-theme="light"\]\) \{[^}]*\}/.exec(html)![0];
+  const forced = /:root\[data-theme="dark"\] \{[^}]*\}/.exec(html)![0];
+  assert.equal(forced.replace(/^[^{]*/, ''), dark.replace(/^.*:root:not\(\[data-theme="light"\]\) /, ''));
   const v = (block: string, name: string) => new RegExp(`--${name}:([^;]+);`).exec(block)![1];
   for (const b of [light, dark]) assert.notEqual(v(b, 'low'), v(b, 'muted'), 'low differs from muted');
   assert.notEqual(v(dark, 'raised'), v(dark, 'card'), 'dark cards differ from the panel');

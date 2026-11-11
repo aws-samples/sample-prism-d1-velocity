@@ -8,7 +8,11 @@
  *     cookie on every request (compared in constant time);
  *   - the Host header must be 127.0.0.1:<port> or localhost:<port>, which
  *     defeats DNS rebinding (a rebound name arrives with its own Host);
- *   - GET only, read-only routes, no CORS headers, strict CSP.
+ *   - GET for every read route; no CORS headers; strict CSP.
+ *   - POST only for the Setup page's action routes (postApi), and each POST
+ *     also needs: an Origin (or, without one, a Referer) of this server; the
+ *     per-run anti-CSRF token embedded in the page, in the X-Prism-CSRF header;
+ *     and Content-Type application/json with a body of at most 16 KB.
  *
  * Why a minted token and not a platform auth mechanism: the server is
  * reachable only from this machine, the audience is the developer running it,
@@ -70,6 +74,8 @@ function send(res: ServerResponse, status: number, type: string, body: string, e
 
 export interface HandlerOptions {
   token: string;
+  /** Per-run anti-CSRF token, embedded in the page and required on every POST. */
+  csrf?: string;
   /** Read at request time: the real port is known only after listen(). */
   getPort: () => number;
   getPayload: () => Promise<unknown>;
@@ -78,10 +84,48 @@ export interface HandlerOptions {
    * matched against directory listings only; it is never turned into a path.
    */
   getReport?: (id: string) => Promise<ScanReport | null>;
+  /** Extra read-only JSON routes (GET), by exact path. */
+  getApi?: Record<string, () => Promise<unknown>>;
+  /** Action routes (POST only), by exact path; receive the parsed JSON body. */
+  postApi?: Record<string, (body: unknown) => Promise<{ status: number; json: unknown }>>;
 }
 
 /** /report/<id> or /report/<id>.md; anything else (slashes, dots, %-escapes) does not match. */
 const REPORT_ROUTE = /^\/report\/([A-Za-z0-9_-]{1,120})(\.md)?$/;
+
+export const CSRF_HEADER = 'x-prism-csrf';
+export const MAX_BODY = 16 * 1024;
+
+const own = <T>(o: Record<string, T> | undefined, k: string): T | undefined =>
+  o && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined;
+
+function readBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    const onData = (c: Buffer) => {
+      size += c.length;
+      // Too big: stop buffering and answer 413 (sent with Connection: close); the rest is drained, not kept.
+      if (size > MAX_BODY) { req.off('data', onData); req.resume(); resolve(null); return; }
+      chunks.push(c);
+    };
+    req.on('data', onData);
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+/** The request's Origin, else its Referer, must be this server (either Host spelling). */
+function sameOrigin(req: IncomingMessage, port: number): boolean {
+  const allowed = [`http://${BIND_HOST}:${port}`, `http://localhost:${port}`];
+  const origin = req.headers.origin;
+  if (typeof origin === 'string') return allowed.includes(origin);
+  const ref = req.headers.referer;
+  return typeof ref === 'string' && allowed.some((a) => ref === a || ref.startsWith(a + '/'));
+}
+
+const json = (res: ServerResponse, status: number, body: unknown) =>
+  send(res, status, 'application/json; charset=utf-8', JSON.stringify(body));
 
 export function createHandler(opts: HandlerOptions) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -91,17 +135,18 @@ export function createHandler(opts: HandlerOptions) {
       if (host !== `${BIND_HOST}:${port}` && host !== `localhost:${port}`) {
         return send(res, 403, 'text/plain; charset=utf-8', 'Forbidden: unexpected Host header\n');
       }
-      if (req.method !== 'GET') {
-        return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', { Allow: 'GET' });
-      }
       const url = new URL(req.url || '/', `http://${BIND_HOST}:${port}`);
+      const post = own(opts.postApi, url.pathname);
+      if (post ? req.method !== 'POST' : req.method !== 'GET') {
+        return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', { Allow: post ? 'POST' : 'GET' });
+      }
       const name = cookieName(port);
       const cookie = readCookie(req, name);
       const cookieOk = cookie !== null && safeEqual(cookie, opts.token);
 
       // First load: exchange the URL token for the cookie, then drop it from the URL.
       const qToken = url.searchParams.get('token');
-      if (url.pathname === '/' && qToken !== null) {
+      if (!post && url.pathname === '/' && qToken !== null) {
         if (!safeEqual(qToken, opts.token)) return send(res, 401, 'text/plain; charset=utf-8', 'Unauthorized\n');
         return send(res, 303, 'text/plain; charset=utf-8', 'See Other\n', {
           Location: '/',
@@ -112,14 +157,30 @@ export function createHandler(opts: HandlerOptions) {
         return send(res, 401, 'text/plain; charset=utf-8', 'Unauthorized: open the URL printed by prism-cli dashboard\n');
       }
 
+      if (post) {
+        if (!sameOrigin(req, port)) return json(res, 403, { error: 'Forbidden: missing or foreign Origin' });
+        const csrf = req.headers[CSRF_HEADER];
+        if (!opts.csrf || typeof csrf !== 'string' || !safeEqual(csrf, opts.csrf)) return json(res, 403, { error: 'Forbidden: missing or wrong CSRF token' });
+        const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (type !== 'application/json') return json(res, 415, { error: 'Content-Type must be application/json' });
+        const raw = await readBody(req);
+        if (raw === null) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request body too large' }), { Connection: 'close' });
+        let body: unknown;
+        try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'invalid JSON' }); }
+        const r = await post(body);
+        return json(res, r.status, r.json);
+      }
+
       if (url.pathname === '/') {
         const nonce = randomBytes(16).toString('base64');
-        return send(res, 200, 'text/html; charset=utf-8', renderPage(nonce), {}, nonce);
+        return send(res, 200, 'text/html; charset=utf-8', renderPage(nonce, opts.csrf), {}, nonce);
       }
       if (url.pathname === '/api/data') {
         const payload = await opts.getPayload();
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(payload));
       }
+      const extra = own(opts.getApi, url.pathname);
+      if (extra) return json(res, 200, await extra());
       const m = REPORT_ROUTE.exec(url.pathname);
       if (m && opts.getReport) {
         const report = await opts.getReport(m[1]);
@@ -146,15 +207,26 @@ export interface RunningServer {
   server: Server;
   port: number;
   token: string;
+  csrf: string;
   url: string;
   close: () => Promise<void>;
 }
 
+export interface StartOptions {
+  port?: number;
+  token?: string;
+  getPayload: () => Promise<unknown>;
+  getReport?: (id: string) => Promise<ScanReport | null>;
+  getApi?: HandlerOptions['getApi'];
+  postApi?: HandlerOptions['postApi'];
+}
+
 /** Starts the server on 127.0.0.1. `port` 0 (default) picks a free port. */
-export function startServer(opts: { port?: number; token?: string; getPayload: () => Promise<unknown>; getReport?: (id: string) => Promise<ScanReport | null> }): Promise<RunningServer> {
+export function startServer(opts: StartOptions): Promise<RunningServer> {
   const token = opts.token || newToken();
+  const csrf = newToken();
   let port = 0;
-  const server = createServer(createHandler({ token, getPort: () => port, getPayload: opts.getPayload, getReport: opts.getReport }));
+  const server = createServer(createHandler({ token, csrf, getPort: () => port, getPayload: opts.getPayload, getReport: opts.getReport, getApi: opts.getApi, postApi: opts.postApi }));
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(opts.port ?? 0, BIND_HOST, () => {
@@ -165,7 +237,7 @@ export function startServer(opts: { port?: number; token?: string; getPayload: (
       }
       port = addr.port;
       resolve({
-        server, port, token,
+        server, port, token, csrf,
         url: `http://${BIND_HOST}:${port}/?token=${token}`,
         close: () => new Promise((r) => server.close(() => r())),
       });
@@ -173,16 +245,17 @@ export function startServer(opts: { port?: number; token?: string; getPayload: (
   });
 }
 
-/** Memoises the payload for `ttlMs` and shares one in-flight build between requests. */
-export function cachedPayload(build: () => Promise<unknown>, ttlMs = 30_000): () => Promise<unknown> {
+/** Memoises the payload for `ttlMs` and shares one in-flight build between requests. `invalidate()` forces the next build. */
+export function cachedPayload(build: () => Promise<unknown>, ttlMs = 30_000): (() => Promise<unknown>) & { invalidate(): void } {
   let at = 0;
   let pending: Promise<unknown> | null = null;
   let value: unknown;
-  return () => {
+  const get = () => {
     if (value !== undefined && Date.now() - at < ttlMs) return Promise.resolve(value);
     if (!pending) {
       pending = build().then((v) => { value = v; at = Date.now(); return v; }).finally(() => { pending = null; });
     }
     return pending;
   };
+  return Object.assign(get, { invalidate: () => { at = 0; } });
 }

@@ -7,11 +7,16 @@
  * innerHTML is never used for data.
  */
 
+import { SETUP_SCRIPT, SETUP_STYLE, THEME_BOOT, THEME_SCRIPT } from './setup-page.js';
+
+/** Colour tokens; the dark set applies by system preference unless the toggle picks Light, and always with Dark. */
+const LIGHT_VARS = '--bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#6b6b73; --line:#e3e3e8; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --high:#cf222e; --medium:#bf8700; --low:#3d6fa8; --accent:#0969da; --raised:var(--bg);';
+const DARK_VARS = '--bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --high:#f85149; --medium:#d29922; --low:#a5d6ff; --accent:#58a6ff; --raised:#21262d;';
+
 const STYLE = `
-:root { color-scheme: light dark; --bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#6b6b73; --line:#e3e3e8;
-  --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --high:#cf222e; --medium:#bf8700; --low:#3d6fa8; --accent:#0969da; --raised:var(--bg); }
-@media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d;
-  --ok:#3fb950; --warn:#d29922; --bad:#f85149; --high:#f85149; --medium:#d29922; --low:#a5d6ff; --accent:#58a6ff; --raised:#21262d; } }
+:root { color-scheme: light; ${LIGHT_VARS} }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; ${DARK_VARS} } }
+:root[data-theme="dark"] { color-scheme: dark; ${DARK_VARS} }
 * { box-sizing: border-box; }
 body { margin:0; font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
 header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
@@ -62,6 +67,7 @@ svg.trend line { stroke:var(--line); }
 .changed { outline:2px solid var(--accent); outline-offset:1px; border-radius:4px; }
 @keyframes prism-flash { from { background-color:color-mix(in srgb, var(--accent) 35%, transparent); } to { background-color:transparent; } }
 @media (prefers-reduced-motion: no-preference) { .changed { animation:prism-flash 2.5s ease-out 1; } }
+${SETUP_STYLE}
 `;
 
 const SCRIPT = `
@@ -635,19 +641,30 @@ async function render() {
   const c = data.overview.counts;
   meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '')
     + ' · updated ' + when(data.generated_at) + (changed.size ? ' · ' + changed.size + ' value' + (changed.size === 1 ? '' : 's') + ' changed (outlined)' : '') + ' · refreshes every minute while visible';
+  await renderSetup(data);
 }
+${SETUP_SCRIPT}
+${THEME_SCRIPT}
 document.getElementById('refresh').addEventListener('click', load);
 setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS - 1000) load(); }, AUTO_REFRESH_MS / 4);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS) load(); });
 load();
 `;
 
-export function renderPage(nonce: string): string {
-  // The nonce is base64 generated server-side; nothing user-derived is interpolated here.
+export function renderPage(nonce: string, csrf = ''): string {
+  // The nonce and the CSRF token are base64/base64url generated server-side; nothing user-derived is interpolated here.
+  if (!/^[A-Za-z0-9_-]*$/.test(csrf)) throw new Error('bad CSRF token');
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="prism-csrf" content="${csrf}">
+<script nonce="${nonce}">${THEME_BOOT}</script>
 <title>PRISM dashboard</title><style nonce="${nonce}">${STYLE}</style></head>
-<body><header><h1>PRISM dashboard</h1><button id="refresh" type="button">Refresh</button><span class="meta" id="meta"></span></header>
+<body><header><h1>PRISM dashboard</h1>
+<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#setup" data-view="setup">Setup</a></nav>
+<button id="refresh" type="button">Refresh</button>
+<div class="theme" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div>
+<span class="meta" id="meta"></span></header>
 <main id="main"></main>
+<main id="setup" hidden></main>
 <script nonce="${nonce}">${SCRIPT}</script></body></html>`;
 }

@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
 import { buildPayload } from '../../dashboard/payload.js';
 import { cachedPayload, startServer, BIND_HOST } from '../../dashboard/server.js';
 import { reportFromRepos } from '../../dashboard/report.js';
+import { ActionRunner, cliEntry, repoId } from '../../dashboard/actions.js';
+import { setupApi } from '../../dashboard/setup-api.js';
+import { repoRootOf } from '../../aws/connection.js';
+import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
 import type { DashboardPayload } from '../../dashboard/payload.js';
 
 /** Opens the URL in the default browser. argv only, detached; failure is non-fatal. */
@@ -27,7 +32,7 @@ export function parsePort(v: string | undefined): number {
 }
 
 export default {
-  description: 'Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage and setup checklist. No AWS calls.',
+  description: 'Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a Setup page that runs local setup steps. Read-only in AWS.',
   options: [
     { flags: '--json', description: 'Print the dashboard data as JSON and exit (no server)' },
     { flags: '--root <dir>', description: 'Where to look for git repos, 3 levels deep (default: your home directory)' },
@@ -51,9 +56,23 @@ export default {
     let srv;
     try {
       const payload = cachedPayload(build);
+      const repos = async () => ((await payload()) as DashboardPayload).repos;
       // Reports are looked up only in the repos the dashboard itself discovered.
-      const getReport = async (id: string) => reportFromRepos(((await payload()) as DashboardPayload).repos.map((r) => r.path), id);
-      srv = await startServer({ port, getPayload: payload, getReport });
+      const getReport = async (id: string) => reportFromRepos((await repos()).map((r) => r.path), id);
+      let systemd: boolean | undefined;
+      const runner = new ActionRunner({
+        execPath: process.execPath, entry: cliEntry(), cwd: process.cwd(), home: homedir(), platform: process.platform,
+        repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
+        systemdAvailable: () => (systemd ??= systemdUserAvailable()),
+        onDone: () => payload.invalidate(),
+      });
+      const api = setupApi({
+        runner, cwd: process.cwd(),
+        repoPaths: async () => (await repos()).map((r) => r.path),
+        identity: { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) },
+        refresh: () => { payload.invalidate(); return payload(); },
+      });
+      srv = await startServer({ port, getPayload: payload, getReport, ...api });
     } catch (e: any) {
       console.error(`Error: could not start the dashboard on ${BIND_HOST}${port ? `:${port}` : ''}: ${e.message}`);
       process.exit(1);
