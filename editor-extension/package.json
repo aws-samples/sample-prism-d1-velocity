@@ -1,0 +1,71 @@
+{
+  "name": "prism-d1",
+  "displayName": "PRISM D1",
+  "description": "PRISM codewatch findings, AI spend and setup checks from prism-cli, in the status bar, the Problems panel and a side panel. Works in VS Code, Kiro and Cursor.",
+  "version": "0.1.0",
+  "publisher": "prism-d1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aws-samples/sample-prism-d1-velocity.git",
+    "directory": "editor-extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "PRISM runs prism-cli in the workspace's repository, so it is off in untrusted folders."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      { "command": "prism.openPanel", "title": "Open panel", "category": "PRISM" },
+      { "command": "prism.refresh", "title": "Refresh", "category": "PRISM" },
+      { "command": "prism.openBrowserDashboard", "title": "Open browser dashboard", "category": "PRISM" },
+      { "command": "prism.enableCodewatch", "title": "Enable codewatch in this repo", "category": "PRISM" },
+      { "command": "prism.copyFixPrompt", "title": "Copy finding as a fix prompt", "category": "PRISM" },
+      { "command": "prism.openReport", "title": "Open review report", "category": "PRISM" },
+      { "command": "prism.showInstallHint", "title": "Install prism-cli", "category": "PRISM" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "prism.copyFixPrompt", "when": "false" },
+        { "command": "prism.showInstallHint", "when": "false" }
+      ]
+    },
+    "configuration": {
+      "title": "PRISM",
+      "properties": {
+        "prism.cliPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Absolute path to the `prism-cli` executable. Empty: found on `PATH`. Machine-scoped, so a workspace's settings cannot change it."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "npm run build && node --test \"out/test/*.test.js\"",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^4.1.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,37 @@
+# editor-extension.yml -- build, test and package the editor extension on PRs that touch it.
+# No secrets, read-only token. The .vsix is built to prove it packages; it is not published or uploaded.
+
+name: Editor extension
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, master]
+    paths:
+      - 'editor-extension/**'
+      - '.github/workflows/editor-extension.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editor-extension
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm ci
+      - name: Build and test
+        run: npm test
+      - name: Package
+        run: npm run package
