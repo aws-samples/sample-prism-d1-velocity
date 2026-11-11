@@ -6,7 +6,7 @@ name: Editor extension
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main, master]
+    branches: [main]
     paths:
       - 'editor-extension/**'
       - '.github/workflows/editor-extension.yml'
