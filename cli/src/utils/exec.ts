@@ -60,7 +60,7 @@ export interface RunResult {
  * Never throws: a non-zero exit, a missing binary, and a signal kill all come
  * back as `ok: false`. Callers branch on `ok` and surface `stderr`.
  */
-export function run(file: string, args: string[], extraEnv?: Record<string, string | undefined>): RunResult {
+export function run(file: string, args: string[], extraEnv?: Record<string, string | undefined>, timeoutMs?: number): RunResult {
   let env: NodeJS.ProcessEnv = process.env;
   if (extraEnv) {
     env = { ...process.env };
@@ -74,6 +74,8 @@ export function run(file: string, args: string[], extraEnv?: Record<string, stri
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
+      // A timed-out child is killed and comes back as ok: false.
+      ...(timeoutMs ? { timeout: timeoutMs } : {}),
     }).trim();
     return { ok: true, stdout, stderr: '' };
   } catch (err: any) {

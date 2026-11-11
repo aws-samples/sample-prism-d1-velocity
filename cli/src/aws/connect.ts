@@ -45,7 +45,7 @@ export interface AccessLevel { level: 'admin' | 'read-only' | 'unknown'; basis: 
 
 const reason = (r: AwsResult) => r.errorCode || r.raw.split('\n').map((l) => l.trim()).filter(Boolean).pop() || 'unknown error';
 
-export function callerIdentity(d: ConnectDeps, profile: string, region: string): Identity | { error: string } {
+export function callerIdentity(d: Pick<ConnectDeps, 'aws'>, profile: string, region: string): Identity | { error: string } {
   const r = d.aws(['sts', 'get-caller-identity'], profile, region);
   if (!r.ok) return { error: reason(r) };
   const account = String(r.json?.Account || '');

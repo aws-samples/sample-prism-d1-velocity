@@ -24,6 +24,8 @@ export interface AwsTarget {
   /** Temporary credentials injected into the child environment. A key mapped
    *  to undefined is removed from it. */
   env?: Record<string, string | undefined>;
+  /** Kill the call after this many ms (the dashboard's Check now must not hang its server). */
+  timeoutMs?: number;
 }
 
 export interface AwsResult {
@@ -45,7 +47,7 @@ export interface AwsResult {
  */
 export function aws(args: string[], target?: AwsTarget): AwsResult {
   const argv = target?.profile ? [...args, '--profile', target.profile] : args;
-  const res = run('aws', [...argv, '--output', 'json'], target?.env);
+  const res = run('aws', [...argv, '--output', 'json'], target?.env, target?.timeoutMs);
   const body = (res.stdout || '').trim();
 
   if (!res.ok) {

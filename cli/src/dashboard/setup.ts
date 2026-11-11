@@ -170,7 +170,7 @@ export interface CodewatchSetup {
 }
 
 /** Shell-quotes a path for the copy-paste fix line. */
-function shellPath(p: string): string {
+export function shellPath(p: string): string {
   return /^[A-Za-z0-9_./~+-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
 }
 

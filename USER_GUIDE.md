@@ -660,9 +660,41 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
 - **Local only.** It listens on `127.0.0.1`, never on other interfaces. The token is random for each
   run; the first page load exchanges it for a cookie, and requests without it are refused. Do not
   share the URL. Ctrl-C stops the server.
-- **Read-only.** The page only reads data; every fix it suggests is a command for you to run.
-- **No AWS calls.** It reads local files and runs local tools (git, codeburn) only. The AWS row in the
-  checklist checks that credentials are configured, without validating them.
+- **Read-only dashboard.** The dashboard view only reads data; every fix it suggests is a command
+  for you to run. The **Setup** view (below) can run a fixed set of local setup commands for you.
+- **Read-only in AWS.** Loading the page makes no AWS calls. On the Setup view, **Check now**,
+  `aws check` and `team info` make read-only calls; nothing on the page writes to AWS.
+- **Theme.** The **Light / Dark / System** toggle in the header is saved in your browser
+  (`localStorage`). System follows your OS setting.
+
+### Setup View
+
+The **Setup** tab lists the setup checklist with a **Run** or **Copy** button per item, in four
+sections: This machine, Repos, Usage sync (codeburn) and AWS. Every Run first shows the exact
+command in a confirm dialog. Runs use this CLI's own binary with a fixed argument list, one at a
+time, without a terminal (so prompts take their no-terminal answer), with a timeout. The output
+is shown with secrets masked, and each run is logged to `~/.prism/logs/dashboard-actions.log`
+(time, action, repo name, exit code; no output and no URLs).
+
+- **Run (local only):** `enable codewatch` in a repo from the list, `enable codewatch --global`,
+  `enable codeburn --local`, `--url <collector URL>` (https only), `--schedule systemd` (Linux with
+  `systemctl --user`, team mode), `--remove` (asks twice) and `--status`, and **Re-check status**.
+- **Run (read-only in AWS):** `aws check`, `team info` and **Check now**.
+- **Copy only:** the gitleaks install hint, `enable security`, `team add-developer`, `aws connect`
+  and the `security code-review / threat-model / pentest` commands, because they write to AWS,
+  install software or need a terminal.
+
+The **AWS** section shows which credentials prism-cli would use and why, in the order every AWS
+command uses: env (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`), `.prism/aws.local.json`, `~/.prism/aws.json`,
+then the default profile. It shows the profile and the credential type (credential_process, SSO,
+static keys in `~/.aws/credentials`, or env vars), read from the setting names in `~/.aws/config` and
+`~/.aws/credentials`; secret values are never read or shown. It warns when the default profile has
+static keys in `~/.aws/credentials` (they win over credential_process and often expire) and when no
+credentials are found. It also shows the saved `aws connect` account, alias, region and when it was
+verified. **Check now** makes one `sts get-caller-identity` call, as `aws connect` does, and shows the
+account, caller ARN and region, whether they match the saved account, and fixes when the credentials
+are expired or invalid. On a match it updates the saved verified time, and says so. Account ids and
+ARNs appear only on the page, never in `prism-cli dashboard --json`.
 
 ### Finding Repos
 
