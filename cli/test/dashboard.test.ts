@@ -53,8 +53,8 @@ function repoWithResults(): string {
   return dir;
 }
 
-const fixtureExporter: CodeburnExport = async (args) =>
-  JSON.parse(readFileSync(join(FIX, args.includes('--from') ? 'codeburn-export-month.json' : 'codeburn-export.json'), 'utf8'));
+/** The month export; the dashboard no longer runs codeburn's all-time default export. */
+const fixtureExporter: CodeburnExport = async () => JSON.parse(readFileSync(join(FIX, 'codeburn-export-month.json'), 'utf8'));
 
 // ---------------------------------------------------------------- codewatch collector
 
@@ -198,7 +198,7 @@ test('setup (machine): ok when tools, schedule, sync log and AWS profile are pre
 
 test('setup (machine): missing items each carry a one-line fix; AWS uses presence only', () => {
   const items = machineChecks({ pathEnv: tmp('none'), home: tmp('home2'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', global: NOT_INSTALLED });
-  assert.deepEqual(items.map((i) => i.status), ['missing', 'info', 'warn', 'missing', 'missing'], 'gitleaks absent is a warning; no sync mode and no endpoint is local only (info)');
+  assert.deepEqual(items.map((i) => i.status), ['missing', 'info', 'warn', 'missing', 'info'], 'gitleaks absent is a warning; no sync mode and no endpoint is local only (info); global hooks are optional (info)');
   for (const i of items.filter((x) => x.status !== 'info')) { assert.ok(i.fix.length > 0); assert.ok(!i.fix.includes('\n')); }
   // an existing config file counts, without its contents being needed
   const home = tmp('home3');
@@ -208,10 +208,10 @@ test('setup (machine): missing items each carry a one-line fix; AWS uses presenc
   assert.equal(aws?.status, 'ok');
 });
 
-test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable fix', () => {
+test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable fix', async () => {
   const dir = tmp('srepo');
   git(dir, 'init', '-q', `--template=${tmp('tpl2')}`);
-  const before = codewatchSetup(dir, { pathEnv: tmp('p0') });
+  const before = await codewatchSetup(dir, { pathEnv: tmp('p0') });
   assert.equal(before.status, 'missing');
   assert.equal(before.fix, `cd ${dir} && prism-cli enable codewatch`);
   assert.deepEqual(Object.keys(before).sort(), ['detail', 'fix', 'global', 'reviewer', 'reviewerSource', 'status']);
@@ -219,18 +219,18 @@ test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable f
   installHooks(join(dir, '.git', 'hooks'));
   const bin = tmp('p1');
   exe(bin, 'claude', 'exit 0');
-  const after = codewatchSetup(dir, { pathEnv: bin });
+  const after = await codewatchSetup(dir, { pathEnv: bin });
   assert.equal(after.status, 'ok');
   assert.equal(after.reviewer, 'claude');
   assert.equal(after.fix, '');
 });
 
-test('setup (repo): hooks from before the rename count as missing; paths with spaces are quoted', () => {
+test('setup (repo): hooks from before the rename count as missing; paths with spaces are quoted', async () => {
   const dir = join(tmp('orepo'), "my repo's");
   mkdirSync(dir);
   git(dir, 'init', '-q', `--template=${tmp('tpl3')}`);
   exe(join(dir, '.git', 'hooks'), 'pre-commit', '# prism-cli enable security\nexec prism-cli git pre-commit');
-  const c = codewatchSetup(dir, { pathEnv: tmp('p2') });
+  const c = await codewatchSetup(dir, { pathEnv: tmp('p2') });
   assert.equal(c.status, 'missing');
   assert.match(c.detail, /before the codewatch rename/);
   assert.equal(c.fix, `cd '${dir.replace(/'/g, `'\\''`)}' && prism-cli enable codewatch`);
@@ -375,8 +375,9 @@ async function withFakeGlobal<T>(fn: (home: string) => Promise<T> | T): Promise<
 test('machine row for the global hooks: ok, not installed, pointing elsewhere', () => {
   assert.equal(globalHooksCheck({ state: 'installed', hooksPath: '/h/.prism/hooks', dir: '' }).status, 'ok');
   const none = globalHooksCheck(NOT_INSTALLED);
-  assert.equal(none.status, 'missing');
-  assert.equal(none.fix, GLOBAL_INSTALL_CMD);
+  assert.equal(none.status, 'info', 'optional: not a setup warning');
+  assert.equal(none.fix, '');
+  assert.ok(none.detail.includes(GLOBAL_INSTALL_CMD), 'the command stays visible in the detail');
   const other = globalHooksCheck({ state: 'elsewhere', hooksPath: '/opt/team', dir: '' });
   assert.equal(other.status, 'warn');
   assert.match(other.detail, /\/opt\/team/);
@@ -389,7 +390,7 @@ test('repo status under the global hooks: ok (global), husky bypass warns, opt-o
   const plain = join(home, 'plain');
   mkdirSync(plain);
   git(plain, 'init', '-q', `--template=${tmp('t1')}`);
-  const ok = codewatchSetup(plain, { pathEnv: tmp('pp'), global: g });
+  const ok = await codewatchSetup(plain, { pathEnv: tmp('pp'), global: g });
   assert.equal(ok.status, 'ok');
   assert.equal(ok.global, true);
   assert.match(ok.detail, /\(global\)/);
@@ -398,13 +399,13 @@ test('repo status under the global hooks: ok (global), husky bypass warns, opt-o
   mkdirSync(husky);
   git(husky, 'init', '-q', `--template=${tmp('t2')}`);
   git(husky, 'config', 'core.hooksPath', '.husky');
-  const w = codewatchSetup(husky, { pathEnv: tmp('pp'), global: g });
+  const w = await codewatchSetup(husky, { pathEnv: tmp('pp'), global: g });
   assert.equal(w.status, 'warn');
   assert.match(w.detail, /core\.hooksPath \(\.husky\) bypasses the global hooks/);
   assert.equal(w.fix, `cd ${husky} && prism-cli enable codewatch`);
 
   git(plain, 'config', 'prism.codewatch', 'false');
-  const out = codewatchSetup(plain, { pathEnv: tmp('pp'), global: g });
+  const out = await codewatchSetup(plain, { pathEnv: tmp('pp'), global: g });
   assert.equal(out.status, 'opted-out');
   assert.match(out.detail, /opted out/);
 }));
@@ -456,7 +457,9 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'usage']);
+  assert.deepEqual(Object.keys(p).sort(), ['aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'timing', 'usage']);
+  assert.deepEqual(Object.keys(p.timing).sort(), ['cacheHit', 'scan', 'setup', 'total', 'usage']);
+  assert.equal(p.timing.cacheHit, false);
   assert.deepEqual(p.aws.accounts, [], 'no aws check results in the fixtures');
   assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'root_display', 'scan_ms', 'truncated']);
   assert.equal(p.scope.root_display, '~');
@@ -607,7 +610,7 @@ test('page uses textContent for data and loads nothing from the network', () => 
 
 test('the Security findings panel is a one-column card: compact blocks and wrapping rows, no wide table', () => {
   const html = renderPage('NONCE');
-  const panel = html.slice(html.indexOf('function securityPanel(sec) {'), html.indexOf('async function load() {'));
+  const panel = html.slice(html.indexOf('function securityPanel(sec) {'), html.indexOf('async function load('));
   assert.ok(panel.length > 0);
   assert.match(panel, /el\('section', \{ class: 'card' \}, el\('h2', \{\}, 'Security findings'\)\)/);
   assert.doesNotMatch(panel, /card wide|table\(/, 'not full-width and no table');

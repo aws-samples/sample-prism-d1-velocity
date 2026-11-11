@@ -84,8 +84,8 @@ export interface HandlerOptions {
    * matched against directory listings only; it is never turned into a path.
    */
   getReport?: (id: string) => Promise<ScanReport | null>;
-  /** Extra read-only JSON routes (GET), by exact path. */
-  getApi?: Record<string, () => Promise<unknown>>;
+  /** Extra read-only JSON routes (GET), by exact path; receive the request URL (for its query). */
+  getApi?: Record<string, (url: URL) => Promise<unknown>>;
   /** Action routes (POST only), by exact path; receive the parsed JSON body. */
   postApi?: Record<string, (body: unknown) => Promise<{ status: number; json: unknown }>>;
 }
@@ -180,7 +180,7 @@ export function createHandler(opts: HandlerOptions) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(payload));
       }
       const extra = own(opts.getApi, url.pathname);
-      if (extra) return json(res, 200, await extra());
+      if (extra) return json(res, 200, await extra(url));
       const m = REPORT_ROUTE.exec(url.pathname);
       if (m && opts.getReport) {
         const report = await opts.getReport(m[1]);

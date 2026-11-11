@@ -5,7 +5,7 @@
  */
 import { collectCodewatch, combineSecretScanning, type CodewatchPanel, type SecretScanning } from './codewatch.js';
 import { discoverRepos, repoLabels, type DiscoverOptions } from './repos.js';
-import { codewatchSetup, GLOBAL_FORCE_CMD, GLOBAL_INSTALL_CMD, machineChecks, SECURITY_RESULT_KINDS, securitySetup, type CheckItem, type CodewatchSetup, type MachineDeps, type SecuritySetup } from './setup.js';
+import { codewatchSetup, GLOBAL_FORCE_CMD, type GitRunner, GLOBAL_INSTALL_CMD, machineChecks, SECURITY_RESULT_KINDS, securitySetup, type CheckItem, type CodewatchSetup, type MachineDeps, type SecuritySetup } from './setup.js';
 import { buildSummary, type DashboardSummary } from './summary.js';
 import { effectiveMode, type CheckHelp, type SyncMode, type SyncModeSource } from '../utils/sync-mode.js';
 import { readResults } from '../codewatch/results.js';
@@ -19,6 +19,7 @@ export function tildeHome(p: string, home: string): string {
   return p.startsWith(home + sep) ? '~' + p.slice(home.length) : p;
 }
 import { collectUsage, spendByRepo, type CodeburnExport, type RepoSpend, type UsagePanel } from './usage.js';
+import { versionCachePath } from './usage-cache.js';
 import { collectSecurity, type SecurityPanel } from './security.js';
 import { collectAws, type AwsPanel } from './aws.js';
 
@@ -137,11 +138,39 @@ export interface DashboardPayload {
   aws: AwsPanel;
   /** The one-glance summary shown at the top of the page (buildSummary). */
   summary: DashboardSummary;
+  /**
+   * Milliseconds per stage, for diagnosis (`dashboard --json --timing`). scan:
+   * repo discovery. setup: checks and codewatch results for every repo and
+   * this machine. usage: codeburn (runs alongside setup). cacheHit: usage came
+   * from the cache.
+   */
+  timing: PayloadTiming;
+}
+
+export interface PayloadTiming { scan: number; setup: number; usage: number; total: number; cacheHit: boolean }
+
+/** The usage panel and whether it came from the cache (usage-cache.ts). */
+export type UsageSource = () => Promise<{ usage: UsagePanel; cacheHit: boolean }>;
+
+/** At most this many repos are checked at once (each check is one git process). */
+export const GIT_CONCURRENCY = 8;
+
+/** fn over items, at most `limit` running at a time; results keep the input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; out[i] = await fn(items[i]); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 export interface PayloadOptions extends DiscoverOptions {
   trendRuns?: number;
   exporter?: CodeburnExport;
+  /** Default: collectUsage with `exporter`, uncached. */
+  usage?: UsageSource;
+  /** Runs the per-repo git calls; injected in tests. */
+  git?: GitRunner;
   machineDeps?: MachineDeps;
   pathEnv?: string;
 }
@@ -163,16 +192,29 @@ export function sortCodewatchRows(rows: CodewatchRow[]): CodewatchRow[] {
 }
 
 export async function buildPayload(opts: PayloadOptions): Promise<DashboardPayload> {
+  const t0 = Date.now();
   const d = discoverRepos(opts);
-  const usage = await collectUsage({ exporter: opts.exporter, pathEnv: opts.pathEnv });
-  const gitleaksAvailable = findOnPath('gitleaks', opts.pathEnv) !== null;
+  const tScan = Date.now();
+  // Usage (codeburn) and the git checks are child processes: start both, then do the in-process work while they run.
+  let usageMs = 0;
+  const usageP = (opts.usage || (async () => ({ usage: await collectUsage({ exporter: opts.exporter, pathEnv: opts.pathEnv }), cacheHit: false })))()
+    .finally(() => { usageMs = Date.now() - tScan; });
   const g = globalStatus(opts.home || homedir());
+  const setupsP = mapLimit(d.repos, GIT_CONCURRENCY, (r) => codewatchSetup(r.path, { pathEnv: opts.pathEnv, global: g, git: opts.git }));
+  // One turn of the event loop: a cache hit settles here, so its timing is not the sync work below.
+  await new Promise((r) => setImmediate(r));
+  const gitleaksAvailable = findOnPath('gitleaks', opts.pathEnv) !== null;
+  const machineSetup = machineChecks({ pathEnv: opts.pathEnv, global: g, versionCache: versionCachePath(opts.machineDeps?.home || opts.home || homedir()), ...opts.machineDeps });
   const labels = repoLabels(d.repos.map((r) => r.path));
-  const spend = spendByRepo(usage.projects, d.repos.map((r) => r.path));
   // Read each repo's results once; the Security panel below reuses them.
   const results = new Map(d.repos.map((r) => [r.path, readResults(r.path)]));
-  const repos: RepoPayload[] = d.repos.map((r) => {
-    const codewatch = collectCodewatch(r.path, opts.trendRuns, gitleaksAvailable);
+  const codewatchByRepo = new Map(d.repos.map((r) => [r.path, collectCodewatch(r.path, opts.trendRuns, gitleaksAvailable)]));
+  const setups = await setupsP;
+  const setupMs = Date.now() - tScan;
+  const { usage, cacheHit } = await usageP;
+  const spend = spendByRepo(usage.projects, d.repos.map((r) => r.path));
+  const repos: RepoPayload[] = d.repos.map((r, i) => {
+    const codewatch = codewatchByRepo.get(r.path)!;
     const repoResults = results.get(r.path) || [];
     const s = spend.get(r.path) || null;
     const securityResults = repoResults.some((x) => SECURITY_RESULT_KINDS.some(([k]) => k === x.kind));
@@ -185,7 +227,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
       current: r.current,
       hasPrism: r.hasPrism,
       codewatch,
-      setup: codewatchSetup(r.path, { pathEnv: opts.pathEnv, global: g }),
+      setup: setups[i],
       security: securitySetup(r.path, repoResults),
     };
   });
@@ -208,7 +250,6 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     unscannedCommits: r.codewatch.secretScanning.unscannedCommits,
     gitleaksWarning: r.codewatch.secretScanning.unscannedCommits > 0,
   })));
-  const machineSetup = machineChecks({ pathEnv: opts.pathEnv, global: g, ...opts.machineDeps });
   return {
     schema: PAYLOAD_SCHEMA,
     generated_at: new Date().toISOString(),
@@ -226,5 +267,6 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     security: collectSecurity(repos, (p) => results.get(p) ?? readResults(p)),
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
     summary: buildSummary(repos, usage, machineSetup),
+    timing: { scan: tScan - t0, setup: setupMs, usage: usageMs, total: Date.now() - t0, cacheHit },
   };
 }

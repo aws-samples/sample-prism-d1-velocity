@@ -2,8 +2,8 @@
  * Setup checklist. Local evidence only: no AWS, GitHub or GitLab calls, and no
  * credential file is opened (only its existence is checked).
  */
-import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { checkTool } from '../utils/tool-check.js';
@@ -11,7 +11,7 @@ import { ENABLE_CODEBURN_CMD, lastSync, scheduleExists, schedulerName, systemdUs
 import { type PrismResult } from '../codewatch/results.js';
 import { HOOK_MARKER, MANAGED_HOOKS } from '../codewatch/hooks.js';
 import { gitleaksInstallHint } from '../codewatch/gitleaks.js';
-import { globalHooksDir, globalStatus, isOptedOut, OPT_OUT_KEY, repoLocalHooksPath, type GlobalStatus } from '../codewatch/globalHooks.js';
+import { globalHooksDir, globalStatus, OPT_OUT_KEY, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { realpathSync } from 'node:fs';
 import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
@@ -44,6 +44,8 @@ export interface MachineDeps {
   systemdAvailable?: () => boolean;
   /** Global codewatch hooks state; computed once by the payload builder. */
   global?: GlobalStatus;
+  /** File that remembers tool versions by binary mtime and size (tool-check.ts cachedToolVersion); unset runs the probes. */
+  versionCache?: string;
 }
 
 export const GLOBAL_INSTALL_CMD = 'prism-cli enable codewatch --global';
@@ -60,7 +62,8 @@ export function globalHooksCheck(g: GlobalStatus): CheckItem {
     case 'incomplete':
       return item('codewatch-global', label, 'warn', 'core.hooksPath points to ~/.prism/hooks but its hooks are missing', GLOBAL_INSTALL_CMD);
     default:
-      return item('codewatch-global', label, 'missing', 'not installed (optional: covers every repo at once)', GLOBAL_INSTALL_CMD);
+      // Optional, so info: it is not counted as a setup warning. The command stays in the detail.
+      return item('codewatch-global', label, 'info', `not installed (optional: covers every repo at once with ${GLOBAL_INSTALL_CMD})`);
   }
 }
 
@@ -114,13 +117,13 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   const home = deps.home || homedir();
   const out: CheckItem[] = [];
 
-  const cb = checkTool('codeburn', { pathEnv: deps.pathEnv });
+  const cb = checkTool('codeburn', { pathEnv: deps.pathEnv, versionCache: deps.versionCache });
   out.push(item('codeburn', 'codeburn installed', cb.installed ? 'ok' : 'missing',
     cb.installed ? (cb.version || 'version unknown') : 'not on PATH', ENABLE_CODEBURN_CMD));
 
   out.push(codeburnSyncCheck(home, deps));
 
-  const gl = checkTool('gitleaks', { pathEnv: deps.pathEnv, versionArgs: ['version'] });
+  const gl = checkTool('gitleaks', { pathEnv: deps.pathEnv, versionArgs: ['version'], versionCache: deps.versionCache });
   // warn, not missing: commits are still allowed, just not secret-scanned (decided).
   out.push(item('gitleaks', 'gitleaks available', gl.installed ? 'ok' : 'warn',
     gl.installed ? (gl.version || 'version unknown') : 'not on PATH; secret scanning is off and commits are not scanned',
@@ -141,9 +144,124 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   return out;
 }
 
-function git(repo: string, args: string[]): string | null {
-  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  return r.status === 0 ? r.stdout.trim() : null;
+/**
+ * What codewatchSetup needs from git, read with one `git config --list` per
+ * repo instead of one git call per question. Each field gives the same answer
+ * as the call named beside it.
+ */
+export interface GitFacts {
+  /** `git rev-parse --path-format=absolute --git-path hooks`, else <repo>/.git/hooks. */
+  hooksDir: string;
+  /** `git config --get prism.reviewer` (the last value wins), or null. */
+  reviewer: string | null;
+  /** `git config --bool --get prism.codewatch` is false. */
+  optedOut: boolean;
+  /** `git config --local --get core.hooksPath` (this repo's own file, no includes), or null when unset or empty. */
+  localHooksPath: string | null;
+}
+
+/** Runs `git -C <repo> <args>`; stdout, or null when git fails. Injected in tests. */
+export type GitRunner = (repo: string, args: string[]) => Promise<string | null>;
+
+export const gitRunner: GitRunner = (repo, args) => new Promise((done) => {
+  execFile('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 30_000 }, (err, stdout) => done(err ? null : stdout));
+});
+
+export const GIT_CONFIG_LIST = ['config', '--list', '--show-origin', '--show-scope', '-z'];
+
+export interface ConfigEntry { scope: string; origin: string; key: string; value: string | null }
+
+/** `git config --list --show-origin --show-scope -z`: scope NUL origin NUL key[LF value] NUL; a key with no `=` has no value. */
+export function parseConfigList(out: string): ConfigEntry[] {
+  const parts = out.split('\0');
+  const entries: ConfigEntry[] = [];
+  for (let i = 0; i + 2 < parts.length; i += 3) {
+    const kv = parts[i + 2];
+    const nl = kv.indexOf('\n');
+    entries.push({ scope: parts[i], origin: parts[i + 1].replace(/^file:/, ''), key: (nl < 0 ? kv : kv.slice(0, nl)).toLowerCase(), value: nl < 0 ? null : kv.slice(nl + 1) });
+  }
+  return entries;
+}
+
+/**
+ * `git config --bool`: true or false, or null where git would fail. A key with
+ * no value is true; integers count as true unless zero (git also accepts k/m/g suffixes).
+ */
+export function gitBool(v: string | null): boolean | null {
+  if (v === null) return true;
+  const s = v.trim().toLowerCase();
+  if (s === 'true' || s === 'yes' || s === 'on') return true;
+  if (s === 'false' || s === 'no' || s === 'off' || s === '') return false;
+  const n = /^([+-]?\d+)[kmg]?$/.exec(s);
+  return n ? Number(n[1]) !== 0 : null;
+}
+
+/** The repo's common git directory (where hooks/ and config live), read from .git the way git does; null when it cannot be read. */
+export function gitCommonDir(repo: string): string | null {
+  const dotGit = join(repo, '.git');
+  let gitDir: string;
+  try {
+    if (statSync(dotGit).isDirectory()) gitDir = dotGit;
+    else {
+      const m = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'));
+      if (!m) return null;
+      gitDir = resolve(repo, m[1].trim());
+    }
+  } catch { return null; }
+  const common = readText(join(gitDir, 'commondir'));
+  return common === null ? gitDir : resolve(gitDir, common.trim());
+}
+
+const lastValue = (entries: ConfigEntry[], key: string) => {
+  for (let i = entries.length - 1; i >= 0; i--) if (entries[i].key === key) return entries[i];
+  return undefined;
+};
+
+/**
+ * GitFacts from a `git config --list` result (null when that call failed).
+ * Returns hooksDir undefined when only git can say (a `~user` path, an
+ * unreadable .git); the caller then asks rev-parse.
+ */
+export function gitFactsFromConfig(repo: string, out: string | null, home: string = homedir()): Omit<GitFacts, 'hooksDir'> & { hooksDir: string | undefined } {
+  const fallback = resolve(repo, '.git/hooks');
+  const entries = out === null ? null : parseConfigList(out);
+  if (!entries) return { hooksDir: fallback, reviewer: null, optedOut: false, localHooksPath: null };
+  const reviewer = lastValue(entries, REVIEWER_GIT_CONFIG_KEY.toLowerCase());
+  const optOut = lastValue(entries, OPT_OUT_KEY.toLowerCase());
+  const local = entries.filter((e) => e.scope === 'local');
+  const common = gitCommonDir(repo);
+  // --local reads only <common dir>/config; an include from it has scope local too but another origin.
+  const localFile = common && join(common, 'config');
+  const ownLocal = localFile ? local.filter((e) => e.key === 'core.hookspath' && samePath(resolve(repo, e.origin), localFile)) : [];
+  const localHooksPath = (ownLocal.length ? (ownLocal[ownLocal.length - 1].value ?? '').trim() : '') || null;
+
+  let hooksDir: string | undefined;
+  const hp = lastValue(entries, 'core.hookspath');
+  // rev-parse fails, and the old code used the fallback, when git ignored the repo (not a repo, or not
+  // trusted) or when any core.hooksPath has no value ("missing value for 'core.hookspath'").
+  if (!local.length || entries.some((e) => e.key === 'core.hookspath' && e.value === null)) hooksDir = fallback;
+  else if (hp) {
+    const v = hp.value!;
+    if (v === '') hooksDir = fallback; // git: "The empty string is not a valid path"
+    else if (v === '~' || v.startsWith('~/')) hooksDir = join(home, v.slice(1));
+    else if (v.startsWith('~')) hooksDir = undefined;
+    else hooksDir = resolve(repo, v);
+  } else hooksDir = common ? join(common, 'hooks') : undefined;
+
+  return {
+    hooksDir,
+    reviewer: reviewer ? (reviewer.value ?? '').trim() : null,
+    optedOut: optOut ? gitBool(optOut.value) === false : false,
+    localHooksPath,
+  };
+}
+
+/** GitFacts for a repo: one `git config --list`, plus a rev-parse only in the rare case gitFactsFromConfig cannot decide. */
+export async function readGitFacts(repo: string, run: GitRunner = gitRunner, home: string = homedir()): Promise<GitFacts> {
+  const f = gitFactsFromConfig(repo, await run(repo, GIT_CONFIG_LIST), home);
+  if (f.hooksDir !== undefined) return f as GitFacts;
+  const r = await run(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']);
+  return { ...f, hooksDir: (r && r.trim()) || resolve(repo, '.git/hooks') };
 }
 
 function readText(p: string): string | null {
@@ -184,29 +302,35 @@ function samePath(a: string, b: string): boolean {
 }
 
 /** The only per-repo check: does codewatch run here (per repo or globally), and which reviewer would run. */
-export function codewatchSetup(repo: string, deps: { pathEnv?: string; global?: GlobalStatus } = {}): CodewatchSetup {
+export async function codewatchSetup(repo: string, deps: { pathEnv?: string; global?: GlobalStatus; git?: GitRunner; home?: string } = {}): Promise<CodewatchSetup> {
   const g = deps.global || globalStatus();
-  const hooksDir = git(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']) || resolve(repo, '.git/hooks');
+  const facts = await readGitFacts(repo, deps.git, deps.home);
+  return codewatchSetupFrom(repo, facts, g, deps.pathEnv);
+}
+
+/** codewatchSetup from facts already read. */
+export function codewatchSetupFrom(repo: string, facts: GitFacts, g: GlobalStatus, pathEnv?: string): CodewatchSetup {
+  const hooksDir = facts.hooksDir;
   const viaGlobal = g.state === 'installed' && samePath(hooksDir, globalHooksDir());
   const state = MANAGED_HOOKS.map((h) => {
     const t = readText(resolve(hooksDir, h));
     return { h, ours: !!t && t.includes(HOOK_MARKER), old: !!t && !t.includes(HOOK_MARKER) && t.includes('# prism-cli enable security') };
   });
   const choice = resolveReviewer({
-    gitConfigValue: git(repo, ['config', '--get', REVIEWER_GIT_CONFIG_KEY]),
+    gitConfigValue: facts.reviewer,
     prismConfigValue: readEvalConfig(repo).reviewer,
-    available: detectReviewers(deps.pathEnv),
+    available: detectReviewers(pathEnv),
   });
   const reviewer = choice.id;
   const base = { reviewer, reviewerSource: choice.source, global: viaGlobal };
-  if (isOptedOut(repo)) {
+  if (facts.optedOut) {
     return { ...base, status: 'opted-out', fix: '', detail: `opted out (git config ${OPT_OUT_KEY} false)` };
   }
   if (state.every((x) => x.ours)) {
     const where = viaGlobal ? 'covered by the global hooks (global)' : 'pre-commit and pre-push installed';
     return { ...base, status: 'ok', fix: '', detail: reviewer ? where : `${where}; no reviewer on PATH (install kiro-cli or Claude Code)` };
   }
-  const local = repoLocalHooksPath(repo);
+  const local = facts.localHooksPath;
   if (local && g.state === 'installed') {
     return { ...base, status: 'warn', fix: enableCodewatchFix(repo),
       detail: `this repo's core.hooksPath (${local}) bypasses the global hooks; install codewatch into it` };

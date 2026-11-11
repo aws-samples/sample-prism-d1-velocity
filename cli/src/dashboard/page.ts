@@ -1,7 +1,7 @@
 /**
  * The dashboard's single-page app: one self-contained HTML document with
  * inline CSS and JS (nonce-gated by the CSP), no CDN and no network fetch
- * other than its own GET /api/data, so it works offline.
+ * other than its own GET routes (/api/data, then /api/usage), so it works offline.
  *
  * Every value from the payload is placed with textContent or a DOM attribute;
  * innerHTML is never used for data.
@@ -65,6 +65,7 @@ svg.trend line { stroke:var(--line); }
 .slim-line { padding:5px 0; border-top:1px solid var(--line); font-size:13px; overflow-wrap:anywhere; } .slim-line:first-of-type { border-top:none; } .slim-line code { white-space:normal; overflow-wrap:anywhere; }
 .empty-line { color:var(--muted); margin:10px 0 4px; font-size:13px; overflow-wrap:anywhere; } .empty-line b { color:var(--text); }
 .changed { outline:2px solid var(--accent); outline-offset:1px; border-radius:4px; }
+.loading { color:var(--muted); }
 @keyframes prism-flash { from { background-color:color-mix(in srgb, var(--accent) 35%, transparent); } to { background-color:transparent; } }
 @media (prefers-reduced-motion: no-preference) { .changed { animation:prism-flash 2.5s ease-out 1; } }
 ${SETUP_STYLE}
@@ -173,9 +174,11 @@ function summaryPanel(sum) {
   }
   const sp = sum && sum.spend;
   const ok = sp && sp.status === 'ok';
+  const loadingUsage = sp && sp.status === 'loading';
+  const updated = sp && sp.updatedAt ? ' · updated ' + when(sp.updatedAt) : '';
   const spendCard = (label, key, n, det) => scard(label,
-    ok ? track(key, n, el('div', { class: 'v' }, money(n, sp.currency))) : el('div', { class: 'v' }, '-'),
-    detail(ok ? det : txt((sp && sp.message) || (sp && sp.status) || 'no codeburn data')));
+    ok ? track(key, n, el('div', { class: 'v' }, money(n, sp.currency))) : el('div', { class: 'v' + (loadingUsage ? ' loading' : '') }, loadingUsage ? 'loading' : '-'),
+    detail(ok ? det + updated : txt((sp && sp.message) || (sp && sp.status) || 'no codeburn data')));
   box.append(spendCard('Spend today', 'sum:today', sp && sp.today, 'codeburn, all projects'));
   box.append(spendCard('Spend this month', 'sum:month', sp && sp.month, 'codeburn, this calendar month'));
   const w = (sum && sum.warnings) || { count: 0, first: null };
@@ -334,7 +337,17 @@ function codewatchPanel(data) {
   return s;
 }
 
+/** "updated <time>", and whether a refresh is running or the last one failed. */
+function usageUpdated(u) {
+  if (!u.updatedAt) return null;
+  return el('p', { class: 'note' }, 'updated ' + when(u.updatedAt)
+    + (u.refreshError ? ' · refresh failed: ' + txt(u.refreshError) : u.stale ? ' · refreshing in the background' : ''));
+}
+
 function usagePanel(u) {
+  if (u.status === 'loading') {
+    return el('section', { class: 'card' }, el('h2', {}, 'Usage (codeburn)'), el('p', { class: 'empty loading' }, txt(u.message)));
+  }
   if (u.status === 'not-installed' || u.status === 'no-data') {
     return emptyLine('Usage (codeburn)', txt(u.message), u.status === 'not-installed' ? '' : el('span', {}, ' Usage appears once a coding tool records sessions; full charts: ', el('code', {}, txt(u.fullView)), '.'));
   }
@@ -350,7 +363,7 @@ function usagePanel(u) {
     s.append(el('h3', {}, 'Top projects this month'));
     s.append(table(['Project', 'Cost', 'Sessions'], u.topProjects.map((p) => [el('span', { title: p.path }, p.name), num(money(p.cost, u.currency)), num(p.sessions)])));
   }
-  s.append(el('p', { class: 'note' }, 'Full charts: run ', el('code', {}, txt(u.fullView)), ' in a terminal.'));
+  s.append(usageUpdated(u) || '', el('p', { class: 'note' }, 'Full charts: run ', el('code', {}, txt(u.fullView)), ' in a terminal.'));
   return s;
 }
 
@@ -599,10 +612,29 @@ function awsPanel(aws) {
 const AUTO_REFRESH_MS = 60000;
 let lastLoad = 0, loading = false;
 
-async function load() {
+/**
+ * Two stages: /api/data (local checks, with cached usage or "loading") paints
+ * at once; then /api/usage, and when its usage differs from what was painted,
+ * /api/data again (cheap: the server rebuilds it from the cache). fresh: the
+ * Refresh button, which runs new codeburn exports; auto-refresh uses the cache.
+ */
+async function load(fresh) {
   if (loading) return;
   loading = true;
-  try { await render(); } finally { loading = false; lastLoad = Date.now(); }
+  try {
+    const data = await render();
+    if (!data) return;
+    let u;
+    try { u = await getJson('/api/usage' + (fresh ? '?fresh=1' : '')); } catch (e) { return; }
+    const was = data.usage || {};
+    if (u && u.usage && (u.usage.updatedAt !== was.updatedAt || u.usage.status !== was.status)) await render();
+  } finally { loading = false; lastLoad = Date.now(); }
+}
+
+async function getJson(path) {
+  const res = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
 }
 
 async function render() {
@@ -611,13 +643,11 @@ async function render() {
   meta.textContent = 'loading...';
   let data;
   try {
-    const res = await fetch('/api/data', { credentials: 'same-origin', cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    data = await res.json();
+    data = await getJson('/api/data');
   } catch (e) {
     // Keep the last good view; say the refresh failed.
     meta.textContent = 'failed to load: ' + e.message + (before && before !== 'loading...' ? ' · showing ' + before : '');
-    return;
+    return null;
   }
   // Open/closed state of keyed <details> survives the redraw.
   const openState = new Map([...main.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
@@ -642,13 +672,14 @@ async function render() {
   meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '')
     + ' · updated ' + when(data.generated_at) + (changed.size ? ' · ' + changed.size + ' value' + (changed.size === 1 ? '' : 's') + ' changed (outlined)' : '') + ' · refreshes every minute while visible';
   await renderSetup(data);
+  return data;
 }
 ${SETUP_SCRIPT}
 ${THEME_SCRIPT}
-document.getElementById('refresh').addEventListener('click', load);
-setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS - 1000) load(); }, AUTO_REFRESH_MS / 4);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS) load(); });
-load();
+document.getElementById('refresh').addEventListener('click', () => load(true));
+setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS - 1000) load(false); }, AUTO_REFRESH_MS / 4);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS) load(false); });
+load(false);
 `;
 
 export function renderPage(nonce: string, csrf = ''): string {

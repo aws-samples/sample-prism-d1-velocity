@@ -297,7 +297,8 @@ test('pre-push exits 0 and records an error when no reviewer is installed', () =
 test('pre-push exits 0 when the reviewer crashes or prints garbage', () => {
   const repo = makeRepo();
   const bin = tmp('bin');
-  exe(bin, 'claude', 'echo "segfault-ish nonsense"; exit 3');
+  // Reads its stdin first: a child that exits before the prompt is written fails with EPIPE instead, depending on timing.
+  exe(bin, 'claude', 'cat >/dev/null; echo "segfault-ish nonsense"; exit 3');
   writeEvalConfig(repo.dir, { reviewer: 'claude' });
   const code = inDir(repo.dir, () => runPrePush({ repoRoot: repo.dir, stdin: pushLine(repo), remote: 'origin', pathEnv: bin, log: () => {} }));
   assert.equal(code, 0);

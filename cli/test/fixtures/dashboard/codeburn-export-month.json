@@ -43,6 +43,30 @@
      "Output Tokens": 14527,
      "Cache Read Tokens": 0,
      "Cache Write Tokens": 0
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Date": "2026-11-04",
+     "Cost (USD)": 2.22,
+     "Saved (USD)": 0,
+     "API Calls": 16,
+     "Sessions": 6,
+     "Input Tokens": 169135,
+     "Output Tokens": 14527,
+     "Cache Read Tokens": 0,
+     "Cache Write Tokens": 0
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-05",
+     "Date": "2026-11-05",
+     "Cost (USD)": 14.46,
+     "Saved (USD)": 0,
+     "API Calls": 65,
+     "Sessions": 23,
+     "Input Tokens": 169135,
+     "Output Tokens": 14527,
+     "Cache Read Tokens": 0,
+     "Cache Write Tokens": 0
     }
    ],
    "activity": [
