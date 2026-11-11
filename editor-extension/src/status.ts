@@ -6,7 +6,8 @@ export const INSTALL_CMD = 'npm i -g @prism-d1/cli';
 
 export type State =
   | { kind: 'loading' }
-  | { kind: 'cli-missing'; reason: string }
+  | { kind: 'no-repo' }
+  | { kind: 'cli-missing'; reason: string; searched?: string[] }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; payload: DashboardPayload; view: RepoView };
 
@@ -14,9 +15,21 @@ export interface StatusView {
   text: string;
   /** Plain text (never markdown): parts of it come from recorded results. */
   tooltip: string;
-  command: 'prism.openPanel' | 'prism.showInstallHint' | 'prism.enableCodewatch' | 'prism.refresh';
+  command: 'prism.openPanel' | 'prism.showInstallHint' | 'prism.enableCodewatch' | 'prism.refresh' | undefined;
   /** Background tint: error when the review has high findings. */
   tint: 'error' | 'warning' | null;
+  /** Dim (disabled) text colour: nothing to show in this window. */
+  dim?: boolean;
+}
+
+export const NO_REPO_HINT = 'Open a folder inside a git repository.';
+
+/** The not-found text for the tooltip and the install message: what was searched and how to set prism.cliPath. */
+export function cliMissingText(reason: string, searched: string[] = []): string {
+  const lines = [`prism-cli was not found (${one(reason)}).`];
+  if (searched.length) lines.push('Searched:', ...searched.map((s) => `  ${one(s, 300)}`));
+  lines.push(`Install it: ${INSTALL_CMD}`, 'Or set prism.cliPath in your user settings to the output of `command -v prism-cli` run in a terminal on this machine.');
+  return lines.join('\n');
 }
 
 const one = (s: unknown, max = 200) => plainText(s, { oneLine: true, max });
@@ -26,10 +39,12 @@ export function statusView(s: State, fmtTime: (iso: string) => string = (iso) =>
   switch (s.kind) {
     case 'loading':
       return { text: '$(sync~spin) PRISM', tooltip: 'PRISM: reading prism-cli dashboard --json…', command: 'prism.openPanel', tint: null };
+    case 'no-repo':
+      return { text: '$(shield) PRISM: no repo', tooltip: `PRISM: no workspace folder is inside a git repository. ${NO_REPO_HINT}`, command: undefined, tint: null, dim: true };
     case 'cli-missing':
       return {
         text: '$(shield) PRISM: install prism-cli',
-        tooltip: `prism-cli was not found (${one(s.reason)}).\nInstall it: ${INSTALL_CMD}\nOr set prism.cliPath in your user settings.`,
+        tooltip: cliMissingText(s.reason, s.searched),
         command: 'prism.showInstallHint', tint: 'warning',
       };
     case 'error':

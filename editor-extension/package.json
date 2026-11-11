@@ -18,6 +18,9 @@
     "Other"
   ],
   "main": "./out/src/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -51,7 +54,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "Absolute path to the `prism-cli` executable. Empty: found on `PATH`. Machine-scoped, so a workspace's settings cannot change it."
+          "markdownDescription": "Absolute path to the `prism-cli` executable. Empty: found on `PATH`, then in per-user install folders (nvm, Volta, `~/.local/bin`, `~/.npm-global/bin`, the npm prefix). If it is still not found, set this to the output of `command -v prism-cli`. Machine-scoped, so a workspace's settings cannot change it."
         }
       }
     }

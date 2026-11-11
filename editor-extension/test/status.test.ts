@@ -53,9 +53,11 @@ test('codewatch off: Enable action', () => {
 });
 
 test('cli missing, loading and error states', () => {
-  const m = statusView({ kind: 'cli-missing', reason: 'prism-cli is not on PATH' });
+  const m = statusView({ kind: 'cli-missing', reason: 'prism-cli is not on PATH', searched: ['PATH', '/home/user/.nvm/versions/node/*/bin', '/home/user/.local/bin'] });
   assert.equal(m.text, '$(shield) PRISM: install prism-cli');
   assert.ok(m.tooltip.includes(INSTALL_CMD));
+  assert.match(m.tooltip, /Searched:\n  PATH\n  \/home\/user\/\.nvm\/versions\/node\/\*\/bin\n  \/home\/user\/\.local\/bin/);
+  assert.match(m.tooltip, /prism\.cliPath .*`command -v prism-cli`/);
   assert.equal(m.command, 'prism.showInstallHint');
   assert.equal(statusView({ kind: 'loading' }).text, '$(sync~spin) PRISM');
   const e = statusView({ kind: 'error', message: 'boom\nsecond line' });
@@ -81,4 +83,13 @@ test('parsePayload: rejects non-JSON and other schemas', () => {
   assert.throws(() => parsePayload('not json'), PayloadError);
   assert.throws(() => parsePayload('{"schema":"prism.dashboard.v1"}'), /Update prism-cli/);
   assert.equal(parsePayload(JSON.stringify(payload())).schema, 'prism.dashboard.v2');
+});
+
+test('no repo: a dim item that says to open a folder inside a git repository', () => {
+  const v = statusView({ kind: 'no-repo' });
+  assert.equal(v.text, '$(shield) PRISM: no repo');
+  assert.match(v.tooltip, /Open a folder inside a git repository/);
+  assert.equal(v.dim, true);
+  assert.equal(v.tint, null);
+  assert.equal(v.command, undefined);
 });

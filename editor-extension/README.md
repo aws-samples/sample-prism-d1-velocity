@@ -16,9 +16,18 @@ Or, in any of them: Extensions view, `...` menu, **Install from VSIX...**.
 
 It needs `prism-cli` 1.7.1 or later (`npm i -g @prism-d1/cli`). 1.7.1 caches codeburn usage for 5 minutes, so a refresh takes about a third of a second when the cache is warm.
 
+## Remote SSH / dev desktops
+
+With a Remote-SSH window (VS Code, Kiro or Cursor) on a dev desktop, the extension runs on the remote machine, next to the repository and `prism-cli` (`extensionKind: workspace`).
+
+- **Install the `.vsix` into the remote.** Copy it to the remote host, then in the Extensions view use **Install from VSIX...** while connected, or run `code --install-extension prism-d1-0.1.0.vsix` in the remote terminal. Check that PRISM D1 is listed under **SSH: <host> - Installed**, not only under Local.
+- **No ports are needed.** The extension opens no listener and forwards nothing; it only runs `prism-cli` on the remote host.
+- **nvm installs are found automatically.** The remote extension host does not read `.bashrc`, so its `PATH` often lacks nvm. When `prism-cli` is not on `PATH`, the extension looks in `$NVM_BIN`, `~/.nvm/versions/node/*/bin` (the `nvm alias default` version first, then the newest), `$VOLTA_HOME/bin` or `~/.volta/bin`, `~/.local/bin`, `~/.npm-global/bin` and `$NPM_CONFIG_PREFIX/bin`. It runs no shell to look. If it still is not found, set `prism.cliPath` in the remote's user settings to the output of `command -v prism-cli`.
+- `prism-cli` always runs with its own folder first on `PATH`, so its `#!/usr/bin/env node` line finds the node installed next to it, also when `prism.cliPath` is set.
+
 ## Features
 
-- **Status bar**: `PRISM: 0 high · 2 med | $12.40 today | 1 warning`. The counts come from the latest codewatch pre-push review of the checked-out branch; spend and warnings are for this machine. The tooltip shows the review time, reviewer, monthly spend and sync mode. Click it to open the PRISM panel. When `prism-cli` is missing the item shows an install hint, and when codewatch is not set up in the repo it reads `codewatch off · Enable`.
+- **Status bar**: `PRISM: 0 high · 2 med | $12.40 today | 1 warning`. The counts come from the latest codewatch pre-push review of the checked-out branch; spend and warnings are for this machine. The tooltip shows the review time, reviewer, monthly spend and sync mode. Click it to open the PRISM panel. When `prism-cli` is missing the item shows an install hint with the folders it searched, when no workspace folder is inside a git repository it shows a dim `PRISM: no repo`, and when codewatch is not set up in the repo it reads `codewatch off · Enable`.
 - **Problems panel**: findings of that review as markers (high = Error, medium = Warning, low = Information, source `PRISM codewatch`, category as the code). Paths are resolved against the repo root; findings for files that are not in this checkout, or that point outside the repo, are skipped. A review of another branch gets no markers, because its line numbers may not match.
 - **Quick fixes on a PRISM marker**: **Copy finding as a fix prompt** copies a short prompt (file, line, severity, the finding quoted) to paste into Claude Code or Kiro chat. **Open review report** runs `prism-cli codewatch report --format html` and shows the report.
 - **PRISM panel**: summary cards, this repo's findings (click one to jump to it) and the setup checklist for this machine and repo. Each fix command has a Copy button.
@@ -29,7 +38,7 @@ It needs `prism-cli` 1.7.1 or later (`npm i -g @prism-d1/cli`). 1.7.1 caches cod
 
 | Setting | Default | |
 |---|---|---|
-| `prism.cliPath` | empty (found on `PATH`) | Absolute path to `prism-cli`. Machine-scoped: only your user settings count, so a repo's `.vscode/settings.json` cannot point it at another program. Set it when the editor does not inherit your shell's `PATH` (for example nvm on macOS). |
+| `prism.cliPath` | empty (found on `PATH`) | Absolute path to `prism-cli`. Machine-scoped: only your user settings count, so a repo's `.vscode/settings.json` cannot point it at another program. Set it when `prism-cli` is not on the editor's `PATH` and not in the folders listed under Remote SSH; use the output of `command -v prism-cli`. |
 
 ## Security
 
@@ -51,6 +60,6 @@ npm test          # unit tests (node:test), vscode API not needed
 npm run package   # vsce package -> prism-d1-0.1.0.vsix (no publish)
 ```
 
-The tests cover the logic modules (status text, findings to markers, the fix prompt, argv building, refresh debounce, the panel model and messages). `src/extension.ts`, the VS Code wiring, is not run headless.
+The tests cover the logic modules (status text, findings to markers, the fix prompt, argv building, finding `prism-cli` in nvm and other per-user folders, the spawn `PATH`, refresh debounce, the panel model and messages). `src/extension.ts`, the VS Code wiring, is not run headless.
 
 Known limits in 0.1: one repository per window (the first workspace folder inside a git repo). On Windows, `PATH` lookup finds only `prism-cli.exe`, because npm's `.cmd` shims need a shell; set `prism.cliPath` there.

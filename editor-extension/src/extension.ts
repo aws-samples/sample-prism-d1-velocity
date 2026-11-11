@@ -10,13 +10,13 @@ import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CliError, configuredCliPath, currentBranch, dashboardArgs, DASHBOARD_TIMEOUT_MS, gitToplevel, isResultId, REPORT_TIMEOUT_MS, reportArgs, resolveCli, runFile,
+  CliError, cliEnv, configuredCliPath, currentBranch, dashboardArgs, DASHBOARD_TIMEOUT_MS, gitToplevel, isResultId, REPORT_TIMEOUT_MS, reportArgs, resolveCli, runCli,
 } from './cli';
 import { DIAGNOSTIC_SOURCE, findingsToDiagnostics, fixPrompt, type DiagnosticRecord } from './diagnostics';
 import { codewatchOff, parsePayload, repoView } from './payload';
 import { panelHtml, panelModel, parsePanelMessage, withReportCsp, type PanelModel } from './panel-model';
 import { INTERVAL_MS, Refresher } from './refresh';
-import { INSTALL_CMD, statusView, type State } from './status';
+import { cliMissingText, INSTALL_CMD, NO_REPO_HINT, statusView, type State } from './status';
 
 const SEVERITY: Record<DiagnosticRecord['severity'], vscode.DiagnosticSeverity> = {
   error: vscode.DiagnosticSeverity.Error,
@@ -76,7 +76,7 @@ class Prism implements vscode.Disposable {
     this.watcher?.dispose();
     this.watcher = null;
     this.repoRoot = root;
-    if (!root) { this.status.hide(); this.diags.clear(); return; }
+    if (!root) { this.publish([]); this.setState({ kind: 'no-repo' }); this.status.show(); return; }
     this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(root), '.prism/results/**'));
     const poke = () => this.refresher.request();
     this.watcher.onDidCreate(poke); this.watcher.onDidChange(poke); this.watcher.onDidDelete(poke);
@@ -86,16 +86,16 @@ class Prism implements vscode.Disposable {
   }
 
   private cli() {
-    return resolveCli(configuredCliPath(vscode.workspace.getConfiguration('prism').inspect('cliPath')), process.env.PATH);
+    return resolveCli(configuredCliPath(vscode.workspace.getConfiguration('prism').inspect('cliPath')), process.env);
   }
 
   private async run(fresh: boolean): Promise<void> {
     const root = this.repoRoot;
     if (!root) return;
     const cli = this.cli();
-    if (!cli.ok) { this.setState({ kind: 'cli-missing', reason: cli.reason }); this.publish([]); return; }
+    if (!cli.ok) { this.setState({ kind: 'cli-missing', reason: cli.reason, searched: cli.searched }); this.publish([]); return; }
     try {
-      const [branch, out] = await Promise.all([currentBranch(root), runFile(cli.path, dashboardArgs(root, fresh), root, DASHBOARD_TIMEOUT_MS)]);
+      const [branch, out] = await Promise.all([currentBranch(root), runCli(cli.path, dashboardArgs(root, fresh), root, DASHBOARD_TIMEOUT_MS)]);
       const payload = parsePayload(out);
       const view = repoView(payload, root, branch);
       // Line numbers of another branch's review do not apply to these files.
@@ -118,6 +118,7 @@ class Prism implements vscode.Disposable {
     this.status.text = v.text;
     this.status.tooltip = v.tooltip; // a plain string: never rendered as markdown
     this.status.command = v.command;
+    this.status.color = v.dim ? new vscode.ThemeColor('disabledForeground') : undefined;
     this.status.backgroundColor = v.tint ? new vscode.ThemeColor(v.tint === 'error' ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground') : undefined;
     const s = this.state;
     this.model = s.kind === 'ready' ? panelModel(s.payload, s.view, this.records, codewatchOff(s.view.repo), fmtTime) : null;
@@ -175,7 +176,7 @@ class Prism implements vscode.Disposable {
     if (!this.panel) return;
     if (this.model) { void this.panel.webview.postMessage({ type: 'model', model: this.model }); return; }
     const s = this.state;
-    const text = s.kind === 'cli-missing' ? `prism-cli was not found. Install it: ${INSTALL_CMD}` : s.kind === 'error' ? `prism-cli failed: ${s.message}` : 'Loading PRISM results…';
+    const text = s.kind === 'cli-missing' ? cliMissingText(s.reason, s.searched) : s.kind === 'no-repo' ? `No git repository in this window. ${NO_REPO_HINT}` : s.kind === 'error' ? `prism-cli failed: ${s.message}` : 'Loading PRISM results…';
     void this.panel.webview.postMessage({ type: 'status', text });
   }
 
@@ -213,7 +214,7 @@ class Prism implements vscode.Disposable {
     const dir = await mkdtemp(join(tmpdir(), 'prism-report-'));
     try {
       const file = join(dir, 'report.html');
-      await runFile(cli.path, reportArgs(this.repoRoot, id, file), this.repoRoot, REPORT_TIMEOUT_MS);
+      await runCli(cli.path, reportArgs(this.repoRoot, id, file), this.repoRoot, REPORT_TIMEOUT_MS);
       const html = await readFile(file, 'utf8');
       // The report is CLI-escaped HTML; scripts stay off and the CSP allows only its inline styles.
       if (!this.report) {
@@ -235,7 +236,8 @@ class Prism implements vscode.Disposable {
     const cli = this.cli();
     if (!cli.ok) { void this.showInstallHint(); return null; }
     if (!this.repoRoot) { vscode.window.showWarningMessage('PRISM: open a folder inside a git repository first.'); return null; }
-    const t = vscode.window.createTerminal({ name, cwd: this.repoRoot, shellPath: cli.path, shellArgs: args });
+    // Merged into the terminal's environment: only PATH changes, with the CLI's folder first.
+    const t = vscode.window.createTerminal({ name, cwd: this.repoRoot, shellPath: cli.path, shellArgs: args, env: { PATH: cliEnv(cli.path).PATH ?? null } });
     t.show();
     return t;
   }
@@ -257,7 +259,9 @@ class Prism implements vscode.Disposable {
   }
 
   private async showInstallHint(): Promise<void> {
-    const pick = await vscode.window.showInformationMessage(`prism-cli was not found. Install it with: ${INSTALL_CMD}`, 'Copy command', 'Set prism.cliPath');
+    const cli = this.cli();
+    const detail = cli.ok ? `prism-cli could not be started from ${cli.path}.` : cliMissingText(cli.reason, cli.searched);
+    const pick = await vscode.window.showInformationMessage('PRISM: prism-cli was not found.', { modal: true, detail }, 'Copy command', 'Set prism.cliPath');
     if (pick === 'Copy command') await vscode.env.clipboard.writeText(INSTALL_CMD);
     if (pick === 'Set prism.cliPath') await vscode.commands.executeCommand('workbench.action.openSettings', 'prism.cliPath');
   }
