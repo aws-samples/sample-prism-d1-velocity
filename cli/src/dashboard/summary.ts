@@ -23,7 +23,8 @@ export interface DashboardSummary {
     /** Result id, for the report link. */
     id: string;
   } | null;
-  spend: { status: UsagePanel['status']; currency: string; today: number | null; month: number | null; message: string | null };
+  /** updatedAt: when the usage was collected (it may come from the cache). */
+  spend: { status: UsagePanel['status']; currency: string; today: number | null; month: number | null; message: string | null; updatedAt: string | null };
   /** Machine checks that are missing or warn (as in the checklist), then repos whose own hooks bypass codewatch. */
   warnings: { count: number; first: string | null };
 }
@@ -50,7 +51,7 @@ export function buildSummary(repos: SummaryRepo[], usage: UsagePanel, machine: C
   ];
   return {
     review,
-    spend: { status: usage.status, currency: usage.currency, today: usage.today?.cost ?? null, month: usage.month?.cost ?? null, message: usage.message },
+    spend: { status: usage.status, currency: usage.currency, today: usage.today?.cost ?? null, month: usage.month?.cost ?? null, message: usage.message, updatedAt: usage.updatedAt },
     warnings: { count: warnings.length, first: warnings[0] ?? null },
   };
 }

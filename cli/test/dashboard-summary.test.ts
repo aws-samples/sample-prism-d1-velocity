@@ -19,7 +19,7 @@ import { repoLabels } from '../src/dashboard/repos.js';
 import { machineChecks, securitySetup, type CheckItem } from '../src/dashboard/setup.js';
 import { LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, SETUP_DOCS, TEAM_NO_URL_HELP } from '../src/utils/sync-mode.js';
 import { buildSummary } from '../src/dashboard/summary.js';
-import { emptyUsage, spendByRepo, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
+import { emptyUsage, localDate, spendByRepo, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
 
 process.env.GIT_CONFIG_GLOBAL = join(mkdtempSync(join(tmpdir(), 'prism-sum-gcfg-')), 'gitconfig');
 const tmp = (p: string) => realpathSync(mkdtempSync(join(tmpdir(), `prism-sum-${p}-`)));
@@ -36,11 +36,13 @@ const review = (at: string, status: PrismResult['status'], extra: Partial<PrismR
 });
 
 /** codeburn exports with one month project per given path. */
+/** The month export; today comes from its per-day rows. */
 function exporter(projects: Record<string, number>): CodeburnExport {
-  return async (args) => args.includes('--from')
-    ? { schema: 'codeburn.export.v2', summary: [{ 'Cost (USD)': 9, 'API Calls': 3, Sessions: 2 }], periods: [{ models: [] }],
-      projects: Object.entries(projects).map(([Project, cost]) => ({ Project, 'Cost (USD)': cost, Sessions: 1 })) }
-    : { schema: 'codeburn.export.v2', currency: { code: 'USD' }, summary: [{ Period: 'Today', 'Cost (USD)': 1.5, 'API Calls': 2, Sessions: 1 }] };
+  return async () => ({
+    schema: 'codeburn.export.v2', currency: { code: 'USD' }, summary: [{ 'Cost (USD)': 9, 'API Calls': 3, Sessions: 2 }],
+    periods: [{ models: [], daily: [{ Date: localDate(new Date()), 'Cost (USD)': 1.5, 'API Calls': 2, Sessions: 1 }] }],
+    projects: Object.entries(projects).map(([Project, cost]) => ({ Project, 'Cost (USD)': cost, Sessions: 1 })),
+  });
 }
 
 /** A home whose codeburn sync endpoint is configured (codeburn's ~/.config/codeburn/sync.json). */
@@ -70,12 +72,12 @@ test('summary: newest review across repos, spend, and setup warnings with the fi
   ];
   const s = buildSummary(repos, usage, machine);
   assert.deepEqual(s.review, { repo: 'work/b', path: '/r/b', at: '2026-11-09T00:00:00Z', status: 'skipped', reason: 'no changes against upstream', high: 0, medium: 1, low: 2, reviewer: 'kiro', id: 'b2' });
-  assert.deepEqual(s.spend, { status: 'ok', currency: 'USD', today: 1.25, month: 40, message: null });
+  assert.deepEqual(s.spend, { status: 'ok', currency: 'USD', today: 1.25, month: 40, message: null, updatedAt: null });
   assert.deepEqual(s.warnings, { count: 3, first: 'Scheduled codeburn sync push: cannot read your crontab' }, 'warn, missing and the repo warn');
 
   const none = buildSummary([], emptyUsage('not-installed', 'codeburn is not installed.'), []);
   assert.equal(none.review, null);
-  assert.deepEqual(none.spend, { status: 'not-installed', currency: 'USD', today: null, month: null, message: 'codeburn is not installed.' });
+  assert.deepEqual(none.spend, { status: 'not-installed', currency: 'USD', today: null, month: null, message: 'codeburn is not installed.', updatedAt: null });
   assert.deepEqual(none.warnings, { count: 0, first: null });
 });
 
@@ -242,7 +244,7 @@ test('page: summary on top, collapsed repo lines, labels, trend note and one-lin
   assert.match(t, /Latest codewatch reviewSkippedcw · .* · kiro · no changes against upstream/);
   assert.match(t, /Spend today\$1\.50codeburn, all projects/);
   assert.match(t, /Spend this month\$9\.00codeburn, this calendar month/);
-  assert.match(t, /Setup warnings5codeburn installed: not on PATH/, 'every missing or warn machine item counts');
+  assert.match(t, /Setup warnings4codeburn installed: not on PATH/, 'every missing or warn machine item counts; the optional global hooks (info) do not');
   assert.match(t, /5 other repos: not set up/, 'setup checklist');
   assert.match(t, /7 other repos: no codewatch/, 'codewatch per-repo section');
   assert.match(t, /workplace\/dup/);
@@ -253,6 +255,18 @@ test('page: summary on top, collapsed repo lines, labels, trend note and one-lin
   assert.match(t, /AWS account: no checks yet\. Run prism-cli aws check/);
   assert.doesNotMatch(t, /No AWS account checks yet/, 'no full AWS panel');
   assert.match(t, /\$2\.00/, 'per-repo spend next to the codewatch row');
+});
+
+test('page: before /api/usage answers, spend cards and the usage panel say loading, not 0', async () => {
+  const { p } = await payloadFixture();
+  const loading = JSON.parse(JSON.stringify(p)) as DashboardPayload;
+  loading.usage = emptyUsage('loading', 'Loading usage from codeburn...');
+  loading.summary.spend = { status: 'loading', currency: 'USD', today: null, month: null, message: 'Loading usage from codeburn...', updatedAt: null };
+  const t = (await runPage([loading])).text();
+  assert.match(t, /Spend todayloadingLoading usage from codeburn/);
+  assert.match(t, /Spend this monthloading/);
+  assert.match(t, /Usage \(codeburn\)Loading usage from codeburn\.\.\./);
+  assert.doesNotMatch(t, /Spend today\$0\.00/);
 });
 
 test('page: a refresh outlines values that changed since the previous load and keeps open sections open', async () => {

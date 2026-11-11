@@ -2,8 +2,11 @@
  * Usage panel data, from `codeburn export -f json` (schema codeburn.export.v2,
  * checked against codeburn 0.9.24).
  *
- * Two exports: the default one for "Today", and a `--from <1st of month>
- * --to <today>` one for this calendar month and its top models and projects.
+ * One `--from <1st of month> --to <today>` export gives this calendar month,
+ * its top models and projects, and "Today" from its per-day breakdown
+ * (periods[0].daily, one row per local date with usage). Only when an export
+ * has no per-day breakdown is a second, today-only export run. The all-time
+ * default export is not used: it is the slowest one and only gave "Today".
  * codeburn's own charts are not rebuilt; the panel points at `codeburn web`.
  */
 import { execFile } from 'node:child_process';
@@ -19,7 +22,8 @@ const EXPORT_TIMEOUT_MS = 60_000;
 
 export interface Totals { cost: number; calls: number; sessions: number }
 export interface UsagePanel {
-  status: 'ok' | 'not-installed' | 'no-data' | 'error';
+  /** loading: the page's first paint, before /api/usage answers; never in `dashboard --json`. */
+  status: 'ok' | 'not-installed' | 'no-data' | 'error' | 'loading';
   message: string | null;
   currency: string;
   today: Totals | null;
@@ -30,6 +34,12 @@ export interface UsagePanel {
   /** Every project this month (symlinks resolved), for matching spend to repos. */
   projects: { path: string; cost: number; sessions: number }[];
   generated: string | null;
+  /** When this data was collected (ISO); null when nothing was collected. */
+  updatedAt: string | null;
+  /** Served from the cache past its TTL while a refresh runs (usage-cache.ts). */
+  stale: boolean;
+  /** The last background refresh failed; the data shown is the older cached copy. */
+  refreshError: string | null;
   /** Shown as a note, never a link: codeburn web is a CLI command. */
   fullView: string;
 }
@@ -63,7 +73,7 @@ export function localDate(d: Date): string {
 }
 
 export function emptyUsage(status: UsagePanel['status'], message: string): UsagePanel {
-  return { status, message, currency: 'USD', today: null, month: null, topModels: [], topProjects: [], projects: [], generated: null, fullView: 'codeburn web' };
+  return { status, message, currency: 'USD', today: null, month: null, topModels: [], topProjects: [], projects: [], generated: null, updatedAt: null, stale: false, refreshError: null, fullView: 'codeburn web' };
 }
 
 function real(p: string): string {
@@ -89,6 +99,20 @@ export function spendByRepo(projects: UsagePanel['projects'], repoPaths: string[
   return out;
 }
 
+const isExport = (j: any) => String(j?.schema || '').startsWith('codeburn.export.');
+
+/**
+ * Today's totals from a month export's per-day rows; null when the export has
+ * no per-day breakdown. No row for today means no usage today (codeburn lists
+ * only days with usage).
+ */
+export function todayFromDaily(month: any, today: string): Totals | null {
+  const daily = month?.periods?.[0]?.daily;
+  if (!Array.isArray(daily)) return null;
+  const row = daily.find((r: any) => r?.Date === today);
+  return row ? totalsFrom(row) : { cost: 0, calls: 0, sessions: 0 };
+}
+
 export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string } = {}): Promise<UsagePanel> {
   let exporter = opts.exporter;
   if (!exporter) {
@@ -99,17 +123,21 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
   const now = opts.now || new Date();
   const to = localDate(now);
   const from = `${to.slice(0, 8)}01`;
-  let base: any, month: any;
-  try {
-    [base, month] = await Promise.all([exporter([]), exporter(['--from', from, '--to', to])]);
-  } catch (e: any) {
-    return emptyUsage('error', `codeburn export failed: ${String(e?.message || e).split('\n')[0].slice(0, 200)}`);
-  }
-  if (!String(base?.schema || '').startsWith('codeburn.export.')) {
-    return emptyUsage('error', `unrecognised codeburn export schema: ${String(base?.schema).slice(0, 40)}`);
+  const failed = (e: any) => emptyUsage('error', `codeburn export failed: ${String(e?.message || e).split('\n')[0].slice(0, 200)}`);
+  const badSchema = (j: any) => emptyUsage('error', `unrecognised codeburn export schema: ${String(j?.schema).slice(0, 40)}`);
+  let month: any;
+  try { month = await exporter(['--from', from, '--to', to]); } catch (e) { return failed(e); }
+  if (!isExport(month)) return badSchema(month);
+
+  let today = todayFromDaily(month, to);
+  if (!today) {
+    // An export without per-day rows: ask for today alone (a small range).
+    let t: any;
+    try { t = await exporter(['--from', to, '--to', to]); } catch (e) { return failed(e); }
+    if (!isExport(t)) return badSchema(t);
+    today = Array.isArray(t.summary) && t.summary[0] ? totalsFrom(t.summary[0]) : { cost: 0, calls: 0, sessions: 0 };
   }
 
-  const todayRow = (Array.isArray(base.summary) ? base.summary : []).find((r: any) => r?.Period === 'Today');
   const monthRow = Array.isArray(month?.summary) ? month.summary[0] : null;
   const monthModels: any[] = Array.isArray(month?.periods?.[0]?.models) ? month.periods[0].models : [];
   const monthProjects: any[] = Array.isArray(month?.projects) ? month.projects : [];
@@ -117,8 +145,8 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
   const panel: UsagePanel = {
     status: 'ok',
     message: null,
-    currency: String(base?.currency?.code || 'USD'),
-    today: todayRow ? totalsFrom(todayRow) : { cost: 0, calls: 0, sessions: 0 },
+    currency: String(month?.currency?.code || 'USD'),
+    today,
     month: monthRow ? { ...totalsFrom(monthRow), from, to } : { cost: 0, calls: 0, sessions: 0, from, to },
     topModels: monthModels
       .map((m) => ({ name: String(m?.Model || 'unknown'), cost: num(m?.['Cost (USD)']), calls: num(m?.['API Calls']) }))
@@ -129,7 +157,10 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
     projects: monthProjects
       .filter((p) => typeof p?.Project === 'string' && p.Project)
       .map((p) => ({ path: real(String(p.Project).replace(/[\\/]+$/, '')), cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) })),
-    generated: typeof base?.generated === 'string' ? base.generated : null,
+    generated: typeof month?.generated === 'string' ? month.generated : null,
+    updatedAt: now.toISOString(),
+    stale: false,
+    refreshError: null,
     fullView: 'codeburn web',
   };
   if (panel.today!.calls === 0 && panel.month!.calls === 0) {

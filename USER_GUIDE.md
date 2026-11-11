@@ -724,12 +724,18 @@ scanned. Under **Per repo**, each repo expands to:
   cherry-picks also appear here.
 
 **Usage (codeburn).** Today's and this month's cost, top models and top projects, from the local
-codeburn data. For full charts it points you to `codeburn web`.
+codeburn data, with the time it was collected ("updated ..."). For full charts it points you to
+`codeburn web`. The numbers come from one `codeburn export` for this calendar month (today is read
+from its per-day rows) and are cached for 5 minutes in `~/.prism/cache/usage.json` (readable only by
+you). The page paints from local data first, with the usage cards showing "loading", then fills
+usage in. A cache older than 5 minutes is shown at once and refreshed in the background. A failed
+or missing codeburn is shown as such and never cached.
 
 **Setup checklist.** For this machine: codeburn installed, the scheduled sync from `enable codeburn`
 and its last run (by sync mode: local shows "local only" as info with how to join a team; team without
 a collector URL says to ask your platform team, with Setup instructions and Platform team guide links;
-admin lists the platform-team steps and `prism-cli team` commands), gitleaks, AWS credentials, and the global codewatch hooks. Then one row per repo:
+admin lists the platform-team steps and `prism-cli team` commands), gitleaks, AWS credentials, and the global codewatch hooks (optional, so "not installed" is info and
+not a setup warning). Then one row per repo:
 codewatch installed (ok); warn, when the global hooks are installed but the repo's own
 `core.hooksPath` (husky and similar) bypasses them; missing, including only one hook installed or
 hooks from before the codewatch rename; or opted out with `git config prism.codewatch false`. Repos covered by the global hooks are
@@ -765,7 +771,10 @@ from, pass / fail / not-checked counts, fails by severity and the top 5 failures
 `prism-cli aws recommend`. With none cached, it points to `prism-cli aws check`. Local files only;
 no AWS calls (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend)).
 
-Data is read when the page loads; the **Refresh** button reads it again.
+Data is read when the page loads, and again every minute while the tab is visible (usage from the
+cache). The **Refresh** button also runs new codeburn exports. The **Setup warnings** card counts the
+checklist items that are missing or warn, plus repos whose own hooks bypass the global hooks; info
+items never count.
 
 ### Scan Report Pages
 
@@ -778,6 +787,8 @@ Each review in the **Scans** list links to `/report/<id>`, a printable page with
 | Flag | Purpose |
 |---|---|
 | `--json` | Print the dashboard data as JSON and exit. No server is started |
+| `--fresh` | With `--json`: run the codeburn exports now instead of using the 5-minute usage cache |
+| `--timing` | With `--json`: print how long each stage took (scan, setup, usage, total) to stderr; the same numbers are in the JSON's `timing` |
 | `--root <dir>` | Where to scan for repos, 3 levels deep (default: your home directory) |
 | `--port <n>` | Port on `127.0.0.1`, 1024-65535 (default: a random free port) |
 | `--no-open` | Do not open a browser; open the printed URL yourself |
