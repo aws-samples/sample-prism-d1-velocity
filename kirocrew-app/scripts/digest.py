@@ -22,7 +22,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from prism_cli_path import app_data_dir, cli_env, load_config, resolve_cli
 
@@ -31,6 +31,8 @@ STATE_SCHEMA = 1
 DASHBOARD_TIMEOUT_S = 110  # under the cron's 120 s script timeout
 FINDING_CHARS = 120
 NAME_CHARS = 60
+SHORT_SHA = 7
+ERROR_CHARS = 200
 MAX_REPOS_LISTED = 10
 BAD_SETUP = ("warn", "missing")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069]")
@@ -47,6 +49,11 @@ def _fingerprint(f: Dict[str, Any]) -> str:
     return "|".join(str(f.get(k) or "") for k in ("branch", "file", "rule"))
 
 
+def _repo_name(repo: Dict[str, Any]) -> str:
+    # The dashboard's label is already unique: it adds a short parent path when two repos share a name.
+    return str(repo.get("label") or repo.get("name") or "")
+
+
 def snapshot(payload: Dict[str, Any]) -> Dict[str, Any]:
     """The parts of the dashboard payload the digest compares."""
     highs: Dict[str, List[str]] = {}
@@ -55,7 +62,7 @@ def snapshot(payload: Dict[str, Any]) -> Dict[str, Any]:
         if item.get("id"):
             setup["machine:" + str(item["id"])] = str(item.get("status") or "")
     for repo in payload.get("repos") or []:
-        name = str(repo.get("label") or repo.get("name") or "")
+        name = _repo_name(repo)
         if not name:
             continue
         fps = sorted({_fingerprint(f) for f in (repo.get("codewatch") or {}).get("findings") or [] if f.get("severity") == "high"})
@@ -80,7 +87,9 @@ def _setup_label(key: str, payload: Dict[str, Any]) -> str:
 def _new_high_lines(prev: Dict[str, List[str]], payload: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     for repo in payload.get("repos") or []:
-        name = str(repo.get("label") or repo.get("name") or "")
+        name = _repo_name(repo)
+        if not name:
+            continue  # never stored in state, so it would look new on every run
         seen = set(prev.get(name) or [])
         new: Dict[str, Dict[str, Any]] = {}
         for f in (repo.get("codewatch") or {}).get("findings") or []:
@@ -89,7 +98,7 @@ def _new_high_lines(prev: Dict[str, List[str]], payload: Dict[str, Any]) -> List
         if not new:
             continue
         first = next(iter(new.values()))
-        commit = clean(first.get("commit") or "?", 40)[:7]
+        commit = clean(first.get("commit") or "?", NAME_CHARS)[:SHORT_SHA]
         branch = clean(first.get("branch") or "?", NAME_CHARS)
         n = len(new)
         lines.append(
@@ -173,32 +182,38 @@ def run_dashboard(cfg: Dict[str, Any]) -> Dict[str, Any]:
     )
     if out.returncode != 0:
         last = (out.stderr or "").strip().splitlines()[-1:] or [f"exit {out.returncode}"]
-        raise RuntimeError("prism-cli dashboard --json failed: " + clean(last[0], 200))
+        raise RuntimeError("prism-cli dashboard --json failed: " + clean(last[0], ERROR_CHARS))
     payload = json.loads(out.stdout)
     if not isinstance(payload, dict) or not str(payload.get("schema", "")).startswith("prism.dashboard."):
         raise RuntimeError("prism-cli dashboard --json returned an unexpected document")
     return payload
 
 
-def digest_once(data_dir: Path, payload: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], bool]:
-    """Run one digest. Returns (message or None, baseline_only)."""
+def digest_once(
+    data_dir: Path,
+    payload: Optional[Dict[str, Any]] = None,
+    deliver: Optional[Callable[[str], Any]] = None,
+) -> Tuple[Optional[str], bool]:
+    """Run one digest. Returns (message or None, baseline_only).
+
+    The state is saved only after `deliver(msg)` returns, so a failed
+    delivery is retried on the next run instead of being lost.
+    """
     cfg = load_config(data_dir)
     if payload is None:
         payload = run_dashboard(cfg)
     path = data_dir / STATE_FILE
     prev = read_state(path)
     msg, state = evaluate(prev, payload, spend_threshold(cfg), _dt.date.today().isoformat())
+    if msg and deliver:
+        deliver(msg)
     write_state(path, state)
     return msg, prev is None
 
 
 def run(ctx: Any) -> None:
-    """Cron entry point (app.json `scripts/digest.py:run`)."""
-    from kiro_crew.cron_script import Report  # present inside the Kiro Crew cron child
-
-    msg, _ = digest_once(app_data_dir())
-    if msg:
-        raise Report(msg)  # delivered once; the job keeps its schedule
+    """Cron entry point (app.json `scripts/digest.py:run`). ctx.notify raises when delivery fails."""
+    digest_once(app_data_dir(), deliver=ctx.notify)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

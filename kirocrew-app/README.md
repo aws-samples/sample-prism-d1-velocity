@@ -89,8 +89,9 @@ is kept across app updates unless a later version of the app changes the schedul
 ## How the digest decides to notify
 
 Each run reads `prism-cli dashboard --json` (with no `--root`, so it scans your whole home
-directory), compares it with the previous run's `data/digest-state.json`, saves the new state and
-sends one message that lists:
+directory) and compares it with the previous run's `data/digest-state.json`. It sends one message
+that lists the changes below, then saves the new state. If delivery fails, the state is not saved,
+so the next run reports the same changes again:
 
 - **New high findings.** For each repo, the high findings in the latest codewatch review of each
   branch that were not there last time. A finding is identified by branch, file and rule, so the

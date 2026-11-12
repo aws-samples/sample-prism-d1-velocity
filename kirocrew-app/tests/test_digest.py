@@ -69,6 +69,12 @@ class EvaluateTest(unittest.TestCase):
         msg, _ = digest.evaluate(prev, payload([finding(sev="medium")]), None, TODAY)
         self.assertIsNone(msg)
 
+    def test_repo_without_a_name_is_skipped(self):
+        p = payload([finding()])
+        p["repos"][0]["label"] = p["repos"][0]["name"] = ""
+        msg, _ = digest.evaluate(baseline(p), p, None, TODAY)
+        self.assertIsNone(msg)
+
     def test_spend_threshold_once_per_day(self):
         prev = baseline(payload(cost=1.0))
         msg, state = digest.evaluate(prev, payload(cost=12.5), 10.0, TODAY)
@@ -122,6 +128,17 @@ class StateFileTest(unittest.TestCase):
     def test_wrong_shape_state_rebuilds_baseline(self):
         (self.dir / digest.STATE_FILE).write_text('{"schema": 1, "highs": []}', encoding="utf-8")
         self.assertEqual(digest.digest_once(self.dir, payload([finding()])), (None, True))
+
+    def test_failed_delivery_keeps_old_state(self):
+        digest.digest_once(self.dir, payload([]))
+        def fail(_msg):
+            raise RuntimeError("notify() failed")
+        with self.assertRaises(RuntimeError):
+            digest.digest_once(self.dir, payload([finding()]), deliver=fail)
+        sent = []
+        msg, _ = digest.digest_once(self.dir, payload([finding()]), deliver=sent.append)
+        self.assertIn("1 new high finding", msg)
+        self.assertEqual(sent, [msg])
 
     def test_threshold_read_from_config(self):
         (self.dir / "config.json").write_text('{"spendThreshold": 2}', encoding="utf-8")
