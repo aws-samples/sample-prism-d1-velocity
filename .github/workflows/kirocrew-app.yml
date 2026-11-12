@@ -1,0 +1,27 @@
+# kirocrew-app.yml -- unit tests for the Kiro Crew app on PRs that touch it. No secrets, read-only token.
+
+name: Kiro Crew app
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - 'kirocrew-app/**'
+      - '.github/workflows/kirocrew-app.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Test
+        run: python3 -m unittest discover -s kirocrew-app/tests -v
+      - name: Page test
+        run: node --test kirocrew-app/tests/page.test.mjs

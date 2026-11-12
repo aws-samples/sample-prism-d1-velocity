@@ -1,0 +1,94 @@
+{
+  "name": "prism",
+  "version": "0.2.1",
+  "displayName": "PRISM",
+  "description": "Codewatch findings, AI spend and setup status from your local prism-cli for Kiro Crew agents, and a daily digest that speaks only when something changed.",
+  "author": "aws-samples",
+  "license": "MIT",
+  "minKiroCrewVersion": "0.12.1",
+  "iconPath": "assets/icon.png",
+  "tags": ["code-review", "developer-tools", "code-quality"],
+  "highlights": [
+    "PRISM page: spend, setup checklist, repos with codewatch newest commit first, their findings and a sandboxed scan report, all read-only",
+    "The prism MCP server: prism_status, prism_findings, prism_spend, prism_report and prism_setup, served by your own prism-cli mcp",
+    "Finds prism-cli installed with nvm or Volta even when Kiro Crew's PATH does not include it",
+    "prism-fix-findings skill: an agent checks the latest codewatch review before it finishes, fixes real issues in at most 2 rounds and reports the rest",
+    "prism-daily-digest: a script cron with no model call that notifies only on a new high finding, spend over your threshold, or a setup item that broke"
+  ],
+  "useCases": [
+    "When you start the day, open the PRISM page to see which repos got new codewatch findings since their last commit and open the scan report of the one that needs attention",
+    "When an agent finishes a code change in a repo with codewatch, the prism-fix-findings skill has it call prism_findings and fix the real high and medium findings before it reports done",
+    "When you want to know what codewatch flagged across your repos, ask a chat to call prism_findings or prism_status instead of opening the dashboard",
+    "When you want a heads-up without watching a page, let prism-daily-digest run at 09:00 and tell you only about new high findings, a setup regression, or spend over your threshold"
+  ],
+  "configuration": [
+    "Install prism-cli 1.8.0 or later: npm install -g @prism-d1/cli",
+    "Trust the app when you enable it; Kiro Crew registers nothing from a third-party app until you do",
+    "Optional: set spendThreshold and cliPath in the app's data/config.json (see the README)"
+  ],
+  "links": [
+    { "label": "README", "url": "https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/kirocrew-app/README.md" },
+    { "label": "PRISM user guide", "url": "https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/USER_GUIDE.md" }
+  ],
+  "skills": ["skills/prism-fix-findings"],
+  "ui": {
+    "entry": "index.mjs",
+    "pages": [
+      { "route": "/apps/prism", "label": "PRISM", "icon": "ScanSearch" }
+    ]
+  },
+  "backend": {
+    "hooks": {
+      "routes": "scripts.page_routes:register_routes"
+    }
+  },
+  "mcpServers": {
+    "prism": {
+      "command": "python3",
+      "args": ["scripts/prism_mcp.py"]
+    }
+  },
+  "crons": [
+    {
+      "name": "prism-daily-digest",
+      "cron_expr": "0 9 * * *",
+      "timezone": "local",
+      "strict_schedule": true,
+      "script": "scripts/digest.py:run",
+      "message": "PRISM daily digest (script, no model call)",
+      "persistent_session": false,
+      "timeout": 120,
+      "timeout_secs": 130
+    }
+  ],
+  "permissions": {
+    "api": ["/api/apps/prism/*"],
+    "cron": true,
+    "storage": true,
+    "network": false
+  },
+  "dependencies": {
+    "commands": ["python3"],
+    "optionalCommands": ["prism-cli"]
+  },
+  "platform": {
+    "os": ["macos", "linux"]
+  },
+  "setup": {
+    "configSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spendThreshold": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Notify once a day when today's AI spend (codeburn, in its currency) is above this. Unset or null: off."
+        },
+        "cliPath": {
+          "type": ["string", "null"],
+          "description": "Absolute path to prism-cli, when it is not found on PATH or in the nvm, Volta, ~/.local/bin or npm prefix folders."
+        }
+      }
+    }
+  }
+}
