@@ -16,6 +16,7 @@ export interface Finding {
   line: number | null;
   message: string;
   branch: string | null;
+  commit?: string | null;
   started_at: string;
 }
 
@@ -48,6 +49,9 @@ export interface RepoPayload {
   spend: { cost: number; sessions: number } | null;
   codewatch: {
     hasResults: boolean;
+    lastRunAt?: string | null;
+    lastReviewId?: string | null;
+    latestByBranch?: { branch: string | null; review: { commit: string | null; started_at: string } }[];
     findings: Finding[];
     findingsTruncated: boolean;
     /** Newest pre-push reviews first. */

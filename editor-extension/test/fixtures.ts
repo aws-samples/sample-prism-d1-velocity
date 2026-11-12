@@ -52,7 +52,10 @@ export const HOME = '/home/user';
 
 /** `prism-cli dashboard --json` run from the home folder with no --root: no current repo. */
 export function machinePayload(over: Partial<DashboardPayload> = {}): DashboardPayload {
-  const base = payload({}, repo({ current: false, path: `${HOME}/src/app`, name: 'app', label: 'app' }));
+  const app = repo({ current: false, path: `${HOME}/src/app`, name: 'app', label: 'app' });
+  app.codewatch.lastReviewId = 'abc-20261111T100000000Z-pre-push-review';
+  const lib = repo({ current: false, path: `${HOME}/src/lib`, name: 'lib', label: 'lib', codewatch: { hasResults: false, findings: [], findingsTruncated: false, scans: [] } });
+  const base = payload({ repos: [app, lib] });
   return {
     ...base,
     scope: { current_repo: null },

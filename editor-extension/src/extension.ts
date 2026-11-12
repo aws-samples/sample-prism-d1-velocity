@@ -8,14 +8,15 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   CliError, cliEnv, configuredCliPath, currentBranch, dashboardArgs, DASHBOARD_TIMEOUT_MS, gitToplevel, isResultId, machineDashboardRun, REPORT_TIMEOUT_MS, reportArgs, resolveCli, runCli,
 } from './cli';
 import { DIAGNOSTIC_SOURCE, findingsToDiagnostics, fixPrompt, type DiagnosticRecord } from './diagnostics';
 import { codewatchOff, parsePayload, repoView } from './payload';
-import { machinePanelModel, panelHtml, panelModel, parsePanelMessage, withReportCsp, type AnyPanelModel } from './panel-model';
+import { machinePanelModel, panelHtml, panelModel, parsePanelMessage, withReportCsp, type AnyPanelModel, type MachineTarget } from './panel-model';
 import { INTERVAL_MS, Refresher } from './refresh';
+import { commitLookupPaths, lastCommits, latestReviewOf, machineRepos, machineReportPlan, repoFile } from './machine';
 import { cliMissingText, INSTALL_CMD, statusView, type State } from './status';
 
 const SEVERITY: Record<DiagnosticRecord['severity'], vscode.DiagnosticSeverity> = {
@@ -36,6 +37,8 @@ class Prism implements vscode.Disposable {
   private repoRoot: string | null = null;
   private records: DiagnosticRecord[] = [];
   private model: AnyPanelModel | null = null;
+  /** Machine mode: per repo row of the panel, its path and finding files. The webview only sends indexes into this. */
+  private targets: MachineTarget[] = [];
   private panel: vscode.WebviewPanel | null = null;
   private report: vscode.WebviewPanel | null = null;
   private watcher: vscode.FileSystemWatcher | null = null;
@@ -109,8 +112,9 @@ class Prism implements vscode.Disposable {
       if (!root) {
         const m = machineDashboardRun(fresh, homedir());
         const payload = parsePayload(await runCli(cli.path, m.args, m.cwd, DASHBOARD_TIMEOUT_MS));
+        const commits = await lastCommits(commitLookupPaths(payload));
         if (this.repoRoot !== root) return; // the window opened a repo meanwhile
-        this.setState({ kind: 'machine', payload });
+        this.setState({ kind: 'machine', payload, repos: machineRepos(payload, commits) });
         return;
       }
       const [branch, out] = await Promise.all([currentBranch(root), runCli(cli.path, dashboardArgs(root, fresh), root, DASHBOARD_TIMEOUT_MS)]);
@@ -140,8 +144,14 @@ class Prism implements vscode.Disposable {
     this.status.command = v.command;
     this.status.backgroundColor = v.tint ? new vscode.ThemeColor(v.tint === 'error' ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground') : undefined;
     const s = this.state;
-    this.model = s.kind === 'ready' ? panelModel(s.payload, s.view, this.records, codewatchOff(s.view.repo), fmtTime)
-      : s.kind === 'machine' ? machinePanelModel(s.payload, fmtTime) : null;
+    this.targets = [];
+    if (s.kind === 'machine') {
+      const built = machinePanelModel(s.payload, s.repos, (repo, file) => repoFile(repo, file), fmtTime);
+      this.model = built.model;
+      this.targets = built.targets;
+    } else {
+      this.model = s.kind === 'ready' ? panelModel(s.payload, s.view, this.records, codewatchOff(s.view.repo), fmtTime) : null;
+    }
     this.postModel();
   }
 
@@ -223,22 +233,57 @@ class Prism implements vscode.Disposable {
         vscode.window.showInformationMessage('PRISM: command copied. Paste it into a terminal to run it.');
         return;
       }
-      case 'openFolder':
-        // a.path is one of the repo paths in the last prism-cli JSON (parsePanelMessage checked it).
-        await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(a.path), { forceNewWindow: true });
+      // Machine mode: the message holds only indexes; paths come from this.targets, built from the last prism-cli JSON.
+      case 'openFolder': {
+        const t = this.targets[a.repoIndex];
+        if (t) await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(t.path), { forceNewWindow: true });
         return;
+      }
+      case 'openRepoFinding': {
+        const t = this.targets[a.repoIndex];
+        const f = t?.files[a.findingIndex];
+        // Checked again at click time: the file could have become a symlink since the panel was drawn.
+        const file = f?.path ? repoFile(t.path, relative(t.path, f.path)) : null;
+        if (!f || !file) { vscode.window.showWarningMessage('PRISM: that file is not in the repository.'); return; }
+        const pos = new vscode.Position(f.line, 0);
+        await vscode.window.showTextDocument(vscode.Uri.file(file), { selection: new vscode.Range(pos, pos), viewColumn: vscode.ViewColumn.One });
+        return;
+      }
+      case 'repoReport': {
+        const t = this.targets[a.repoIndex];
+        const s = this.state;
+        const repo = s.kind === 'machine' ? s.payload.repos.find((r) => r.path === t?.path) ?? null : null;
+        if (!t) return;
+        const plan = machineReportPlan(t.path, t.name, t.commit, latestReviewOf(repo));
+        await this.showReport(t.path, plan.primary, plan.fallback);
+        return;
+      }
     }
   }
 
   private async openReport(): Promise<void> {
     const s = this.state;
     const id = s.kind === 'ready' ? s.view.review?.id : undefined;
+    const root = this.repoRoot;
+    if (!root || !isResultId(id)) { vscode.window.showWarningMessage('PRISM: no review report to open.'); return; }
+    await this.showReport(root, (out) => reportArgs(root, id, out));
+  }
+
+  /** Runs prism-cli codewatch report into a temp file and shows it. `fallback` runs when the first report fails (not when the CLI is missing). */
+  private async showReport(repo: string, args: (output: string) => string[], fallback?: { args: (output: string) => string[]; message: string } | null): Promise<void> {
     const cli = this.cli();
-    if (!this.repoRoot || !cli.ok || !isResultId(id)) { vscode.window.showWarningMessage('PRISM: no review report to open.'); return; }
-    const dir = await mkdtemp(join(tmpdir(), 'prism-report-'));
+    if (!cli.ok) { void this.showInstallHint(); return; }
+    let dir: string | null = null;
     try {
+      dir = await mkdtemp(join(tmpdir(), 'prism-report-'));
       const file = join(dir, 'report.html');
-      await runCli(cli.path, reportArgs(this.repoRoot, id, file), this.repoRoot, REPORT_TIMEOUT_MS);
+      try {
+        await runCli(cli.path, args(file), repo, REPORT_TIMEOUT_MS);
+      } catch (e) {
+        if (!fallback || (e instanceof CliError && e.notFound)) throw e;
+        await runCli(cli.path, fallback.args(file), repo, REPORT_TIMEOUT_MS);
+        vscode.window.showInformationMessage(fallback.message);
+      }
       const html = await readFile(file, 'utf8');
       // The report is CLI-escaped HTML; scripts stay off and the CSP allows only its inline styles.
       if (!this.report) {
@@ -251,7 +296,7 @@ class Prism implements vscode.Disposable {
     } catch (e) {
       vscode.window.showErrorMessage(`PRISM: could not build the report: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      if (dir) await rm(dir, { recursive: true, force: true });
     }
   }
 

@@ -88,4 +88,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 .row-name { overflow-wrap: anywhere; min-width: 0; }
 .row-value { font-variant-numeric: tabular-nums; }
 .repo-row { border-left-width: 4px; border-left-style: solid; padding-left: 8px; }
-.repo-row .check-top button { margin-left: auto; }
+.row-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.repo-findings { margin-top: 4px; }
+.repo-findings summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
+.repo-findings .finding:last-child { border-bottom: none; }

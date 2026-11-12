@@ -106,14 +106,36 @@
     if (m.reposNote) rs.append(el('p', 'muted', m.reposNote));
     if (!m.repos.length) rs.append(el('p', 'muted', 'No repository has codewatch yet.'));
     const ul = el('ul', 'checks');
-    for (const r of m.repos) {
+    // Messages carry only indexes into m.repos; the extension looks the paths up itself.
+    m.repos.forEach((/** @type {any} */ r, /** @type {number} */ repoIndex) => {
       const li = el('li', 'check repo-row tone-' + pick(r.tone, TONES, 'none'));
       const top = el('div', 'check-top');
       top.append(el('span', 'check-label', r.name), el('span', 'status', 'codewatch ' + r.status));
-      top.append(button('Open folder', () => vscode.postMessage({ type: 'openFolder', path: r.path }), 'secondary small'));
-      li.append(top, el('div', 'check-detail muted', r.when ? r.review + ' · ' + r.when : r.review));
+      const btns = el('span', 'row-actions');
+      if (r.hasReport) btns.append(button('Open report', () => vscode.postMessage({ type: 'repoReport', repoIndex }), 'secondary small'));
+      btns.append(button('Open folder', () => vscode.postMessage({ type: 'openFolder', repoIndex }), 'secondary small'));
+      top.append(btns);
+      li.append(top, el('div', 'check-detail muted', r.commit), el('div', 'check-detail muted', r.when ? 'Latest review: ' + r.review + ' · ' + r.when : r.review));
+      if (r.findings.length) {
+        const det = el('details', 'repo-findings');
+        det.append(el('summary', '', 'Findings (' + r.findings.length + (r.more ? '+' : '') + ')'));
+        const fl = el('ul', 'findings');
+        r.findings.forEach((/** @type {any} */ f, /** @type {number} */ findingIndex) => {
+          const fi = el('li', 'finding sev-' + pick(f.severity, SEVERITIES, 'low'));
+          const ft = el('div', 'finding-top');
+          ft.append(el('span', 'badge', f.severity));
+          if (f.openable) ft.append(button(f.location, () => vscode.postMessage({ type: 'openRepoFinding', repoIndex, findingIndex }), 'link'));
+          else ft.append(el('span', 'loc muted', f.location + ' (file not in this checkout)'));
+          ft.append(el('span', 'cat', 'branch ' + f.branch));
+          fi.append(ft, el('div', 'msg', f.message));
+          fl.append(fi);
+        });
+        det.append(fl);
+        if (r.more) det.append(el('p', 'muted', r.more));
+        li.append(det);
+      }
       ul.append(li);
-    }
+    });
     rs.append(ul);
     app.append(rs);
 

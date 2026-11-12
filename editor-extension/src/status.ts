@@ -1,13 +1,14 @@
 /** Status bar text, tooltip and click command for each extension state. No vscode import. */
 import { codewatchOff, type DashboardPayload, type RepoView } from './payload';
 import { money, plainText } from './text';
+import type { MachineRepo } from './machine';
 
 export const INSTALL_CMD = 'npm i -g @prism-d1/cli';
 
 export type State =
   | { kind: 'loading' }
   /** No repo in this window: machine-wide data from a home-directory scan. */
-  | { kind: 'machine'; payload: DashboardPayload }
+  | { kind: 'machine'; payload: DashboardPayload; repos: MachineRepo[] }
   | { kind: 'cli-missing'; reason: string; searched?: string[] }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; payload: DashboardPayload; view: RepoView };
