@@ -52,6 +52,16 @@ class ManifestTest(unittest.TestCase):
             self.assertGreaterEqual(c["timeout_secs"], c["timeout"] + 5)
             self.assertIsInstance(c["strict_schedule"], bool)
 
+    def test_page_and_backend_hook(self):
+        ui = MANIFEST["ui"]
+        self.assertTrue((ROOT / "ui" / ui["entry"]).is_file())
+        self.assertEqual([p["route"] for p in ui["pages"]], ["/apps/" + MANIFEST["name"]])
+        mod, _, func = MANIFEST["backend"]["hooks"]["routes"].partition(":")
+        self.assertRegex((ROOT / (mod.replace(".", "/") + ".py")).read_text(encoding="utf-8"), r"(?m)^def " + func + r"\(ctx")
+        # No process backend (no port); the page reaches only this app's own routes.
+        self.assertNotIn("entryPoint", MANIFEST["backend"])
+        self.assertEqual(MANIFEST["permissions"]["api"], ["/api/apps/" + MANIFEST["name"] + "/*"])
+
     def test_platform_os_names(self):
         self.assertTrue(set(MANIFEST["platform"]["os"]) <= {"macos", "linux", "windows"})
 

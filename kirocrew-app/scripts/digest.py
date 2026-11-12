@@ -118,10 +118,14 @@ def evaluate(
 ) -> Tuple[Optional[str], Dict[str, Any]]:
     """(message or None, state to save). `prev` None means first run or unreadable state: baseline only."""
     snap = snapshot(payload)
-    state: Dict[str, Any] = {"schema": STATE_SCHEMA, **snap, "spendAlertDate": None}
+    state: Dict[str, Any] = {"schema": STATE_SCHEMA, **snap, "spendAlertDate": None,
+                             "lastNotifiedAt": None, "lastMessage": None}
     if prev is None:
         return None, state
     state["spendAlertDate"] = prev.get("spendAlertDate")
+    # Shown on the app's page ("Last digest").
+    state["lastNotifiedAt"] = prev.get("lastNotifiedAt")
+    state["lastMessage"] = prev.get("lastMessage")
 
     lines = _new_high_lines(prev.get("highs") or {}, payload)
 
@@ -205,8 +209,12 @@ def digest_once(
     path = data_dir / STATE_FILE
     prev = read_state(path)
     msg, state = evaluate(prev, payload, spend_threshold(cfg), _dt.date.today().isoformat())
+    stamp = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     if msg and deliver:
         deliver(msg)
+    state["lastRunAt"] = stamp
+    if msg:
+        state["lastNotifiedAt"], state["lastMessage"] = stamp, msg
     write_state(path, state)
     return msg, prev is None
 

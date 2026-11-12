@@ -147,6 +147,18 @@ class StateFileTest(unittest.TestCase):
         self.assertIn("1 new high finding", msg)
         self.assertEqual(sent, [msg])
 
+    def test_last_run_and_notification_recorded(self):
+        digest.digest_once(self.dir, payload([]))
+        state = json.loads((self.dir / digest.STATE_FILE).read_text(encoding="utf-8"))
+        self.assertTrue(state["lastRunAt"])
+        self.assertIsNone(state["lastNotifiedAt"])
+        msg, _ = digest.digest_once(self.dir, payload([finding()]), deliver=lambda m: None)
+        state = json.loads((self.dir / digest.STATE_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(state["lastMessage"], msg)
+        self.assertTrue(state["lastNotifiedAt"])
+        digest.digest_once(self.dir, payload([finding()]))  # quiet run keeps the last notification
+        self.assertEqual(json.loads((self.dir / digest.STATE_FILE).read_text(encoding="utf-8"))["lastMessage"], msg)
+
     def test_threshold_read_from_config(self):
         (self.dir / "config.json").write_text('{"spendThreshold": 2}', encoding="utf-8")
         digest.digest_once(self.dir, payload(cost=1.0))

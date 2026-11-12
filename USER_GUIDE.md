@@ -591,7 +591,10 @@ the absolute path that `command -v prism-cli` prints as the command, for example
 
 [`kirocrew-app/`](kirocrew-app/README.md) is a [Kiro Crew](https://github.com/kirodotdev/KiroCrew)
 app. It registers the `prism-cli mcp` tools as the `prism` MCP server and finds a `prism-cli`
-installed with nvm or Volta even when Kiro Crew's PATH lacks it. It also adds the
+installed with nvm or Volta even when Kiro Crew's PATH lacks it. It also adds a **PRISM** sidebar
+page with the same view as the editor extension's machine mode: spend, the setup checklist, repos
+with codewatch and their findings, and sandboxed scan reports. The page is read-only and is served
+through the gateway's own authenticated routes. The app also adds the
 `prism-fix-findings` skill, which has an agent read the latest codewatch review before it finishes,
 fix the real issues in at most 2 rounds and report the rest. The third part is a daily 09:00 digest
 that runs as a script, with no model call. The digest notifies only on a new high finding, on

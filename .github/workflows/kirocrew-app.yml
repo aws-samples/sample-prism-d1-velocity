@@ -23,3 +23,5 @@ jobs:
           persist-credentials: false
       - name: Test
         run: python3 -m unittest discover -s kirocrew-app/tests -v
+      - name: Page test
+        run: node --test kirocrew-app/tests/page.test.mjs

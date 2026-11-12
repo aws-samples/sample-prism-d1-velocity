@@ -1,8 +1,12 @@
-# PRISM app for Kiro Crew (v0.1)
+# PRISM app for Kiro Crew (v0.2)
 
 A [Kiro Crew](https://github.com/kirodotdev/KiroCrew) app that brings your local PRISM data into
-Kiro Crew. It ships no page. It adds:
+Kiro Crew. It adds:
 
+- **Page `PRISM`** in the sidebar: spend today and this month, top models and projects, the
+  machine setup checklist, the repos with codewatch (newest commit first, with their findings), a
+  sandboxed view of each repo's scan report, and when the daily digest last ran and what it sent.
+  See [The page](#the-page).
 - **MCP server `prism`**: the tools `prism_status`, `prism_findings`, `prism_spend`, `prism_report`
   and `prism_setup`. The app does not implement them. `scripts/prism_mcp.py` finds your
   `prism-cli` and replaces itself with `prism-cli mcp` (an argv list, no shell). See
@@ -66,9 +70,27 @@ What you are trusting. After you enable it, the app can:
   `digest-state.json` in the app's data folder, and it sends a Kiro Crew notification when
   something changed.
 - give your agents the `prism-fix-findings` skill.
+- run `scripts/page_routes.py` inside the gateway process (`backend.hooks.routes`). These are the
+  page's two read-only routes. While the page is open, they run `prism-cli dashboard --json`,
+  `prism-cli --version`, `git log -1` in up to 30 repos, and `prism-cli codewatch report`. Reports
+  are written to `data/reports/` in the app's data folder and deleted after a day. Like every
+  in-gateway app code, these routes run with the gateway's privileges.
 
-The manifest declares `cron` and `storage` and sets `network: false`. The app has no backend, no
-UI, no install hooks, no `spawn` and no session control.
+The manifest declares `cron`, `storage` and `api: ["/api/apps/prism/*"]` (the page may call only
+this app's own routes), and sets `network: false`. The app opens no port and runs no backend
+process. It has no install hooks, no `spawn` and no session control.
+
+### Updating from v0.1
+
+```bash
+kirocrew app update prism --source <path-to>/sample-prism-d1-velocity/kirocrew-app
+```
+
+v0.2 adds the `api` permission for the page. Per the App Kit, an update that adds an `api` entry
+keeps the app enabled but withholds the new entry until you approve it on the app's detail page
+(**Apps → PRISM**). Until you approve it, the page shows an API error. If the page answers 404 after
+the update, the gateway has not wired the new routes yet: disable and enable the app once, or
+restart the gateway.
 
 ## Settings
 
@@ -85,6 +107,43 @@ The app reads `~/.kiro/crew/apps/prism/data/config.json`, which is optional:
 
 To change the schedule, edit `prism-daily-digest` on the dashboard's **Schedule** page. Your edit
 is kept across app updates unless a later version of the app changes the schedule itself.
+
+## The page
+
+The **PRISM** sidebar page shows the same data as the editor extension's machine mode:
+
+- spend today and this month (calls, sessions), sync mode, prism-cli version, and when the data
+  and the usage cache were taken;
+- top models and top projects this month (project folder names only);
+- the machine setup checklist, with fix commands you can copy (the page never runs them);
+- the repos with codewatch, newest last commit first (`git log -1` in at most 30 repos, 4 at a
+  time; a repo whose commit is unknown sorts by its last review). Each repo shows its last commit,
+  the latest review's counts and up to 20 findings, plus an "N more" line;
+- **Open report**: the scan report of the review covering the repo's last commit, or the latest
+  review when none covers it. The page says which. You can also download the report;
+- **Last digest**: when the digest cron last ran and the last message it sent;
+- **Refresh**, plus an automatic refresh every 5 minutes while the page is visible.
+
+How it talks to its backend. The page is `ui/index.mjs`, an ES module that the dashboard loads.
+It calls `GET /api/apps/prism/data` and `GET /api/apps/prism/report?repoIndex=N` through the App
+SDK's `useAppApi()`, which allows only the paths in `permissions.api`. The gateway serves those
+routes from `scripts/page_routes.py` inside its own process. Its token middleware authenticates
+every request (a dashboard session, or an app token scoped to `permissions.api`; loopback is not
+exempt). Each handler then also requires the dashboard owner (`ctx.require_owner`), or this app's
+own token, and refuses everything else.
+
+Security:
+
+- The page sends only indexes. The backend resolves an index against its own last result and
+  refuses any value that is not a plain number inside that list.
+- Recorded text (repo names, commit subjects, finding messages written by a reviewer model) is
+  rendered only as React text, never as HTML.
+- The report HTML is untrusted. It is shown in an `<iframe sandbox="">` (no scripts, an opaque
+  origin, no forms or popups), and the backend adds a CSP that blocks script and every remote load.
+- Usage comes from the dashboard's 5-minute cache. When nothing is cached for today, the page does
+  not start a codeburn export. It says so and offers a **Load now** button that does. When the cache
+  is stale, the backend returns as soon as `dashboard --json` prints and lets the CLI's background
+  refresh finish on its own.
 
 ## How the digest decides to notify
 
@@ -130,12 +189,15 @@ Disabling the app removes its cron job, MCP server and skill. By default, uninst
 
 ```bash
 python3 -m unittest discover -s kirocrew-app/tests
+node --test kirocrew-app/tests/page.test.mjs
 ```
 
-The tests cover the digest's diff logic, the `prism-cli` lookup, and `app.json` against the
+The tests cover the digest's diff logic, the `prism-cli` lookup, the page model (sorting, caps,
+index checks, report arguments and fallback, digest state) and the page's rendering with fixture
+data. They also check `app.json` against the
 [App Kit manifest reference](https://github.com/kirodotdev/KiroCrew/blob/main/docs/app-kit/manifest-reference.md).
 When Kiro Crew is installed, they also run Kiro Crew's own manifest validator. CI runs them in
 `.github/workflows/kirocrew-app.yml`.
 
-Not in v0.1: a page, Windows support (`os.execve` on an npm `.cmd` shim needs a shell), and
-delivery to a channel other than Kiro Crew's default notification.
+Not in v0.2: Windows support (`os.execve` on an npm `.cmd` shim needs a shell), and delivery to a
+channel other than Kiro Crew's default notification.
