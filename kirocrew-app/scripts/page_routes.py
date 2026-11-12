@@ -179,7 +179,10 @@ async def handle_data(request: web.Request, ctx: Any) -> web.Response:
         except (OSError, ValueError, asyncio.TimeoutError) as e:
             return _err(502, "prism-cli dashboard --json failed: " + pm.plain(e, 200))
         version, commits = await asyncio.gather(_version(cli, env), _commits(pm.commit_lookup_paths(payload)))
-        model, targets = pm.build_model(payload, commits, version, pm.read_digest(_data_dir(ctx)))
+        try:
+            model, targets = pm.build_model(payload, commits, version, pm.read_digest(_data_dir(ctx)))
+        except (ValueError, TypeError, KeyError) as e:
+            return _err(502, "prism-cli dashboard --json returned data this page cannot read: " + pm.plain(e, 200))
         # The page sends this back with each index, so an index always means the list it was drawn from.
         _state["gen"] = model["gen"] = uuid.uuid4().hex
         _state["targets"] = targets
@@ -199,7 +202,10 @@ async def handle_report(request: web.Request, ctx: Any) -> web.Response:
     if not cli:
         return _err(503, reason)
     report_dir = _data_dir(ctx) / "reports"
-    report_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        report_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as e:
+        return _err(502, "could not create the report folder: " + pm.plain(e, 200))
     pm.cleanup_reports(report_dir)
     out = report_dir / f"report-{uuid.uuid4().hex}.html"
     plan = pm.report_plan(target, str(out))
@@ -218,9 +224,18 @@ async def handle_report(request: web.Request, ctx: Any) -> web.Response:
         if rc != 0 or not out.is_file():
             causes.append(f"exit {rc}")
             continue
-        if out.stat().st_size > MAX_REPORT_BYTES:
-            return _err(502, "the report is too large to show here; run prism-cli codewatch report in a terminal")
-        html = out.read_text(encoding="utf-8", errors="replace")
+        try:
+            if out.stat().st_size > MAX_REPORT_BYTES:
+                return _err(502, "the report is too large to show here; run prism-cli codewatch report in a terminal")
+            html = out.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            return _err(502, "could not read the report: " + pm.plain(e, 200))
+        finally:
+            # Read once, then gone; cleanup_reports catches files a crash left behind.
+            try:
+                out.unlink()
+            except OSError:
+                pass
         return web.json_response({"repo": target["name"], "note": note, "html": pm.with_report_csp(html)})
     ctx.logger.warning("prism report for %s failed: %s", target["name"], "; ".join(causes))
     return _err(502, f"prism-cli codewatch report found no review for {target['name']} ({'; '.join(causes)})")

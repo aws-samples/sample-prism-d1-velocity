@@ -72,8 +72,9 @@ What you are trusting. After you enable it, the app can:
 - give your agents the `prism-fix-findings` skill.
 - run `scripts/page_routes.py` inside the gateway process (`backend.hooks.routes`). These are the
   page's two read-only routes. While the page is open, they run `prism-cli dashboard --json`,
-  `prism-cli --version`, `git log -1` in up to 30 repos, and `prism-cli codewatch report`. Reports
-  are written to `data/reports/` in the app's data folder and deleted after a day. Like every
+  `prism-cli --version`, `git log -1` in up to 30 repos, and `prism-cli codewatch report`. Each
+  report is written to `data/reports/` in the app's data folder and deleted as soon as it is read.
+  Any file older than a day that is left over is removed on the next report request. Like every
   in-gateway app code, these routes run with the gateway's privileges.
 
 The manifest declares `cron`, `storage` and `api: ["/api/apps/prism/*"]` (the page may call only

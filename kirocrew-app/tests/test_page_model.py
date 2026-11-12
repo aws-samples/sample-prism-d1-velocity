@@ -128,6 +128,7 @@ class IndexAndReportTest(unittest.TestCase):
         self.assertTrue(pm.with_report_csp("<p>x</p>").startswith("<!DOCTYPE html><html><head><meta http-equiv"))
         # <header> is not <head>: no head means the document is wrapped, not patched inside the body.
         self.assertTrue(pm.with_report_csp("<header class=x>t</header>").startswith("<!DOCTYPE html><html><head><meta http-equiv"))
+        self.assertNotIn("refresh", pm.with_report_csp('<html><head><META HTTP-EQUIV="Refresh" content="0;url=https://example.com"></head></html>'))
 
     def test_cleanup_reports_only_old_html(self):
         d = Path(tempfile.mkdtemp())

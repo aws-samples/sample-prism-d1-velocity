@@ -240,8 +240,13 @@ def report_plan(target: Dict[str, Any], output: str) -> Dict[str, Any]:
     return plan
 
 
+_META_REFRESH = re.compile(r"<meta\b[^>]*http-equiv\s*=\s*[\"']?\s*refresh[^>]*>", re.I)
+
+
 def with_report_csp(html: str) -> str:
-    """The report with a CSP meta tag: its inline styles only, no script, nothing remote."""
+    """The report with a CSP meta tag (its inline styles only, no script, nothing remote) and no
+    meta refresh, which a CSP does not stop from navigating the frame."""
+    html = _META_REFRESH.sub("", html)
     meta = f'<meta http-equiv="Content-Security-Policy" content="{REPORT_CSP}">'
     m = re.search(r"<head(?:\s[^>]*)?>", html, re.I)  # not <header>
     if m:
