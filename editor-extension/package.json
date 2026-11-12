@@ -2,7 +2,7 @@
   "name": "prism-d1",
   "displayName": "PRISM D1",
   "description": "PRISM codewatch findings, AI spend and setup checks from prism-cli, in the status bar, the Problems panel and a side panel. Works in VS Code, Kiro and Cursor.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "prism-d1",
   "license": "MIT",
   "repository": {

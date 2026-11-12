@@ -84,12 +84,3 @@ test('parsePayload: rejects non-JSON and other schemas', () => {
   assert.throws(() => parsePayload('{"schema":"prism.dashboard.v1"}'), /Update prism-cli/);
   assert.equal(parsePayload(JSON.stringify(payload())).schema, 'prism.dashboard.v2');
 });
-
-test('no repo: a dim item that says to open a folder inside a git repository', () => {
-  const v = statusView({ kind: 'no-repo' });
-  assert.equal(v.text, '$(shield) PRISM: no repo');
-  assert.match(v.tooltip, /Open a folder inside a git repository/);
-  assert.equal(v.dim, true);
-  assert.equal(v.tint, null);
-  assert.equal(v.command, undefined);
-});

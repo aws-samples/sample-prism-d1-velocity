@@ -151,6 +151,11 @@ export function dashboardArgs(repoRoot: string, fresh: boolean): string[] {
   return ['dashboard', '--json', '--root', repoRoot, ...(fresh ? ['--fresh'] : [])];
 }
 
+/** Machine mode (no repo in the window): no --root, so the CLI scans the home directory, run from there. */
+export function machineDashboardRun(fresh: boolean, home: string = homedir()): { args: string[]; cwd: string } {
+  return { args: ['dashboard', '--json', ...(fresh ? ['--fresh'] : [])], cwd: home };
+}
+
 /** Result ids are file names in .prism/results/; anything else (or an option-looking value) is refused. */
 export function isResultId(id: unknown): id is string {
   return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id);
@@ -159,6 +164,38 @@ export function isResultId(id: unknown): id is string {
 export function reportArgs(repoRoot: string, id: string, output: string): string[] {
   if (!isResultId(id)) throw new Error('not a codewatch result id');
   return ['codewatch', 'report', '--repo', repoRoot, '--id', id, '--format', 'html', '--output', output];
+}
+
+/** The report of the newest review whose pushed range includes the repo's HEAD. */
+export function headReportArgs(repoRoot: string, output: string): string[] {
+  return ['codewatch', 'report', '--repo', repoRoot, '--commit', 'HEAD', '--format', 'html', '--output', output];
+}
+
+export interface LastCommit { at: string; sha: string; subject: string }
+
+export function lastCommitArgs(repo: string): string[] {
+  return ['-C', repo, 'log', '-1', '--format=%cI%x00%h%x00%s'];
+}
+
+/** `%cI NUL %h NUL %s` -> the commit, or null when the output is not that. */
+export function parseLastCommit(out: string): LastCommit | null {
+  const [at, sha, subject] = out.replace(/\r?\n$/, '').split('\0');
+  if (!at || !sha || Number.isNaN(Date.parse(at))) return null;
+  return { at, sha, subject: subject ?? '' };
+}
+
+/** The repo's last commit, or null when git fails (not a repo any more, no commits, timeout). */
+export async function lastCommit(repo: string, exec?: ExecFileFn): Promise<LastCommit | null> {
+  try { return parseLastCommit(await runFile('git', lastCommitArgs(repo), repo, GIT_TIMEOUT_MS, exec)); } catch { return null; }
+}
+
+/** `fn` over `items`, at most `limit` at a time, results in input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; out[i] = await fn(items[i]); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 export function execOptions(cwd: string, timeout: number, env?: NodeJS.ProcessEnv): ExecFileOptions & { shell: false } {

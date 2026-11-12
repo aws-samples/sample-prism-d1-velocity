@@ -1,12 +1,14 @@
 /** Status bar text, tooltip and click command for each extension state. No vscode import. */
 import { codewatchOff, type DashboardPayload, type RepoView } from './payload';
 import { money, plainText } from './text';
+import type { MachineRepo } from './machine';
 
 export const INSTALL_CMD = 'npm i -g @prism-d1/cli';
 
 export type State =
   | { kind: 'loading' }
-  | { kind: 'no-repo' }
+  /** No repo in this window: machine-wide data from a home-directory scan. */
+  | { kind: 'machine'; payload: DashboardPayload; repos: MachineRepo[] }
   | { kind: 'cli-missing'; reason: string; searched?: string[] }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; payload: DashboardPayload; view: RepoView };
@@ -18,11 +20,9 @@ export interface StatusView {
   command: 'prism.openPanel' | 'prism.showInstallHint' | 'prism.enableCodewatch' | 'prism.refresh' | undefined;
   /** Background tint: error when the review has high findings. */
   tint: 'error' | 'warning' | null;
-  /** Dim (disabled) text colour: nothing to show in this window. */
-  dim?: boolean;
 }
 
-export const NO_REPO_HINT = 'Open a folder inside a git repository.';
+export const OPEN_REPO_HINT = 'Open a repository folder to see its findings.';
 
 /** The not-found text for the tooltip and the install message: what was searched and how to set prism.cliPath. */
 export function cliMissingText(reason: string, searched: string[] = []): string {
@@ -39,8 +39,8 @@ export function statusView(s: State, fmtTime: (iso: string) => string = (iso) =>
   switch (s.kind) {
     case 'loading':
       return { text: '$(sync~spin) PRISM', tooltip: 'PRISM: reading prism-cli dashboard --json…', command: 'prism.openPanel', tint: null };
-    case 'no-repo':
-      return { text: '$(shield) PRISM: no repo', tooltip: `PRISM: no workspace folder is inside a git repository. ${NO_REPO_HINT}`, command: undefined, tint: null, dim: true };
+    case 'machine':
+      return machineView(s.payload, fmtTime);
     case 'cli-missing':
       return {
         text: '$(shield) PRISM: install prism-cli',
@@ -54,12 +54,41 @@ export function statusView(s: State, fmtTime: (iso: string) => string = (iso) =>
   }
 }
 
-function readyView(p: DashboardPayload, v: RepoView, fmtTime: (iso: string) => string): StatusView {
+/** Spend today and warnings ("$12.40 today", "1 warning"), shared by both modes. */
+function spendAndWarnings(p: DashboardPayload): string[] {
   const spend = p.summary.spend;
   const warn = p.summary.warnings;
   const tail: string[] = [];
   if (spend.status === 'ok' && typeof spend.today === 'number') tail.push(`${money(spend.today, spend.currency)} today`);
   if (warn.count > 0) tail.push(plural(warn.count, 'warning'));
+  return tail;
+}
+
+function machineView(p: DashboardPayload, fmtTime: (iso: string) => string): StatusView {
+  const spend = p.summary.spend;
+  const warn = p.summary.warnings;
+  const tail = spendAndWarnings(p);
+  const lines = ['PRISM: no repository open in this window; showing this machine.'];
+  if (spend.status === 'ok') {
+    if (typeof spend.month === 'number') lines.push(`Spend this month: ${money(spend.month, spend.currency)}`);
+  } else {
+    lines.push(`Spend: ${one(spend.message ?? spend.status)}`);
+  }
+  const r = p.summary.review;
+  lines.push(r
+    ? `Latest review: ${one(r.repo, 80)}, ${fmtTime(r.at)} (${r.high} high, ${r.medium} medium, ${r.low} low)`
+    : 'No pre-push review recorded in any repo yet.');
+  const c = p.overview?.counts;
+  if (c) lines.push(`Repos with codewatch: ${c.codewatch} of ${c.repos}`);
+  if (warn.count > 0 && warn.first) lines.push(`Warning: ${one(warn.first)}`);
+  lines.push(OPEN_REPO_HINT, 'Click to open the PRISM panel.');
+  return { text: tail.length ? `$(shield) PRISM: ${tail.join(' | ')}` : '$(shield) PRISM', tooltip: lines.join('\n'), command: 'prism.openPanel', tint: null };
+}
+
+function readyView(p: DashboardPayload, v: RepoView, fmtTime: (iso: string) => string): StatusView {
+  const spend = p.summary.spend;
+  const warn = p.summary.warnings;
+  const tail = spendAndWarnings(p);
 
   const lines: string[] = [];
   const r = v.review;
