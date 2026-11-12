@@ -33,7 +33,7 @@
     "@modelcontextprotocol/sdk": "1.32.2",
     "chalk": "^4.1.2",
     "commander": "^12.1.0",
-    "glob": "^13.0.6",
+    "glob": "^14.0.6",
     "simple-git": "^3.36.0"
   },
   "devDependencies": {
