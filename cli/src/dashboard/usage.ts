@@ -33,6 +33,8 @@ export interface UsagePanel {
   topProjects: { name: string; path: string; cost: number; sessions: number }[];
   /** Every project this month (symlinks resolved), for matching spend to repos. */
   projects: { path: string; cost: number; sessions: number }[];
+  /** Days this month with usage, oldest first. Absent in caches written before 1.8.0. */
+  daily?: (Totals & { date: string })[];
   generated: string | null;
   /** When this data was collected (ISO); null when nothing was collected. */
   updatedAt: string | null;
@@ -73,7 +75,7 @@ export function localDate(d: Date): string {
 }
 
 export function emptyUsage(status: UsagePanel['status'], message: string): UsagePanel {
-  return { status, message, currency: 'USD', today: null, month: null, topModels: [], topProjects: [], projects: [], generated: null, updatedAt: null, stale: false, refreshError: null, fullView: 'codeburn web' };
+  return { status, message, currency: 'USD', today: null, month: null, topModels: [], topProjects: [], projects: [], daily: [], generated: null, updatedAt: null, stale: false, refreshError: null, fullView: 'codeburn web' };
 }
 
 function real(p: string): string {
@@ -157,6 +159,11 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
     projects: monthProjects
       .filter((p) => typeof p?.Project === 'string' && p.Project)
       .map((p) => ({ path: real(String(p.Project).replace(/[\\/]+$/, '')), cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) })),
+    // any: codeburn export rows are untyped JSON; each field is checked or read through num().
+    daily: (Array.isArray(month?.periods?.[0]?.daily) ? month.periods[0].daily : [])
+      .filter((r: any) => typeof r?.Date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.Date))
+      .map((r: any) => ({ date: r.Date as string, ...totalsFrom(r) }))
+      .sort((a: { date: string }, b: { date: string }) => a.date.localeCompare(b.date)),
     generated: typeof month?.generated === 'string' ? month.generated : null,
     updatedAt: now.toISOString(),
     stale: false,

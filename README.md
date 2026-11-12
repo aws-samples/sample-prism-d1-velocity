@@ -28,6 +28,7 @@ Most features run on a developer machine with no AWS deployment: codewatch git h
 |---------|---------|---------|
 | Secret scan on commit, AI review on push | `prism-cli enable codewatch` | [Codewatch](USER_GUIDE.md#codewatch-local-git-hooks) |
 | One local page for results, usage and setup | `prism-cli dashboard` | [Local Dashboard](USER_GUIDE.md#local-dashboard) |
+| Findings, spend and setup status for an AI agent (Kiro, Claude Code) | `prism-cli mcp` | [MCP server](USER_GUIDE.md#mcp-server-prism-cli-mcp) |
 | Findings in VS Code, Kiro or Cursor | `code --install-extension prism-d1-<version>.vsix` | [Editor extension](USER_GUIDE.md#editor-extension) |
 | Read-only AWS account checks and fixes | `prism-cli aws check` | [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend) |
 | Security Agent review of your branch (after `enable security`, which deploys to AWS) | `prism-cli security code-review` | [Running a Review](USER_GUIDE.md#running-a-review-from-the-cli) |
