@@ -19,6 +19,7 @@ prism-cli is the command-line tool a developer installs from npm (`@prism-d1/cli
 | `enable codeburn` | Installs codeburn and schedules it to send AI usage and commit attribution to the team's PRISM collector every 12 hours. | None | None in AWS beyond the team's existing PRISM pipeline. | 1.3.0 |
 | `enable security` | Sets up AWS Security Agent for one account and region, and this repo's code review for the CI gate. | Deploys resources | A KMS key, an S3 bucket and SSM parameters (small monthly charges). | 1.3.0 |
 | `dashboard` | A local web page with each repo's codewatch results, AI usage, security findings and a setup checklist. | None | None | 1.2.0 |
+| `mcp` | An MCP server on stdio that gives an AI agent (Kiro, Claude Code) the dashboard's findings, reports, cached spend and setup checklist, read-only. | None | None | 1.8.0 |
 | `export otel` | Sends unsent AI usage to the PRISM collector now, instead of waiting for the schedule. | None | None | 1.3.0 |
 | `install transformation-center` | Not built. | | | Blocked |
 

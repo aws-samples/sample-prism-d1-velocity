@@ -506,7 +506,7 @@ Most features run on a developer machine with no AWS deployment: the
 |-----|----------|
 | Send AI usage to PRISM | `enable codeburn`, `export otel` ([Developer Setup](#developer-setup)) |
 | Check changes before they leave your machine | `enable codewatch`, `codewatch report` |
-| See results locally | `dashboard`, and the [editor extension](#editor-extension) for VS Code, Kiro and Cursor |
+| See results locally | `dashboard`, `mcp` ([for an AI agent](#mcp-server-prism-cli-mcp)), and the [editor extension](#editor-extension) for VS Code, Kiro and Cursor |
 | Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security pentest` |
 | Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection` |
 | Platform team | `team info`, `team add-developer`, `bootstrapper ...` |
@@ -541,6 +541,51 @@ while connected, or run the install command in the remote terminal. Check that i
 `SSH: <host> - Installed`. A `prism-cli` installed with nvm is found automatically; if it is not
 found, set `prism.cliPath` in the remote's user settings to the output of `command -v prism-cli`.
 Features, settings and security: [editor extension README](editor-extension/README.md).
+
+### MCP server (prism-cli mcp)
+
+`prism-cli mcp` is an [MCP](https://modelcontextprotocol.io) server that gives an AI agent (Kiro,
+Claude Code or any MCP client) the same local data as the dashboard. The client starts it and talks
+to it over stdin and stdout; it opens no port, starts no background process and exits when the
+client closes stdin. It makes no AWS or network calls and never runs a fix. It needs prism-cli 1.8.0
+or later.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `prism_status` | none | Spend today and this month, setup warning count and the first warning, the latest codewatch review (repo, when, counts), repos with codewatch, sync mode, prism-cli version |
+| `prism_findings` | `repo`, `branch`, `limit` (at most 50) | Findings of the latest pre-push review: severity, category, file, line, message, branch, commit, reviewer, time. Default repo: the one containing the client's working directory |
+| `prism_spend` | `days` (at most 31) | Today, this month, calls, sessions, top models, top projects (folder names), per-day rows, `updatedAt` and `stale` |
+| `prism_report` | `repo`, `commit` (default `HEAD`), `format` (`md` or `html`) | The scan report for the review covering the commit, or the latest review, and which branch and range it covers. `md` returns the text; `html` writes a file under the OS temp directory and returns its path |
+| `prism_setup` | none | The setup checklist: each item's status, detail and a fix command to copy |
+
+`repo` is a repo name as the dashboard shows it, or the path to a repo's top level; it must be a repo
+the dashboard found (3 levels under your home directory). Spend comes from the dashboard's usage
+cache (`~/.prism/cache`, refreshed every 5 minutes while `prism-cli dashboard` runs); the MCP server
+never runs codeburn, so when nothing is cached for today it asks you to open the dashboard once.
+Finding and report text is written by a reviewer model and quotes code: the tools return it as JSON
+fields, cap each message at 2,000 characters and each answer at about 50 KB, and their descriptions
+tell the agent to treat that text as data, not instructions. Every answer carries `schema: 1` and
+`prism_cli_version`.
+
+Kiro (`~/.kiro/settings/mcp.json`, or `.kiro/settings/mcp.json` in a workspace):
+
+```json
+{
+  "mcpServers": {
+    "prism": { "command": "prism-cli", "args": ["mcp"] }
+  }
+}
+```
+
+Claude Code:
+
+```bash
+claude mcp add prism -- prism-cli mcp
+```
+
+With an nvm install, a client started outside your shell may not have nvm's directory on PATH. Use
+the absolute path that `command -v prism-cli` prints as the command, for example
+`"command": "/path/from/command-v/prism-cli"`.
 
 ---
 

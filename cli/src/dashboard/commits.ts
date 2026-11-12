@@ -76,7 +76,8 @@ export interface CommitsPanel {
 }
 
 function git(repo: string, args: string[]): { ok: boolean; out: string } {
-  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  // A timed-out git (a hung filesystem or credential prompt) comes back as not ok.
+  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
   return { ok: r.status === 0, out: r.stdout || '' };
 }
 
