@@ -1,4 +1,4 @@
-# PRISM app for Kiro Crew (v0.2)
+# PRISM app for Kiro Crew
 
 A [Kiro Crew](https://github.com/kirodotdev/KiroCrew) app that brings your local PRISM data into
 Kiro Crew. It adds:
@@ -50,14 +50,13 @@ With prism-cli 1.9.0 or later, which bundles this app:
 npm i -g @prism-d1/cli && prism-cli enable kirocrew
 ```
 
-`prism-cli enable kirocrew` prints its plan (install, update or already current, with the
-versions) and asks before it changes anything. It copies the bundled app to
-`~/.prism/kirocrew-app`, then runs `kirocrew app install`, or `kirocrew app update prism --source`
-when the app is already installed (also from another folder, such as a clone), and
-`kirocrew app enable prism` on a first install. It never installs Kiro Crew. `--dry-run` prints
-the plan only, `--status` shows the installed and bundled versions, the source folder, the API
-grants and the digest cron, and `--uninstall` removes the app. After a prism-cli upgrade,
-`prism-cli version` says when the bundled app is newer than the installed one.
+What the command does, its `--status`, `--dry-run` and `--uninstall` options and the two steps
+that stay with you (trust the app, approve its API routes) are in the User Guide's
+[Kiro Crew app](../USER_GUIDE.md#kiro-crew-app) section; every flag is in the
+[command reference](../docs/CLI-REFERENCE.md#prism-cli-enable-kirocrew). It updates an app that
+was installed from another folder, such as a clone, too. It never installs Kiro Crew.
+
+### Install from a folder
 
 From a local folder instead (a clone, for development):
 

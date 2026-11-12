@@ -2,14 +2,16 @@
 
 Shows PRISM's local results inside the editor: VS Code, Kiro IDE and Cursor (any VS Code-family editor, engine 1.90 or later). It reads `prism-cli dashboard --json` for the open repository, or for the whole machine when no repository is open, and does not copy the browser dashboard.
 
+How it compares with the Kiro Crew app and Claude Code, and how it fits with the rest of PRISM: [Using PRISM locally](../USER_GUIDE.md#where-prism-shows-up) in the User Guide. This README covers installing, the features in detail, settings, security, building and releasing.
+
 ## Install
 
 The extension is not on a marketplace yet. Download `prism-d1-<version>.vsix` and its `.sha256` from [GitHub Releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases) (the releases tagged `ext-v*`; the CLI itself ships on npm), or build it from source (see Build). To check the download, run `sha256sum -c prism-d1-<version>.vsix.sha256` (macOS: `shasum -a 256 -c ...`) in the folder holding both files. Then:
 
 ```bash
-code --install-extension prism-d1-0.1.1.vsix     # VS Code
-kiro --install-extension prism-d1-0.1.1.vsix     # Kiro IDE
-cursor --install-extension prism-d1-0.1.1.vsix   # Cursor
+code --install-extension prism-d1-<version>.vsix     # VS Code
+kiro --install-extension prism-d1-<version>.vsix     # Kiro IDE
+cursor --install-extension prism-d1-<version>.vsix   # Cursor
 ```
 
 Or, in any of them: Extensions view, `...` menu, **Install from VSIX...**.
@@ -20,7 +22,7 @@ It needs `prism-cli` 1.7.1 or later (`npm i -g @prism-d1/cli`). 1.7.1 caches cod
 
 With a Remote-SSH window (VS Code, Kiro or Cursor) on a dev desktop, the extension runs on the remote machine, next to the repository and `prism-cli` (`extensionKind: workspace`).
 
-- **Install the `.vsix` into the remote.** Copy it to the remote host, then in the Extensions view use **Install from VSIX...** while connected, or run `code --install-extension prism-d1-0.1.1.vsix` in the remote terminal. Check that PRISM D1 is listed under **SSH: <host> - Installed**, not only under Local.
+- **Install the `.vsix` into the remote.** Copy it to the remote host, then in the Extensions view use **Install from VSIX...** while connected, or run `code --install-extension prism-d1-<version>.vsix` in the remote terminal. Check that PRISM D1 is listed under **SSH: <host> - Installed**, not only under Local.
 - **No ports are needed.** The extension opens no listener and forwards nothing; it only runs `prism-cli` on the remote host.
 - **nvm installs are found automatically.** The remote extension host does not read `.bashrc`, so its `PATH` often lacks nvm. When `prism-cli` is not on `PATH`, the extension looks in `$NVM_BIN`, `~/.nvm/versions/node/*/bin` (the `nvm alias default` version first, then the newest), `$VOLTA_HOME/bin` or `~/.volta/bin`, `~/.local/bin`, `~/.npm-global/bin` and `$NPM_CONFIG_PREFIX/bin`. It runs no shell to look. If it still is not found, set `prism.cliPath` in the remote's user settings to the output of `command -v prism-cli`.
 - `prism-cli` always runs with its own folder first on `PATH`, so its `#!/usr/bin/env node` line finds the node installed next to it, also when `prism.cliPath` is set.
@@ -58,7 +60,7 @@ cd editor-extension
 npm ci
 npm run build     # tsc -> out/
 npm test          # unit tests (node:test), vscode API not needed
-npm run package   # vsce package -> prism-d1-0.1.1.vsix (no publish)
+npm run package   # vsce package -> prism-d1-<version>.vsix (no publish)
 ```
 
 The tests cover the logic modules (status text, findings to markers, the fix prompt, argv building, finding `prism-cli` in nvm and other per-user folders, the spawn `PATH`, refresh debounce, machine mode's argv, status text, tooltip, panel model, last-commit sort and caps, report fallback and file path guard, the panel model and messages). `src/extension.ts`, the VS Code wiring, is not run headless.

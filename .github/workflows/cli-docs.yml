@@ -1,0 +1,45 @@
+# cli-docs.yml -- keep docs/CLI-REFERENCE.md in step with the CLI's --help, and check Markdown links.
+# No secrets, read-only token. Fails when the regenerated reference differs from the committed one,
+# when a relative link or #anchor is broken, or when a doc names a prism-cli command that does not exist.
+
+name: CLI docs
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - 'cli/**'
+      - '**/*.md'
+      - '.github/workflows/cli-docs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm ci
+      - name: Regenerate the command reference
+        run: npm run docs
+      - name: Fail if the reference is out of date
+        run: |
+          if ! git diff --exit-code -- ../docs/CLI-REFERENCE.md; then
+            echo "::error file=docs/CLI-REFERENCE.md::docs/CLI-REFERENCE.md is out of date. Run 'npm run docs' in cli/ and commit the result."
+            exit 1
+          fi
+      - name: Check links, anchors and command names
+        run: npm run docs:check

@@ -1,12 +1,14 @@
 # Design: prism-cli Advise commands (aws connect, check, recommend)
 
-Status: built on `feat/aws-advise` (2026-11-07). User docs: [AWS Account Advice](../USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend).
+> **Historical design document.** It records what was proposed and why. For shipped behavior see the [User Guide](../USER_GUIDE.md#using-prism-locally), the [command reference](CLI-REFERENCE.md) and the [prism-cli Overview](PRISM-CLI-OVERVIEW.md), which also holds the decisions and status that used to be in `PRISM-CLI-STATUS.md`.
+
+Status: built on `feat/aws-advise` (2026-11-07), released in 1.4.0. User docs: [AWS Account Advice](../USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend).
 
 The slide's "Advise" group: look at one AWS account and say what to fix. All three commands are read-only against AWS and print that before their first AWS call.
 
 ## Decisions
 
-| Question (from PRISM-CLI-STATUS) | Decision |
+| Question (from the former PRISM-CLI-STATUS) | Decision |
 |---|---|
 | `aws connect`: per repo or per user? | Both. Per user by default (`~/.prism/aws.json`); `--repo` writes a per-repo override (`.prism/aws.local.json`, git-ignored through `.git/info/exclude`, like `security.local.json`). |
 | What does connect store? | `{profile, region, account, alias, verifiedAt}`. No credentials: the AWS CLI resolves the profile each call. |

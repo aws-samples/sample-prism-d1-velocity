@@ -1,6 +1,8 @@
 # Research: `security threat-model` and `security design-review`
 
-Status: research, 2026-11-06. `security threat-model` and `security threats` are now built from section 3; differences are marked "as built". Usage is in [USER_GUIDE.md](../USER_GUIDE.md#running-a-threat-model-from-the-cli). Answers open question 3 in [PRISM-CLI-STATUS.md](PRISM-CLI-STATUS.md) ("Which Security Agent APIs back `design-review` and `threat-model`?").
+> **Historical design document.** It records what was proposed and why. For shipped behavior see the [User Guide](../USER_GUIDE.md#using-prism-locally), the [command reference](CLI-REFERENCE.md) and the [prism-cli Overview](PRISM-CLI-OVERVIEW.md), which also holds the decisions and status that used to be in `PRISM-CLI-STATUS.md`.
+
+Status: research, 2026-11-06. `security threat-model` and `security threats` are now built from section 3; differences are marked "as built". Usage is in [USER_GUIDE.md](../USER_GUIDE.md#running-a-threat-model-from-the-cli). Answers open question 3 of the former PRISM-CLI-STATUS.md, now in the [prism-cli Overview](PRISM-CLI-OVERVIEW.md) ("Which Security Agent APIs back `design-review` and `threat-model`?").
 
 No AWS call that needs credentials was made. The evidence comes from:
 
@@ -265,7 +267,7 @@ Key: `threat-model/<slug>/<sha12>/docs/<repo-relative path>`. The scan bucket's 
 
 ### 3.4 What `design-review` should be
 
-Recommendation: **drop it for now** and record why in PRISM-CLI-STATUS.
+Recommendation: **drop it for now** and record why in PRISM-CLI-STATUS (now the [Overview](PRISM-CLI-OVERVIEW.md#decided-not-to-build)).
 
 - **Alias it to threat-model with docs?** No. A design review checks docs against requirement packs and returns Compliant, Non-compliant, Insufficient data or Not applicable. A threat model returns STRIDE threats. Users who know the web app would get a different report under the same name. `security threat-model --doc design.md` already covers threat-modeling a design.
 - **A requirements check?** The only requirements evaluation in the API is a code review with `controlsScanning`. It checks code, not designs, and it is an agent-space setting that `enable security` would have to change, which affects CI reviews too. That is a separate decision. If wanted later, it fits as an `enable security --requirements` option, not as `design-review`.

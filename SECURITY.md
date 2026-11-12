@@ -63,6 +63,13 @@ Session IDs are now generated with a CSPRNG (32 bytes, base64url), which closes 
 
 ## Design Decisions (Accepted)
 
+- **Local tools stay local.** Each local surface documents its own exposure; read these before changing them:
+  - `prism-cli dashboard` binds `127.0.0.1` only, requires a per-run token, makes no AWS calls on load, and its Setup view runs only a fixed list of commands after a confirmation ([Local Dashboard](USER_GUIDE.md#local-dashboard)).
+  - `prism-cli mcp` speaks MCP over stdio only, with no network listener; it treats finding text as untrusted reviewer output ([MCP server](USER_GUIDE.md#mcp-server-prism-cli-mcp)).
+  - The editor extension opens no port, makes no network calls and does not run in untrusted folders ([Security](editor-extension/README.md#security)).
+  - The Kiro Crew app runs only after you trust it in Kiro Crew; its page uses the gateway's authenticated routes and sandboxes report HTML (see [the app README](kirocrew-app/README.md)).
+  - `prism-cli security pentest` never takes a URL: it tests only an app it deployed into a private VPC with no internet ingress, and tears it down afterwards ([Running a Penetration Test](USER_GUIDE.md#running-a-penetration-test-from-the-cli)).
+  - `prism-cli enable security`, `security pentest` and `team add-developer` show the account, region and plan and ask before writing to AWS.
 - **AI attribution is developer-machine data, not cryptographically verified.** codeburn attribution is pushed from each developer's machine. The system is designed for internal teams measuring productivity, not adversarial environments. (Commit trailers and the token tracker that fed them are retired.)
 - **Codewatch results** (`.prism/results/`) are gitignored, or excluded through `.git/info/exclude` with `--global`, so they are never committed. They store gitleaks rule ids and locations, never secret values.
 - **Pinned action SHAs** prevent supply-chain attacks via compromised actions.

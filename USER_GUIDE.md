@@ -9,20 +9,23 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Prerequisites](#prerequisites)
 - [Administrator Setup](#administrator-setup)
 - [Developer Setup](#developer-setup)
-- [Using PRISM locally](#using-prism-locally)
+- [Using PRISM locally](#using-prism-locally) (where PRISM shows up, commands by job, editor extension, MCP server, Kiro Crew app)
 - [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)
 - [Local Dashboard](#local-dashboard)
 - [Security Agent Setup (enable security)](#security-agent-setup-enable-security)
+- [Security Scans from Your Machine](#security-scans-from-your-machine)
 - [CI-CD Workflows (GitHub and GitLab)](#ci-cd-workflows-github-and-gitlab)
 - [Eval Gates](#eval-gates)
 - [AWS Account Advice (aws connect, check, recommend)](#aws-account-advice-aws-connect-check-recommend)
 - [Bedrock Protection Audit](#bedrock-protection-audit)
-- [AWS Continuum Security Agent](#aws-continuum-security-agent)
 - [Dashboards](#dashboards)
 - [Agent Development (MCP + Agent Configs)](#agent-development-mcp--agent-configs)
 - [Sample App](#sample-app)
 - [Troubleshooting](#troubleshooting)
 - [Event Schema](#event-schema)
+
+Every prism-cli command and flag is in the [command reference](docs/CLI-REFERENCE.md), generated
+from `--help`. This guide explains what each feature does and how to set it up.
 
 ---
 
@@ -57,20 +60,10 @@ npx cdk deploy --all --context enableSecurityAgent=true
 
 Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 5, and developers need the URL for `prism-cli enable codeburn`.
 
-**Or let prism-cli set up Security Agent.** `prism-cli enable security` deploys only the Security Agent resources (after showing a diff and asking): in the standalone `PrismD1SecurityAgent` stack, or in the pipeline stack if this account already hosts them there. Then it does the Continuum onboarding that would otherwise follow it. If you use it, deploy the pipeline above without `--context enableSecurityAgent=true`:
-
-```bash
-prism-cli enable security --dry-run --profile your-profile --region us-west-2   # see the plan first
-prism-cli enable security --profile your-profile --region us-west-2
-```
-
-Beyond the deploy, it:
-
-1. Looks up your Continuum agent space
-2. Creates the Continuum application if it does not exist, and attaches its execution role
-3. Archives the repository to the scan bucket, creates a Code Review resource, and stores its id at `/prism/continuum/code-review-id/<repo-slug>` in SSM
-
-Item 3 is a convenience rather than a requirement — the eval-gate workflow reads that SSM parameter and creates the Code Review itself on its first run if the parameter is missing. See [Security Agent Setup](#security-agent-setup-enable-security) for the details; `prism-cli securityagent setup` is its deprecated alias.
+**Or let prism-cli set up Security Agent.** `prism-cli enable security` deploys only the Security
+Agent resources (after showing a diff and asking) and then does the Continuum onboarding for the
+repo you run it in. If you use it, deploy the pipeline above **without**
+`--context enableSecurityAgent=true`. See [Security Agent Setup](#security-agent-setup-enable-security).
 
 ### Step 2: Set Up OIDC (CI/CD → AWS Authentication)
 
@@ -93,6 +86,14 @@ prism-cli bootstrapper setup-gitlab-oidc
 ```
 
 Creates OIDC provider + IAM role. Add `PRISM_METRICS_ROLE_ARN` as a CI/CD variable (unprotected).
+
+**One role for many repos.** By default the role trusts one repository (GitHub) or project
+(GitLab). `--global` creates one role (`GitHubActions-<owner>-all` or `GitLabCI-<group>-all`) whose
+trust policy accepts every repo of the GitHub owner (or every project of the GitLab group), which is
+simpler to roll out but lets any of those repos assume it. `setup-github-oidc --pin-ids` pins the trust policy to GitHub's
+immutable owner and repo ids instead of names, so a deleted and re-created name cannot inherit the
+role (private repos may need the `gh` CLI or `GITHUB_TOKEN`). `setup-gitlab-oidc --project-id`
+does the same with the numeric project id.
 
 Both commands take `--region <region>` (default `us-west-2`), which sets the event bus ARN in the
 inline policy. Pass the same region to the workflow installer below, or `events:PutEvents` will be
@@ -147,15 +148,9 @@ This installs four things into your repo:
 The kiro-cli gate needs `KIRO_API_KEY` from the next step and a paid Kiro subscription.
 See [Eval Gates](#eval-gates) for full details.
 
-Available flags:
-
-| Flag | Purpose |
-|---|---|
-| `--region <region>` | AWS region (default `us-west-2`) |
-| `--agent-eval-model <id>` | Bedrock model for `prism-agent-eval.yml` |
-| `--agent-eval-threshold <n>` | Pass threshold for agent eval (0–1) |
-| `--skip-agent-eval-harness` | Skip installing `.prism/eval-harness/` |
-| `--uninstall` | Remove all installed files |
+Its flags (region, the agent-eval model and threshold, skipping `.prism/eval-harness/`,
+`--uninstall`) are in the
+[command reference](docs/CLI-REFERENCE.md#prism-cli-bootstrapper-install-eval-harness).
 
 > **`--mode` and `--with-rubrics` are retired.** Passing `--mode bedrock` now exits 1 with a
 > migration message.
@@ -435,23 +430,17 @@ In team mode the command takes these steps, and a re-run reports the ones alread
 3. **Backfills** 30 days of history (`codeburn sync push --since 30d --attribution`), on first setup
    only.
 4. **Installs a platform-native schedule** — crontab on Linux, LaunchAgent on macOS, Scheduled Task
-   on Windows — that runs `codeburn sync push --since 7d --attribution` every 12 hours, pushing AI
-   usage **and** per-commit attribution. An existing schedule is refreshed in place.
+   on Windows — that runs `codeburn sync push --since 7d --attribution` every 12 hours
+   (`--interval <hours>` changes it), pushing AI usage **and** per-commit attribution. An existing
+   schedule is refreshed in place. On Linux, `--schedule systemd` uses a systemd user timer instead
+   of your crontab, and when the crontab cannot be read a systemd user timer is offered (`--yes`
+   accepts it).
 5. **Reports `codeburn sync status`.**
 
-| Flag | Purpose |
-|---|---|
-| `--local` | Local only (the default): usage stays on this machine |
-| `--url <url>` | Team: the collector URL (the `OtelCollectorUrl` stack output, from your platform team); default: the URL codeburn already syncs to |
-| `--admin` | Platform team: print the setup steps and the `prism-cli team` commands (no AWS calls) |
-| `--interval <hours>` | Sync interval, default `12` |
-| `--yes` | Install codeburn, and reconfigure a different endpoint, without asking |
-| `--dry-run` | Print the plan with the exact commands; change nothing |
-| `--status` | Show codeburn, the sync config, the schedule, the last sync log lines and `codeburn sync status` |
-| `--remove` | Remove the schedule; with `--local`, switch to local and remove it |
-
-`prism-cli bootstrapper setup-otel-sync` is the old name of this command. It still works, takes the
-same flags and prints a deprecation notice.
+`--dry-run` prints the plan with the exact commands and changes nothing. `--status` shows codeburn,
+the sync config, the schedule, the last sync log lines and `codeburn sync status`. `--remove`
+removes the schedule (on Linux both kinds, unless `--schedule` picks one). Every flag:
+[`prism-cli enable codeburn`](docs/CLI-REFERENCE.md#prism-cli-enable-codeburn).
 
 **Push now.** `prism-cli export otel` runs the same push the schedule runs
 (`codeburn sync push --since 7d --attribution`), streams codeburn's output and exits with codeburn's
@@ -497,50 +486,65 @@ npm install -g @prism-d1/cli
 prism-cli version        # installed version, newer release on npm, other copies on PATH
 ```
 
+### Where PRISM shows up
+
+The local results (codewatch reviews, AI spend, the setup checklist) appear in these tools. All of
+them read the same local data as `prism-cli dashboard` and make no AWS calls.
+
+| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code (WIP / planned) |
+|---|---|---|---|
+| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes, through the `prism_findings` MCP tool |
+| Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes, through the `prism_report` MCP tool |
+| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes, through the `prism_spend` MCP tool; a status line is planned |
+| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes, through the `prism_setup` MCP tool |
+| MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: today's only integration besides the SessionStart hook |
+| Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
+| Plugin, slash commands | No | No | Planned |
+| Where it runs | With a repo open or without one (machine mode), and on the remote host over Remote-SSH | The Kiro Crew gateway's machine | Wherever `claude` runs |
+| Install | `code --install-extension prism-d1-<version>.vsix` (`kiro` or `cursor` instead of `code`), from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true) | `prism-cli enable kirocrew` | `claude mcp add prism -- prism-cli mcp` |
+
+Claude Code support is a work in progress. Today it is the [MCP server](#mcp-server-prism-cli-mcp)
+and the SessionStart hook `prism-cli git claude-session-context`, which the retired git-hook
+installer used to register and which is kept for hooks already installed. A Claude Code plugin,
+slash commands and a status line are planned.
+
+### Commands by job
+
 Most features run on a developer machine with no AWS deployment: the
 [codewatch git hooks](#codewatch-local-git-hooks), the [local dashboard](#local-dashboard), the
-[editor extension](#editor-extension) and the read-only
-[AWS account checks](#aws-account-advice-aws-connect-check-recommend). The commands by job:
+[editor extension](#editor-extension), the [MCP server](#mcp-server-prism-cli-mcp), the
+[Kiro Crew app](#kiro-crew-app) and the read-only
+[AWS account checks](#aws-account-advice-aws-connect-check-recommend).
 
-| Job | Commands |
-|-----|----------|
-| Send AI usage to PRISM | `enable codeburn`, `export otel` ([Developer Setup](#developer-setup)) |
-| Check changes before they leave your machine | `enable codewatch`, `codewatch report` |
-| See results locally | `dashboard`, `mcp` ([for an AI agent](#mcp-server-prism-cli-mcp)), and the [editor extension](#editor-extension) for VS Code, Kiro and Cursor |
-| Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security pentest` |
-| Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection` |
-| Platform team | `team info`, `team add-developer`, `bootstrapper ...` |
+| Job | Commands | How-to |
+|-----|----------|--------|
+| Send AI usage to PRISM | `enable codeburn`, `export otel` | [Developer Setup](#developer-setup) |
+| Check changes before they leave your machine | `enable codewatch`, `codewatch report` | [Codewatch](#codewatch-local-git-hooks) |
+| See results locally | `dashboard`, `mcp`, `enable kirocrew`, the editor extension | [Local Dashboard](#local-dashboard), [Where PRISM shows up](#where-prism-shows-up) |
+| Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security threats`, `security pentest` | [Security Agent Setup](#security-agent-setup-enable-security), [Security Scans from Your Machine](#security-scans-from-your-machine) |
+| Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection scan-account`, `scan-org`, `scan-repo` | [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend), [Bedrock Protection Audit](#bedrock-protection-audit) |
+| Platform team | `team info`, `team add-developer`, `bootstrapper setup-github-oidc` and the other `bootstrapper` commands | [Administrator Setup](#administrator-setup) |
+| Assess a team | `assessment run`, `assessment web`, `assessment deploy-cdk` | [Assessment Guide](assessment/ASSESSMENT_GUIDE.md) |
+| Run the workshop | `workshop verify-setup`, `deploy-infra`, `generate-demo-data`, `run-agent`, `perform-pen-test` | The workshop modules |
 
-Every command takes `--help`. [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) groups the commands
-by job and lists what each one touches in AWS.
+Every command and flag, generated from `--help`, is in the
+**[command reference](docs/CLI-REFERENCE.md)**, including the deprecated old names. The
+[prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) lists what each command touches in AWS and what it
+costs.
 
 ### Editor extension
 
 The [editor extension](editor-extension/README.md) works in VS Code, Kiro and Cursor. It puts this
 repo's codewatch findings in the Problems panel and a one-line summary (findings, spend today,
-setup warnings) in the status bar, with a side panel for the setup checklist. It reads
-`prism-cli dashboard --json`, opens no ports and makes no AWS calls. It needs prism-cli 1.7.1 or
-later.
+setup warnings) in the status bar, with a side panel for the setup checklist. With no repository
+open it shows the whole machine instead. It reads `prism-cli dashboard --json`, opens no ports and
+makes no AWS calls. It needs prism-cli 1.7.1 or later.
 
-Download `prism-d1-<version>.vsix` and its `.sha256` from the latest
-[`ext-v*` release](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true)
-(the CLI itself ships on npm). Check the download in the folder that holds both files, then install
-it:
-
-```bash
-sha256sum -c prism-d1-0.1.0.vsix.sha256          # macOS: shasum -a 256 -c prism-d1-0.1.0.vsix.sha256
-code --install-extension prism-d1-0.1.0.vsix     # VS Code
-kiro --install-extension prism-d1-0.1.0.vsix     # Kiro IDE
-cursor --install-extension prism-d1-0.1.0.vsix   # Cursor
-```
-
-Or use **Install from VSIX...** in the Extensions view's `...` menu.
-
-On Remote-SSH, install it on the SSH host: copy the `.vsix` there and use **Install from VSIX...**
-while connected, or run the install command in the remote terminal. Check that it is listed under
-`SSH: <host> - Installed`. A `prism-cli` installed with nvm is found automatically; if it is not
-found, set `prism.cliPath` in the remote's user settings to the output of `command -v prism-cli`.
-Features, settings and security: [editor extension README](editor-extension/README.md).
+Download `prism-d1-<version>.vsix` (0.1.1 at the time of writing) and its `.sha256` from the
+latest [`ext-v*` release](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true),
+then install it with `code --install-extension prism-d1-<version>.vsix` (or `kiro`, `cursor`).
+Checking the download, Remote-SSH, features, settings and security:
+[editor extension README](editor-extension/README.md#install).
 
 ### MCP server (prism-cli mcp)
 
@@ -607,7 +611,7 @@ Install it with prism-cli 1.9.0 or later, which bundles the app:
 npm i -g @prism-d1/cli && prism-cli enable kirocrew
 ```
 
-The command prints its plan and asks first (`--yes` skips the question, `--dry-run` only prints
+The command prints its plan (install, update or already current, with the versions) and asks first (`--yes` skips the question, `--dry-run` only prints
 the plan). It copies the bundled app to `~/.prism/kirocrew-app` and runs `kirocrew app install`
 or `kirocrew app update prism --source ~/.prism/kirocrew-app`, then `kirocrew app enable prism` on
 a first install. It does not install Kiro Crew. Two steps stay with you: trust the app and approve
@@ -618,14 +622,9 @@ the app and keeps its data; add `--purge-data` to delete the data too. `prism-cl
 dashboard's Setup tab say when the installed app is older than the one bundled with your
 prism-cli.
 
-To install from a local folder instead, for example a clone you are changing:
-
-```bash
-kirocrew app install <path-to>/sample-prism-d1-velocity/kirocrew-app
-kirocrew app enable prism    # trust the app when Kiro Crew asks; nothing is registered until you do
-```
-
-What the app can access, its settings and how to uninstall it: [app README](kirocrew-app/README.md).
+To install from a local folder instead, for example a clone you are changing, see
+[Install from a folder](kirocrew-app/README.md#install-from-a-folder) in the app README. What the
+app can access, its settings and the digest rules are there too.
 
 ---
 
@@ -760,10 +759,10 @@ The per-repo uninstall removes the hooks and restores any `<hook>.pre-prism` the
 unwanted. The global uninstall restores the previous global `core.hooksPath` (or unsets it) and
 removes the scripts from `~/.prism/hooks`. It never touches repo-local hooks.
 
-`prism-cli bootstrapper install-git-hooks` is a deprecated alias for `enable codewatch`. Its old
-flags (`--team-id`, `--max-tokens`, `--max-cost`, `--global`) are accepted and ignored; `--reviewer`
-and `--uninstall` are passed through. Installing over the retired `prepare-commit-msg` trailer hook
-removes it.
+`prism-cli bootstrapper install-git-hooks` is a deprecated alias for `enable codewatch` (its old
+flags are accepted and ignored; see the
+[command reference](docs/CLI-REFERENCE.md#prism-cli-bootstrapper-install-git-hooks)). Installing
+codewatch over the retired `prepare-commit-msg` trailer hook removes it.
 
 ### Scan Reports
 
@@ -777,13 +776,9 @@ prism-cli codewatch report --commit 1a2b3c4d             # newest review whose p
 prism-cli codewatch report --format html --output scan.html
 ```
 
-| Flag | Purpose |
-|---|---|
-| `--repo <path>` | Repository (default: the current one) |
-| `--id <result-id>` | A specific review: its file name in `.prism/results/` without `.json` |
-| `--commit <sha>` | The newest review whose pushed range includes this commit. Not with `--id` |
-| `--format <fmt>` | `md` (default), `html` or `json` |
-| `--output <file>` | Write to a file instead of stdout |
+`--id <result-id>` picks a review by its file name in `.prism/results/` without `.json`; `--commit`
+is not allowed with `--id`. Every flag:
+[`prism-cli codewatch report`](docs/CLI-REFERENCE.md#prism-cli-codewatch-report).
 
 Reports never contain secret values: results store only the gitleaks rule and location. The same
 reports are linked from the dashboard (see [Local Dashboard](#local-dashboard)).
@@ -928,15 +923,11 @@ Each review in the **Scans** list links to `/report/<id>`, a printable page with
 
 ### Options
 
-| Flag | Purpose |
-|---|---|
-| `--json` | Print the dashboard data as JSON and exit. No server is started |
-| `--fresh` | With `--json`: run the codeburn exports now instead of using the 5-minute usage cache |
-| `--timing` | With `--json`: print how long each stage took (scan, setup, usage, total) to stderr; the same numbers are in the JSON's `timing` |
-| `--root <dir>` | Where to scan for repos, 3 levels deep (default: your home directory) |
-| `--port <n>` | Port on `127.0.0.1`, 1024-65535 (default: a random free port) |
-| `--no-open` | Do not open a browser; open the printed URL yourself |
-| `--all` | Deprecated and has no effect: every repo under `--root` is shown by default |
+`--json` prints the dashboard data as JSON and exits without starting a server; with it, `--fresh`
+runs the codeburn exports now instead of using the 5-minute usage cache, and `--timing` prints how
+long each stage took (scan, setup, usage, total) to stderr, with the same numbers in the JSON's
+`timing`. `--port` takes 1024-65535. Every flag, with its default:
+[`prism-cli dashboard`](docs/CLI-REFERENCE.md#prism-cli-dashboard).
 
 ### Remote Machines
 
@@ -1108,17 +1099,19 @@ names the application it checked when there are several), the CI workflow step (
 marker. It also flags the unused `/prism/continuum/code-review-id` parameter left by the old
 `securityagent setup`.
 
+At the end of a successful run the command prints the Security Agent web console URL. To check
+the setup by hand with the AWS CLI:
+
+```bash
+aws securityagent list-agent-spaces --region us-west-2 --output table
+# Should show: prism-d1-security | as-xxxxxxxxxxxx | ACTIVE
+aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text
+```
+
 ### Options
 
-| Flag | Purpose |
-|---|---|
-| `--profile <name>` | AWS CLI profile (default: `AWS_PROFILE` or env credentials, else the profile saved by [`aws connect`](#aws-account-advice-aws-connect-check-recommend), else the standard credential chain) |
-| `--region <region>` | AWS region (default: `AWS_REGION`, `AWS_DEFAULT_REGION`, the `aws connect` region, else the profile's region; refuses when none is set) |
-| `--dry-run` | Run every read-only step and print the plan; change nothing |
-| `--status` | Read-only report |
-| `--yes` | Approve without a prompt |
-| `--repo <host/owner/name>` | Repo id for the code review (default: from `origin`) |
-| `--context <key=value>` | Extra CDK context, repeatable |
+Every flag, with its default:
+[`prism-cli enable security`](docs/CLI-REFERENCE.md#prism-cli-enable-security).
 
 ### Permissions
 
@@ -1138,6 +1131,273 @@ that needs its own design; until then, remove them in the console or with CloudF
 
 `prism-cli securityagent setup` is a deprecated alias for `enable security` with the same flags. It
 now asks before deploying, so scripts that ran it unattended need `--yes`.
+
+---
+
+## Security Scans from Your Machine
+
+AWS Continuum (formerly AWS Security Agent) can review code, threat-model a repo and penetration-test
+a running app (OWASP Top 10 and business-logic flaws). These commands run those jobs from a developer machine, against the repo you are in.
+`security code-review`, `security findings`, `security threat-model` and `security threats` need
+[Security Agent Setup](#security-agent-setup-enable-security) first; `security pentest` sets up its
+own agent space. Each command's flags are in the
+[command reference](docs/CLI-REFERENCE.md#prism-cli-security). The CI gate runs the same code
+review on every pull request (see [Security Agent (Continuum) in the Gate](#security-agent-continuum-in-the-gate)).
+
+Design review has no public API, so it stays in the Security Agent web console; there is no
+`design-review` command. A manual, console-and-AWS-CLI route for GitHub integration and for testing
+an already-deployed public URL is kept in
+[docs/SECURITY-AGENT-MANUAL.md](docs/SECURITY-AGENT-MANUAL.md).
+
+### Running a Review from the CLI
+
+After `prism-cli enable security`, you can run the same Security Agent code review the eval gate
+runs, from your machine:
+
+```bash
+prism-cli security code-review                    # this branch's diff against its upstream
+prism-cli security code-review --full             # the whole repo at HEAD
+prism-cli security code-review --fail-on high     # exit 1 on a high or critical finding
+prism-cli security code-review --no-wait          # start it and come back later
+prism-cli security findings                       # the pending job's findings, else the latest job's
+prism-cli security findings --job <id> --wait     # a specific job, waiting if it is still running
+```
+
+`security code-review`:
+
+1. Prints a notice, then the same account, caller, region and credential block as `enable
+   security`, with the same credential chain and region rules.
+2. Finds the agent space and this repo's code review in SSM (`/prism/continuum/agent-space-id` and
+   `/prism/continuum/code-review-id/<repo-slug>`), the source of truth, because a file in the repo
+   could be committed by anyone. `.prism/security.local.json` is used only when SSM has no value,
+   only if git does not track it, and it says so; when the two disagree, SSM wins with a warning.
+   The legacy `security` block in `.prism/config.json` is never read here. With no IDs, it says to
+   run `prism-cli enable security` first and exits 1.
+3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
+   upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
+   changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
+4. Uploads to the scan bucket, skipping any upload whose object's ETag already matches. Both scopes
+   first refresh the code review's own source, `repo/<repo-slug>/latest.zip`, to `git archive
+   HEAD` and print `Review context: updated ... to HEAD <sha>`. A diff job reads that zip as the
+   code around the patch, so a stale zip would make it report code that no longer exists. The
+   Security Agent has no per-job source, so this is the zip CI diff jobs read too. A diff then
+   goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`. The result records the zip's commit as
+   `security.context_commit`.
+5. Starts the job and at once saves a **pending** result in `.prism/results/` with the job ID, the
+   scope and the commits. When the job ends, that same file is completed, so a wait that does not
+   finish loses nothing. Then it waits. It polls every 10 seconds, doubling up to 60, with a
+   one-line ticker on a terminal and plain lines otherwise. A failed poll (throttling, a network
+   error) is retried 3 times, after 2, 4 and 8 seconds.
+   - `--timeout <minutes>` (default 30): on timeout it prints the job ID and the `security findings
+     --job` command, and exits 2.
+   - Ctrl-C stops waiting but leaves the job running, prints the same hint, and exits 130.
+   - A poll that still fails, or fails on credentials or permissions, prints the error and the same
+     hint, and exits 1.
+   - In all three cases, and with `--no-wait`, the pending result stays for `security findings`.
+6. Prints the findings, grouped by risk level and then file: title, file:line, CWE when present,
+   and a short description. Then totals, our wall time and the service's own job duration.
+   Paths are repo-relative: the service's sandbox prefix (`.../source_code/code_sc-<id>/`) is
+   removed, and the result keeps the original as `raw_file`.
+7. Saves the result in `.prism/results/`, in the codewatch result format with `kind:
+   security-review`, `tool: security-agent`, the job ID, base, tip and scope.
+
+The uploads and starting the job are its only AWS writes. It exits 0 (report only, like
+codewatch) unless `--fail-on <critical|high|medium|low>` finds a finding at or above that level,
+which exits 1. A failed or stopped job exits 1 with its reason. `--json` prints only the result JSON
+on stdout, with progress on stderr.
+
+`security findings` is read-only. Without `--job`, it first looks for pending results in this repo
+for the current account, region and code review. It takes the newest and names any older ones.
+When that job has finished, it fetches the findings and completes the pending result, keeping its
+scope and commits. Only when nothing is pending does it ask the API for the latest job (saved with
+scope `unknown`). `--job <id>` fetches that job, and completes its pending result if there is
+one. `--severity <level>` hides lower levels. A job still running exits 2 with a note; `--wait`
+waits for it with the same poller.
+
+Both work on one repository: run them from its top level, or pass `--path <repo>`. A subdirectory
+is refused (the message names the top level), and so is a directory that is not a repository; they
+never walk up to an enclosing repo. Results are written under that top level. `--repo
+<host/owner/name>` is the repo id (not a path) the code review is named after, as in `enable
+security`.
+
+Both take `--profile`, `--region` and `--repo`, as `enable security` does. Besides the
+`enable security` read permissions, they need `securityagent:StartCodeReviewJob`,
+`BatchGetCodeReviewJobs`, `ListCodeReviewJobsForCodeReview`, `ListFindings` and `BatchGetFindings`,
+`s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
+
+### Running a Threat Model from the CLI
+
+A Security Agent threat model reads the repo at HEAD and, optionally, design docs (scope docs). It
+returns a system overview and threats with a severity, STRIDE categories and a recommendation. AWS
+does not charge for threat modeling while it is in preview. The research behind this command is in
+[docs/RESEARCH-threat-model-design-review.md](docs/RESEARCH-threat-model-design-review.md).
+
+```bash
+prism-cli security threat-model                          # source + .kiro/specs/*/{design,requirements}.md
+prism-cli security threat-model --doc docs/DESIGN.md     # these scope docs instead (repeatable)
+prism-cli security threat-model --no-docs                # the source alone
+prism-cli security threat-model --no-wait                # start it and come back later
+prism-cli security threats                               # the pending job's threats, else the latest job's
+prism-cli security threats --job <id> --wait --severity high
+```
+
+`security threat-model` works like `security code-review`: the same repo-root check, notice,
+identity block, pending record, polling, `--json`, `--no-wait` and exit codes (Ctrl-C 130, timeout 2,
+failed job 1). It differs in these ways:
+
+1. The agent space, scan bucket and service role come from SSM (`/prism/continuum/agent-space-id`,
+   `scan-bucket`, `service-role-arn`) only. No repo file is read for them.
+2. Scope docs are read from **HEAD**, not the working tree, so they match the source that is
+   modeled. A `--doc` must be committed, must be inside the repository, must not be a symlink, and
+   must be `.md`, `.txt`, `.pdf`, `.doc`, `.docx`, `.png`, `.jpg` or `.jpeg`. A bad `--doc` prints
+   one error line before any AWS call. Without `--doc`, the Kiro spec files
+   `.kiro/specs/*/design.md` and `requirements.md` in HEAD are used when present.
+3. `git archive HEAD` and the docs go to the scan bucket under
+   `threat-model/<repo-slug>/<commit>/` (`source.zip`, `docs/<path>`). Identical objects are not
+   uploaded again. The CI code review's `repo/<repo-slug>/latest.zip` is not touched.
+4. Each run creates its own threat model, titled `<repo-slug>-tm-<commit>-<time>`, and starts its
+   job. `security threats` finds the latest one by that title prefix.
+5. `--timeout` defaults to 120 minutes. AWS's IDE docs give 5 to 30 minutes for a run, but a full-repo run with one scope doc took about 51 minutes in testing.
+6. The output has the first paragraph of the system overview, then the threats by severity
+   (CRITICAL, HIGH, MEDIUM, LOW, INFO). Each threat shows its STRIDE categories, title,
+   recommendation and evidence paths, with the sandbox prefix removed. The result is saved with
+   `kind: security-threat-model` and keeps the full overview in `threat_model.system_overview`.
+7. `--fail-on <level>` exits 1 on a threat at or above that level. INFO never fails.
+
+The agent space must list the scan bucket in `awsResources.s3Buckets`, or `create-threat-model`
+refuses the upload. The stack lists it since this release. Before any upload, the command checks
+the list with `batch-get-agent-spaces` and stops with no writes when the bucket is missing:
+`the Security Agent space doesn't list the scan bucket <name>; run prism-cli enable security to
+update it.` On an older stack, `enable security` sees the drift and updates the agent space in
+place. `enable security --status` shows the same check as the `Scan bucket on agent space` row.
+The extra read permission is `securityagent:BatchGetAgentSpaces`.
+
+The API documents no scope-doc limits, so on a client error the command prints a hint to trim the
+docs. It also warns when the docs exceed the web app's design-review limits: 5 files, 2 MB each
+(0.5 MB for `.md` and `.txt`), 6 MB in total.
+
+`security threats` is read-only and completes pending records like `security findings` does.
+
+**IAM.** Besides the `enable security` read permissions, the two commands need:
+
+- `securityagent:CreateThreatModel` and `StartThreatModelJob` (threat-model only);
+- `securityagent:BatchGetAgentSpaces` (threat-model's bucket check);
+- `securityagent:BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats`;
+- for `security threats` without a pending record, `ListThreatModels` and `ListThreatModelJobs`;
+- `iam:PassRole` on the service role, conditioned on `iam:PassedToService = securityagent.amazonaws.com`;
+- `s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
+
+The CI managed policy `prism-d1-continuum-ci-scan` grants only the code-review actions. Running a
+threat model from CI would need `BatchGetAgentSpaces`, `CreateThreatModel`, `StartThreatModelJob`,
+`BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats` added to its `ContinuumScanAPIs`
+statement. Its PassRole, scan bucket and SSM statements already cover the rest.
+
+There is no `security design-review` command: design review has no public API (see the research
+doc).
+
+### Running a Penetration Test from the CLI
+
+`prism-cli security pentest` builds this repo's app from its Dockerfile, deploys it into a
+temporary **private** environment in your AWS account, and runs an AWS Security Agent penetration
+test against that environment only. It never takes a URL, so it can only test what it just
+deployed. The design is in [docs/DESIGN-prism-cli-pentest.md](docs/DESIGN-prism-cli-pentest.md).
+
+```bash
+prism-cli security pentest --dry-run                    # the plan, target and cost; changes nothing
+prism-cli security pentest                              # deploy, start the job, return (no wait)
+prism-cli security pentest --status                     # refresh the job; tear down once it has finished
+prism-cli security findings --pentest                   # read the findings (read-only)
+prism-cli security pentest --cleanup                    # remove the environment now
+prism-cli security pentest --wait --fail-on high        # wait (up to 6 h), then exit 1 on a high finding
+```
+
+**Prerequisites**
+
+1. Docker running locally, to build the image.
+2. The account and region bootstrapped for CDK (`npx cdk bootstrap aws://<account>/<region>`).
+3. AWS CLI 2.36 or later, with permission to deploy CloudFormation, ECR, ECS, EC2, ELB,
+   Route 53, S3, CloudWatch Logs and IAM, and to call the Security Agent pentest APIs.
+4. `prism-cli enable security` is **not** required: each run creates its own agent space.
+
+**`.prism/pentest.json`** (committable; every field is optional):
+
+```jsonc
+{
+  "appType": "dockerfile",                 // v1 supports only dockerfile
+  "path": "sample-app",                    // Docker build context, relative to the repo root (default ".")
+  "dockerfile": "sample-app/Dockerfile",   // relative to the repo root (default <path>/Dockerfile)
+  "port": 8080,                            // the port the container listens on (default 8080)
+  "healthPath": "/health",                 // ALB health check path (default /health)
+  "env": {
+    "LOG_LEVEL": "info",                                              // a literal value
+    "DB_PASSWORD": { "secret": "arn:aws:secretsmanager:...:secret:db" } // a Secrets Manager reference
+  },
+  "actors": [                              // optional signed-in test users
+    { "identifier": "user", "auth": { "providerType": "SECRETS_MANAGER", "secret": "arn:aws:secretsmanager:...:secret:user" } }
+  ],
+  "excludeRiskTypes": ["DENIAL_OF_SERVICE"]
+}
+```
+
+An `env` name that looks sensitive (`password`, `secret`, `token`, `key`, ...) must be a
+`{ "secret": "<arn>" }` reference; a literal value there is refused, so no credential lands in
+the committed file. Secrets are injected by ECS when the task starts. An actor's `providerType` is
+`SECRETS_MANAGER`, `AWS_LAMBDA` or `AWS_IAM_ROLE`, and its ARN must be in the same account. The
+pentest's service role is granted read on exactly the actor ARNs listed. `--app-dir` and
+`--dockerfile` override `path` and `dockerfile` for one run.
+
+**Flags.** Every flag, with its default (`--timeout` 360 minutes for `--wait`):
+[`prism-cli security pentest`](docs/CLI-REFERENCE.md#prism-cli-security-pentest).
+
+**Waiting, status and teardown.** A run takes hours: the reference runs took about 2 h 50 min,
+mostly in the `PENTEST` step. So by default the command starts the job, saves a pending record in
+`.prism/results/` and returns. It prints the follow-up commands with the `--profile` and
+`--region` you passed.
+
+- `--status` refreshes the job and prints its step. Once the job has finished, it saves the
+  findings and tears the environment down.
+- `--wait` polls until the job finishes (or `--timeout`), prints the findings, then tears down.
+- `--keep` leaves the environment up after the job, to reproduce a finding.
+- `--cleanup` removes a run's environment at any time; it stops a running job first.
+- `security findings --pentest [<job>]` reads the findings without deleting anything.
+
+Teardown deletes the pentest, the run's agent space, its target domain and the CloudFormation
+stack. It first waits for the agent's network interfaces to be released, then retries the stack
+deletion once. If it still fails, the record keeps a `teardown failed` marker, which `--status`
+and the dashboard show; run `--cleanup` again later.
+
+**What it creates.** One CloudFormation stack per run, `PrismPentest-<repo>-<id>`, tagged
+`prism:purpose=pentest` and `prism:expires-at`:
+
+- a new VPC with two private subnets only: no public subnet, no internet gateway, no NAT, and no
+  `0.0.0.0/0` ingress;
+- VPC endpoints for ECR, S3, CloudWatch Logs, and Secrets Manager when `env` uses secrets;
+- the app on Fargate behind an **internal** ALB, reachable only from the pentest agent's security
+  group, under a private Route 53 name `app.<id>.prism.internal`;
+- a scoped service role, a private source bucket (the repo at HEAD, for white-box testing) and a
+  log group.
+
+Before deploying, the command shows the plan and the cost and asks for confirmation (`--yes`
+skips the prompt). It starts the job only after the app passes the ALB health check, waiting up
+to 10 minutes. If the app never becomes healthy, no pentest is created; the command prints the
+target's health reason and an `aws logs tail` command for the app's log group, and leaves the
+environment up for `--cleanup`.
+
+**Cost.** Security Agent penetration testing is billed in task-hours, publicly reported at **$50
+per task-hour** (per-second metered; check the current AWS Security Agent pricing page). The
+environment adds Fargate, internal ALB and VPC endpoint charges while it is up. With a
+reference run of about 2 h 50 min, budget accordingly, and do not leave `--keep` environments
+running.
+
+**Findings.** Each finding has a risk level and the agent's confidence, but no file or line.
+Findings the agent rated `FALSE_POSITIVE` are hidden by default, and `--fail-on` ignores them;
+`--include-false-positives` shows them. The result is saved with `kind: security-pentest`, and the
+dashboard's Security card shows it under "Penetration tests".
+
+**VPC quota.** Each run creates one VPC, and an account allows 5 VPCs per region by default.
+Concurrent runs, `--keep` environments or a failed teardown count against that quota. When a
+deploy fails with `VpcLimitExceeded`, run `--cleanup` on old runs, or request a higher quota in
+Service Quotas.
 
 ---
 
@@ -1405,6 +1665,35 @@ gitleaks needs no secret and no AWS role, so it is the only check that runs on f
 `KIRO_API_KEY` is unavailable). It fails closed: if gitleaks cannot be installed or errors during
 the scan, the gate fails.
 
+### Security Agent (Continuum) in the Gate
+
+When the account has Security Agent set up ([Security Agent Setup](#security-agent-setup-enable-security))
+and the OIDC role has the `prism-d1-continuum-ci-scan` policy, the eval gate (`prism-eval-gate.yml`)
+also runs an AWS Continuum code review of the pull request as a deterministic security scan:
+
+1. Uploads the PR diff to S3 as a `.patch` file
+2. Calls `StartCodeReviewJob` with the diff S3 URI
+3. Polls `BatchGetCodeReviewJobs` every 30 seconds, up to 60 attempts (a 30-minute ceiling; scans
+   typically finish in 5-15 minutes)
+4. Calls `ListFindings` to get structured results with risk levels
+5. Fails the gate on a **critical or high** finding
+6. Forwards findings to EventBridge for dashboard reporting
+
+No GitHub App polling or comment parsing is involved; it is fully API-driven. The findings that
+reach the PRISM pipeline are tagged with Continuum's own `riskLevel` and, where the finding carries
+one, a CWE id; correlated with AI vs human code origin from codeburn attribution; and surfaced in
+the Team, Executive and CISO dashboards.
+
+Limitations:
+
+- **Code reviews require the `securityagent` CLI subcommands**: AWS CLI v2.36 or later.
+- **Code Review resources are per repo.** The eval gate creates one on its first run and stores
+  the id in SSM, so pre-provisioning it with `prism-cli enable security` is a convenience rather
+  than a prerequisite.
+- **Design reviews are web-console-only**: not automatable from the CLI or CI.
+- **Pen tests take hours**, so they do not belong in a blocking CI gate. Run them with
+  [`prism-cli security pentest`](#running-a-penetration-test-from-the-cli).
+
 ### Uninstall
 
 ```bash
@@ -1435,13 +1724,9 @@ Without `--profile`, on a terminal it lists `aws configure list-profiles` to cho
 
 It stores **no credentials**: only `{profile, region, account, alias, verifiedAt}`, in `~/.prism/aws.json` (per user) or, with `--repo`, in `.prism/aws.local.json` (per repo; added to `.git/info/exclude` so it is never committed). The AWS CLI still resolves the profile's credentials itself on every call, so an expired SSO session still needs `aws sso login`.
 
-| Flag | Purpose |
-|---|---|
-| `--profile <name>` | Profile to save |
-| `--region <region>` | Region to save |
-| `--repo` | Write (or clear) the per-repo file instead of the per-user one |
-| `--status` | Show both files, which one applies, and whether it still validates (exit 1 when it does not, or the account changed) |
-| `--clear` | Remove the user file, or the repo file with `--repo` |
+`--status` shows both files, which one applies, and whether it still validates; it exits 1 when it
+does not, or when the account changed. `--clear` removes the user file, or the repo file with
+`--repo`. Every flag: [`prism-cli aws connect`](docs/CLI-REFERENCE.md#prism-cli-aws-connect).
 
 **How the saved connection is used.** It becomes the default for `enable security`, every `security` command, `aws check`/`aws recommend` and `bedrock-protection`. The order, per field:
 
@@ -1456,19 +1741,17 @@ Runs read-only checks in sections and saves the result to `.prism/results/` as k
 
 | Section | Checks |
 |---|---|
-| `bedrock` | The [`bedrock-protection scan-account`](#scan-account) checks, unchanged, except that it never calls `iam generate-credential-report` (the credential-report checks are INDETERMINATE until a report exists) |
+| `bedrock` | The [`bedrock-protection scan-account`](docs/CLI-REFERENCE.md#prism-cli-bedrock-protection-scan-account) checks, unchanged, except that it never calls `iam generate-credential-report` (the credential-report checks are INDETERMINATE until a report exists) |
 | `prism-setup` | The `PrismD1MetricsPipeline` stack; the Security Agent stack, its `/prism/continuum/*` SSM parameters and the scan bucket on the agent space (the `enable security --status` checks); a GitHub/GitLab OIDC provider and a `GitHubActions-*`/`GitLabCI-*` role; the codeburn sync endpoint on this machine (local file, no AWS call) |
 | `baseline` | A logging multi-region CloudTrail trail; a GuardDuty detector; Security Hub; IAM Access Analyzer; at least one AWS Budget; account-level S3 Block Public Access; EBS encryption by default. Root MFA is checked once, in `bedrock` |
 | `startup-advisor` | Placeholder, INDETERMINATE ("not integrated yet") until how PRISM consumes Startup Advisor is settled |
 
 Regional checks (GuardDuty, Security Hub, Access Analyzer, EBS, the stacks) look at the resolved region only.
 
-| Flag | Purpose |
-|---|---|
-| `--profile`, `--region` | As above; refuses when no region resolves |
-| `--section <name>` | Run only this section; repeatable |
-| `--fail-on <severity>` | Exit 1 when a FAIL is at or above it (default `none`: report only). INDETERMINATE never trips it |
-| `--json` | Print the findings as JSON on stdout (notices go to stderr) |
+`aws check` refuses when no region resolves. It only reports by default: `--fail-on <severity>`
+exits 1 when a FAIL is at or above it, and INDETERMINATE never trips it. `--json` prints the
+findings on stdout, with notices on stderr. Every flag:
+[`prism-cli aws check`](docs/CLI-REFERENCE.md#prism-cli-aws-check).
 
 The dashboard's **AWS account** panel shows the latest result per account: counts by status, fails by severity and the top failures.
 
@@ -1478,767 +1761,75 @@ Reads the latest `aws-check` result for the account (the `aws connect` account, 
 
 - Each FAIL is looked up in a fixed table: a title, why it matters, the steps, the `prism-cli` command that fixes it when there is one (`enable security`, `enable codeburn`, `bootstrapper setup-github-oidc`) and a doc link.
 - Fixes are ranked by severity, then effort (quick wins first), and grouped by section.
-- INDETERMINATE checks become "grant read access to check this" items that name the IAM actions the check reads.
+- Each INDETERMINATE check becomes an item that says what to do before it can be checked, by cause:
+  - **access denied**: "Grant read access to check" this, naming the read-only IAM actions the check
+    needs;
+  - **no IAM credential report yet**: create one first (`prism-cli bedrock-protection scan-account`
+    generates one, which is a write, or `aws iam generate-credential-report`), because `aws check`
+    never generates it;
+  - **depends on another fix**: fix the named item first (for example, the budget-alert checks wait
+    for a budget to exist), then re-run;
+  - **not integrated yet** (the Startup Advisor placeholder) or any other cause: why it could not
+    run.
+
+  Items with the same step are merged into one. None of them counts as a pass.
 - With no result it says so and suggests `prism-cli aws check` or `--refresh`.
 
-| Flag | Purpose |
-|---|---|
-| `--account <id>` | Read this account's latest result |
-| `--refresh` | Run `aws check` first |
-| `--json` | Print the recommendations as JSON (`prism.aws-recommend.v1`) |
-| `--markdown` | Also write `<result>.recommend.md` next to the result |
+`--json` prints the recommendations as JSON (`prism.aws-recommend.v1`), and `--markdown` also
+writes `<result>.recommend.md` next to the result. Every flag:
+[`prism-cli aws recommend`](docs/CLI-REFERENCE.md#prism-cli-aws-recommend).
 
 ### Permissions
 
-Every check needs only read actions, so a read-only identity is enough. When one is missing, the check is INDETERMINATE and `aws recommend` names the action to grant. Admin credentials work but are not needed; `aws connect` points this out.
+Every check needs only read actions, so a read-only identity is enough. When a read is denied, the check is INDETERMINATE and `aws recommend` names the action to grant; a check that could not run for another reason (no credential report, a missing prerequisite) names that instead. Admin credentials work but are not needed; `aws connect` points this out.
 
 ---
 
 ## Bedrock Protection Audit
 
-Two read-only commands that audit an account and a repository for LLMjacking exposure — credential
-theft aimed at model inference, where a leaked long-lived key is spent on Bedrock. Full rationale,
-the layered model and the check-by-check reference are in
+Three read-only commands that audit an account, an Organization and a repository for LLMjacking
+exposure: credential theft aimed at model inference, where a leaked long-lived key is spent on
+Bedrock. The layered model, every check, the IAM policies to run them and their verification are in
 **[Bedrock Protection](docs/BEDROCK-PROTECTION.md)**; this section is how to run them.
 
 ```bash
 # AWS account — IAM credential hygiene + Bedrock spend guardrails (15 checks)
 prism-cli bedrock-protection scan-account --region us-west-2
 
-# AWS Organization or specific OUs — IAM per account, Bedrock once at the payer
+# AWS Organization or specific OUs — IAM per account, Bedrock once at the payer, 9 org guardrail checks
 prism-cli bedrock-protection scan-org --ou ou-1234-abcd5678
 
 # Repository — gitleaks over full history, working tree and commit messages (6 checks)
 prism-cli bedrock-protection scan-repo
 ```
 
-Both are **audit-only**: nothing is provisioned, rotated or deleted. The one non-read AWS call is
-`iam:GenerateCredentialReport`, which produces a report artifact — IAM has no way to read the report
-without generating it first.
+All three are **audit-only**: nothing is provisioned, rotated or deleted. The one non-read AWS call
+is `iam:GenerateCredentialReport`, which produces a report artifact; IAM has no way to read the
+report without generating it first. `scan-org` assumes a role in each member account
+(`OrganizationAccountAccessRole` by default, `--role-name AWSControlTowerExecution` in Control Tower
+orgs) and runs from the management account or a delegated admin. `--session-duration` sets that
+AssumeRole session length (at least 900 seconds). A member account that holds its
+own budget is not detected by `scan-org`; run `scan-account --bedrock-only` there.
 
-### scan-account
+`scan-repo` needs a `gitleaks` binary on PATH (or `--gitleaks <path>`) and never downloads one.
+It scans all history, all refs, the working tree and commit messages, unlike the CI gate, which
+scans only the pull request's commits; a green gate means nothing new was added, not that the
+repository is clean.
 
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `--region <region>` | `AWS_REGION`, `AWS_DEFAULT_REGION`, the `aws connect` region, the profile's region, else `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
-| `--profile <name>` | `AWS_PROFILE` or env credentials, else the `aws connect` profile, else the ambient chain | AWS CLI profile to audit |
-| `--max-key-age <days>` | `90` | Flag active access keys older than this |
-| `--unused-days <days>` | `90` | Flag credentials idle longer than this |
-| `--iam-only` | — | Only the 7 IAM credential hygiene checks |
-| `--bedrock-only` | — | Only the 8 Bedrock spend guardrail and forensics checks |
-| `--json` | — | Machine-readable output |
-| `--fail-on <severity>` | `none` | Exit 1 if any FAIL is at or above this severity |
+Each check is PASS, FAIL or INDETERMINATE, and **INDETERMINATE is not a pass**: a missing
+permission, Cost Explorer being off or a missing gitleaks all produce it. `--fail-on <severity>`
+exits 1 only on a FAIL at or above that severity, so in CI also assert on the indeterminate count in
+the `--json` output ([Running it in CI](docs/BEDROCK-PROTECTION.md#running-it-in-ci)). Secret values
+never appear in the output.
 
-Covers root MFA and root access keys, access key age, console users without MFA,
-`AdministratorAccess` attached directly to users, idle credentials, password policy, budgets across
-**both** Bedrock billing surfaces, budget alert subscribers, Cost Explorer, cost anomaly detection,
-a CloudWatch alarm on `AWS/Bedrock` metrics, Provisioned Throughput commitments, and model
-invocation logging.
-
-### scan-org
-
-Audits an Organization, or specific OUs within it. Run from the management account or a delegated
-admin.
-
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `--ou <ids>` | entire organization | Comma-separated OU ids to scope to |
-| `--role-name <name>` | `OrganizationAccountAccessRole` | Role to assume in each member account (`AWSControlTowerExecution` in Control Tower orgs) |
-| `--region <region>` | `AWS_REGION`, `AWS_DEFAULT_REGION`, the `aws connect` region, the profile's region, else `us-west-2` | Region for Bedrock, CloudWatch and Provisioned Throughput checks |
-| `--profile <name>` | `AWS_PROFILE` or env credentials, else the `aws connect` profile, else the ambient chain | Management-account profile |
-| `--max-accounts <n>` | `50` | Stop after this many accounts (~10 API calls each) |
-| `--session-duration <seconds>` | `3600` | AssumeRole session length (minimum 900) |
-| `--max-key-age <days>` | `90` | Flag active access keys older than this |
-| `--unused-days <days>` | `90` | Flag credentials idle longer than this |
-| `--skip-bedrock` | — | Skip the org-wide Bedrock spend guardrail checks |
-| `--skip-guardrails` | — | Skip the SCP and AWS Config organization guardrail checks |
-| `--json` | — | Machine-readable output |
-| `--fail-on <severity>` | `none` | Exit 1 if any FAIL is at or above this severity |
-
-`scan-org` also runs 9 **organization guardrail** checks that have no single-account equivalent:
-whether SCPs are enabled and attached, whether one denies CloudTrail/Config/GuardDuty teardown,
-whether one restricts Bedrock by region or denies `bedrock:CreateProvisionedModelThroughput`, and
-whether AWS Config organization rules continuously cover the IAM checks this audit only samples.
-Attachment is judged against the audited target **plus every ancestor**, since SCPs inherit downward.
-These detect presence and attachment, **not enforcement** — inheritance, `NotAction` and
-principal-tag exemptions can neutralise a policy that reads correctly, so confirm with a live call.
-Skip them with `--skip-guardrails`.
-
-The two account-side layers run at different scopes, deliberately: **IAM hygiene per account** via an
-assumed role, and **Bedrock spend guardrails once at the management account**, because under
-consolidated billing the payer's budgets bound every linked account. Evaluating budgets per member
-account would report "no budget" for every account in an org that is in fact fully covered by one
-consolidated budget. The trade-off is stated in the output: a member account holding its own budget
-is not detected — run `scan-account --bedrock-only` there if you need that.
-
-Enumeration always recurses into nested OUs, since a non-recursive walk would report on a fraction of
-an OU and look complete. An account whose role cannot be assumed is reported **INDETERMINATE, never
-skipped**, and the rollup prints explicit coverage (`Org coverage is 3/5`). After assuming,
-`sts:GetCallerIdentity` confirms the session landed in the intended account before any finding is
-attributed to it.
-
-Needs these in the management account, plus the IAM read actions in each member account's assumed
-role:
-
-```
-organizations:DescribeOrganization, organizations:ListRoots,
-organizations:ListAccountsForParent, organizations:ListOrganizationalUnitsForParent,
-organizations:DescribeOrganizationalUnit, organizations:ListParents,
-organizations:ListPolicies, organizations:DescribePolicy,
-organizations:ListTargetsForPolicy, config:DescribeOrganizationConfigRules,
-sts:AssumeRole
-```
-
-### scan-repo
-
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `--repo <path>` | `.` | Repository to scan |
-| `--gitleaks <path>` | `$GITLEAKS_PATH`, then `PATH` | Path to the gitleaks binary |
-| `--skip-history` | — | Skip the full-history scan (the slow one on a large repo) |
-| `--json` | — | Machine-readable output |
-| `--fail-on <severity>` | `none` | Exit 1 if any FAIL is at or above this severity |
-
-Requires a `gitleaks` binary. It is **not** auto-downloaded — the CI eval gate fetches a
-version-pinned, checksum-verified binary into a disposable container, but a developer CLI silently
-pulling an executable onto a workstation is a different risk. Without it the three detection checks
-report INDETERMINATE and state that the repository is not cleared.
-
-Honours `.gitleaks.toml` (auto-loaded by gitleaks from the scanned path) and
-`.prism/gitleaks-baseline.json`, the same tuning surface as the [eval gate](#eval-gates). When either
-is present the report says so, because a silently applied allowlist is indistinguishable from a clean
-repository.
-
-**This is a different scope from the CI gate, deliberately.** The gate scans only the PR's commits
-(`BASE..HEAD`) so it can go green on a repo with pre-existing findings; `scan-repo` scans all
-history, all refs, the working tree including ignored files, and commit message text. A green gate
-means nothing new was added — not that the repository is clean.
-
-### Reading the output
-
-Three statuses, and the third one matters:
-
-| Status | Meaning |
-|--------|---------|
-| ✅ `PASS` | Control present and asserted |
-| ❌ `FAIL` | Control absent or ineffective |
-| ❓ `INDETERMINATE` | **The check could not run.** Not a pass |
-
-A missing IAM permission, Cost Explorer being disabled, or an absent gitleaks binary all produce
-INDETERMINATE. The summary names them and tells you to treat the result as a floor:
-
-```
-15 checks: 4 pass, 9 fail, 2 indeterminate
-Findings by severity: CRITICAL 1, HIGH 4, MEDIUM 4, LOW 0
-
-❓ 2 check(s) could not run and are NOT passes: budget-alerting, anomaly-monitor
-   Treat the result as a floor, not a clean bill of health.
-```
-
-Secret values never appear in output. `scan-repo` always passes `--redact` and projects only rule id,
-path, line and commit — never the matched value, and never the commit message, which is itself a
-scan target.
-
-### Running in CI
-
-```bash
-prism-cli bedrock-protection scan-account --json --fail-on HIGH
-prism-cli bedrock-protection scan-repo --json --fail-on CRITICAL
-```
-
-`--fail-on` reacts only to **FAIL**, never INDETERMINATE — otherwise a missing permission would be
-indistinguishable from a real finding. Assert on the indeterminate count in the JSON separately, so a
-silently degraded audit does not read as a passing one.
-
-Ready-to-attach IAM policy documents — caller, `scan-org` additions, and the member-account role with
-its trust policy — are in
-**[Bedrock Protection → IAM policy required to run the audit](docs/BEDROCK-PROTECTION.md#iam-policy-required-to-run-the-audit)**.
-All were verified by **creating roles that carry them verbatim and running the audit under those
-roles**, not only with the policy simulator: every check reached the same verdict as an admin
-session. That step matters — the simulator had passed a budgets statement that is denied in
-practice. Simulator results are retained as a second signal (24/24 required allowed, 17/17 dangerous
-denied).
-
-Required read-only permissions:
-
-```
-iam:GetAccountSummary, iam:GetAccountPasswordPolicy, iam:ListUsers,
-iam:ListAttachedUserPolicies, iam:GenerateCredentialReport, iam:GetCredentialReport,
-budgets:ViewBudget, ce:GetAnomalyMonitors,
-ce:GetAnomalySubscriptions, cloudwatch:DescribeAlarms,
-bedrock:ListProvisionedModelThroughputs,
-bedrock:GetModelInvocationLoggingConfiguration, sts:GetCallerIdentity
-```
-
-`budgets:ViewBudget` covers all three budget read operations the audit calls. Granting the
-operation names (`budgets:DescribeBudgets` and friends) instead denies every one of them --
-verified live, not inferred.
-
-### Limitations
-
-- No `--fix`. Audit only.
-- Single account per invocation; no Organization scope.
-- `provisioned-throughput` is region-scoped — a commitment elsewhere will not appear.
-- Budget limits are not judged for size. A $1,000,000 Bedrock budget passes.
+Every flag and default: [`bedrock-protection`](docs/CLI-REFERENCE.md#prism-cli-bedrock-protection).
+Required IAM permissions:
+[IAM policy required to run the audit](docs/BEDROCK-PROTECTION.md#iam-policy-required-to-run-the-audit).
+What it does not do (no `--fix`, region-scoped Provisioned Throughput, budget size not judged):
+[What this does not do](docs/BEDROCK-PROTECTION.md#what-this-does-not-do).
 
 ---
 
-## AWS Continuum Security Agent
-
-### Overview
-
-AWS Continuum (formerly AWS Security Agent) provides proactive security scanning across the AI-DLC lifecycle:
-
-| Phase | Trigger | What Gets Scanned | How It Works |
-|---|---|---|---|
-| Design Review | Manual (web console) | Architecture decisions, data flows, auth design | Web-console-only — not automatable via CLI |
-| Code Review | PR opened/updated | Source code diff via S3 upload | `StartCodeReviewJob` API with diff patch file |
-| Pen Testing | Manual or on deploy | Running application (OWASP Top 10, business logic) | CLI-automatable via `create-pentest` + `start-pentest-job` |
-
-Findings flow into the PRISM pipeline where they're:
-- Tagged with Continuum's own `riskLevel` and, where the finding carries one, a CWE id
-- Correlated with AI vs human code origin from codeburn attribution
-- Surfaced in Team, Executive, and CISO dashboards
-- Used to block the eval gate on **critical or high** findings
-
-### Setup (CLI — Recommended)
-
-```bash
-prism-cli enable security --profile your-profile --region us-west-2
-```
-
-This deploys only the Security Agent resources, in the standalone `PrismD1SecurityAgent` stack or,
-where an account already hosts them there, in `PrismD1MetricsPipeline` (after a diff and your
-confirmation), creates or reuses the Security Agent application and attaches the
-`prism-d1-security-agent-prism-d1-security` role, creates this repo's code review and its SSM
-pointer, and prints the web console URL. `--dry-run` shows the plan and `--status` checks an existing
-setup. See [Security Agent Setup](#security-agent-setup-enable-security).
-
-**Verify:**
-
-```bash
-aws securityagent list-agent-spaces --region us-west-2 --output table
-# Should show: prism-d1-security | as-xxxxxxxxxxxx | ACTIVE
-```
-
-After running, verify SSM parameters are populated:
-
-```bash
-aws ssm get-parameter --name /prism/continuum/agent-space-id --query Parameter.Value --output text
-```
-
-### Running a Review from the CLI
-
-After `prism-cli enable security`, you can run the same Security Agent code review the eval gate
-runs, from your machine:
-
-```bash
-prism-cli security code-review                    # this branch's diff against its upstream
-prism-cli security code-review --full             # the whole repo at HEAD
-prism-cli security code-review --fail-on high     # exit 1 on a high or critical finding
-prism-cli security code-review --no-wait          # start it and come back later
-prism-cli security findings                       # the pending job's findings, else the latest job's
-prism-cli security findings --job <id> --wait     # a specific job, waiting if it is still running
-```
-
-`security code-review`:
-
-1. Prints a notice, then the same account, caller, region and credential block as `enable
-   security`, with the same credential chain and region rules.
-2. Finds the agent space and this repo's code review in SSM (`/prism/continuum/agent-space-id` and
-   `/prism/continuum/code-review-id/<repo-slug>`), the source of truth, because a file in the repo
-   could be committed by anyone. `.prism/security.local.json` is used only when SSM has no value,
-   only if git does not track it, and it says so; when the two disagree, SSM wins with a warning.
-   The legacy `security` block in `.prism/config.json` is never read here. With no IDs, it says to
-   run `prism-cli enable security` first and exits 1.
-3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
-   upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
-   changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
-4. Uploads to the scan bucket, skipping any upload whose object's ETag already matches. Both scopes
-   first refresh the code review's own source, `repo/<repo-slug>/latest.zip`, to `git archive
-   HEAD` and print `Review context: updated ... to HEAD <sha>`. A diff job reads that zip as the
-   code around the patch, so a stale zip would make it report code that no longer exists. The
-   Security Agent has no per-job source, so this is the zip CI diff jobs read too. A diff then
-   goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`. The result records the zip's commit as
-   `security.context_commit`.
-5. Starts the job and at once saves a **pending** result in `.prism/results/` with the job ID, the
-   scope and the commits. When the job ends, that same file is completed, so a wait that does not
-   finish loses nothing. Then it waits. It polls every 10 seconds, doubling up to 60, with a
-   one-line ticker on a terminal and plain lines otherwise. A failed poll (throttling, a network
-   error) is retried 3 times, after 2, 4 and 8 seconds.
-   - `--timeout <minutes>` (default 30): on timeout it prints the job ID and the `security findings
-     --job` command, and exits 2.
-   - Ctrl-C stops waiting but leaves the job running, prints the same hint, and exits 130.
-   - A poll that still fails, or fails on credentials or permissions, prints the error and the same
-     hint, and exits 1.
-   - In all three cases, and with `--no-wait`, the pending result stays for `security findings`.
-6. Prints the findings, grouped by risk level and then file: title, file:line, CWE when present,
-   and a short description. Then totals, our wall time and the service's own job duration.
-   Paths are repo-relative: the service's sandbox prefix (`.../source_code/code_sc-<id>/`) is
-   removed, and the result keeps the original as `raw_file`.
-7. Saves the result in `.prism/results/`, in the codewatch result format with `kind:
-   security-review`, `tool: security-agent`, the job ID, base, tip and scope.
-
-The uploads and starting the job are its only AWS writes. It exits 0 (report only, like
-codewatch) unless `--fail-on <critical|high|medium|low>` finds a finding at or above that level,
-which exits 1. A failed or stopped job exits 1 with its reason. `--json` prints only the result JSON
-on stdout, with progress on stderr.
-
-`security findings` is read-only. Without `--job`, it first looks for pending results in this repo
-for the current account, region and code review. It takes the newest and names any older ones.
-When that job has finished, it fetches the findings and completes the pending result, keeping its
-scope and commits. Only when nothing is pending does it ask the API for the latest job (saved with
-scope `unknown`). `--job <id>` fetches that job, and completes its pending result if there is
-one. `--severity <level>` hides lower levels. A job still running exits 2 with a note; `--wait`
-waits for it with the same poller.
-
-Both work on one repository: run them from its top level, or pass `--path <repo>`. A subdirectory
-is refused (the message names the top level), and so is a directory that is not a repository; they
-never walk up to an enclosing repo. Results are written under that top level. `--repo
-<host/owner/name>` is the repo id (not a path) the code review is named after, as in `enable
-security`.
-
-Both take `--profile`, `--region` and `--repo`, as `enable security` does. Besides the
-`enable security` read permissions, they need `securityagent:StartCodeReviewJob`,
-`BatchGetCodeReviewJobs`, `ListCodeReviewJobsForCodeReview`, `ListFindings` and `BatchGetFindings`,
-`s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
-
-### Running a Threat Model from the CLI
-
-A Security Agent threat model reads the repo at HEAD and, optionally, design docs (scope docs). It
-returns a system overview and threats with a severity, STRIDE categories and a recommendation. AWS
-does not charge for threat modeling while it is in preview. The research behind this command is in
-[docs/RESEARCH-threat-model-design-review.md](docs/RESEARCH-threat-model-design-review.md).
-
-```bash
-prism-cli security threat-model                          # source + .kiro/specs/*/{design,requirements}.md
-prism-cli security threat-model --doc docs/DESIGN.md     # these scope docs instead (repeatable)
-prism-cli security threat-model --no-docs                # the source alone
-prism-cli security threat-model --no-wait                # start it and come back later
-prism-cli security threats                               # the pending job's threats, else the latest job's
-prism-cli security threats --job <id> --wait --severity high
-```
-
-`security threat-model` works like `security code-review`: the same repo-root check, notice,
-identity block, pending record, polling, `--json`, `--no-wait` and exit codes (Ctrl-C 130, timeout 2,
-failed job 1). It differs in these ways:
-
-1. The agent space, scan bucket and service role come from SSM (`/prism/continuum/agent-space-id`,
-   `scan-bucket`, `service-role-arn`) only. No repo file is read for them.
-2. Scope docs are read from **HEAD**, not the working tree, so they match the source that is
-   modeled. A `--doc` must be committed, must be inside the repository, must not be a symlink, and
-   must be `.md`, `.txt`, `.pdf`, `.doc`, `.docx`, `.png`, `.jpg` or `.jpeg`. A bad `--doc` prints
-   one error line before any AWS call. Without `--doc`, the Kiro spec files
-   `.kiro/specs/*/design.md` and `requirements.md` in HEAD are used when present.
-3. `git archive HEAD` and the docs go to the scan bucket under
-   `threat-model/<repo-slug>/<commit>/` (`source.zip`, `docs/<path>`). Identical objects are not
-   uploaded again. The CI code review's `repo/<repo-slug>/latest.zip` is not touched.
-4. Each run creates its own threat model, titled `<repo-slug>-tm-<commit>-<time>`, and starts its
-   job. `security threats` finds the latest one by that title prefix.
-5. `--timeout` defaults to 120 minutes. AWS's IDE docs give 5 to 30 minutes for a run, but a full-repo run with one scope doc took about 51 minutes in testing.
-6. The output has the first paragraph of the system overview, then the threats by severity
-   (CRITICAL, HIGH, MEDIUM, LOW, INFO). Each threat shows its STRIDE categories, title,
-   recommendation and evidence paths, with the sandbox prefix removed. The result is saved with
-   `kind: security-threat-model` and keeps the full overview in `threat_model.system_overview`.
-7. `--fail-on <level>` exits 1 on a threat at or above that level. INFO never fails.
-
-The agent space must list the scan bucket in `awsResources.s3Buckets`, or `create-threat-model`
-refuses the upload. The stack lists it since this release. Before any upload, the command checks
-the list with `batch-get-agent-spaces` and stops with no writes when the bucket is missing:
-`the Security Agent space doesn't list the scan bucket <name>; run prism-cli enable security to
-update it.` On an older stack, `enable security` sees the drift and updates the agent space in
-place. `enable security --status` shows the same check as the `Scan bucket on agent space` row.
-The extra read permission is `securityagent:BatchGetAgentSpaces`.
-
-The API documents no scope-doc limits, so on a client error the command prints a hint to trim the
-docs. It also warns when the docs exceed the web app's design-review limits: 5 files, 2 MB each
-(0.5 MB for `.md` and `.txt`), 6 MB in total.
-
-`security threats` is read-only and completes pending records like `security findings` does.
-
-**IAM.** Besides the `enable security` read permissions, the two commands need:
-
-- `securityagent:CreateThreatModel` and `StartThreatModelJob` (threat-model only);
-- `securityagent:BatchGetAgentSpaces` (threat-model's bucket check);
-- `securityagent:BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats`;
-- for `security threats` without a pending record, `ListThreatModels` and `ListThreatModelJobs`;
-- `iam:PassRole` on the service role, conditioned on `iam:PassedToService = securityagent.amazonaws.com`;
-- `s3:GetObject` and `s3:PutObject` on the scan bucket, and `ssm:GetParameter`.
-
-The CI managed policy `prism-d1-continuum-ci-scan` grants only the code-review actions. Running a
-threat model from CI would need `BatchGetAgentSpaces`, `CreateThreatModel`, `StartThreatModelJob`,
-`BatchGetThreatModelJobs`, `ListThreats` and `BatchGetThreats` added to its `ContinuumScanAPIs`
-statement. Its PassRole, scan bucket and SSM statements already cover the rest.
-
-There is no `security design-review` command: design review has no public API (see the research
-doc).
-
-### Running a Penetration Test from the CLI
-
-`prism-cli security pentest` builds this repo's app from its Dockerfile, deploys it into a
-temporary **private** environment in your AWS account, and runs an AWS Security Agent penetration
-test against that environment only. It never takes a URL, so it can only test what it just
-deployed. The design is in [docs/DESIGN-prism-cli-pentest.md](docs/DESIGN-prism-cli-pentest.md).
-
-```bash
-prism-cli security pentest --dry-run                    # the plan, target and cost; changes nothing
-prism-cli security pentest                              # deploy, start the job, return (no wait)
-prism-cli security pentest --status                     # refresh the job; tear down once it has finished
-prism-cli security findings --pentest                   # read the findings (read-only)
-prism-cli security pentest --cleanup                    # remove the environment now
-prism-cli security pentest --wait --fail-on high        # wait (up to 6 h), then exit 1 on a high finding
-```
-
-**Prerequisites**
-
-1. Docker running locally, to build the image.
-2. The account and region bootstrapped for CDK (`npx cdk bootstrap aws://<account>/<region>`).
-3. AWS CLI 2.36 or later, with permission to deploy CloudFormation, ECR, ECS, EC2, ELB,
-   Route 53, S3, CloudWatch Logs and IAM, and to call the Security Agent pentest APIs.
-4. `prism-cli enable security` is **not** required: each run creates its own agent space.
-
-**`.prism/pentest.json`** (committable; every field is optional):
-
-```jsonc
-{
-  "appType": "dockerfile",                 // v1 supports only dockerfile
-  "path": "sample-app",                    // Docker build context, relative to the repo root (default ".")
-  "dockerfile": "sample-app/Dockerfile",   // relative to the repo root (default <path>/Dockerfile)
-  "port": 8080,                            // the port the container listens on (default 8080)
-  "healthPath": "/health",                 // ALB health check path (default /health)
-  "env": {
-    "LOG_LEVEL": "info",                                              // a literal value
-    "DB_PASSWORD": { "secret": "arn:aws:secretsmanager:...:secret:db" } // a Secrets Manager reference
-  },
-  "actors": [                              // optional signed-in test users
-    { "identifier": "user", "auth": { "providerType": "SECRETS_MANAGER", "secret": "arn:aws:secretsmanager:...:secret:user" } }
-  ],
-  "excludeRiskTypes": ["DENIAL_OF_SERVICE"]
-}
-```
-
-An `env` name that looks sensitive (`password`, `secret`, `token`, `key`, ...) must be a
-`{ "secret": "<arn>" }` reference; a literal value there is refused, so no credential lands in
-the committed file. Secrets are injected by ECS when the task starts. An actor's `providerType` is
-`SECRETS_MANAGER`, `AWS_LAMBDA` or `AWS_IAM_ROLE`, and its ARN must be in the same account. The
-pentest's service role is granted read on exactly the actor ARNs listed. `--app-dir` and
-`--dockerfile` override `path` and `dockerfile` for one run.
-
-**Flags.** `--app-type`, `--path` (repository top level), `--app-dir`, `--dockerfile`, `--wait`,
-`--timeout <minutes>` (default 360), `--keep`, `--status`, `--cleanup`, `--dry-run`, `--yes`
-(approve without a prompt), `--include-false-positives`, `--fail-on critical|high|medium|low`,
-`--profile`, `--region`.
-
-**Waiting, status and teardown.** A run takes hours: the reference runs took about 2 h 50 min,
-mostly in the `PENTEST` step. So by default the command starts the job, saves a pending record in
-`.prism/results/` and returns. It prints the follow-up commands with the `--profile` and
-`--region` you passed.
-
-- `--status` refreshes the job and prints its step. Once the job has finished, it saves the
-  findings and tears the environment down.
-- `--wait` polls until the job finishes (or `--timeout`), prints the findings, then tears down.
-- `--keep` leaves the environment up after the job, to reproduce a finding.
-- `--cleanup` removes a run's environment at any time; it stops a running job first.
-- `security findings --pentest [<job>]` reads the findings without deleting anything.
-
-Teardown deletes the pentest, the run's agent space, its target domain and the CloudFormation
-stack. It first waits for the agent's network interfaces to be released, then retries the stack
-deletion once. If it still fails, the record keeps a `teardown failed` marker, which `--status`
-and the dashboard show; run `--cleanup` again later.
-
-**What it creates.** One CloudFormation stack per run, `PrismPentest-<repo>-<id>`, tagged
-`prism:purpose=pentest` and `prism:expires-at`:
-
-- a new VPC with two private subnets only: no public subnet, no internet gateway, no NAT, and no
-  `0.0.0.0/0` ingress;
-- VPC endpoints for ECR, S3, CloudWatch Logs, and Secrets Manager when `env` uses secrets;
-- the app on Fargate behind an **internal** ALB, reachable only from the pentest agent's security
-  group, under a private Route 53 name `app.<id>.prism.internal`;
-- a scoped service role, a private source bucket (the repo at HEAD, for white-box testing) and a
-  log group.
-
-Before deploying, the command shows the plan and the cost and asks for confirmation (`--yes`
-skips the prompt). It starts the job only after the app passes the ALB health check, waiting up
-to 10 minutes. If the app never becomes healthy, no pentest is created; the command prints the
-target's health reason and an `aws logs tail` command for the app's log group, and leaves the
-environment up for `--cleanup`.
-
-**Cost.** Security Agent penetration testing is billed in task-hours, publicly reported at **$50
-per task-hour** (per-second metered; check the current AWS Security Agent pricing page). The
-environment adds Fargate, internal ALB and VPC endpoint charges while it is up. With a
-reference run of about 2 h 50 min, budget accordingly, and do not leave `--keep` environments
-running.
-
-**Findings.** Each finding has a risk level and the agent's confidence, but no file or line.
-Findings the agent rated `FALSE_POSITIVE` are hidden by default, and `--fail-on` ignores them;
-`--include-false-positives` shows them. The result is saved with `kind: security-pentest`, and the
-dashboard's Security card shows it under "Penetration tests".
-
-**VPC quota.** Each run creates one VPC, and an account allows 5 VPCs per region by default.
-Concurrent runs, `--keep` environments or a failed teardown count against that quota. When a
-deploy fails with `VpcLimitExceeded`, run `--cleanup` on old runs, or request a higher quota in
-Service Quotas.
-
-### Setup Script (Alternative)
-
-For forwarding findings to the PRISM API independently:
-
-```bash
-/path/to/bootstrapper/security-agent/setup.sh \
-  --api-url https://your-api.execute-api.us-west-2.amazonaws.com/v1 \
-  --api-key your-prism-api-key \
-  --team-id your-team-name
-```
-
-Creates `.prism/security-agent.json` with scan trigger configuration and remediation SLAs.
-
-### Domain Registration for Pen Testing
-
-> **Skip this step** if you only need code review (domain is only required for pen testing).
-
-#### Option A: DNS TXT Record (Recommended)
-
-```bash
-aws securityagent create-target-domain \
-  --target-domain-name api.yourcompany.com \
-  --verification-method DNS_TXT \
-  --region us-west-2
-```
-
-Add the DNS TXT record at your DNS provider:
-
-```
-Type:   TXT
-Name:   _securityagent.api.yourcompany.com
-Value:  <paste the verification token from the command output>
-TTL:    300
-```
-
-Verify:
-
-```bash
-dig TXT _securityagent.api.yourcompany.com
-
-aws securityagent verify-target-domain \
-  --target-domain-name api.yourcompany.com \
-  --region us-west-2
-
-aws securityagent batch-get-target-domains \
-  --target-domain-names api.yourcompany.com \
-  --region us-west-2 \
-  --query 'targetDomains[0].verificationStatus'
-```
-
-**Expected:** `VERIFIED`
-
-#### Option B: HTTP Route
-
-```bash
-aws securityagent create-target-domain \
-  --target-domain-name api.yourcompany.com \
-  --verification-method HTTP_ROUTE \
-  --region us-west-2
-```
-
-Host a verification endpoint at:
-`https://api.yourcompany.com/.well-known/security-agent-verification`
-
-> **⚠️ Critical:** The endpoint must return JSON in this exact format:
-> ```json
-> {"tokens": ["<your-verification-token>"]}
-> ```
-> Not `{"token": "..."}` or plain text — it must be `{"tokens": [...]}` with an array.
-
-#### Associate Domain with Agent Space
-
-**⚠️ Required:** A verified domain is NOT automatically usable for pen tests. You must explicitly associate it:
-
-```bash
-DOMAIN_ID=$(aws securityagent batch-get-target-domains \
-  --target-domain-names api.yourcompany.com \
-  --region us-west-2 \
-  --query 'targetDomains[0].targetDomainId' --output text)
-
-aws securityagent update-agent-space \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --target-domain-ids "${DOMAIN_ID}" \
-  --region us-west-2
-```
-
-### Connect GitHub for Code Review
-
-> **⚠️ Important:** GitHub integration requires an OAuth authorization code from AWS's pre-registered GitHub OAuth App. You **cannot** bypass this with `gh` CLI tokens or PATs. The initial setup must be done via the web console.
-
-1. Open [Security Agent console](https://console.aws.amazon.com/securityagent)
-2. Click your agent space (`prism-d1-security`)
-3. Go to **Integrations** → **Add Integration**
-4. Select **GitHub**
-5. Complete the OAuth authorization flow
-6. Select the repositories to monitor (must be **private** repos)
-7. Save
-
-**After initial OAuth setup**, manage repos via CLI:
-
-```bash
-aws securityagent list-integrations \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --region us-west-2 --output table
-
-aws securityagent update-integrated-resources \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --integration-id <integration-id> \
-  --add-resources '["your-org/new-repo"]' \
-  --region us-west-2
-```
-
-After this, Security Agent automatically reviews every PR opened against the connected repositories. It posts as `aws-security-agent[bot]` with inline review comments on specific lines.
-
-> **Note:** Code reviews only work on **private repositories**. Public repos will not show the code review option.
-
-### Create a Pen Test Configuration
-
-```bash
-SERVICE_ROLE_ARN=$(aws iam list-roles \
-  --query "Roles[?contains(RoleName, 'security-agent')].Arn" \
-  --output text | head -1)
-
-# ⚠️ Title only allows: letters, numbers, hyphens, underscores. No spaces. Max 100 chars.
-PENTEST_RESULT=$(aws securityagent create-pentest \
-  --title "PRISM-D1-Application-Pen-Test" \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --service-role "${SERVICE_ROLE_ARN}" \
-  --assets '{
-    "endpoints": [
-      {"url": "https://api.yourcompany.com"}
-    ]
-  }' \
-  --code-remediation-strategy DISABLED \
-  --region us-west-2 \
-  --output json)
-
-PENTEST_ID=$(echo "${PENTEST_RESULT}" | jq -r '.pentestId')
-echo "Pen Test ID: ${PENTEST_ID}"
-```
-
-### How Eval Gate Integrates Continuum
-
-The eval gate (`prism-eval-gate.yml`) integrates Continuum as a deterministic security scan:
-
-1. Uploads the PR diff to S3 as a `.patch` file
-2. Calls `StartCodeReviewJob` with the diff S3 URI
-3. Polls `BatchGetCodeReviewJobs` every 30s, up to 60 attempts (30-minute ceiling; scans typically finish in 5-15 min)
-4. Calls `ListFindings` to get structured results with risk levels
-5. Fails the gate on a **critical or high** finding
-6. Forwards findings to EventBridge for dashboard reporting
-
-No GitHub App polling or comment parsing needed — fully API-driven and deterministic.
-
-### Verify End-to-End
-
-**Test Code Review:**
-
-```bash
-git checkout -b test-security-review
-echo "// test change" >> src/index.ts
-git add src/index.ts
-git commit -m "Test code for security review"
-git push -u origin test-security-review
-# Open a PR via GitHub UI
-```
-
-What happens:
-1. Security Agent GitHub App automatically reviews the PR
-2. Posts inline review comments on specific lines (as `aws-security-agent[bot]`)
-3. Eval gate workflow collects findings and blocks on critical/high findings
-4. Findings forwarded to EventBridge carrying Continuum's `riskLevel` as severity, plus the CWE id as metadata
-
-**Test Pen Test:**
-
-> ⚠️ Pen tests take several hours to complete. Not suitable for blocking CI.
-
-```bash
-# Warm the verification Lambda
-for i in {1..3}; do
-  curl -s https://api.yourcompany.com/.well-known/security-agent-verification > /dev/null
-  sleep 2
-done
-
-# Start
-aws securityagent start-pentest-job \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --pentest-id "${PENTEST_ID}" \
-  --region us-west-2
-
-# Monitor
-aws securityagent list-pentest-jobs-for-pentest \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --pentest-id "${PENTEST_ID}" \
-  --region us-west-2 \
-  --query 'pentestJobSummaries[0].{JobId:pentestJobId,Status:status}' \
-  --output table
-```
-
-### Important Limitations
-
-- **Code reviews require the `securityagent` CLI subcommands** — AWS CLI v2.36+ needed
-- **Code Review resources are per-repo** — the eval gate creates one on its first run and stores the id in SSM, so pre-provisioning via `prism-cli enable security` is a convenience rather than a prerequisite
-- **Design reviews are web-console-only** — not automatable via CLI or GitHub Actions
-- **Pen tests take hours** — not suitable for blocking CI pipelines
-- **Scans typically take 5-15 minutes** — the workflow polls every 30s for up to 60 attempts, a 30-minute ceiling before it gives up
-
-### Quick Reference: All Continuum Commands
-
-```bash
-# Deploy Security Agent (plan first with --dry-run; check later with --status)
-prism-cli enable security --profile your-profile --region us-west-2
-
-# List agent spaces
-aws securityagent list-agent-spaces --region us-west-2
-
-# Register and verify a domain
-aws securityagent create-target-domain \
-  --target-domain-name api.example.com \
-  --verification-method DNS_TXT --region us-west-2
-aws securityagent verify-target-domain \
-  --target-domain-name api.example.com --region us-west-2
-
-# Associate domain with agent space (required before pen test)
-aws securityagent update-agent-space \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --target-domain-ids "<domain-id>" --region us-west-2
-
-# Upload spec as context for pen tests
-aws securityagent add-artifact \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --artifact-content fileb://specs/my-spec.md \
-  --artifact-type MD --file-name my-spec.md --region us-west-2
-
-# Start a pen test
-aws securityagent start-pentest-job \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --pentest-id "${PENTEST_ID}" --region us-west-2
-
-# Check pen test status
-aws securityagent list-pentest-jobs-for-pentest \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --pentest-id "${PENTEST_ID}" \
-  --query 'pentestJobSummaries[0].status' --region us-west-2
-
-# Get findings from a pen test job
-aws securityagent list-findings \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --pentest-job-id <job-id> --region us-west-2
-
-# Manage GitHub integration repos (after initial OAuth via console)
-aws securityagent list-integrations \
-  --agent-space-id "${AGENT_SPACE_ID}" --region us-west-2
-aws securityagent update-integrated-resources \
-  --agent-space-id "${AGENT_SPACE_ID}" \
-  --integration-id <id> \
-  --add-resources '["org/repo"]' --region us-west-2
-```
-
----
 
 ## Dashboards
 
@@ -2665,14 +2256,8 @@ by `enable codeburn` (see [Developer Setup](#developer-setup)), and no CI workfl
 | Agent space not found | CDK not deployed with Security Agent | Run `prism-cli enable security` (`--status` shows what is missing) |
 | KMS 403 on agent space creation | `securityagent.amazonaws.com` lacks KMS grants | Add `kms:Encrypt/Decrypt` grant for the service principal |
 | Pen test fails at PREFLIGHT | `logs.amazonaws.com` lacks KMS permissions | Grant `kms:Encrypt/Decrypt/GenerateDataKey*/DescribeKey` with log group ARN condition |
-| Domain verification stuck (DNS) | DNS not propagated | Wait 5 min; verify with `dig TXT _securityagent.yourdomain.com` |
-| Domain verification stuck (HTTP) | Wrong JSON format | Must return `{"tokens": ["<token>"]}` — not `{"token": "..."}` |
-| `create-pentest` title rejected | Invalid characters | Only letters, numbers, hyphens, underscores. No spaces. Max 100 chars |
-| Pen test start times out | Domain re-verification + Lambda cold start | Warm the verification Lambda first; add retry logic |
-| Code review not triggering | Repo is public or not connected | Must be private; re-authorize via web console OAuth |
-| GitHub integration CLI fails | OAuth not completed | Initial setup requires web console; CLI only works after OAuth |
 | No findings in PRISM dashboards | Eval gate not emitting, or the OIDC role lacks the Continuum policy | Check the eval gate job log and `security-agent-processor` Lambda logs; confirm `PRISM_METRICS_ROLE_ARN` is set and `prism-d1-continuum-ci-scan` is attached |
-| Eval gate not blocking | Security Agent hasn't posted yet | Gate polls for up to 10 min; check if bot posted comments |
+| Eval gate does not block a merge on a Security Agent finding | No branch protection rule requires the check, or the Continuum review did not finish | Add `eval-gate` as a required check ([Making the Gate Block Merges](#making-the-gate-block-merges)). The gate polls the Continuum job every 30 seconds for up to 30 minutes and reads findings from the API, not from bot comments; a job that does not complete in that time fails the gate closed |
 | Pen test log group missing | IAM path wrong | Logs go to `/aws/securityagent/<space-name>/pt-<id>`, not `/prism/security-agent/*` |
 | `UnrecognizedClientException` | Security Agent not enabled for your account | Request access via your AWS account team |
 | `AccessDeniedException` | IAM role needs `securityagent:*` permissions | Add Security Agent permissions to role |
@@ -2722,4 +2307,4 @@ Usage instructions for the copy-me artifacts live in [`bootstrapper/README.md`](
 | `bootstrapper/spec-templates/` | Kiro-compatible specification templates (API endpoint, data model, integration, agent workflow, MCP server) |
 | `bootstrapper/aidlc-steering/` | AI-DLC development workflow rules for Claude Code, Kiro, and Q Developer |
 | `bootstrapper/agent-configs/` | AgentCore Runtime, Memory, Gateway, and Guardrail templates |
-| `bootstrapper/security-agent/` | AWS Continuum setup script and configuration |
+| `bootstrapper/security-agent/` | Legacy script that forwards Security Agent findings to the PRISM API ([manual steps](docs/SECURITY-AGENT-MANUAL.md)); setup is `prism-cli enable security` |

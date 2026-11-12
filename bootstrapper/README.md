@@ -23,7 +23,7 @@ If a `prism-cli` command installs it, you never touch this directory. If it is a
 | `spec-templates/` | Five Kiro-compatible spec templates |
 | `aidlc-steering/` | AI-DLC workflow and security-baseline steering files |
 | `agent-configs/` | AgentCore runtime, gateway, memory, and Bedrock Guardrails JSON templates |
-| `security-agent/` | `setup.sh` for AWS Continuum onboarding |
+| `security-agent/` | `setup.sh`, which forwards Security Agent findings to the PRISM API (legacy; see [SECURITY-AGENT-MANUAL.md](../docs/SECURITY-AGENT-MANUAL.md)). Security Agent setup itself is `prism-cli enable security` |
 
 Install commands and OIDC setup for the bundled assets are in the [User Guide](../USER_GUIDE.md). The rest of this file covers the copy-me artifacts.
 
