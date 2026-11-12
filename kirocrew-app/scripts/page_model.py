@@ -54,19 +54,6 @@ def _time(iso: Any) -> Optional[float]:
         return None
 
 
-def ago(iso: Any, now: float) -> str:
-    t = _time(iso)
-    if t is None:
-        return "unknown"
-    mins = max(0, round((now - t) / 60))
-    if mins < 1:
-        return "just now"
-    if mins < 60:
-        return f"{mins} min ago"
-    h = round(mins / 60)
-    return f"{h} h ago" if h < 48 else f"{round(h / 24)} d ago"
-
-
 def base_name(s: Any) -> str:
     parts = [p for p in re.split(r"[\\/]", str(s or "")) if p]
     return plain(parts[-1] if parts else "", 120)
@@ -134,10 +121,24 @@ def latest_review_of(repo: Optional[Dict[str, Any]]) -> Optional[Dict[str, Optio
     return {"id": rid, "branch": (scan or {}).get("branch") or (lb or {}).get("branch"), "commit": ((lb or {}).get("review") or {}).get("commit")}
 
 
-def _tone(row: Dict[str, Any]) -> str:
+def findings_badge(row: Dict[str, Any]) -> Dict[str, str]:
+    """The repo row's badge from its latest review; the row's left border uses the same tone."""
     if not row.get("lastRunAt"):
-        return "none"
-    return "error" if row.get("high") else "warn" if row.get("medium") else "ok"
+        return {"text": "no review", "tone": "none"}
+    high, med, low = (int(row.get(k) or 0) for k in ("high", "medium", "low"))
+    if high:
+        return {"text": f"{high} high", "tone": "error"}
+    if med:
+        return {"text": f"{med} med", "tone": "warn"}
+    if low:
+        return {"text": f"{low} low", "tone": "none"}
+    return {"text": "clean", "tone": "ok"}
+
+
+def hooks_text(status: Any) -> str:
+    """Codewatch hook status, shown as small muted text: it says the hooks run, not that the code is clean."""
+    s = plain(status or "unknown", 20)
+    return {"ok": "hooks on", "missing": "hooks off"}.get(s, "hooks " + s)
 
 
 def _check_item(i: Dict[str, Any]) -> Dict[str, str]:
@@ -147,9 +148,8 @@ def _check_item(i: Dict[str, Any]) -> Dict[str, str]:
 
 
 def build_model(p: Dict[str, Any], commits: Dict[str, Optional[Dict[str, str]]], version: str,
-                digest: Optional[Dict[str, Any]], now: Optional[float] = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """(model for the page, targets kept by the backend). The model holds no path."""
-    now = time.time() if now is None else now
+                digest: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """(model for the page, targets kept by the backend). The model holds no path; times stay ISO."""
     u = p.get("usage") or {}
     summary = p.get("summary") or {}
     cur = u.get("currency") or (summary.get("spend") or {}).get("currency") or "USD"
@@ -177,13 +177,16 @@ def build_model(p: Dict[str, Any], commits: Dict[str, Optional[Dict[str, str]]],
         r, c = mr["row"], mr["commit"]
         name = plain(r.get("label") or r.get("name"), 120)
         latest = latest_review_of(mr["repo"])
+        badge = findings_badge(r)
         rows.append({
             "name": name,
             "review": f"{int(r.get('high') or 0)} high · {int(r.get('medium') or 0)} med · {int(r.get('low') or 0)} low" if r.get("lastRunAt") else "no review yet",
-            "when": ago(r.get("lastRunAt"), now) if r.get("lastRunAt") else "",
-            "status": plain(setup_of.get(r.get("path")) or "unknown", 20),
-            "tone": _tone(r),
-            "commit": f"{plain(c['sha'], 12)} · {ago(c['at'], now)} · {plain(c['subject'], 80)}" if c else "last commit: unknown",
+            # Raw ISO times: the page shows them relative and re-renders them on its own clock.
+            "reviewAt": plain(r.get("lastRunAt") or "", 40),
+            "badge": badge,
+            "tone": badge["tone"],
+            "hooks": hooks_text(setup_of.get(r.get("path"))),
+            "commit": {"sha": plain(c["sha"], 12), "at": plain(c["at"], 40), "subject": plain(c["subject"], 80)} if c else None,
             "findings": [{"severity": plain(f.get("severity"), 10),
                           "location": plain(f.get("file"), 200) + (f":{f['line']}" if isinstance(f.get("line"), int) and not isinstance(f.get("line"), bool) else ""),
                           "message": plain(f.get("message"), 300), "branch": plain(f.get("branch") or "(detached)", 80)} for f in mr["findings"]],
@@ -204,7 +207,7 @@ def build_model(p: Dict[str, Any], commits: Dict[str, Optional[Dict[str, str]]],
         "checklist": [_check_item(i) for i in (p.get("machine") or {}).get("setup") or []],
         "repos": rows,
         "reposNote": f"{counts.get('codewatch', 0)} of {counts.get('repos', 0)} repos found under your home folder have codewatch. Newest commit first." if counts else "",
-        "digest": digest_view(digest, now),
+        "digest": digest_view(digest),
     }
     return model, targets
 
@@ -283,13 +286,13 @@ def read_digest(data_dir: Path) -> Optional[Dict[str, Any]]:
     return d if isinstance(d, dict) else None
 
 
-def digest_view(d: Optional[Dict[str, Any]], now: float) -> Dict[str, str]:
+def digest_view(d: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Raw digest fields; the page turns them into 'Not run yet' / 'Last run 3 h ago · ...'."""
     if not d:
-        return {"ran": "not yet", "notified": "", "message": ""}
-    ran = d.get("lastRunAt")
-    sent = d.get("lastNotifiedAt")
+        return {"recorded": False, "lastRunAt": "", "lastNotifiedAt": "", "lastMessage": ""}
     return {
-        "ran": ago(ran, now) if ran else "before v0.2 (time not recorded)",
-        "notified": ago(sent, now) if sent else "never",
-        "message": plain(d.get("lastMessage") or "", 1500, one_line=False),
+        "recorded": True,
+        "lastRunAt": plain(d.get("lastRunAt") or "", 40),
+        "lastNotifiedAt": plain(d.get("lastNotifiedAt") or "", 40),
+        "lastMessage": plain(d.get("lastMessage") or "", 1500, one_line=False),
     }

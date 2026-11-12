@@ -22,6 +22,7 @@ const S = {
   h1: { fontSize: '22px', fontWeight: 700, margin: 0, color: v('text-strong', 'inherit') },
   h2: { fontSize: '15px', fontWeight: 600, margin: '0 0 8px', color: v('text-strong', 'inherit') },
   muted: { color: v('muted', 'GrayText'), fontSize: '13px', margin: '2px 0', overflowWrap: 'anywhere' },
+  small: { color: v('muted', 'GrayText'), fontSize: '12px' },
   cards: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', margin: '12px 0' },
   card: { background: v('card', 'transparent'), border: `1px solid ${v('border', 'GrayText')}`, borderRadius: '8px', padding: '10px 12px', minWidth: 0 },
   cardTitle: { color: v('muted', 'GrayText'), fontSize: '12px', textTransform: 'uppercase', letterSpacing: '.04em' },
@@ -42,8 +43,65 @@ const STATUS_TONE = { ok: 'ok', info: 'none', warn: 'warn', missing: 'error' };
 const SEV_TONE = { high: 'error', medium: 'warn', low: 'none' };
 const str = (x) => (typeof x === 'string' ? x : x == null ? '' : String(x));
 
-function badge(h, text, tone) {
-  return h('span', { style: { display: 'inline-block', fontSize: '12px', fontWeight: 600, padding: '0 8px', borderRadius: '999px', border: `1px solid ${TONE[tone] || TONE.none}`, color: TONE[tone] || 'inherit' } }, str(text));
+/** An ISO timestamp inside recorded text (e.g. a setup item's "last sync log write <ISO>"). */
+const ISO_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+/** The digest cron's schedule in app.json ("0 9 * * *", local time). */
+export const DIGEST_HOUR = 9;
+
+/** "just now", "5 min ago", "3 h ago", "2 d ago". */
+export function ago(iso, now) {
+  const t = Date.parse(str(iso));
+  if (Number.isNaN(t)) return 'unknown';
+  const min = Math.max(0, Math.round((now - t) / 60000));
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  return hr < 48 ? `${hr} h ago` : `${Math.round(hr / 24)} d ago`;
+}
+
+/** A relative time with the full local time as its tooltip. */
+function stamp(h, iso, now) {
+  const t = Date.parse(str(iso));
+  return h('span', { title: Number.isNaN(t) ? '' : new Date(t).toLocaleString() }, ago(iso, now));
+}
+
+/** Text children with every ISO timestamp in it replaced by a relative stamp. */
+export function withTimes(h, text, now) {
+  const s = str(text);
+  const out = [];
+  let last = 0;
+  for (const m of s.matchAll(ISO_RE)) {
+    if (Number.isNaN(Date.parse(m[0]))) continue;
+    out.push(s.slice(last, m.index), stamp(h, m[0], now));
+    last = m.index + m[0].length;
+  }
+  out.push(s.slice(last));
+  return out.filter((x) => x !== '');
+}
+
+/**
+ * 'today' or 'tomorrow': the digest's next 09:00 in this browser's time zone.
+ * shortcut: assumes the default schedule and that the browser and the gateway share a zone;
+ * an edit on the Schedule page is not seen here (read the job through the cron API to fix).
+ */
+export function nextDigestDay(now) {
+  const nine = new Date(now);
+  nine.setHours(DIGEST_HOUR, 0, 0, 0);
+  return now < nine.getTime() ? 'today' : 'tomorrow';
+}
+
+/** The 'Last digest' line (children) and the message to show under it. */
+export function digestParts(h, d, now) {
+  const first = `${nextDigestDay(now)} at 0${DIGEST_HOUR}:00`;
+  if (!d || !d.recorded) return { parts: [`Not run yet. First run: ${first}.`], message: '' };
+  if (!d.lastRunAt) return { parts: [`Last run: time not recorded (state from v0.1). Next run: ${first}.`], message: '' };
+  // digest.py writes the same stamp to lastRunAt and lastNotifiedAt when a run notifies.
+  const notified = !!d.lastNotifiedAt && d.lastNotifiedAt === d.lastRunAt;
+  return { parts: ['Last run ', stamp(h, d.lastRunAt, now), notified ? ' · notified:' : ' · nothing new'], message: notified ? str(d.lastMessage) : '' };
+}
+
+function badge(h, text, tone, title) {
+  return h('span', { title: title || undefined, style: { display: 'inline-block', fontSize: '12px', fontWeight: 600, padding: '0 8px', borderRadius: '999px', border: `1px solid ${TONE[tone] || TONE.none}`, color: TONE[tone] || 'inherit' } }, str(text));
 }
 
 function list(h, title, rows) {
@@ -59,49 +117,58 @@ function list(h, title, rows) {
  */
 export function renderModel(h, m, ui) {
   const repos = Array.isArray(m.repos) ? m.repos : [];
+  const now = typeof ui.now === 'number' ? ui.now : Date.now();
   const out = [];
   out.push(h('div', { key: 'head', style: S.head },
     h('h1', { style: S.h1 }, 'PRISM'),
     h('button', { type: 'button', style: S.btn, onClick: ui.refresh, disabled: ui.loading }, ui.loading ? 'Refreshing…' : 'Refresh')));
   out.push(h('p', { key: 'meta', style: S.muted },
-    `Data from ${str(m.generatedAt)} · usage cached ${str(m.usageUpdatedAt) || 'unknown'}${m.usageStale ? ' (refreshing in the background)' : ''} · prism-cli ${str(m.version)}`));
+    'updated ', stamp(h, m.generatedAt, now),
+    ' · usage cached ', m.usageUpdatedAt ? stamp(h, m.usageUpdatedAt, now) : 'unknown',
+    m.usageStale ? ' (refreshing in the background)' : '',
+    ` · prism-cli ${str(m.version)}`));
   out.push(h('section', { key: 'cards', style: S.cards }, ...(m.cards || []).map((c, i) =>
-    h('div', { key: i, style: S.card }, h('div', { style: S.cardTitle }, str(c.title)), h('div', { style: S.cardValue }, str(c.value)), h('div', { style: S.muted }, str(c.detail))))));
+    h('div', { key: i, style: S.card }, h('div', { style: S.cardTitle }, str(c.title)), h('div', { style: S.cardValue }, str(c.value)), h('div', { style: S.muted }, ...withTimes(h, c.detail, now))))));
   out.push(h('div', { key: 'lists', style: S.two }, list(h, 'Top models this month', m.topModels || []), list(h, 'Top projects this month', m.topProjects || [])));
 
   out.push(h('section', { key: 'repos', style: S.block },
     h('h2', { style: S.h2 }, 'Repositories with codewatch'),
     m.reposNote ? h('p', { style: S.muted }, str(m.reposNote)) : null,
     repos.length ? null : h('p', { style: S.muted }, 'No repository has codewatch yet.'),
-    h('ul', { style: S.ul }, ...repos.map((r, repoIndex) => h('li', { key: repoIndex, style: { ...S.li, borderLeft: `3px solid ${TONE[r.tone] || TONE.none}`, paddingLeft: '10px' } },
-      h('div', { style: S.row },
-        h('strong', null, str(r.name)),
-        h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-          badge(h, 'codewatch ' + str(r.status), STATUS_TONE[r.status] || 'none'),
-          r.hasReport ? h('button', { type: 'button', style: S.btn, onClick: () => ui.openReport(repoIndex) }, 'Open report') : null)),
-      h('p', { style: S.muted }, str(r.commit)),
-      h('p', { style: S.muted }, r.when ? `Latest review: ${str(r.review)} · ${str(r.when)}` : str(r.review)),
-      Array.isArray(r.findings) && r.findings.length ? h('details', null,
-        h('summary', { style: { cursor: 'pointer', fontSize: '13px' } }, `Findings (${r.findings.length}${r.more ? '+' : ''})`),
-        h('ul', { style: S.ul }, ...r.findings.map((f, fi) => h('li', { key: fi, style: S.li },
-          h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' } },
-            badge(h, f.severity, SEV_TONE[f.severity] || 'none'), h('code', { style: S.code }, str(f.location)), h('span', { style: S.muted }, 'branch ' + str(f.branch))),
-          h('div', { style: { marginTop: '4px', overflowWrap: 'anywhere' } }, str(f.message))))),
-        r.more ? h('p', { style: S.muted }, str(r.more)) : null) : null,
-      ui.report && ui.report.index === repoIndex ? reportView(h, ui.report, ui) : null)))));
+    h('ul', { style: S.ul }, ...repos.map((r, repoIndex) => {
+      const b = r.badge || { text: 'no review', tone: 'none' };
+      const c = r.commit;
+      return h('li', { key: repoIndex, style: { ...S.li, borderLeft: `3px solid ${TONE[b.tone] || TONE.none}`, paddingLeft: '10px' } },
+        h('div', { style: S.row },
+          h('strong', null, str(r.name)),
+          h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+            badge(h, b.text, b.tone, 'Latest review: ' + str(r.review)),
+            h('span', { style: S.small }, str(r.hooks)),
+            r.hasReport ? h('button', { type: 'button', style: S.btn, onClick: () => ui.openReport(repoIndex) }, 'Open report') : null)),
+        h('p', { style: S.muted }, ...(c ? [str(c.sha), ' · ', stamp(h, c.at, now), ' · ', str(c.subject)] : ['last commit: unknown'])),
+        h('p', { style: S.muted }, ...(r.reviewAt ? ['Latest review: ', str(r.review), ' · ', stamp(h, r.reviewAt, now)] : [str(r.review)])),
+        Array.isArray(r.findings) && r.findings.length ? h('details', null,
+          h('summary', { style: { cursor: 'pointer', fontSize: '13px' } }, `Findings (${r.findings.length}${r.more ? '+' : ''})`),
+          h('ul', { style: S.ul }, ...r.findings.map((f, fi) => h('li', { key: fi, style: S.li },
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' } },
+              badge(h, f.severity, SEV_TONE[f.severity] || 'none'), h('code', { style: S.code }, str(f.location)), h('span', { style: S.muted }, 'branch ' + str(f.branch))),
+            h('div', { style: { marginTop: '4px', overflowWrap: 'anywhere' } }, str(f.message))))),
+          r.more ? h('p', { style: S.muted }, str(r.more)) : null) : null,
+        ui.report && ui.report.index === repoIndex ? reportView(h, ui.report, ui) : null);
+    }))));
 
-  const d = m.digest || {};
+  const dg = digestParts(h, m.digest, now);
   out.push(h('section', { key: 'digest', style: S.block },
     h('h2', { style: S.h2 }, 'Last digest'),
-    h('p', { style: S.muted }, `Ran ${str(d.ran)} · last notification ${str(d.notified) || 'never'}`),
-    d.message ? h('pre', { style: S.pre }, str(d.message)) : h('p', { style: S.muted }, 'Nothing notified yet.')));
+    h('p', { style: S.muted }, ...dg.parts),
+    dg.message ? h('pre', { style: S.pre }, dg.message) : null));
 
   out.push(h('section', { key: 'setup', style: S.block },
     h('h2', { style: S.h2 }, 'Setup checklist'),
     h('p', { style: S.muted }, 'Commands are copy-only: paste them into a terminal to run them yourself.'),
     h('ul', { style: S.ul }, ...(m.checklist || []).map((c, i) => h('li', { key: i, style: S.li },
       h('div', { style: S.row }, h('strong', null, str(c.label)), badge(h, c.status, STATUS_TONE[c.status] || 'none')),
-      h('p', { style: S.muted }, str(c.detail)),
+      h('p', { style: S.muted }, ...withTimes(h, c.detail, now)),
       c.fix ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' } },
         h('code', { style: S.code }, str(c.fix)),
         h('button', { type: 'button', style: S.btn, onClick: () => ui.copy(str(c.fix)) }, ui.copied === str(c.fix) ? 'Copied' : 'Copy')) : null)))));
@@ -144,6 +211,7 @@ export default function PrismPage() {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
   const [copied, setCopied] = useState('');
+  const [now, setNow] = useState(Date.now());
   const lastLoad = useRef(0);
 
   const load = useCallback((allowExport) => {
@@ -152,7 +220,7 @@ export default function PrismPage() {
     api.get(API + '/data' + (allowExport ? '?allowExport=1' : ''))
       .then((d) => {
         if (d && d.needsUsageCache) { setNeedsCache(true); return; }
-        setNeedsCache(false); setModel(d); setError(''); setReport(null);
+        setNeedsCache(false); setModel(d); setError(''); setReport(null); setNow(Date.now());
       })
       .catch((e) => setError(str(e && e.body ? e.body : e && e.message)))
       .finally(() => setLoading(false));
@@ -161,14 +229,19 @@ export default function PrismPage() {
   useEffect(() => {
     load(false);
     // Auto-refresh every 5 minutes while the page is visible; catch up when it becomes visible again.
-    const tick = () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad.current >= REFRESH_MS) load(false); };
+    // Each tick also moves the clock, so "3 min ago" stays current between refreshes.
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      setNow(Date.now());
+      if (Date.now() - lastLoad.current >= REFRESH_MS) load(false);
+    };
     const timer = setInterval(tick, VISIBILITY_POLL_MS);
     document.addEventListener('visibilitychange', tick);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
   }, [load]);
 
   const ui = {
-    loading, copied, report,
+    loading, copied, report, now,
     refresh: () => load(false),
     loadWithExport: () => load(true),
     copy: (text) => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => setCopied(text), () => setCopied('')); },

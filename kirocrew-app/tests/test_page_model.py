@@ -64,7 +64,7 @@ class ReposTest(unittest.TestCase):
         self.assertFalse(any(p.endswith("/never") for p in paths))
 
     def test_findings_capped_with_more_line(self):
-        model, _ = pm.build_model(payload(repo("big", 10, findings=25)), {}, "1.8.0", None, NOW)
+        model, _ = pm.build_model(payload(repo("big", 10, findings=25)), {}, "1.8.0", None)
         row = model["repos"][0]
         self.assertEqual(len(row["findings"]), pm.ROW_FINDINGS_MAX)
         self.assertIn("5 more findings not listed", row["more"])
@@ -79,26 +79,39 @@ class ModelTest(unittest.TestCase):
     def test_model_from_fixture_has_no_paths_and_one_line_text(self):
         r = repo("demo", 30, findings=2, review_id="abc-123-pre-push-review")
         model, targets = pm.build_model(payload(r), {r[0]["path"]: {"at": iso(3600), "sha": "deadbee", "subject": "s\u202e evil"}}, "1.8.0",
-                                        {"lastRunAt": iso(120), "lastNotifiedAt": iso(120), "lastMessage": "PRISM daily digest\n- demo: 1 new"}, NOW)
+                                        {"lastRunAt": iso(120), "lastNotifiedAt": iso(120), "lastMessage": "PRISM daily digest\n- demo: 1 new"})
         blob = json.dumps(model)
         self.assertNotIn("/home/someone", blob)
         self.assertEqual(model["topProjects"][0]["name"], "secret-project")
         self.assertEqual([c["title"] for c in model["cards"]], ["AI spend today", "AI spend this month", "Setup warnings", "Sync mode"])
         self.assertEqual(model["cards"][0]["value"], "$1.50")
         row = model["repos"][0]
-        self.assertEqual(row["commit"], "deadbee · 1 h ago · s evil")  # bidi override removed
+        self.assertEqual(row["commit"], {"sha": "deadbee", "at": iso(3600), "subject": "s evil"})  # bidi override removed
+        self.assertEqual(row["reviewAt"], iso(30))
         self.assertEqual(row["findings"][0]["message"], "msg 0 second line")
         self.assertEqual(row["findings"][0]["location"], "src/f0.ts:1")
         self.assertTrue(row["hasReport"])
-        self.assertEqual(row["tone"], "error")
+        self.assertEqual(row["badge"], {"text": "1 high", "tone": "error"})
+        self.assertEqual(row["tone"], "error")  # the left border agrees with the badge
+        self.assertEqual(row["hooks"], "hooks on")
         self.assertEqual(model["checklist"][0]["fix"], "brew install gitleaks")
-        self.assertEqual(model["digest"], {"ran": "2 min ago", "notified": "2 min ago", "message": "PRISM daily digest\n- demo: 1 new"})
+        self.assertEqual(model["digest"], {"recorded": True, "lastRunAt": iso(120), "lastNotifiedAt": iso(120), "lastMessage": "PRISM daily digest\n- demo: 1 new"})
         self.assertEqual(targets[0]["path"], r[0]["path"])
+
+    def test_findings_badge_and_hooks_text(self):
+        def row(last=True, high=0, med=0, low=0):
+            return {"lastRunAt": iso(5) if last else None, "high": high, "medium": med, "low": low}
+        self.assertEqual(pm.findings_badge(row(high=2, med=1)), {"text": "2 high", "tone": "error"})
+        self.assertEqual(pm.findings_badge(row(med=3, low=1)), {"text": "3 med", "tone": "warn"})
+        self.assertEqual(pm.findings_badge(row(low=4)), {"text": "4 low", "tone": "none"})
+        self.assertEqual(pm.findings_badge(row()), {"text": "clean", "tone": "ok"})
+        self.assertEqual(pm.findings_badge(row(last=False, high=9)), {"text": "no review", "tone": "none"})
+        self.assertEqual([pm.hooks_text(s) for s in ("ok", "missing", "warn", None)], ["hooks on", "hooks off", "hooks warn", "hooks unknown"])
 
     def test_usage_not_ok(self):
         p = payload(repo("x", 1))
         p["usage"] = {"status": "not-installed", "message": "codeburn is not installed"}
-        model, _ = pm.build_model(p, {}, "", None, NOW)
+        model, _ = pm.build_model(p, {}, "", None)
         self.assertEqual(model["cards"][0], {"title": "AI spend", "value": "not-installed", "detail": "codeburn is not installed"})
         self.assertEqual(model["version"], "unknown")
 
@@ -148,11 +161,12 @@ class FilesTest(unittest.TestCase):
     def test_digest_state_read(self):
         d = Path(tempfile.mkdtemp())
         self.assertIsNone(pm.read_digest(d))
-        self.assertEqual(pm.digest_view(None, NOW)["ran"], "not yet")
+        self.assertEqual(pm.digest_view(None)["recorded"], False)
         (d / "digest-state.json").write_text("{broken", encoding="utf-8")
         self.assertIsNone(pm.read_digest(d))
         (d / "digest-state.json").write_text('{"schema": 1, "highs": {}, "setup": {}}', encoding="utf-8")
-        self.assertEqual(pm.digest_view(pm.read_digest(d), NOW), {"ran": "before v0.2 (time not recorded)", "notified": "never", "message": ""})
+        # A v0.1 state file: recorded, but no run time.
+        self.assertEqual(pm.digest_view(pm.read_digest(d)), {"recorded": True, "lastRunAt": "", "lastNotifiedAt": "", "lastMessage": ""})
 
     def test_usage_cached_today(self):
         home = Path(tempfile.mkdtemp())

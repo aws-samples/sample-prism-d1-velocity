@@ -118,8 +118,11 @@ The **PRISM** sidebar page shows the same data as the editor extension's machine
 - top models and top projects this month (project folder names only);
 - the machine setup checklist, with fix commands you can copy (the page never runs them);
 - the repos with codewatch, newest last commit first (`git log -1` in at most 30 repos, 4 at a
-  time; a repo whose commit is unknown sorts by its last review). Each repo shows its last commit,
-  the latest review's counts and up to 20 findings, plus an "N more" line;
+  time; a repo whose commit is unknown sorts by its last review). Each repo shows a badge from its
+  latest review (red `N high`, amber `N med`, muted `N low`, green `clean`, or `no review`; the row's
+  left border uses the same color), whether its hooks are on, its last commit, the latest review's
+  counts and up to 20 findings, plus an "N more" line. Times on the page are relative ("3 h ago",
+  with the full local time as a tooltip) and update while the page is open;
 - **Open report**: the scan report of the review covering the repo's last commit, or the latest
   review when none covers it. The page says which. You can also download the report;
 - **Last digest**: when the digest cron last ran and the last message it sent;
