@@ -151,6 +151,11 @@ export function dashboardArgs(repoRoot: string, fresh: boolean): string[] {
   return ['dashboard', '--json', '--root', repoRoot, ...(fresh ? ['--fresh'] : [])];
 }
 
+/** Machine mode (no repo in the window): no --root, so the CLI scans the home directory, run from there. */
+export function machineDashboardRun(fresh: boolean, home: string = homedir()): { args: string[]; cwd: string } {
+  return { args: ['dashboard', '--json', ...(fresh ? ['--fresh'] : [])], cwd: home };
+}
+
 /** Result ids are file names in .prism/results/; anything else (or an option-looking value) is refused. */
 export function isResultId(id: unknown): id is string {
   return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id);

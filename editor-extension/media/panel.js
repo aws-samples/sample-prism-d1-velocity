@@ -29,8 +29,102 @@
   /** @param {string} v @param {string[]} allowed @param {string} dflt */
   const pick = (v, allowed, dflt) => (allowed.includes(v) ? v : dflt);
 
+  /** @param {any[]} list */
+  function drawCards(list) {
+    const cards = el('section', 'cards');
+    for (const c of list) {
+      const card = el('div', 'card tone-' + pick(c.tone, TONES, 'none'));
+      card.append(el('div', 'card-title', c.title), el('div', 'card-value', c.value), el('div', 'card-detail', c.detail));
+      cards.append(card);
+    }
+    return cards;
+  }
+
+  /** @param {any[]} checklist */
+  function drawChecklist(checklist) {
+    const cs = el('section', 'block');
+    cs.append(el('h2', '', 'Setup checklist'));
+    cs.append(el('p', 'muted', 'Commands are copy-only: paste them into a terminal to run them yourself.'));
+    let group = '';
+    let ul = el('ul', 'checks');
+    for (const c of checklist) {
+      if (c.group !== group) {
+        group = c.group;
+        cs.append(el('h3', '', group));
+        ul = el('ul', 'checks');
+        cs.append(ul);
+      }
+      const li = el('li', 'check st-' + pick(c.status, STATUSES, 'info'));
+      const row = el('div', 'check-top');
+      row.append(el('span', 'dot'), el('span', 'check-label', c.label), el('span', 'status', c.status));
+      li.append(row, el('div', 'check-detail muted', c.detail));
+      if (c.fix) {
+        const fix = el('div', 'fix');
+        fix.append(el('code', '', c.fix), button('Copy', () => vscode.postMessage({ type: 'copy', key: c.key }), 'secondary small'));
+        li.append(fix);
+      }
+      ul.append(li);
+    }
+    return cs;
+  }
+
+  /** @param {string} title @param {any[]} rows */
+  function drawList(title, rows) {
+    const s = el('section', 'block');
+    s.append(el('h2', '', title));
+    if (!rows.length) s.append(el('p', 'muted', 'No data yet.'));
+    const ul = el('ul', 'rows');
+    for (const r of rows) {
+      const li = el('li', 'row');
+      li.append(el('span', 'row-name', r.name), el('span', 'row-value muted', r.value));
+      ul.append(li);
+    }
+    s.append(ul);
+    return s;
+  }
+
+  /** No repo in this window: this machine's spend, setup and repos with codewatch. @param {any} m */
+  function drawMachine(m) {
+    app.replaceChildren();
+    const head = el('header', 'head');
+    const title = el('h1', '', 'PRISM');
+    title.append(el('span', 'repo', 'this machine'));
+    head.append(title);
+    const actions = el('div', 'actions');
+    actions.append(button('Refresh', () => vscode.postMessage({ type: 'refresh' }), 'secondary'));
+    head.append(actions);
+    app.append(head);
+    app.append(el('p', 'muted', 'Updated ' + m.generatedAt + '. Open a repository folder to see its findings.'));
+    app.append(drawCards(m.cards));
+
+    const lists = el('div', 'lists');
+    lists.append(drawList('Top models this month', m.topModels), drawList('Top projects this month', m.topProjects));
+    app.append(lists);
+
+    const rs = el('section', 'block');
+    rs.append(el('h2', '', 'Repositories with codewatch'));
+    if (m.reposNote) rs.append(el('p', 'muted', m.reposNote));
+    if (!m.repos.length) rs.append(el('p', 'muted', 'No repository has codewatch yet.'));
+    const ul = el('ul', 'checks');
+    for (const r of m.repos) {
+      const li = el('li', 'check repo-row tone-' + pick(r.tone, TONES, 'none'));
+      const top = el('div', 'check-top');
+      top.append(el('span', 'check-label', r.name), el('span', 'status', 'codewatch ' + r.status));
+      top.append(button('Open folder', () => vscode.postMessage({ type: 'openFolder', path: r.path }), 'secondary small'));
+      li.append(top, el('div', 'check-detail muted', r.when ? r.review + ' · ' + r.when : r.review));
+      ul.append(li);
+    }
+    rs.append(ul);
+    app.append(rs);
+
+    app.append(drawChecklist(m.checklist));
+    loading.hidden = true;
+    app.hidden = false;
+  }
+
   /** @param {any} m */
   function draw(m) {
+    if (m.mode === 'machine') { drawMachine(m); return; }
     app.replaceChildren();
 
     const head = el('header', 'head');
@@ -45,13 +139,7 @@
     app.append(head);
     app.append(el('p', 'muted', 'Updated ' + m.generatedAt));
 
-    const cards = el('section', 'cards');
-    for (const c of m.cards) {
-      const card = el('div', 'card tone-' + pick(c.tone, TONES, 'none'));
-      card.append(el('div', 'card-title', c.title), el('div', 'card-value', c.value), el('div', 'card-detail', c.detail));
-      cards.append(card);
-    }
-    app.append(cards);
+    app.append(drawCards(m.cards));
 
     const fs = el('section', 'block');
     fs.append(el('h2', '', 'Codewatch findings (latest review)'));
@@ -74,30 +162,7 @@
     if (m.findingsTruncated) fs.append(el('p', 'muted', 'More findings were recorded than prism-cli lists; run prism-cli codewatch report for all of them.'));
     app.append(fs);
 
-    const cs = el('section', 'block');
-    cs.append(el('h2', '', 'Setup checklist'));
-    cs.append(el('p', 'muted', 'Commands are copy-only: paste them into a terminal to run them yourself.'));
-    let group = '';
-    let ul = el('ul', 'checks');
-    for (const c of m.checklist) {
-      if (c.group !== group) {
-        group = c.group;
-        cs.append(el('h3', '', group));
-        ul = el('ul', 'checks');
-        cs.append(ul);
-      }
-      const li = el('li', 'check st-' + pick(c.status, STATUSES, 'info'));
-      const row = el('div', 'check-top');
-      row.append(el('span', 'dot'), el('span', 'check-label', c.label), el('span', 'status', c.status));
-      li.append(row, el('div', 'check-detail muted', c.detail));
-      if (c.fix) {
-        const fix = el('div', 'fix');
-        fix.append(el('code', '', c.fix), button('Copy', () => vscode.postMessage({ type: 'copy', key: c.key }), 'secondary small'));
-        li.append(fix);
-      }
-      ul.append(li);
-    }
-    app.append(cs);
+    app.append(drawChecklist(m.checklist));
 
     loading.hidden = true;
     app.hidden = false;

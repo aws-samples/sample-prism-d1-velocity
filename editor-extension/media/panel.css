@@ -81,3 +81,11 @@ ul { list-style: none; margin: 0; padding: 0; }
   overflow-wrap: anywhere;
   min-width: 0;
 }
+
+/* Machine mode: top lists side by side when there is room, repo rows with an Open folder button. */
+.lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 16px; }
+.row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); flex-wrap: wrap; }
+.row-name { overflow-wrap: anywhere; min-width: 0; }
+.row-value { font-variant-numeric: tabular-nums; }
+.repo-row { border-left-width: 4px; border-left-style: solid; padding-left: 8px; }
+.repo-row .check-top button { margin-left: auto; }

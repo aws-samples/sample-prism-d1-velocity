@@ -47,3 +47,39 @@ export function payload(over: Partial<DashboardPayload> = {}, r: RepoPayload = r
     ...over,
   };
 }
+
+export const HOME = '/home/user';
+
+/** `prism-cli dashboard --json` run from the home folder with no --root: no current repo. */
+export function machinePayload(over: Partial<DashboardPayload> = {}): DashboardPayload {
+  const base = payload({}, repo({ current: false, path: `${HOME}/src/app`, name: 'app', label: 'app' }));
+  return {
+    ...base,
+    scope: { current_repo: null },
+    overview: {
+      counts: { repos: 3, codewatch: 2 },
+      setup: [
+        { name: 'app', label: 'app', path: `${HOME}/src/app`, status: 'ok', reviewer: 'kiro', detail: 'pre-commit and pre-push installed' },
+        { name: 'lib', label: 'lib', path: `${HOME}/src/lib`, status: 'warn', reviewer: 'kiro', detail: 'pre-push bypassed' },
+        { name: 'old', label: 'old', path: `${HOME}/src/old`, status: 'missing', reviewer: null, detail: 'no hooks' },
+      ],
+      codewatch: [
+        { name: 'app', label: 'app', path: `${HOME}/src/app`, high: 2, medium: 1, low: 0, lastRunAt: '2026-11-11T10:00:00.000Z', reviewer: 'kiro' },
+        { name: 'lib', label: 'lib', path: `${HOME}/src/lib`, high: 0, medium: 0, low: 0, lastRunAt: null, reviewer: 'kiro' },
+      ],
+    },
+    usage: {
+      status: 'ok', message: null, currency: 'USD',
+      today: { cost: 34.08, calls: 79, sessions: 1 },
+      month: { cost: 480.14, calls: 1301, sessions: 453, from: '2026-11-01', to: '2026-11-12' },
+      topModels: [{ name: 'Model A', cost: 478.64, calls: 1240 }],
+      topProjects: [{ name: 'app', cost: 107.6, sessions: 54 }, { name: `${HOME}/src/lib`, cost: 1, sessions: 1 }],
+    },
+    summary: {
+      spend: { status: 'ok', currency: 'USD', today: 34.08, month: 480.14, message: null },
+      warnings: { count: 1, first: 'gitleaks available: not on PATH' },
+      review: { repo: 'app', at: '2026-11-11T10:00:00.000Z', status: 'findings', reason: null, high: 2, medium: 1, low: 0, reviewer: 'kiro' },
+    },
+    ...over,
+  };
+}

@@ -57,14 +57,42 @@ export interface RepoPayload {
   security: { status: string; detail: string; fix: string };
 }
 
+/** One row of overview.setup: codewatch setup of one repo found under the scan root. */
+export interface SetupRow { name: string; label: string; path: string; status: string; reviewer: string | null; detail: string }
+
+/** One row of overview.codewatch: a repo with codewatch installed or with results. */
+export interface CodewatchRow { name: string; label: string; path: string; high: number; medium: number; low: number; lastRunAt: string | null; reviewer: string | null }
+
+export interface UsageTotals { cost: number; calls: number; sessions: number }
+
+/** The codeburn usage panel (cli/src/dashboard/usage.ts), the parts read here. */
+export interface UsagePayload {
+  status: string;
+  message: string | null;
+  currency: string;
+  today: UsageTotals | null;
+  month: (UsageTotals & { from: string; to: string }) | null;
+  topModels: { name: string; cost: number; calls: number }[];
+  /** `name` is the project folder name; `path` (codeburn's full path) is never shown. */
+  topProjects: { name: string; cost: number; sessions: number }[];
+}
+
+/** The newest pre-push review in any scanned repo (summary.review). */
+export interface LatestReview { repo: string; at: string; status: string; reason: string | null; high: number; medium: number; low: number; reviewer: string | null }
+
 export interface DashboardPayload {
   schema: string;
   generated_at: string;
+  /** current_repo is null when the CLI ran outside a repo (machine mode). */
+  scope?: { current_repo: string | null };
   repos: RepoPayload[];
+  overview?: { counts: { repos: number; codewatch: number }; setup: SetupRow[]; codewatch: CodewatchRow[] };
   machine: { setup: CheckItem[]; codeburnSync: { mode: string } };
+  usage?: UsagePayload;
   summary: {
     spend: { status: string; currency: string; today: number | null; month: number | null; message: string | null; updatedAt?: string | null };
     warnings: { count: number; first: string | null };
+    review?: LatestReview | null;
   };
 }
 
