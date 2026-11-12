@@ -587,6 +587,24 @@ With an nvm install, a client started outside your shell may not have nvm's dire
 the absolute path that `command -v prism-cli` prints as the command, for example
 `"command": "/path/from/command-v/prism-cli"`.
 
+### Kiro Crew app
+
+[`kirocrew-app/`](kirocrew-app/README.md) is a [Kiro Crew](https://github.com/kirodotdev/KiroCrew)
+app. It registers the `prism-cli mcp` tools as the `prism` MCP server and finds a `prism-cli`
+installed with nvm or Volta even when Kiro Crew's PATH lacks it. It also adds the
+`prism-fix-findings` skill, which has an agent read the latest codewatch review before it finishes,
+fix the real issues in at most 2 rounds and report the rest. The third part is a daily 09:00 digest
+that runs as a script, with no model call. The digest notifies only on a new high finding, on
+today's spend above a threshold you set (off by default), or on a setup item that went from ok to
+warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.8.0 or later.
+
+```bash
+kirocrew app install <path-to>/sample-prism-d1-velocity/kirocrew-app
+kirocrew app enable prism    # trust the app when Kiro Crew asks; nothing is registered until you do
+```
+
+What the app can access, its settings and how to uninstall it: [app README](kirocrew-app/README.md).
+
 ---
 
 ## Codewatch (Local Git Hooks)
