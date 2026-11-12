@@ -47,7 +47,9 @@ export async function runStdio(ctx: ToolContext): Promise<void> {
   const stop = () => {
     if (closing) return;
     closing = true;
-    server.close().catch(() => {}).finally(() => process.exit(0));
+    server.close()
+      .catch((e) => { process.stderr.write(`prism-cli mcp: close failed: ${String(e?.message || e).split('\n')[0]}\n`); })
+      .finally(() => process.exit(0));
   };
   process.stdin.on('end', stop);
   process.stdin.on('close', stop);

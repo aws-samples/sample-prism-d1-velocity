@@ -154,6 +154,10 @@ function noResults(label: string): ToolError {
   return new ToolError(`no codewatch results for repo ${label}; run prism-cli enable codewatch`);
 }
 
+function noReview(label: string): ToolError {
+  return new ToolError(`no pre-push review recorded for repo ${label} yet; codewatch reviews run on git push`);
+}
+
 // ------------------------------------------------------------ usage and payload
 
 const NO_CACHE = 'no usage cached for today yet; open prism-cli dashboard (or run prism-cli dashboard --json) once to collect it';
@@ -219,12 +223,14 @@ async function findings(ctx: ToolContext, a: Args): Promise<Record<string, unkno
   if (!latest) {
     throw new ToolError(branch
       ? `no pre-push review on branch ${clip(branch, 100)} in repo ${repo.label}`
-      : `no pre-push review recorded for repo ${repo.label} yet; codewatch reviews run on git push`);
+      : noReview(repo.label).message);
   }
   const r: PrismResult = latest.result;
-  const all = [...(r.findings || [])].sort((x, y) => SEV_ORDER[x.severity] - SEV_ORDER[y.severity] || x.file.localeCompare(y.file) || (x.line ?? 0) - (y.line ?? 0));
+  // Result files are local JSON: an unknown severity sorts last and is not counted, rather than failing the call.
+  const sev = (s: unknown) => SEV_ORDER[s as keyof typeof SEV_ORDER] ?? 3;
+  const all = [...(r.findings || [])].sort((x, y) => sev(x.severity) - sev(y.severity) || String(x.file ?? '').localeCompare(String(y.file ?? '')) || (x.line ?? 0) - (y.line ?? 0));
   const counts = { high: 0, medium: 0, low: 0 };
-  for (const f of all) counts[f.severity]++;
+  for (const f of all) if (f.severity in counts) counts[f.severity]++;
   const rows = all.slice(0, limit).map((f) => ({
     severity: f.severity, category: f.category, rule: clip(String(f.rule ?? ''), 200), file: clip(String(f.file ?? ''), 500), line: f.line,
     message: capMessage(f.message), branch: r.branch, commit: r.commit, reviewer: r.tool, time: r.started_at,
@@ -288,13 +294,10 @@ async function spend(ctx: ToolContext, a: Args): Promise<Record<string, unknown>
 /** Fits `text` so `wrap(text)` stays under the byte budget; returns the text and whether it was cut. */
 function fitText(text: string, wrap: (t: string) => unknown): { text: string; truncated: boolean } {
   if (jsonBytes(wrap(text)) <= MAX_OUTPUT_BYTES) return { text, truncated: false };
+  const cut = (n: number) => `${text.slice(0, n)}\n\n[report truncated at ${n} of ${text.length} characters; use format html for the full report]\n`;
   let n = Math.min(text.length, MAX_OUTPUT_BYTES);
-  let t = text.slice(0, n);
-  while (n > 0 && jsonBytes(wrap(t)) > MAX_OUTPUT_BYTES) {
-    n = Math.floor(n * 0.9);
-    t = `${text.slice(0, n)}\n\n[report truncated at ${n} of ${text.length} characters; use format html for the full report]\n`;
-  }
-  return { text: t, truncated: true };
+  while (n > 0 && jsonBytes(wrap(cut(n))) > MAX_OUTPUT_BYTES) n = Math.floor(n * 0.9);
+  return { text: cut(n), truncated: true };
 }
 
 /** The report with reviewer text capped like prism_findings. */
@@ -316,7 +319,7 @@ async function report(ctx: ToolContext, a: Args): Promise<Record<string, unknown
   const entries = readResultEntries(repo.path);
   if (!entries.length) throw noResults(repo.label);
   const latest = reviewEntries(entries)[0];
-  if (!latest) throw new ToolError(`no pre-push review recorded for repo ${repo.label} yet; codewatch reviews run on git push`);
+  if (!latest) throw noReview(repo.label);
 
   // Validated above; one argv element, no shell. `^{commit}` keeps git from reading it as a path.
   const rev = run('git', ['-C', repo.path, 'rev-parse', '--verify', '--quiet', `${commit}^{commit}`], undefined, GIT_TIMEOUT_MS);
@@ -438,7 +441,7 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
     const text = JSON.stringify(body);
     if (Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) throw new ToolError(`${name}: the answer is larger than ${MAX_OUTPUT_BYTES} bytes; narrow it with repo, branch or limit`);
     return { content: [{ type: 'text', text }], structuredContent: body };
-  } catch (e: any) {
+  } catch (e: any) { // any: a tool can throw anything; only its message's first line is used.
     const message = e instanceof ToolError ? e.message : `${name} failed: ${firstLine(e?.message || e)}`;
     if (!(e instanceof ToolError)) process.stderr.write(`prism-cli mcp: ${message}\n`);
     return { content: [{ type: 'text', text: message }], structuredContent: { ...stamp, error: message }, isError: true };

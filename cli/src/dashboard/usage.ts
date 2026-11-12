@@ -159,6 +159,7 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
     projects: monthProjects
       .filter((p) => typeof p?.Project === 'string' && p.Project)
       .map((p) => ({ path: real(String(p.Project).replace(/[\\/]+$/, '')), cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) })),
+    // any: codeburn export rows are untyped JSON; each field is checked or read through num().
     daily: (Array.isArray(month?.periods?.[0]?.daily) ? month.periods[0].daily : [])
       .filter((r: any) => typeof r?.Date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.Date))
       .map((r: any) => ({ date: r.Date as string, ...totalsFrom(r) }))

@@ -21,6 +21,8 @@ import { REASON_GITLEAKS_MISSING, type Finding, type PrismResult } from '../code
 export const MAX_COMMIT_ROWS = 50;
 /** History read per repo; ranges reaching further are cut there. */
 export const LOG_LIMIT = 5000;
+/** Per git call (log, blame). */
+export const GIT_TIMEOUT_MS = 30_000;
 
 export interface LogEntry {
   sha: string;
@@ -77,7 +79,7 @@ export interface CommitsPanel {
 
 function git(repo: string, args: string[]): { ok: boolean; out: string } {
   // A timed-out git (a hung filesystem or credential prompt) comes back as not ok.
-  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 });
+  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS });
   return { ok: r.status === 0, out: r.stdout || '' };
 }
 

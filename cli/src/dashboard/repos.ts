@@ -34,8 +34,10 @@ export const MAX_REPOS = 200;
 /** Hard cap on directories listed, so an unusually wide home cannot stall the page. */
 export const MAX_DIRS_VISITED = 20_000;
 
+export const TOPLEVEL_TIMEOUT_MS = 10_000;
+
 export function gitToplevel(cwd: string): string | null {
-  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 });
+  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: TOPLEVEL_TIMEOUT_MS });
   return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
 }
 
