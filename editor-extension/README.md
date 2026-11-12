@@ -4,7 +4,7 @@ Shows PRISM's local results inside the editor: VS Code, Kiro IDE and Cursor (any
 
 ## Install
 
-The extension is not on a marketplace yet. Download `prism-d1-<version>.vsix` and its `.sha256` from [GitHub Releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases) (the releases tagged `ext-v*`; `v*` releases are the npm CLI), or build it from source (see Build). To check the download, run `sha256sum -c prism-d1-<version>.vsix.sha256` (macOS: `shasum -a 256 -c ...`) in the folder holding both files. Then:
+The extension is not on a marketplace yet. Download `prism-d1-<version>.vsix` and its `.sha256` from [GitHub Releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases) (the releases tagged `ext-v*`; the CLI itself ships on npm), or build it from source (see Build). To check the download, run `sha256sum -c prism-d1-<version>.vsix.sha256` (macOS: `shasum -a 256 -c ...`) in the folder holding both files. Then:
 
 ```bash
 code --install-extension prism-d1-0.1.0.vsix     # VS Code
@@ -66,7 +66,7 @@ Known limits in 0.1: one repository per window (the first workspace folder insid
 
 ## Releasing
 
-For maintainers. `.github/workflows/editor-extension-release.yml` runs on tags `ext-v*`: it checks the tag against `package.json`, runs the tests, packages the `.vsix` and creates a GitHub release with the `.vsix` and its `.sha256`. It does not mark the release Latest, so the npm CLI release keeps that label.
+For maintainers. `.github/workflows/editor-extension-release.yml` runs on tags `ext-v*`: it checks the tag against `package.json`, runs the tests, packages the `.vsix` and creates a GitHub release with the `.vsix` and its `.sha256`. It passes `--latest=false`, so it does not take the Latest label from another release. While it is the repo's only release, GitHub still shows it as Latest.
 
 1. Bump `version` in `editor-extension/package.json` in a PR and merge it.
 2. Tag the merge commit and push the tag:
