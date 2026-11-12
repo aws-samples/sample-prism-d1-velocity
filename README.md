@@ -32,21 +32,17 @@ Install [`prism-cli`](https://www.npmjs.com/package/@prism-d1/cli) (Node.js 22 o
 | Read-only AWS account checks and fixes | `prism-cli aws check` | [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend) |
 | Security Agent review of your branch (after `enable security`, which deploys to AWS) | `prism-cli security code-review` | [Running a Review](USER_GUIDE.md#running-a-review-from-the-cli) |
 
-Where the local results show up:
+### Supported coding agent plugins
 
-| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code (WIP / planned) |
+PRISM brings codewatch findings, review reports, AI spend and the setup checklist into the tools you already code in:
+
+| Plugin | Works with | What you get | Install |
 |---|---|---|---|
-| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes, through the `prism_findings` MCP tool |
-| Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes, through the `prism_report` MCP tool |
-| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes, through the `prism_spend` MCP tool; a status line is planned |
-| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes, through the `prism_setup` MCP tool |
-| MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: today's only integration besides the SessionStart hook |
-| Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
-| Plugin, slash commands | No | No | Planned |
-| Where it runs | With a repo open or without one (machine mode), and on the remote host over Remote-SSH | The Kiro Crew gateway's machine | Wherever `claude` runs |
-| Install | `code --install-extension prism-d1-<version>.vsix` (`kiro` or `cursor` instead of `code`), from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true) | `prism-cli enable kirocrew` | `claude mcp add prism -- prism-cli mcp` |
+| **PRISM editor extension** | VS Code, Kiro IDE, Cursor | Findings in the Problems panel, spend and findings in the status bar, a PRISM panel with reports and setup. Works with or without a repo open, and over Remote-SSH. | [Install the editor extension](USER_GUIDE.md#editor-extension) |
+| **PRISM Kiro Crew app** | Kiro Crew | A PRISM sidebar page, PRISM tools for every agent, a skill that fixes findings before a push, and a daily digest that notifies you only when something changed. | [Install the Kiro Crew app](USER_GUIDE.md#kiro-crew-app) (`prism-cli enable kirocrew`) |
+| **Claude Code** (work in progress) | Claude Code | Today: the PRISM MCP tools (`prism-cli mcp`) and the SessionStart hook. Planned: a plugin with slash commands and a status line. | [Add the MCP server](USER_GUIDE.md#mcp-server-prism-cli-mcp) |
 
-Claude Code support is a work in progress: today the MCP server and the existing SessionStart hook; a plugin, slash commands and a status line are planned. Details for every feature: [Using PRISM locally](USER_GUIDE.md#using-prism-locally). Every command and flag: [command reference](docs/CLI-REFERENCE.md). What each command touches in AWS: [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md).
+Any other MCP client, including Kiro, can use the same tools through [`prism-cli mcp`](USER_GUIDE.md#mcp-server-prism-cli-mcp). Feature-by-feature comparison and details: [Using PRISM locally](USER_GUIDE.md#using-prism-locally). Every command and flag: [command reference](docs/CLI-REFERENCE.md). What each command touches in AWS: [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md).
 
 ## Quick Start
 
