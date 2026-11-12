@@ -1,6 +1,6 @@
 {
   "name": "prism",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "displayName": "PRISM",
   "description": "Codewatch findings, AI spend and setup status from your local prism-cli for Kiro Crew agents, and a daily digest that speaks only when something changed.",
   "author": "aws-samples",
@@ -22,7 +22,7 @@
     "When you want a heads-up without watching a page, let prism-daily-digest run at 09:00 and tell you only about new high findings, a setup regression, or spend over your threshold"
   ],
   "configuration": [
-    "Install prism-cli 1.8.0 or later: npm install -g @prism-d1/cli",
+    "Install with prism-cli 1.9.0 or later: npm install -g @prism-d1/cli && prism-cli enable kirocrew (or install this folder; see the README)",
     "Trust the app when you enable it; Kiro Crew registers nothing from a third-party app until you do",
     "Optional: set spendThreshold and cliPath in the app's data/config.json (see the README)"
   ],

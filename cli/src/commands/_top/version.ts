@@ -11,6 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { ENABLE_KIROCREW_CMD, KIROCREW_APP_NAME, kirocrewAppState, type KirocrewAppState } from '../../utils/kirocrew.js';
 
 export const PACKAGE_NAME = '@prism-d1/cli';
 const BIN_NAME = 'prism-cli';
@@ -38,6 +40,8 @@ export interface VersionReport {
   latestNote: string | null;
   onPath: Install[];
   warnings: string[];
+  /** The PRISM Kiro Crew app; null when kirocrew is not on this machine. */
+  kirocrewApp: KirocrewAppState | null;
 }
 
 export interface VersionDeps {
@@ -46,6 +50,8 @@ export interface VersionDeps {
   pathEnv: string;
   /** `npm view @prism-d1/cli version`: the version, or an error message. */
   npmLatest: () => { version: string | null; error?: string };
+  /** Installed and bundled Kiro Crew app versions; file reads only, no kirocrew call. */
+  kirocrewApp?: () => KirocrewAppState | null;
 }
 
 /** Walks up from `start` to the package.json of @prism-d1/cli, at most 6 levels. */
@@ -142,7 +148,21 @@ export function buildReport(opts: { offline?: boolean }, d: VersionDeps): Versio
   }
   const updateAvailable = latest && version !== 'unknown' ? compareVersions(latest, version) > 0 : null;
 
-  return { schema: 'prism.version.v1', version, node: process.version, latest, updateAvailable, latestNote, onPath, warnings };
+  let kirocrewApp: KirocrewAppState | null = null;
+  try { kirocrewApp = d.kirocrewApp?.() ?? null; } catch { /* optional line: never fails `version` */ }
+
+  return { schema: 'prism.version.v1', version, node: process.version, latest, updateAvailable, latestNote, onPath, warnings, kirocrewApp };
+}
+
+/** True when an installed Kiro Crew app is older than the bundled one. */
+export function appOutdated(s: KirocrewAppState | null | undefined): boolean {
+  return !!(s?.installed && s.bundled && compareVersions(s.installed, s.bundled) < 0);
+}
+
+/** The `prism-cli version` line for an outdated Kiro Crew app; null otherwise. */
+export function kirocrewVersionLine(s: KirocrewAppState | null | undefined): string | null {
+  if (!appOutdated(s)) return null;
+  return `Kiro Crew app ${KIROCREW_APP_NAME} ${s!.installed} installed, ${s!.bundled} bundled: run ${ENABLE_KIROCREW_CMD}`;
 }
 
 function realNpmLatest(): { version: string | null; error?: string } {
@@ -163,6 +183,7 @@ export function defaultDeps(): VersionDeps {
     ownPackageDir: findPackageDir(dirname(fileURLToPath(import.meta.url))) ?? process.cwd(),
     pathEnv: process.env.PATH || '',
     npmLatest: realNpmLatest,
+    kirocrewApp: () => kirocrewAppState({ home: homedir() }),
   };
 }
 
@@ -173,6 +194,8 @@ export function printReport(r: VersionReport, log: (l: string) => void = console
   else if (r.latestNote === 'offline') log('Update check skipped (--offline).');
   else log(`Update check: not checked (${r.latestNote}).`);
   for (const w of r.warnings) log(`⚠  ${w}`);
+  const kc = kirocrewVersionLine(r.kirocrewApp);
+  if (kc) log(kc);
 }
 
 export default {

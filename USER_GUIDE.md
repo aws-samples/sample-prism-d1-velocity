@@ -601,6 +601,25 @@ that runs as a script, with no model call. The digest notifies only on a new hig
 today's spend above a threshold you set (off by default), or on a setup item that went from ok to
 warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.8.0 or later.
 
+Install it with prism-cli 1.9.0 or later, which bundles the app:
+
+```bash
+npm i -g @prism-d1/cli && prism-cli enable kirocrew
+```
+
+The command prints its plan and asks first (`--yes` skips the question, `--dry-run` only prints
+the plan). It copies the bundled app to `~/.prism/kirocrew-app` and runs `kirocrew app install`
+or `kirocrew app update prism --source ~/.prism/kirocrew-app`, then `kirocrew app enable prism` on
+a first install. It does not install Kiro Crew. Two steps stay with you: trust the app and approve
+`/api/apps/prism/*` under **Apps → PRISM** in the Kiro Crew dashboard, then reload the dashboard
+to see the **PRISM** sidebar entry. `prism-cli enable kirocrew --status` shows the installed and
+bundled versions, the source folder, the API grants and the digest cron. `--uninstall` removes
+the app and keeps its data; add `--purge-data` to delete the data too. `prism-cli version` and the
+dashboard's Setup tab say when the installed app is older than the one bundled with your
+prism-cli.
+
+To install from a local folder instead, for example a clone you are changing:
+
 ```bash
 kirocrew app install <path-to>/sample-prism-d1-velocity/kirocrew-app
 kirocrew app enable prism    # trust the app when Kiro Crew asks; nothing is registered until you do

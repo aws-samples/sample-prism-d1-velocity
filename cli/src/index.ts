@@ -20,7 +20,7 @@ export const GROUP_DESCRIPTIONS: Record<string, string> = {
   'bedrock-protection': 'Audit an AWS account, organization or repo for LLMjacking exposure',
   bootstrapper: 'Install PRISM CI workflows, the eval harness and the coding agent, and set up CI OIDC roles',
   codewatch: 'Git hook entry points and scan reports for the local codewatch hooks',
-  enable: 'Turn on a PRISM feature on this machine or repo: codewatch hooks, codeburn sync, Security Agent',
+  enable: 'Turn on a PRISM feature on this machine or repo: codewatch hooks, codeburn sync, Security Agent, the Kiro Crew app',
   export: 'Push local usage data to PRISM now',
   git: 'Claude Code session hook, and the retired AI-origin commit trailers',
   'parse-code-tool': 'Parse Kiro CLI and Kiro IDE sessions into codeburn-compatible token usage',
