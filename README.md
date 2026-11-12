@@ -18,6 +18,26 @@ PRISM D1 instruments how your teams actually use AI to write software — which 
 
 ![PRISM D1 Velocity Architecture](assets/images/prismarchitecture.drawio.png)
 
+## prism-cli
+
+`prism-cli` is the local command line for PRISM, published on npm as [`@prism-d1/cli`](https://www.npmjs.com/package/@prism-d1/cli). It needs Node.js 22 or later.
+
+```bash
+npm install -g @prism-d1/cli
+prism-cli version        # installed version, newer release on npm, other copies on PATH
+```
+
+| Job | Commands |
+|-----|----------|
+| Send AI usage to PRISM | `enable codeburn`, `export otel` |
+| Check changes before they leave your machine | `enable codewatch`, `codewatch report` |
+| See results locally | `dashboard`, and the [editor extension](#optional-see-results-in-your-editor-vs-code-kiro-cursor) for VS Code, Kiro and Cursor |
+| Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security pentest` |
+| Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection` |
+| Platform team | `team info`, `team add-developer`, `bootstrapper ...` |
+
+Every command takes `--help`. [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) groups the commands by job and lists what each one touches in AWS. The [User Guide](USER_GUIDE.md) has the details. The [Quick Start](#quick-start) below uses prism-cli at each step.
+
 ## Quick Start
 
 > **⚠️ Node.js 22 is required.** [codeburn](https://github.com/getagentseal/codeburn) needs Node.js 22+ for AI usage telemetry. Install via [nodejs.org](https://nodejs.org/en/download) or [nvm](https://github.com/nvm-sh/nvm#installing-and-updating): `nvm install 22 && nvm use 22`.
@@ -101,6 +121,14 @@ Starts a local web page with codewatch results for every repo it finds under you
 ### Optional: see results in your editor (VS Code, Kiro, Cursor)
 
 The [editor extension](editor-extension/README.md) puts this repo's codewatch findings in the Problems panel and a one-line summary (findings, spend today, setup warnings) in the status bar, with a side panel for the setup checklist. It reads `prism-cli dashboard --json`, opens no ports and makes no AWS calls.
+
+Download `prism-d1-<version>.vsix` from the latest [`ext-v*` release](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true), then install it:
+
+```bash
+code --install-extension prism-d1-0.1.0.vsix   # or kiro / cursor
+```
+
+Or use **Install from VSIX...** in the Extensions view's `...` menu. On Remote-SSH, install it on the SSH host. It needs prism-cli 1.7.1 or later. Details: [editor extension README](editor-extension/README.md).
 
 ### Optional: AWS Security Agent scans in CI (enable security)
 
