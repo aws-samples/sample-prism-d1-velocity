@@ -1,0 +1,116 @@
+# editor-extension-release.yml -- build, test and package the editor extension, then attach the
+# .vsix and its sha256 to a GitHub release. Uses GITHUB_TOKEN only; no other secrets.
+#
+# Tags: `ext-v<version>`, e.g. `ext-v0.1.0`. GitHub tag filters are globs matched against the
+# whole tag name from its first character, so `ext-v0.1.0` does not match publish.yml's `v*`
+# (npm CLI) and `v1.7.1` does not match `ext-v*`. The two release streams never trigger each other.
+#
+# workflow_dispatch is a dry run: it builds, tests and packages, and uploads the .vsix and
+# sha256 as a workflow artifact only. It creates no tag and no release.
+
+name: Editor extension release
+
+on:
+  push:
+    tags: ['ext-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create
+    defaults:
+      run:
+        working-directory: editor-extension
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check tag matches package.json version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ "${TAG#ext-v}" != "$VERSION" ]; then
+              echo "::error::Tag '$TAG' does not match editor-extension/package.json version '$VERSION'. Expected tag 'ext-v$VERSION'."
+              exit 1
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm ci
+      - name: Build and test
+        run: npm test
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm run package
+          VSIX="prism-d1-$VERSION.vsix"
+          test -f "$VSIX"
+          sha256sum "$VSIX" > "$VSIX.sha256"
+          cat "$VSIX.sha256"
+      - name: Upload dry-run artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prism-d1-${{ steps.version.outputs.version }}-vsix
+          path: |
+            editor-extension/prism-d1-${{ steps.version.outputs.version }}.vsix
+            editor-extension/prism-d1-${{ steps.version.outputs.version }}.vsix.sha256
+          if-no-files-found: error
+      - name: Create release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          VSIX="prism-d1-$VERSION.vsix"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::Release '$TAG' already exists. Not overwriting it; bump the version and push a new ext-v tag."
+            exit 1
+          fi
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          cat > "$NOTES" <<EOF
+          PRISM editor extension $VERSION for VS Code, Kiro IDE and Cursor (engine 1.90 or later).
+
+          ## Install
+
+          Download \`$VSIX\`, then either:
+
+          - In VS Code, Kiro or Cursor: Extensions view, \`...\` menu, **Install from VSIX...**, pick the file.
+          - Or from a terminal: \`code --install-extension $VSIX\` (\`kiro\` or \`cursor\` instead of \`code\` for those editors).
+
+          **Remote-SSH:** the extension runs on the SSH host, so install the \`.vsix\` there: copy it to the host and use **Install from VSIX...** while connected, or run the install command in the remote terminal. Check that it is listed under **SSH: <host> - Installed**.
+
+          Requires \`prism-cli\` 1.7.1 or later (\`npm i -g @prism-d1/cli\`).
+
+          ## Verify the download
+
+          Put \`$VSIX\` and \`$VSIX.sha256\` in the same folder, then run:
+
+          \`\`\`bash
+          sha256sum -c $VSIX.sha256        # Linux
+          shasum -a 256 -c $VSIX.sha256    # macOS
+          \`\`\`
+
+          It must print \`$VSIX: OK\`.
+          EOF
+          # --latest=false: keep the npm CLI release (v* tags) marked Latest.
+          gh release create "$TAG" "$VSIX" "$VSIX.sha256" \
+            --title "PRISM editor extension $VERSION" \
+            --notes-file "$NOTES" \
+            --latest=false

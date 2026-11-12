@@ -4,7 +4,7 @@ Shows PRISM's local results inside the editor: VS Code, Kiro IDE and Cursor (any
 
 ## Install
 
-The extension is not on a marketplace yet. Build the `.vsix` (see Build) or take one from a release, then:
+The extension is not on a marketplace yet. Download `prism-d1-<version>.vsix` and its `.sha256` from [GitHub Releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases) (the releases tagged `ext-v*`; `v*` releases are the npm CLI), or build it from source (see Build). To check the download, run `sha256sum -c prism-d1-<version>.vsix.sha256` (macOS: `shasum -a 256 -c ...`) in the folder holding both files. Then:
 
 ```bash
 code --install-extension prism-d1-0.1.0.vsix     # VS Code
@@ -63,3 +63,19 @@ npm run package   # vsce package -> prism-d1-0.1.0.vsix (no publish)
 The tests cover the logic modules (status text, findings to markers, the fix prompt, argv building, finding `prism-cli` in nvm and other per-user folders, the spawn `PATH`, refresh debounce, the panel model and messages). `src/extension.ts`, the VS Code wiring, is not run headless.
 
 Known limits in 0.1: one repository per window (the first workspace folder inside a git repo). On Windows, `PATH` lookup finds only `prism-cli.exe`, because npm's `.cmd` shims need a shell; set `prism.cliPath` there.
+
+## Releasing
+
+For maintainers. `.github/workflows/editor-extension-release.yml` runs on tags `ext-v*`: it checks the tag against `package.json`, runs the tests, packages the `.vsix` and creates a GitHub release with the `.vsix` and its `.sha256`. It does not mark the release Latest, so the npm CLI release keeps that label.
+
+1. Bump `version` in `editor-extension/package.json` in a PR and merge it.
+2. Tag the merge commit and push the tag:
+
+   ```bash
+   git fetch origin
+   git tag ext-v<version> <merge-sha>
+   git push origin ext-v<version>
+   git ls-remote --tags origin ext-v<version>   # check the tag reached GitHub
+   ```
+
+The workflow fails if the tag does not match `package.json` or the release already exists. To try the build without releasing, run the workflow by hand (Actions, **Run workflow**): it uploads the `.vsix` as a workflow artifact only.
