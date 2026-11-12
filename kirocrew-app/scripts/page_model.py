@@ -243,7 +243,7 @@ def report_plan(target: Dict[str, Any], output: str) -> Dict[str, Any]:
 def with_report_csp(html: str) -> str:
     """The report with a CSP meta tag: its inline styles only, no script, nothing remote."""
     meta = f'<meta http-equiv="Content-Security-Policy" content="{REPORT_CSP}">'
-    m = re.search(r"<head[^>]*>", html, re.I)
+    m = re.search(r"<head(?:\s[^>]*)?>", html, re.I)  # not <header>
     if m:
         return html[: m.end()] + meta + html[m.end():]
     return f"<!DOCTYPE html><html><head>{meta}</head><body>{html}</body></html>"

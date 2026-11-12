@@ -31,7 +31,7 @@ REPORT_TIMEOUT_S = 60
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_REPORT_BYTES = 5 * 1024 * 1024
 
-_state: Dict[str, Any] = {"targets": []}
+_state: Dict[str, Any] = {"targets": [], "gen": None}
 _lock = asyncio.Lock()
 _reaping: Set["asyncio.Task[None]"] = set()
 
@@ -83,11 +83,14 @@ async def _run(argv: List[str], cwd: str, env: Dict[str, str], timeout: float) -
 
 
 async def _reap(proc: "asyncio.subprocess.Process") -> None:
-    try:
+    async def drain() -> None:
         assert proc.stdout is not None
-        while await asyncio.wait_for(proc.stdout.read(65536), REAP_TIMEOUT_S):
+        while await proc.stdout.read(65536):
             pass
-        await asyncio.wait_for(proc.wait(), REAP_TIMEOUT_S)
+        await proc.wait()
+
+    try:
+        await asyncio.wait_for(drain(), REAP_TIMEOUT_S)  # one deadline for the whole tail
     except Exception:  # timeout or a broken pipe: make sure the child does not outlive us
         if proc.returncode is None:
             proc.kill()
@@ -177,6 +180,8 @@ async def handle_data(request: web.Request, ctx: Any) -> web.Response:
             return _err(502, "prism-cli dashboard --json failed: " + pm.plain(e, 200))
         version, commits = await asyncio.gather(_version(cli, env), _commits(pm.commit_lookup_paths(payload)))
         model, targets = pm.build_model(payload, commits, version, pm.read_digest(_data_dir(ctx)))
+        # The page sends this back with each index, so an index always means the list it was drawn from.
+        _state["gen"] = model["gen"] = uuid.uuid4().hex
         _state["targets"] = targets
     return web.json_response(model)
 
@@ -185,6 +190,8 @@ async def handle_report(request: web.Request, ctx: Any) -> web.Response:
     denied = await _gate(request, ctx, "report")
     if denied is not None:
         return denied
+    if request.query.get("gen") != _state.get("gen"):
+        return _err(409, "the data changed since this page loaded; refresh and try again")
     target = pm.target_for(_state["targets"], request.query.get("repoIndex"))
     if target is None:
         return _err(400, "unknown repo; refresh the page")
@@ -198,14 +205,22 @@ async def handle_report(request: web.Request, ctx: Any) -> web.Response:
     plan = pm.report_plan(target, str(out))
     env = cli_env(cli, os.environ)
     attempts = [(plan["primary"], plan["primaryNote"])] + ([(plan["fallback"], plan["fallbackNote"])] if plan["fallback"] else [])
+    causes: List[str] = []
     for args, note in attempts:
         try:
             rc, _ = await _run([cli, *args], target["path"], env, REPORT_TIMEOUT_S)
-        except (OSError, asyncio.TimeoutError):
+        except asyncio.TimeoutError:
+            causes.append(f"timed out after {REPORT_TIMEOUT_S} s")
             continue
-        if rc == 0 and out.is_file():
-            if out.stat().st_size > MAX_REPORT_BYTES:
-                return _err(502, "the report is too large to show here; run prism-cli codewatch report in a terminal")
-            html = out.read_text(encoding="utf-8", errors="replace")
-            return web.json_response({"repo": target["name"], "note": note, "html": pm.with_report_csp(html)})
-    return _err(502, f"prism-cli codewatch report found no review for {target['name']}")
+        except OSError as e:
+            causes.append(pm.plain(e, 200))
+            continue
+        if rc != 0 or not out.is_file():
+            causes.append(f"exit {rc}")
+            continue
+        if out.stat().st_size > MAX_REPORT_BYTES:
+            return _err(502, "the report is too large to show here; run prism-cli codewatch report in a terminal")
+        html = out.read_text(encoding="utf-8", errors="replace")
+        return web.json_response({"repo": target["name"], "note": note, "html": pm.with_report_csp(html)})
+    ctx.logger.warning("prism report for %s failed: %s", target["name"], "; ".join(causes))
+    return _err(502, f"prism-cli codewatch report found no review for {target['name']} ({'; '.join(causes)})")

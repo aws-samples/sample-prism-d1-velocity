@@ -28,11 +28,10 @@ from prism_cli_path import app_data_dir, cli_env, load_config, resolve_cli
 
 STATE_FILE = "digest-state.json"
 STATE_SCHEMA = 1
-DASHBOARD_TIMEOUT_S = 110  # under the cron's 120 s script timeout
+REFRESH_GRACE_S = 20  # time left for the CLI's codeburn refresh after it printed; under the cron's 120 s timeout
 FINDING_CHARS = 120
 NAME_CHARS = 60
 SHORT_SHA = 7
-ERROR_CHARS = 200
 CURRENCY_CHARS = 8
 MAX_REPOS_LISTED = 10
 BAD_SETUP = ("warn", "missing")
@@ -179,15 +178,30 @@ def run_dashboard(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if not cli:
         raise RuntimeError(reason)
     # No --root: the CLI scans the home directory, as the dashboard does.
-    out = subprocess.run(
-        [cli, "dashboard", "--json"],
-        cwd=str(Path.home()), env=cli_env(cli, os.environ),
-        capture_output=True, text=True, timeout=DASHBOARD_TIMEOUT_S, check=False,
-    )
-    if out.returncode != 0:
-        last = (out.stderr or "").strip().splitlines()[-1:] or [f"exit {out.returncode}"]
-        raise RuntimeError("prism-cli dashboard --json failed: " + clean(last[0], ERROR_CHARS))
-    payload = json.loads(out.stdout)
+    # With a stale usage cache the CLI prints the document, then waits for its codeburn refresh;
+    # read only up to the closing line, give the refresh a moment, then stop the child, so that
+    # wait cannot push this run past the cron's timeout.
+    proc = subprocess.Popen([cli, "dashboard", "--json"], cwd=str(Path.home()), env=cli_env(cli, os.environ),
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    lines: List[bytes] = []
+    try:
+        assert proc.stdout is not None
+        # shortcut: no per-line timeout while reading; the cron's own 120 s script timeout is the backstop.
+        for line in proc.stdout:
+            lines.append(line)
+            if line == b"}\n":  # the document is pretty-printed; this closes it
+                break
+        try:
+            proc.wait(timeout=REFRESH_GRACE_S)
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    if not lines or lines[-1] != b"}\n":
+        raise RuntimeError(f"prism-cli dashboard --json failed (exit {proc.returncode})")
+    payload = json.loads(b"".join(lines).decode("utf-8"))
     if not isinstance(payload, dict) or not str(payload.get("schema", "")).startswith("prism.dashboard."):
         raise RuntimeError("prism-cli dashboard --json returned an unexpected document")
     return payload

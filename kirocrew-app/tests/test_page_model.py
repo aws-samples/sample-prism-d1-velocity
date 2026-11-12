@@ -126,6 +126,8 @@ class IndexAndReportTest(unittest.TestCase):
     def test_report_csp_is_inserted(self):
         self.assertIn(pm.REPORT_CSP, pm.with_report_csp("<html><head><title>x</title></head></html>").split("<title>")[0])
         self.assertTrue(pm.with_report_csp("<p>x</p>").startswith("<!DOCTYPE html><html><head><meta http-equiv"))
+        # <header> is not <head>: no head means the document is wrapped, not patched inside the body.
+        self.assertTrue(pm.with_report_csp("<header class=x>t</header>").startswith("<!DOCTYPE html><html><head><meta http-equiv"))
 
     def test_cleanup_reports_only_old_html(self):
         d = Path(tempfile.mkdtemp())

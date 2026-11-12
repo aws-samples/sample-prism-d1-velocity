@@ -9,6 +9,10 @@
 // The page sends only indexes (repoIndex) to the backend, never a path.
 
 export const REFRESH_MS = 5 * 60 * 1000;
+/** How often the page checks whether a refresh is due (it only refreshes while visible). */
+const VISIBILITY_POLL_MS = 30 * 1000;
+/** How long a download's blob URL stays valid. */
+const BLOB_URL_TTL_MS = 10 * 1000;
 export const API = '/api/apps/prism';
 
 const v = (name, fallback) => `var(--${name}, ${fallback})`;
@@ -158,7 +162,7 @@ export default function PrismPage() {
     load(false);
     // Auto-refresh every 5 minutes while the page is visible; catch up when it becomes visible again.
     const tick = () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad.current >= REFRESH_MS) load(false); };
-    const timer = setInterval(tick, 30 * 1000);
+    const timer = setInterval(tick, VISIBILITY_POLL_MS);
     document.addEventListener('visibilitychange', tick);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
   }, [load]);
@@ -170,7 +174,7 @@ export default function PrismPage() {
     copy: (text) => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => setCopied(text), () => setCopied('')); },
     openReport: (index) => {
       setReport({ index, loading: true });
-      api.get(API + '/report?repoIndex=' + encodeURIComponent(String(index)))
+      api.get(API + '/report?repoIndex=' + encodeURIComponent(String(index)) + '&gen=' + encodeURIComponent(str(model && model.gen)))
         .then((r) => setReport({ index, repo: str(r.repo), note: str(r.note), html: str(r.html) }))
         .catch((e) => setReport({ index, error: str(e && e.body ? e.body : e && e.message) }));
     },
@@ -182,7 +186,7 @@ export default function PrismPage() {
       a.href = url;
       a.download = 'prism-codewatch-report.html';
       a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
     },
   };
 
