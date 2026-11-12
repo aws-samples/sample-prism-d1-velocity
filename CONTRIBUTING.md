@@ -44,6 +44,9 @@ GitHub provides additional document on [forking a repository](https://help.githu
 | Package | Command |
 |---------|---------|
 | `cli/` | `cd cli && npm test` — type-checks (including the tests, which the build config excludes) then runs the `node:test` suite |
+| `cli/` docs | `cd cli && npm run docs && npm run docs:check` — regenerates `docs/CLI-REFERENCE.md` from `--help`, then checks every Markdown link, anchor and `prism-cli` command name (CI fails if either differs) |
+| `editor-extension/` | `cd editor-extension && npm ci && npm test` |
+| `kirocrew-app/` | `python3 -m unittest discover -s kirocrew-app/tests && node --test kirocrew-app/tests/page.test.mjs` |
 | `sample-app/` | `cd sample-app && npm test` — Jest |
 | `infra/` | `cd infra && npm run build` — CDK synth is the check |
 
@@ -52,6 +55,21 @@ stubbing `utils/aws.ts`, so they exercise the real wrapper — its argv construc
 error-code parsing, and its normalisation of the empty bodies several AWS commands return on success.
 Add a check's stubs via `withFakeAws()`; an unstubbed call fails the test loudly instead of silently
 taking an error branch.
+
+### Docs map
+
+Where prism-cli documentation goes, so each topic has one home:
+
+| You are adding or changing… | Put it in | Also |
+|---|---|---|
+| A prism-cli command, flag or default | The command's description and option text in `cli/src` | Run `npm run docs` in `cli/` and commit `docs/CLI-REFERENCE.md`; CI checks it |
+| How to use a feature (steps, what it changes, troubleshooting) | The feature's one section in `USER_GUIDE.md`; link flags to `docs/CLI-REFERENCE.md` instead of copying them | A row in README's "Use PRISM locally" tables if it is a new local feature or surface |
+| What a command touches in AWS, its cost, a safety default, or a product decision | `docs/PRISM-CLI-OVERVIEW.md` | — |
+| A new local surface (UI, server, editor or agent integration) | Its component folder's `README.md` for install, build and release; usage in `USER_GUIDE.md` | A line in `SECURITY.md` under "Local tools stay local" |
+| A design proposal or API research | `docs/DESIGN-*.md` or `docs/RESEARCH-*.md`, with a status line at the top | Mark it historical once it ships |
+| A known security gap | `SECURITY.md` | — |
+| A rename or deprecation | Start the command's description with `[deprecated]` in `cli/src`; it then appears under Deprecated commands in the reference | A Troubleshooting entry only if users must migrate something |
+| Workshop steps | The Workshop Studio module | Link to the `USER_GUIDE.md` section instead of repeating it |
 
 
 ## Finding contributions to work on

@@ -128,22 +128,23 @@ Workshop is designed for **4-hour delivery** with optional deep-dive extensions.
 
 ## Bootstrapper Usage (Post-Workshop)
 
-Teams fork the `bootstrapper/` directory into their own repos:
+Teams install the bundled assets with prism-cli and copy the rest from `bootstrapper/` by hand (see `bootstrapper/README.md`):
 
 ```bash
-# Copy bootstrapper into your project
-cp -r bootstrapper/ ~/your-project/.prism/
-
-# Install git hooks
 cd ~/your-project
-.prism/metric-hooks/install.sh
 
-# Copy GitHub workflows
-cp .prism/github-workflows/*.yml .github/workflows/
+# CI workflows and the eval gate (GitHub; use install-gitlab-workflows for GitLab)
+prism-cli bootstrapper install-github-workflows --region us-west-2
+prism-cli bootstrapper install-eval-harness
 
-# Set up Claude Code config
-cp .prism/claude-code/CLAUDE.md ./CLAUDE.md
+# Local git hooks: gitleaks pre-commit and a report-only AI review on push
+prism-cli enable codewatch
+
+# Claude Code config: copy the template for your team's archetype
+cp <path-to>/sample-prism-d1-velocity/bootstrapper/claude-code/CLAUDE-backend-api.md ./CLAUDE.md
 ```
+
+The old `prepare-commit-msg` trailer hook is retired; do not install it. Every command: `docs/CLI-REFERENCE.md`.
 
 ## Key Conventions
 

@@ -20,9 +20,7 @@ PRISM D1 instruments how your teams actually use AI to write software — which 
 
 ## Use PRISM locally (prism-cli)
 
-Install [`prism-cli`](https://www.npmjs.com/package/@prism-d1/cli) (Node.js 22 or later): `npm install -g @prism-d1/cli`.
-
-Most features run on a developer machine with no AWS deployment: codewatch git hooks, the local dashboard, the editor extension (a `.vsix` from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true)) and read-only AWS account checks.
+Install [`prism-cli`](https://www.npmjs.com/package/@prism-d1/cli) (Node.js 22 or later): `npm install -g @prism-d1/cli`. Most features run on a developer machine with no AWS deployment.
 
 | Feature | Command | Details |
 |---------|---------|---------|
@@ -34,7 +32,21 @@ Most features run on a developer machine with no AWS deployment: codewatch git h
 | Read-only AWS account checks and fixes | `prism-cli aws check` | [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend) |
 | Security Agent review of your branch (after `enable security`, which deploys to AWS) | `prism-cli security code-review` | [Running a Review](USER_GUIDE.md#running-a-review-from-the-cli) |
 
-Every command takes `--help`. [Using PRISM locally](USER_GUIDE.md#using-prism-locally) has the full command list, and the [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) lists what each command touches in AWS.
+Where the local results show up:
+
+| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code (WIP / planned) |
+|---|---|---|---|
+| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes, through the `prism_findings` MCP tool |
+| Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes, through the `prism_report` MCP tool |
+| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes, through the `prism_spend` MCP tool; a status line is planned |
+| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes, through the `prism_setup` MCP tool |
+| MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: today's only integration besides the SessionStart hook |
+| Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
+| Plugin, slash commands | No | No | Planned |
+| Where it runs | With a repo open or without one (machine mode), and on the remote host over Remote-SSH | The Kiro Crew gateway's machine | Wherever `claude` runs |
+| Install | `code --install-extension prism-d1-<version>.vsix` (`kiro` or `cursor` instead of `code`), from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true) | `prism-cli enable kirocrew` | `claude mcp add prism -- prism-cli mcp` |
+
+Claude Code support is a work in progress: today the MCP server and the existing SessionStart hook; a plugin, slash commands and a status line are planned. Details for every feature: [Using PRISM locally](USER_GUIDE.md#using-prism-locally). Every command and flag: [command reference](docs/CLI-REFERENCE.md). What each command touches in AWS: [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md).
 
 ## Quick Start
 
@@ -75,7 +87,7 @@ npm install -g @prism-d1/cli
 prism-cli enable codeburn --url <OtelCollectorUrl>
 ```
 
-`--url` puts codeburn in team mode. Without a flag it asks where your usage should go; the default, local only (`--local`), keeps usage on the machine with no endpoint and no schedule, and `--admin` prints the platform-team steps. One command: installs codeburn if it is missing (it asks first and prints the npm command), authenticates, backfills 30 days, and installs a platform-native schedule (crontab / LaunchAgent / Scheduled Task) that pushes usage **and** git commit attribution every 12 hours. Preview it with `--dry-run`, check it with `--status`, remove the schedule with `--remove`. Re-running it reports what is already set up. `prism-cli export otel` pushes immediately, and `prism-cli version` shows the CLI version, whether npm has a newer one, and any older `prism-cli` on PATH. (`bootstrapper setup-otel-sync` is the deprecated old name.)
+`--url` puts codeburn in team mode. It installs codeburn if it is missing (it asks first), signs you in, backfills 30 days and installs a schedule that pushes usage **and** git commit attribution every 12 hours. Preview it with `--dry-run` and check it with `--status`; the other modes and flags are in [Developer Setup](USER_GUIDE.md#developer-setup).
 
 ### 4. Confirm data is flowing
 
@@ -98,11 +110,13 @@ Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum se
 
 | Guide | For | Contents |
 |-------|-----|----------|
-| **[User Guide](USER_GUIDE.md)** | Engineers deploying PRISM | Setup, codewatch git hooks, local dashboard, CI/CD workflows, eval gates, security agent, dashboards, agent development, troubleshooting |
+| **[User Guide](USER_GUIDE.md)** | Engineers deploying and using PRISM | Setup, local tools (codewatch, dashboard, editor extension, MCP, Kiro Crew app), security scans, AWS checks, CI/CD workflows, eval gates, dashboards, agent development, troubleshooting |
 | **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the attribution pipeline, metrics catalog with known gaps, alarms, dashboard design decisions |
 | **[Bedrock Protection](docs/BEDROCK-PROTECTION.md)** | Engineers and security leaders | Layered defence against LLMjacking: gitleaks in CI and full-history repo scans, IAM credential hygiene, Bedrock spend guardrails across both billing surfaces |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
-| **[prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md)** | Engineering managers | The local prism-cli commands by job, what each costs and touches in AWS, safety defaults, open questions |
+| **[prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md)** | Engineering managers | The prism-cli commands by job, what each costs and touches in AWS, safety defaults, decisions and open questions |
+| **[prism-cli Command Reference](docs/CLI-REFERENCE.md)** | Anyone running prism-cli | Every command and flag, generated from `--help` |
+| **[Editor extension](editor-extension/README.md)**, **[Kiro Crew app](kirocrew-app/README.md)**, **[Coding agent](coding-agent/README.md)** | Users and maintainers of each component | Install, features, security, build and release |
 | **[Assessment Guide](assessment/ASSESSMENT_GUIDE.md)** | Solutions Architects | Scanner categories, interview questions and rubrics, scoring, qualification matrix |
 | **[Customer Onboarding](assessment/ONBOARDING.md)** | Solutions Architects | Onboarding tracks, email templates, per-track pre-work |
 | **[Roadmap](docs/ROADMAP.md)** | Contributors | Prioritized backlog |

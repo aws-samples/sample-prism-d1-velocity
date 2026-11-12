@@ -389,7 +389,7 @@ Here is what matters most this week:
 
 **This Week's Priorities**
 
-1. **[PRIORITY_1]** — [DETAILS — e.g., "Verify CLAUDE.md is deployed to all active repos. Run `verify-setup.sh` in each repo and send me a screenshot of the output."]
+1. **[PRIORITY_1]** — [DETAILS — e.g., "Verify CLAUDE.md is deployed to all active repos. Run `prism-cli workshop verify-setup --verify-only` on each developer machine and send me a screenshot of the output."]
 2. **[PRIORITY_2]** — [DETAILS — e.g., "Start using spec templates for any new feature work. Your team committed to building the search API and the user profile update via specs — hold that line."]
 3. **[PRIORITY_3]** — [DETAILS — e.g., "Check that every developer has run `prism-cli enable codeburn` and that Attribution Coverage on the Team Velocity dashboard is rising. If a sync is failing, check the troubleshooting guide below."]
 
@@ -548,15 +548,16 @@ Troubleshooting:
 3. Sign in with your AWS Builder ID
 4. Verify the spec panel is visible in the sidebar
 
-##### 3. Run the Setup Verification Script
+##### 3. Run the Setup Check
 
 ```bash
-curl -sL https://prism-d1-assets.s3.amazonaws.com/verify-setup.sh | bash
+npm install -g @prism-d1/cli
+prism-cli workshop verify-setup --verify-only
 ```
 
-The script checks: Claude Code installation and Bedrock connectivity, Kiro IDE installation, Git version (2.30+), Node.js version (18+), AWS CLI configured.
+It checks the AWS CLI and credentials, Bedrock model access, Claude Code, Kiro IDE, git (2.34+), Node.js (20+), Python, common utilities, codeburn and the sample app. `--verify-only` reports without offering to install anything; `--skip-aws` skips the AWS and Bedrock checks, and `--profile` picks the AWS profile.
 
-**Expected output**: All items should show a green checkmark. Screenshot the output and share with your team lead.
+**Expected output**: All checks pass. Screenshot the output and share with your team lead.
 
 ##### 4. Read: "Why Spec-Driven Development"
 
@@ -596,7 +597,7 @@ Bad examples:
 |------|-------|----------|------|
 | Install Claude Code + Bedrock config | Each developer | Before workshop | [ ] |
 | Install Kiro IDE | Each developer | Before workshop | [ ] |
-| Run verify-setup.sh (green output) | Each developer | Before workshop | [ ] |
+| Run `prism-cli workshop verify-setup` (all checks pass) | Each developer | Before workshop | [ ] |
 | Read "Why Spec-Driven Development" | Each developer | 1 week before workshop | [ ] |
 | Identify 2 workshop features | Team lead | 3 days before workshop | [ ] |
 
@@ -632,13 +633,14 @@ claude "Hello, confirm you are running on Bedrock"
 2. Install, launch, and sign in with your AWS Builder ID
 3. Verify the spec panel is visible in the sidebar
 
-##### 3. Run the Setup Verification Script
+##### 3. Run the Setup Check
 
 ```bash
-curl -sL https://prism-d1-assets.s3.amazonaws.com/verify-setup.sh | bash
+npm install -g @prism-d1/cli
+prism-cli workshop verify-setup --verify-only
 ```
 
-All items should show green checkmarks. Screenshot and share with your team lead.
+All checks should pass. Screenshot the output and share it with your team lead.
 
 ##### 4. Read: "Why Spec-Driven Development"
 
@@ -714,7 +716,7 @@ Share the sponsor's name and email with your SA so they can be included in reado
 |------|-------|----------|------|
 | Install Claude Code + Bedrock config | Each developer | Before workshop | [ ] |
 | Install Kiro IDE | Each developer | Before workshop | [ ] |
-| Run verify-setup.sh (green output) | Each developer | Before workshop | [ ] |
+| Run `prism-cli workshop verify-setup` (all checks pass) | Each developer | Before workshop | [ ] |
 | Read "Why Spec-Driven Development" | Each developer | 1 week before | [ ] |
 | Identify 2 workshop features | Team lead | 3 days before | [ ] |
 | Identify CI/CD pipeline to instrument | Team lead | 1 week before | [ ] |

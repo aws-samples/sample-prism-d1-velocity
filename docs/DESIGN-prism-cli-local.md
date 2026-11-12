@@ -1,6 +1,8 @@
 # Design: prism-cli as one local tool with three jobs
 
-> Status: draft for review. `enable codewatch` is implemented on branch `feat/enable-security`; everything else here is a proposal.
+> **Historical design document.** It records what was proposed and why. For shipped behavior see the [User Guide](../USER_GUIDE.md#using-prism-locally), the [command reference](CLI-REFERENCE.md) and the [prism-cli Overview](PRISM-CLI-OVERVIEW.md), which also holds the decisions and status that used to be in `PRISM-CLI-STATUS.md`.
+>
+> Status when written: draft for review; everything except `enable codewatch` was a proposal. All of it has since shipped except `install transformation-center` (blocked) and `security design-review` (dropped).
 > Source: the roadmap slide "prism-cli: one tool, three jobs".
 
 ## Summary

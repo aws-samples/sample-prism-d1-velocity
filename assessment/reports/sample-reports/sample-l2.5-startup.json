@@ -136,7 +136,7 @@
     "preWork": [
       { "task": "Install Claude Code and configure for AWS Bedrock", "deadline": "Before workshop", "owner": "Each developer" },
       { "task": "Install Kiro IDE", "deadline": "Before workshop", "owner": "Each developer" },
-      { "task": "Run verify-setup.sh and confirm green output", "deadline": "Before workshop", "owner": "Team lead" },
+      { "task": "Run prism-cli workshop verify-setup and confirm every check passes", "deadline": "Before workshop", "owner": "Team lead" },
       { "task": "Read 'Why Spec-Driven Development' (Module 02 primer)", "deadline": "1 week before workshop", "owner": "Each developer" },
       { "task": "Identify 2 features the team will build during the workshop", "deadline": "3 days before workshop", "owner": "Team lead" },
       { "task": "Ensure AWS account has EventBridge, Timestream, and CloudWatch access", "deadline": "1 week before workshop", "owner": "Platform/DevOps lead" },

@@ -139,38 +139,38 @@ Open `http://localhost:3120`, paste the customer's repo path (or import a JSON s
 
 ### CLI Commands
 
-```bash
-prism-cli <category> <command> [options]
-```
+Every flag and default is in the [command reference](../docs/CLI-REFERENCE.md#prism-cli-assessment).
 
 #### `assessment run`
 
-Run the repo scanner against a customer's codebase.
+Run the repo scanner against a customer's codebase. `--output` is `console` (default), `json` or
+`markdown`; `--verbose` adds timing and the detailed evidence behind each score.
 
 ```bash
 prism-cli assessment run --repo /path/to/repo --output json --output-file report.json
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-r, --repo <path>` | Path to git repository to scan | `.` |
-| `-o, --output <format>` | Output format: `console`, `json`, `markdown` | `console` |
-| `-f, --output-file <path>` | Write report to file | — |
-| `-v, --verbose` | Show timing and detailed evidence | `false` |
-
 #### `assessment web`
 
-Launch the interactive assessment web UI.
+Launch the interactive assessment web UI on `localhost` (port 3120 by default).
 
 ```bash
 prism-cli assessment web --port 3120
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--port <number>` | Port to serve on | `3120` |
+#### `assessment deploy-cdk`
 
-Features:
+Deploy the assessment web app to your AWS account with CDK (ECS behind an ALB, with Cognito), or
+remove it with `--destroy`. It needs a Route 53 hosted zone (`--hosted-zone`); the certificate is
+created when `--certificate-arn` is omitted. Read
+[SECURITY.md](../SECURITY.md#assessment-web-ui-security) before hosting it: in ECS mode the server
+binds `0.0.0.0` and has no authentication of its own.
+
+`assessment interview-agent` appears in `--help` but is not a command to run: it is the module
+behind the web UI's AI interview, which the CLI's command loader also lists. It has no action.
+
+The web UI's features:
+
 - **Repo scanner** — paste a repo path or import JSON scan results
 - **AI interview** — conversational agent asks 20 questions across 6 sections, scores in real-time
 - **Org readiness** — 5 binary qualification factors
@@ -182,13 +182,11 @@ Features:
 
 ## Part 1: Automated Scanner (40%)
 
-**What it does:** Runs `prism-scan` CLI against the customer's repository, checking 12 categories of AI-DLC maturity via file glob patterns and content regex.
+**What it does:** Runs the scanner (`prism-cli assessment run`) against the customer's repository, checking 12 categories of AI-DLC maturity via file glob patterns and content regex.
 
 **How to run:**
 ```bash
-cd assessment/scanner
-npm install
-npx ts-node src/index.ts --repo /path/to/customer/repo --verbose
+prism-cli assessment run --repo /path/to/customer/repo --verbose
 ```
 
 ### 12 Scanner Categories
