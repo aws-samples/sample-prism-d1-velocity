@@ -44,6 +44,23 @@ Before it runs `prism-cli`, the app puts that folder first on `PATH`, so the CLI
 
 ## Install
 
+With prism-cli 1.9.0 or later, which bundles this app:
+
+```bash
+npm i -g @prism-d1/cli && prism-cli enable kirocrew
+```
+
+`prism-cli enable kirocrew` prints its plan (install, update or already current, with the
+versions) and asks before it changes anything. It copies the bundled app to
+`~/.prism/kirocrew-app`, then runs `kirocrew app install`, or `kirocrew app update prism --source`
+when the app is already installed (also from another folder, such as a clone), and
+`kirocrew app enable prism` on a first install. It never installs Kiro Crew. `--dry-run` prints
+the plan only, `--status` shows the installed and bundled versions, the source folder, the API
+grants and the digest cron, and `--uninstall` removes the app. After a prism-cli upgrade,
+`prism-cli version` says when the bundled app is newer than the installed one.
+
+From a local folder instead (a clone, for development):
+
 ```bash
 git clone https://github.com/aws-samples/sample-prism-d1-velocity.git
 kirocrew app install "$PWD/sample-prism-d1-velocity/kirocrew-app"
@@ -51,7 +68,8 @@ kirocrew app enable prism
 ```
 
 Kiro Crew copies the folder into its apps directory (`~/.kiro/crew/apps/prism/`). Later edits to
-your clone do nothing until you update the app.
+the folder do nothing until you update the app. The app's data stays in
+`~/.kiro/crew/apps/prism/data/` across updates.
 
 Kiro Crew registers nothing from a third-party app until you trust it. If you enable the app from
 the dashboard's App Store, it asks you to trust this one app. `kirocrew app enable` refuses with
@@ -180,6 +198,12 @@ python3 kirocrew-app/scripts/digest.py --state-dir "$(mktemp -d)"   # prints the
 reads a saved `dashboard --json` output instead of running `prism-cli`.
 
 ## Uninstall
+
+```bash
+prism-cli enable kirocrew --uninstall   # kirocrew app uninstall prism, then removes ~/.prism/kirocrew-app
+```
+
+Or with Kiro Crew directly:
 
 ```bash
 kirocrew app disable prism

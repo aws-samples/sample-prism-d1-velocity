@@ -95,5 +95,5 @@ test('version --json shape', () => {
   const r = buildReport({}, { ownPackageDir: me.pkgDir, pathEnv: me.binDir, npmLatest: npm('1.2.0') });
   const j = JSON.parse(JSON.stringify(r));
   assert.equal(j.schema, 'prism.version.v1');
-  assert.deepEqual(Object.keys(j).sort(), ['latest', 'latestNote', 'node', 'onPath', 'schema', 'updateAvailable', 'version', 'warnings']);
+  assert.deepEqual(Object.keys(j).sort(), ['kirocrewApp', 'latest', 'latestNote', 'node', 'onPath', 'schema', 'updateAvailable', 'version', 'warnings']);
 });

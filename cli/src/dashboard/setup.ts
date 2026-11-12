@@ -17,6 +17,8 @@ import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js'
 import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
 import { readSecurityMarker } from '../security/marker.js';
 import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
+import { ENABLE_KIROCREW_CMD, kirocrewAppState, type KirocrewAppState } from '../utils/kirocrew.js';
+import { appOutdated } from '../commands/_top/version.js';
 import { effectiveMode, LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, TEAM_NO_URL_HELP, TEAM_URL_CMD, type CheckHelp } from '../utils/sync-mode.js';
 
 /** info: nothing to fix (a choice, like local-only sync); counted as neither ok nor a warning. */
@@ -26,7 +28,7 @@ export interface CheckItem {
   label: string;
   status: CheckStatus;
   detail: string;
-  /** One-line fix; empty when status is ok or info. */
+  /** One-line fix; empty when status is ok or info, except an optional item's copy-only command (kirocrew-app). */
   fix: string;
   /** Guidance with doc links: a fix that needs the platform team, or what a chosen mode means. */
   help?: CheckHelp;
@@ -46,6 +48,8 @@ export interface MachineDeps {
   global?: GlobalStatus;
   /** File that remembers tool versions by binary mtime and size (tool-check.ts cachedToolVersion); unset runs the probes. */
   versionCache?: string;
+  /** Kiro Crew app versions; null when kirocrew is not on this machine (then there is no row). */
+  kirocrewApp?: () => KirocrewAppState | null;
 }
 
 export const GLOBAL_INSTALL_CMD = 'prism-cli enable codewatch --global';
@@ -111,6 +115,16 @@ export function codeburnSyncCheck(home: string, deps: MachineDeps = {}): CheckIt
   return item('codeburn-sync', SYNC_LABEL, 'missing', `no ${sched} entry${last ? `; last sync log write ${last.at}` : ''}`, ENABLE_CODEBURN_CMD);
 }
 
+/** The optional Kiro Crew app row: info in every state, with the copy-only command when there is something to install. */
+export function kirocrewAppCheck(s: KirocrewAppState): CheckItem {
+  const label = 'Kiro Crew app';
+  const row = (detail: string, fix = ''): CheckItem => ({ id: 'kirocrew-app', label, status: 'info', detail, fix });
+  if (!s.installed) return row('not installed (optional: a PRISM page, the PRISM tools and a daily digest in Kiro Crew)', ENABLE_KIROCREW_CMD);
+  if (appOutdated(s)) return row(`outdated: ${s.installed} installed, ${s.bundled} bundled with this prism-cli`, ENABLE_KIROCREW_CMD);
+  if (s.bundled && s.installed === s.bundled) return row(`${s.installed} installed (current)`);
+  return row(`${s.installed} installed`);
+}
+
 /** Checks that do not depend on a repository. */
 export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   const env = deps.env || process.env;
@@ -141,6 +155,8 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
         : 'no AWS env var or ~/.aws config found',
     "aws configure (or aws sso login); then validate with 'aws sts get-caller-identity'"));
   out.push(globalHooksCheck(deps.global || globalStatus(home)));
+  const kc = (deps.kirocrewApp || (() => kirocrewAppState({ pathEnv: deps.pathEnv, home, env })))();
+  if (kc) out.push(kirocrewAppCheck(kc));
   return out;
 }
 
