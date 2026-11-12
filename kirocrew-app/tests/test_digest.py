@@ -59,6 +59,13 @@ class EvaluateTest(unittest.TestCase):
         self.assertNotIn("/somewhere", msg)  # repo names, not paths
         self.assertEqual(len(state["highs"]["demo"]), 2)
 
+    def test_new_highs_on_two_branches_get_a_line_each(self):
+        prev = baseline(payload([]))
+        cur = payload([finding(branch="main", commit="aaaaaaa1"), finding(branch="dev", commit="bbbbbbb2")])
+        msg, _ = digest.evaluate(prev, cur, None, TODAY)
+        self.assertIn("demo: 1 new high finding (review of aaaaaaa on main)", msg)
+        self.assertIn("demo: 1 new high finding (review of bbbbbbb on dev)", msg)
+
     def test_same_issue_on_a_later_commit_is_not_new(self):
         prev = baseline(payload([finding(commit="aaa")]))
         msg, _ = digest.evaluate(prev, payload([finding(commit="bbb")]), None, TODAY)

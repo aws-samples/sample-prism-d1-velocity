@@ -110,11 +110,11 @@ the run ends in an error, which the Schedule page shows, and the saved state is 
 To see what a run would send without Kiro Crew:
 
 ```bash
-PRISM_APP_DATA="$(mktemp -d)" python3 kirocrew-app/scripts/digest.py   # prints the message, or why it was quiet
+python3 kirocrew-app/scripts/digest.py --state-dir "$(mktemp -d)"   # prints the message, or why it was quiet
 ```
 
-`--state-dir DIR` sets where the state and config are kept, and `--payload FILE` reads a saved
-`dashboard --json` output instead of running `prism-cli`.
+`--state-dir DIR` is required and keeps a manual run away from the cron's own state. `--payload FILE`
+reads a saved `dashboard --json` output instead of running `prism-cli`.
 
 ## Uninstall
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 CLI_NAME = "prism-cli"
+MAX_ALIAS_HOPS = 4  # default -> lts/* -> lts/<name> -> version
 _VERSION_DIR = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
@@ -56,7 +57,7 @@ def _read_text(p: Path) -> Optional[str]:
 def _nvm_default(home: Path, versions: List[str]) -> Optional[str]:
     """The installed version ~/.nvm/alias/default names (following a few alias hops), or None."""
     alias = _read_text(home / ".nvm" / "alias" / "default")
-    for _ in range(4):
+    for _ in range(MAX_ALIAS_HOPS):
         if not alias:
             return None
         if alias in ("node", "stable"):

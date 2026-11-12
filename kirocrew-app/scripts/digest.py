@@ -33,6 +33,7 @@ FINDING_CHARS = 120
 NAME_CHARS = 60
 SHORT_SHA = 7
 ERROR_CHARS = 200
+CURRENCY_CHARS = 8
 MAX_REPOS_LISTED = 10
 BAD_SETUP = ("warn", "missing")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069]")
@@ -91,20 +92,19 @@ def _new_high_lines(prev: Dict[str, List[str]], payload: Dict[str, Any]) -> List
         if not name:
             continue  # never stored in state, so it would look new on every run
         seen = set(prev.get(name) or [])
-        new: Dict[str, Dict[str, Any]] = {}
+        # One line per branch: each branch's latest review has its own commit.
+        by_branch: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for f in (repo.get("codewatch") or {}).get("findings") or []:
             if f.get("severity") == "high" and _fingerprint(f) not in seen:
-                new.setdefault(_fingerprint(f), f)
-        if not new:
-            continue
-        first = next(iter(new.values()))
-        commit = clean(first.get("commit") or "?", NAME_CHARS)[:SHORT_SHA]
-        branch = clean(first.get("branch") or "?", NAME_CHARS)
-        n = len(new)
-        lines.append(
-            f"- {clean(name, NAME_CHARS)}: {n} new high finding{'s' if n != 1 else ''} "
-            f"(review of {commit} on {branch}). First: {clean(first.get('message') or first.get('rule'), FINDING_CHARS)}"
-        )
+                by_branch.setdefault(str(f.get("branch") or "?"), {}).setdefault(_fingerprint(f), f)
+        for branch, new in sorted(by_branch.items()):
+            first = next(iter(new.values()))
+            commit = clean(first.get("commit") or "?", NAME_CHARS)[:SHORT_SHA]
+            n = len(new)
+            lines.append(
+                f"- {clean(name, NAME_CHARS)}: {n} new high finding{'s' if n != 1 else ''} "
+                f"(review of {commit} on {clean(branch, NAME_CHARS)}). First: {clean(first.get('message') or first.get('rule'), FINDING_CHARS)}"
+            )
     if len(lines) > MAX_REPOS_LISTED:
         lines = lines[:MAX_REPOS_LISTED] + [f"- and {len(lines) - MAX_REPOS_LISTED} more repos"]
     return lines
@@ -128,7 +128,7 @@ def evaluate(
     usage = payload.get("usage") or {}
     cost = (usage.get("today") or {}).get("cost") if usage.get("status") == "ok" else None
     if threshold and isinstance(cost, (int, float)) and cost > threshold and prev.get("spendAlertDate") != today:
-        cur = clean(usage.get("currency") or "USD", 8)
+        cur = clean(usage.get("currency") or "USD", CURRENCY_CHARS)
         lines.append(f"- AI spend today is {cost:.2f} {cur}, above your threshold of {threshold:.2f} {cur}.")
         state["spendAlertDate"] = today
 
@@ -218,10 +218,11 @@ def run(ctx: Any) -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Run the PRISM digest once and print what it would send.")
-    ap.add_argument("--state-dir", help="Folder for digest-state.json and config.json (default: the app's data folder)")
+    # Required, so a manual run never advances the cron's own state with changes it did not deliver.
+    ap.add_argument("--state-dir", required=True, help="Folder for digest-state.json and config.json; use a scratch folder, not the app's data folder")
     ap.add_argument("--payload", help="Read the dashboard JSON from this file instead of running prism-cli")
     a = ap.parse_args(argv)
-    data_dir = Path(a.state_dir) if a.state_dir else app_data_dir()
+    data_dir = Path(a.state_dir)
     payload = json.loads(Path(a.payload).read_text(encoding="utf-8")) if a.payload else None
     msg, baseline = digest_once(data_dir, payload)
     print(msg if msg else ("baseline saved, no notification" if baseline else "no change, no notification"))
