@@ -9,6 +9,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Prerequisites](#prerequisites)
 - [Administrator Setup](#administrator-setup)
 - [Developer Setup](#developer-setup)
+- [Using PRISM locally](#using-prism-locally)
 - [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)
 - [Local Dashboard](#local-dashboard)
 - [Security Agent Setup (enable security)](#security-agent-setup-enable-security)
@@ -486,10 +487,68 @@ percentage.
 
 ---
 
+## Using PRISM locally
+
+`prism-cli` is the local command line for PRISM, published on npm as
+[`@prism-d1/cli`](https://www.npmjs.com/package/@prism-d1/cli). It needs Node.js 22 or later.
+
+```bash
+npm install -g @prism-d1/cli
+prism-cli version        # installed version, newer release on npm, other copies on PATH
+```
+
+Most features run on a developer machine with no AWS deployment: the
+[codewatch git hooks](#codewatch-local-git-hooks), the [local dashboard](#local-dashboard), the
+[editor extension](#editor-extension) and the read-only
+[AWS account checks](#aws-account-advice-aws-connect-check-recommend). The commands by job:
+
+| Job | Commands |
+|-----|----------|
+| Send AI usage to PRISM | `enable codeburn`, `export otel` ([Developer Setup](#developer-setup)) |
+| Check changes before they leave your machine | `enable codewatch`, `codewatch report` |
+| See results locally | `dashboard`, and the [editor extension](#editor-extension) for VS Code, Kiro and Cursor |
+| Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security pentest` |
+| Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection` |
+| Platform team | `team info`, `team add-developer`, `bootstrapper ...` |
+
+Every command takes `--help`. [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) groups the commands
+by job and lists what each one touches in AWS.
+
+### Editor extension
+
+The [editor extension](editor-extension/README.md) works in VS Code, Kiro and Cursor. It puts this
+repo's codewatch findings in the Problems panel and a one-line summary (findings, spend today,
+setup warnings) in the status bar, with a side panel for the setup checklist. It reads
+`prism-cli dashboard --json`, opens no ports and makes no AWS calls. It needs prism-cli 1.7.1 or
+later.
+
+Download `prism-d1-<version>.vsix` and its `.sha256` from the latest
+[`ext-v*` release](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true)
+(the CLI itself ships on npm). Check the download in the folder that holds both files, then install
+it:
+
+```bash
+sha256sum -c prism-d1-0.1.0.vsix.sha256          # macOS: shasum -a 256 -c prism-d1-0.1.0.vsix.sha256
+code --install-extension prism-d1-0.1.0.vsix     # VS Code
+kiro --install-extension prism-d1-0.1.0.vsix     # Kiro IDE
+cursor --install-extension prism-d1-0.1.0.vsix   # Cursor
+```
+
+Or use **Install from VSIX...** in the Extensions view's `...` menu.
+
+On Remote-SSH, install it on the SSH host: copy the `.vsix` there and use **Install from VSIX...**
+while connected, or run the install command in the remote terminal. Check that it is listed under
+`SSH: <host> - Installed`. A `prism-cli` installed with nvm is found automatically; if it is not
+found, set `prism.cliPath` in the remote's user settings to the output of `command -v prism-cli`.
+Features, settings and security: [editor extension README](editor-extension/README.md).
+
+---
+
 ## Codewatch (Local Git Hooks)
 
 Codewatch is an optional pair of git hooks that check your changes on your own machine, before CI
-sees them. Telemetry does not depend on it, and the CI eval gate runs with or without it.
+sees them. Telemetry does not depend on it, and the CI eval gate runs with or without it. It
+replaces the retired commit-trailer hook.
 
 | Hook | What it does | Blocks? |
 |---|---|---|
