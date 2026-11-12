@@ -18,25 +18,21 @@ PRISM D1 instruments how your teams actually use AI to write software — which 
 
 ![PRISM D1 Velocity Architecture](assets/images/prismarchitecture.drawio.png)
 
-## prism-cli
+## Use PRISM locally (prism-cli)
 
-`prism-cli` is the local command line for PRISM, published on npm as [`@prism-d1/cli`](https://www.npmjs.com/package/@prism-d1/cli). It needs Node.js 22 or later.
+Install [`prism-cli`](https://www.npmjs.com/package/@prism-d1/cli) (Node.js 22 or later): `npm install -g @prism-d1/cli`.
 
-```bash
-npm install -g @prism-d1/cli
-prism-cli version        # installed version, newer release on npm, other copies on PATH
-```
+Most features run on a developer machine with no AWS deployment: codewatch git hooks, the local dashboard, the editor extension (a `.vsix` from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true)) and read-only AWS account checks.
 
-| Job | Commands |
-|-----|----------|
-| Send AI usage to PRISM | `enable codeburn`, `export otel` |
-| Check changes before they leave your machine | `enable codewatch`, `codewatch report` |
-| See results locally | `dashboard`, and the [editor extension](#optional-see-results-in-your-editor-vs-code-kiro-cursor) for VS Code, Kiro and Cursor |
-| Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security pentest` |
-| Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection` |
-| Platform team | `team info`, `team add-developer`, `bootstrapper ...` |
+| Feature | Command | Details |
+|---------|---------|---------|
+| Secret scan on commit, AI review on push | `prism-cli enable codewatch` | [Codewatch](USER_GUIDE.md#codewatch-local-git-hooks) |
+| One local page for results, usage and setup | `prism-cli dashboard` | [Local Dashboard](USER_GUIDE.md#local-dashboard) |
+| Findings in VS Code, Kiro or Cursor | `code --install-extension prism-d1-<version>.vsix` | [Editor extension](USER_GUIDE.md#editor-extension) |
+| Read-only AWS account checks and fixes | `prism-cli aws check` | [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend) |
+| Security Agent review of your branch (after `enable security`, which deploys to AWS) | `prism-cli security code-review` | [Running a Review](USER_GUIDE.md#running-a-review-from-the-cli) |
 
-Every command takes `--help`. [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) groups the commands by job and lists what each one touches in AWS. The [User Guide](USER_GUIDE.md) has the details. The [Quick Start](#quick-start) below uses prism-cli at each step.
+Every command takes `--help`. [Using PRISM locally](USER_GUIDE.md#using-prism-locally) has the full command list, and the [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md) lists what each command touches in AWS.
 
 ## Quick Start
 
@@ -95,70 +91,6 @@ prism-cli bootstrapper install-github-workflows --region us-west-2
 ```
 
 Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum security agent, VPC options, and cost tuning are in the **[User Guide](USER_GUIDE.md)**.
-
-### Optional: check changes locally (codewatch)
-
-Codewatch adds two git hooks on a developer's machine. `pre-commit` runs gitleaks on the staged changes and **blocks** a commit that contains a secret. `pre-push` has kiro-cli or Claude Code review the changes being pushed and **only reports**; it never blocks a push. Results go to `.prism/results/` (gitignored).
-
-```bash
-prism-cli enable codewatch                     # this repo
-prism-cli enable codewatch --global            # every repo on this machine
-prism-cli enable codewatch --reviewer claude   # pick the reviewer: kiro | claude
-prism-cli enable codewatch --uninstall         # remove (add --global for the global hooks)
-git config prism.codewatch false               # turn codewatch off in one repo (per-repo or global hooks)
-```
-
-It needs gitleaks plus kiro-cli or Claude Code; telemetry does not depend on it. It replaces the retired commit-trailer hook, and `bootstrapper install-git-hooks` is now an alias for it. Details: [Codewatch (Local Git Hooks)](USER_GUIDE.md#codewatch-local-git-hooks).
-
-### Optional: see it all on one page (dashboard)
-
-```bash
-prism-cli dashboard
-```
-
-Starts a local web page with codewatch results for every repo it finds under your home directory (3 levels deep), per-commit results and a report for each scan, a codeburn usage summary, and a Setup page. It listens on `127.0.0.1` only, behind a per-run token in the printed URL. The Setup page can run a fixed set of local setup commands (each shown in a confirm dialog first) and one read-only AWS identity check; nothing on the page writes to AWS. On a remote host, forward the port with `ssh -L <port>:127.0.0.1:<port>`. `prism-cli codewatch report` exports a scan report without the server. Details: [Local Dashboard](USER_GUIDE.md#local-dashboard).
-
-### Optional: see results in your editor (VS Code, Kiro, Cursor)
-
-The [editor extension](editor-extension/README.md) puts this repo's codewatch findings in the Problems panel and a one-line summary (findings, spend today, setup warnings) in the status bar, with a side panel for the setup checklist. It reads `prism-cli dashboard --json`, opens no ports and makes no AWS calls.
-
-Download `prism-d1-<version>.vsix` from the latest [`ext-v*` release](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true), then install it:
-
-```bash
-code --install-extension prism-d1-0.1.0.vsix   # or kiro / cursor
-```
-
-Or use **Install from VSIX...** in the Extensions view's `...` menu. On Remote-SSH, install it on the SSH host. It needs prism-cli 1.7.1 or later. Details: [editor extension README](editor-extension/README.md).
-
-### Optional: AWS Security Agent scans in CI (enable security)
-
-```bash
-prism-cli enable security --dry-run    # the plan: every read, no changes
-prism-cli enable security              # shows the diff, asks, then sets it up
-prism-cli enable security --status     # read-only check
-```
-
-Sets up AWS Security Agent (Continuum) so the eval gate can scan each pull request. It first says it will deploy AWS resources (a Security Agent space, an IAM service role and policies, an encrypted S3 scan bucket, SSM parameters) into the account your credentials point to, which may incur cost, and shows the account, caller, region and credential source. It uses the standard AWS credential chain and region unless you pass `--profile` or `--region`, and refuses when no region is set. It deploys only the Security Agent resources, in the standalone `PrismD1SecurityAgent` stack (or in the pipeline stack where an account already hosts them there), never `--all`, and only after printing a resource diff (IAM, network and public endpoint changes called out) and asking with the account and region named. It then creates or reuses the application, this repo's code review and the SSM parameter the gate reads. Re-running changes nothing when everything is in place. `--yes` approves for CI. `prism-cli securityagent setup` is now its deprecated alias. Details: [Security Agent Setup](USER_GUIDE.md#security-agent-setup-enable-security).
-
-Once it is set up, run a review from your machine without opening a PR:
-
-```bash
-prism-cli security code-review               # review this branch's diff, wait, print the findings
-prism-cli security code-review --full        # the whole repo at HEAD
-prism-cli security findings                  # the latest job's findings (read-only)
-```
-
-`code-review` uploads the snapshot (skipped when unchanged) and starts the job; those are its only AWS writes. It exits 0 unless you pass `--fail-on <level>`. Results are cached in `.prism/results/`, and the dashboard's Security findings panel shows them. Details: [Running a Review from the CLI](USER_GUIDE.md#running-a-review-from-the-cli).
-
-### Optional: check your AWS account (aws connect, check, recommend)
-
-```bash
-prism-cli aws connect          # choose, verify and save the default profile and region (no credentials stored)
-prism-cli aws check            # read-only checks: Bedrock protection, PRISM setup, account baseline
-prism-cli aws recommend        # a ranked fix list from the last check (no AWS calls)
-```
-
-All three are read-only against AWS. `aws connect` saves a profile name and region in `~/.prism/aws.json` (or, with `--repo`, a git-ignored `.prism/aws.local.json`), and the other AWS commands use it unless a flag or `AWS_PROFILE`/`AWS_REGION` says otherwise. `aws check` saves its result for `aws recommend` and the dashboard's AWS account panel. Details: [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend).
 
 ## Documentation
 
