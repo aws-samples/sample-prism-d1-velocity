@@ -9,6 +9,8 @@
 #   - CI/CD variable KIRO_API_KEY (masked). Generate at https://app.kiro.dev
 #   - PRISM_AWS_REGION variable in the variables: block below controls the region
 #   - (Optional) CI/CD variable PRISM_METRICS_ROLE_ARN for EventBridge metrics
+#   - (Optional) Review model: CI/CD variable PRISM_REVIEW_MODEL, else
+#     eval.model in .prism/config.json on the target branch, else `auto`
 #
 # The Bedrock rubric gate that used to live in this file is retired. It scored
 # changed files against .prism/eval-harness/rubrics/*.json via run-eval.sh; the
@@ -180,7 +182,39 @@ prism-eval-gate:
 
       echo ""
       echo "── Code quality review (kiro-cli) ──"
-      if [ -z "${KIRO_API_KEY:-}" ]; then
+
+      # --- review model: start (identical in every eval-gate workflow; cli/test/eval-gate-retry.test.ts checks) ---
+      # Order: the PRISM_REVIEW_MODEL variable, then eval.model in the BASE
+      # commit's .prism/config.json, then auto. Never the PR head's config:
+      # the PR author controls it, and a PR must not pick a weaker model to
+      # pass its own review. The value reaches a CLI argument, so it is
+      # validated here and never echoed when invalid.
+      REVIEW_MODEL="${PRISM_REVIEW_MODEL:-}"
+      REVIEW_MODEL_SOURCE="the PRISM_REVIEW_MODEL variable"
+      MODEL_ERROR=""
+      if [ -z "${REVIEW_MODEL}" ]; then
+        REVIEW_MODEL_SOURCE="the default"
+        if [ -n "${BASE_SHA}" ] && git cat-file -e "${BASE_SHA}:.prism/config.json" 2>/dev/null; then
+          if ! BASE_CFG_MODEL=$(git show "${BASE_SHA}:.prism/config.json" | jq -r '.eval.model? // empty | tostring'); then
+            MODEL_ERROR="the base branch's .prism/config.json could not be read as JSON"
+          elif [ -n "${BASE_CFG_MODEL}" ]; then
+            REVIEW_MODEL="${BASE_CFG_MODEL}"
+            REVIEW_MODEL_SOURCE="eval.model in the base branch's .prism/config.json"
+          fi
+        fi
+        REVIEW_MODEL="${REVIEW_MODEL:-auto}"
+      fi
+      if [ -z "${MODEL_ERROR}" ] && ! [[ "${REVIEW_MODEL}" =~ ^[A-Za-z0-9._:/-]{1,100}$ ]]; then
+        MODEL_ERROR="the model from ${REVIEW_MODEL_SOURCE} must match ^[A-Za-z0-9._:/-]{1,100}\$"
+      fi
+      # --- review model: end ---
+
+      if [ -n "${MODEL_ERROR}" ]; then
+        # FAIL CLOSED: a misconfigured model must not fall back silently.
+        echo "❌ Invalid review model: ${MODEL_ERROR}. Failing closed."
+        REVIEW_MODEL=""
+        REVIEW_RESULT="ERROR"
+      elif [ -z "${KIRO_API_KEY:-}" ]; then
         # Fork MRs receive no protected variables. Reported, never silently passed.
         echo "⚠️  KIRO_API_KEY unavailable (fork MR or unset variable) — review skipped."
       elif [ -z "${BASE_SHA}" ] || [ -z "${HEAD_SHA}" ]; then
@@ -213,6 +247,7 @@ prism-eval-gate:
             REVIEW_RESULT="ERROR"
           else
             kiro-cli --version || true
+            echo "Review model: ${REVIEW_MODEL} (from ${REVIEW_MODEL_SOURCE})"
             # Short prompt on purpose: kiro-cli has a bug putting long stdin
             # into HTTP headers, so let it read the patch off disk itself.
             git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES} > /tmp/mr-diff.patch
@@ -233,7 +268,7 @@ prism-eval-gate:
               PROMPT="${REVIEW_PROMPT}"
               if [ "${ATTEMPT}" = "2" ]; then PROMPT="${REVIEW_PROMPT} ${RETRY_NOTE}"; fi
               set +e
-              REVIEW_OUTPUT=$(timeout "${REVIEW_TIMEOUT_SECS}" kiro-cli chat --no-interactive --trust-all-tools --model auto "${PROMPT}")
+              REVIEW_OUTPUT=$(timeout "${REVIEW_TIMEOUT_SECS}" kiro-cli chat --no-interactive --trust-all-tools --model "${REVIEW_MODEL}" "${PROMPT}")
               set -e
 
               # Extract the LAST JSON object that parses and has a numeric score
@@ -291,7 +326,7 @@ prism-eval-gate:
                 REVIEW_RESULT="PASS"
               fi
 
-              echo "Score: ${REVIEW_SCORE} | Findings: ${REVIEW_TOTAL} (${REVIEW_HIGH} high) | ${REVIEW_RESULT}"
+              echo "Score: ${REVIEW_SCORE} | Findings: ${REVIEW_TOTAL} (${REVIEW_HIGH} high) | ${REVIEW_RESULT} | Model: ${REVIEW_MODEL}"
               echo "Summary: ${REVIEW_SUMMARY}"
               jq -r '.findings[] | "   [\(.severity)] \(.file):\(.line) — \(.message)"' /tmp/kiro-review.json || true
             fi
@@ -334,10 +369,10 @@ prism-eval-gate:
           DETAIL=$(jq -n -c \
             --arg team_id "${TEAM_ID}" --arg repo "${PRISM_REPO}" --arg timestamp "${TIMESTAMP}" \
             --arg score "${REVIEW_SCORE}" --arg result "${REVIEW_RESULT}" \
-            --arg mr_iid "${CI_MERGE_REQUEST_IID:-0}" \
+            --arg mr_iid "${CI_MERGE_REQUEST_IID:-0}" --arg model "${REVIEW_MODEL}" \
             '{team_id:$team_id,repo:$repo,timestamp:$timestamp,prism_level:2,
               metric:{name:"eval_score",value:($score|tonumber),unit:"score"},
-              ai_context:{tool:"kiro-cli",model:"claude-haiku-4.5",origin:"ai-generated"},
+              ai_context:{tool:"kiro-cli",model:$model,origin:"ai-generated"},
               eval:{score:($score|tonumber),result:$result,rubric:"kiro-headless",
                     mr_iid:($mr_iid|tonumber),method:"kiro-headless"}}')
           aws events put-events --region "${AWS_DEFAULT_REGION}" --entries \
@@ -424,10 +459,14 @@ prism-eval-gate:
           echo "  deleting it from the branch does not un-expose what was pushed."
           echo "  False positive? Add an allowlist entry to .gitleaks.toml."
         fi
-        [ "${REVIEW_RESULT}" = "ERROR" ] && echo "  Review failed closed: output could not be parsed."
+        if [ -n "${MODEL_ERROR}" ]; then
+          echo "  Review failed closed: invalid review model (${MODEL_ERROR})."
+        elif [ "${REVIEW_RESULT}" = "ERROR" ]; then
+          echo "  Review failed closed: output could not be parsed."
+        fi
         [ "${REVIEW_RESULT}" = "FAIL" ] && echo "  Review score ${REVIEW_SCORE} below threshold, or high-severity findings."
         exit 1
       fi
 
-      echo "✅ PRISM Eval Gate passed (secret scan: clean, review: ${REVIEW_RESULT})"
+      echo "✅ PRISM Eval Gate passed (secret scan: clean, review: ${REVIEW_RESULT}, model: ${REVIEW_MODEL})"
       exit 0

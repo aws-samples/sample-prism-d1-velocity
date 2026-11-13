@@ -745,7 +745,8 @@ recorded. With neither installed, the push goes through and the result records "
 terminal it keeps the existing setting, or picks claude).
 
 `.prism/config.json` also accepts `eval.model` (passed to the reviewer) and `eval.timeout_seconds`
-(default 300).
+(default 300). The CI eval gate reads `eval.model` too, from the base branch, unless the
+`PRISM_REVIEW_MODEL` variable is set; see [Kiro-CLI Eval Gate](#kiro-cli-eval-gate).
 
 ### What the Hooks Do
 
@@ -1515,6 +1516,28 @@ Installs:
 Without `KIRO_API_KEY` the review reports `SKIPPED` — never a silent pass — while the secret scan
 still runs and can still block. That is the fork-PR condition, and it is why gitleaks is the gate
 with teeth there.
+
+**Review model.** The gate passes one model to kiro-cli (`--model`) for the smoke test, the first
+attempt and the retry. It takes the first of:
+
+1. The `PRISM_REVIEW_MODEL` repository variable (Settings → Secrets and variables → Actions →
+   Variables). On GitLab, a CI/CD variable of the same name.
+2. `eval.model` in `.prism/config.json` as committed on the **base branch** (GitLab: the merge
+   request's target branch), the same key the local pre-push review reads.
+3. `auto`.
+
+```json
+{ "eval": { "model": "claude-sonnet-4.5" } }
+```
+
+The gate never reads the PR's own copy of `.prism/config.json`, so a PR cannot pick a weaker model
+to pass its own review; a model change in that file takes effect after it merges. The value must
+match `^[A-Za-z0-9._:/-]{1,100}$`. Anything else (or a base-branch config that is not valid JSON)
+fails the gate closed with `Invalid review model` instead of falling back to `auto`. The resolved
+model and where it came from are shown in the job summary and the PR comment, and sent as
+`ai_context.model` on the `prism.d1.eval` event. `eval.model` is shared with the local review, so
+if your local reviewer is Claude Code and the name is not one kiro-cli accepts, set
+`PRISM_REVIEW_MODEL` for CI instead.
 
 A failing gate does **not** block the merge on its own; see
 [Making the Gate Block Merges](#making-the-gate-block-merges).
