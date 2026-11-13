@@ -27,7 +27,7 @@ import { readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
-import { agentText, bypassReason, finishGateOn, HOOK_BUDGET_MS, isGitPush, MAX_REASON_BYTES, noticeOnce, parsePushTarget, personText, pushGateOn } from './claude.js';
+import { agentText, bypassReason, capBytes, clip, finishGateOn, HOOK_BUDGET_MS, isGitPush, MAX_FINDING_CHARS, MAX_REASON_BYTES, noticeOnce, oneLine, parsePushTarget, personText, pushGateOn } from './claude.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict } from './engine.js';
 import { deleteState, ensureHarnessDir, harnessDir, loadState, recordBaseline, sanitizeSession } from './state.js';
 
@@ -62,12 +62,7 @@ interface KiroInput {
 }
 
 const ok = (stderr = ''): KiroHookResult => ({ exit: 0, stdout: '', stderr });
-const oneLine = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
-
-function capBytes(s: string, max: number): string {
-  if (Buffer.byteLength(s, 'utf8') <= max) return s;
-  return Buffer.from(s, 'utf8').subarray(0, max - 32).toString('utf8').replace(/\uFFFD+$/, '') + '\n[PRISM: text truncated]';
-}
+const short = (v: unknown) => clip(oneLine(v), MAX_FINDING_CHARS);
 
 function deny(text: string): KiroHookResult {
   return { exit: KIRO_DENY_EXIT, stdout: '', stderr: `${capBytes(text, MAX_REASON_BYTES - Buffer.byteLength(KIRO_DENY_TAIL) - 1)}\n${KIRO_DENY_TAIL}\n` };
@@ -75,7 +70,7 @@ function deny(text: string): KiroHookResult {
 
 /** The push deny for an error inside the check: never let a push through unchecked (Kiro fails open on a crash). */
 export function failClosed(why: string): KiroHookResult {
-  return deny(`${FAIL_CLOSED}: ${oneLine(why)}. The push was not run, because the secret check could not complete. Tell the person; they can fix the cause (prism-cli codewatch review shows the same check) or push from their own terminal.`);
+  return deny(`${FAIL_CLOSED}: ${short(why)}. The push was not run, because the secret check could not complete. Tell the person; they can fix the cause (prism-cli codewatch review shows the same check) or push from their own terminal.`);
 }
 
 const block = (reason: string): KiroHookResult => ({ exit: 0, stdout: JSON.stringify({ decision: 'block', reason: capBytes(reason, MAX_REASON_BYTES) }), stderr: '' });
@@ -92,17 +87,15 @@ function savePushNotice(repoRoot: string, session: string, text: string): void {
   renameSync(`${p}.${process.pid}.tmp`, p);
 }
 
-/** Reads and deletes the pending push notice; null when there is none. */
-function takePushNotice(repoRoot: string, session: string): string | null {
-  const p = noticePath(repoRoot, session);
-  let text: string | null = null;
+/** The pending push notice, or null. It is deleted only once a Stop hook has handed it over (clearPushNotice). */
+function readPushNotice(repoRoot: string, session: string): string | null {
   try {
-    const v = JSON.parse(readFileSync(p, 'utf8'));
-    text = v && typeof v.text === 'string' && v.text ? v.text : null;
+    const v = JSON.parse(readFileSync(noticePath(repoRoot, session), 'utf8'));
+    return v && typeof v.text === 'string' && v.text ? v.text : null;
   } catch { return null; }
-  rmSync(p, { force: true });
-  return text;
 }
+
+const clearPushNotice = (repoRoot: string, session: string) => rmSync(noticePath(repoRoot, session), { force: true });
 
 // ------------------------------------------------------------ events
 
@@ -129,17 +122,27 @@ function prePush(cmd: string, input: KiroInput, deps: KiroHookDeps, env: NodeJS.
   if (v.verdict === 'fix') return deny(text());
   if (v.verdict === 'stop' && (v.secrets.length || v.commit_secrets.length || ['tamper', 'secrets-scan-failed', 'push-unknown'].includes(v.human_why ?? ''))) return deny(text());
   // D4: findings never deny. Kiro drops PreToolUse stdout, so the Stop hook hands them over.
+  let note = '';
   if (v.findings.length && session) {
-    try { savePushNotice(repoRoot, session, `${agentText(v, { includeNonBlocking: true, push: true })}\n${KIRO_PERSON_NOTE} Offer the follow-up change; do not change code or push again unless the person asks.`); } catch { /* the result file still has them */ }
+    try { savePushNotice(repoRoot, session, `${agentText(v, { includeNonBlocking: true, push: true })}\n${KIRO_PERSON_NOTE} Offer the follow-up change; do not change code or push again unless the person asks.`); } catch (e: any) { // any: fs error, message only
+      note = `PRISM harness: could not keep the push findings for the Stop hook (${short(e?.message || e)}); they are only in ${v.result_path ?? 'the result file'}.\n`;
+    }
   }
-  return ok(v.findings.length || v.warnings.length ? `${personText(v)}\n` : '');
+  return ok(`${v.findings.length || v.warnings.length ? `${personText(v)}\n` : ''}${note}`);
 }
 
 function stop(input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv): KiroHookResult {
   const repoRoot = repoOf(input);
   if (!repoRoot) return ok();
   const session = sanitizeSession(input.session_id);
-  const pushNotice = session ? takePushNotice(repoRoot, session) : null;
+  const pushNotice = session ? readPushNotice(repoRoot, session) : null;
+  const r = finishCheck(repoRoot, session, pushNotice, deps, env);
+  // Every output that blocks carries the notice, so it is handed over; an error above keeps it for the next Stop.
+  if (pushNotice && r.stdout) clearPushNotice(repoRoot, session!);
+  return r;
+}
+
+function finishCheck(repoRoot: string, session: string | null, pushNotice: string | null, deps: KiroHookDeps, env: NodeJS.ProcessEnv): KiroHookResult {
   const cfg = readHarnessConfig(repoRoot);
   if (!finishGateOn(cfg.finish_gate, env)) return pushNotice ? block(pushNotice) : ok();
 
@@ -196,6 +199,6 @@ export function runKiroHook(event: KiroEvent, stdin: string, deps: KiroHookDeps 
     }
     return stop(input, deps, env);
   } catch (e: any) { // any: a PRISM bug must not trap the agent at the finish
-    return ok(`PRISM harness: internal error (${oneLine(e?.message || e)}); no decision was made. The git pre-push review and the CI gate still run.\n`);
+    return ok(`PRISM harness: internal error (${short(e?.message || e)}); no decision was made. The git pre-push review and the CI gate still run.\n`);
   }
 }

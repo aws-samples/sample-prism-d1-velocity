@@ -48,13 +48,24 @@ export interface AgentHooksDeps {
   now: () => Date;
 }
 
-const isPrismCommand = (c: unknown, client: Client) => typeof c === 'string' && new RegExp(`prism-cli(\\.js)?['"]?\\s+codewatch\\s+hook\\s+--client\\s+${client}\\b`).test(c);
+const isPrismCommand = (c: unknown, client: Client) => typeof c === 'string' && new RegExp(`prism-cli(\\.[cm]?[jt]s)?['"]?\\s+codewatch\\s+hook\\s+--client\\s+${client}\\b`).test(c);
 const hookCmd = (cli: string, client: Client, event: string) => `${cli} codewatch hook --client ${client} --event ${event}`;
 const tilde = (p: string, home: string) => (p === home || p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
 
+/** any: parsed hook files are user JSON of any shape; every field is checked where it is read. */
+type Json = any;
+
 class UserError extends Error {}
 
-function readObject(path: string): { exists: boolean; text: string; json: Record<string, any> } {
+/** A file's `hooks` object (Claude settings), {} when absent; anything else is refused rather than rewritten. */
+function hooksObject(json: Record<string, Json>, path: string): Record<string, Json> {
+  const h = json.hooks;
+  if (h === undefined) return {};
+  if (!h || typeof h !== 'object' || Array.isArray(h)) throw new UserError(`${path}: "hooks" is not an object. Nothing was changed.`);
+  return h;
+}
+
+function readObject(path: string): { exists: boolean; text: string; json: Record<string, Json> } {
   if (!existsSync(path)) return { exists: false, text: '', json: {} };
   const text = readFileSync(path, 'utf8');
   let json: unknown;
@@ -62,7 +73,7 @@ function readObject(path: string): { exists: boolean; text: string; json: Record
     throw new UserError(`${path} is not valid JSON (${String(e?.message || e).split('\n')[0]}); fix it first. Nothing was changed.`);
   }
   if (!json || typeof json !== 'object' || Array.isArray(json)) throw new UserError(`${path} does not hold a JSON object. Nothing was changed.`);
-  return { exists: true, text, json: json as Record<string, any> };
+  return { exists: true, text, json: json as Record<string, Json> };
 }
 
 // ------------------------------------------------------------ kiro
@@ -88,12 +99,12 @@ const kiroDir = (o: AgentHooksOptions, d: AgentHooksDeps) => (o.global ? join(d.
 type State = 'installed' | 'outdated' | 'missing';
 
 /** PRISM entries in a Kiro hook file and whether they equal what this prism-cli would write. */
-function kiroState(json: Record<string, any>, want: Record<string, unknown>): { state: State; others: number } {
-  const hooks: any[] = Array.isArray(json.hooks) ? json.hooks : [];
+function kiroState(json: Record<string, Json>, want: Record<string, unknown>): { state: State; others: number } {
+  const hooks: Json[] = Array.isArray(json.hooks) ? json.hooks : [];
   const ours = hooks.filter((x) => isPrismCommand(x?.action?.command, 'kiro'));
   const others = hooks.length - ours.length;
   if (!ours.length) return { state: 'missing', others };
-  return { state: JSON.stringify(ours) === JSON.stringify((want as any).hooks) && json.version === 'v1' ? 'installed' : 'outdated', others };
+  return { state: JSON.stringify(ours) === JSON.stringify((want as { hooks: unknown }).hooks) && json.version === 'v1' ? 'installed' : 'outdated', others };
 }
 
 /** Other hook files in the same directory that also run the PRISM Kiro hook. */
@@ -101,7 +112,7 @@ function kiroDuplicates(dir: string): string[] {
   let names: string[] = [];
   try { names = readdirSync(dir).filter((n) => n.endsWith('.json') && n !== KIRO_FILE); } catch { return []; }
   return names.filter((n) => {
-    try { return (JSON.parse(readFileSync(join(dir, n), 'utf8'))?.hooks ?? []).some((x: any) => isPrismCommand(x?.action?.command, 'kiro')); } catch { return false; }
+    try { return (JSON.parse(readFileSync(join(dir, n), 'utf8'))?.hooks ?? []).some((x: Json) => isPrismCommand(x?.action?.command, 'kiro')); } catch { return false; }
   });
 }
 
@@ -152,7 +163,7 @@ function kiroWarnings(o: AgentHooksOptions, d: AgentHooksDeps, dir: string): voi
 function kiroUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
   const path = join(kiroDir(o, d), KIRO_FILE);
   const f = readObject(path);
-  const hooks: any[] = Array.isArray(f.json.hooks) ? f.json.hooks : [];
+  const hooks: Json[] = Array.isArray(f.json.hooks) ? f.json.hooks : [];
   const rest = hooks.filter((x) => !isPrismCommand(x?.action?.command, 'kiro'));
   if (!f.exists || rest.length === hooks.length) { d.log(`  No PRISM Kiro hooks in ${tilde(path, d.home)}. Nothing to remove.`); return 0; }
   if (rest.length) { write(path, f.text, true, render({ ...f.json, hooks: rest }), o, d); return 0; }
@@ -183,12 +194,12 @@ export function claudeHooks(cli: string): Record<string, unknown[]> {
 }
 
 /** `hooks` with every PRISM entry removed; groups and events left empty are dropped. */
-export function withoutPrism(hooks: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {};
+export function withoutPrism(hooks: Record<string, Json>): Record<string, Json> {
+  const out: Record<string, Json> = {};
   for (const [ev, groups] of Object.entries(hooks)) {
     if (!Array.isArray(groups)) { out[ev] = groups; continue; }
     const kept = groups
-      .map((g) => (g && Array.isArray(g.hooks) ? { ...g, hooks: g.hooks.filter((h: any) => !isPrismCommand(h?.command, 'claude')) } : g))
+      .map((g) => (g && Array.isArray(g.hooks) ? { ...g, hooks: g.hooks.filter((h: Json) => !isPrismCommand(h?.command, 'claude')) } : g))
       .filter((g, i) => !(g && Array.isArray(g.hooks) && g.hooks.length === 0 && groups[i].hooks.length > 0));
     if (kept.length) out[ev] = kept;
   }
@@ -196,13 +207,13 @@ export function withoutPrism(hooks: Record<string, any>): Record<string, any> {
 }
 
 /** Existing hooks without PRISM's, then PRISM's appended to each event. */
-export function mergeClaude(hooks: Record<string, any>, want: Record<string, unknown[]>): Record<string, any> {
+export function mergeClaude(hooks: Record<string, Json>, want: Record<string, unknown[]>): Record<string, Json> {
   const out = withoutPrism(hooks);
   for (const [ev, groups] of Object.entries(want)) out[ev] = [...(Array.isArray(out[ev]) ? out[ev] : []), ...groups];
   return out;
 }
 
-function claudeState(hooks: Record<string, any>, want: Record<string, unknown[]>): State {
+function claudeState(hooks: Record<string, Json>, want: Record<string, unknown[]>): State {
   const has = JSON.stringify(withoutPrism(hooks)) !== JSON.stringify(hooks);
   if (!has) return 'missing';
   return JSON.stringify(mergeClaude(hooks, want)) === JSON.stringify(hooks) ? 'installed' : 'outdated';
@@ -218,8 +229,8 @@ function pluginActive(d: AgentHooksDeps): { active: boolean; version: string | n
   return { active: p.installed && p.enabled !== false, version: p.version };
 }
 
-function withHooks(json: Record<string, any>, hooks: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {};
+function withHooks(json: Record<string, Json>, hooks: Record<string, Json>): Record<string, Json> {
+  const out: Record<string, Json> = {};
   let placed = false;
   for (const [k, v] of Object.entries(json)) {
     if (k === 'hooks') { placed = true; if (Object.keys(hooks).length) out.hooks = hooks; continue; }
@@ -241,8 +252,7 @@ function claudeInstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
   }
   const path = claudeSettings(o, d);
   const f = readObject(path);
-  const hooks = f.json.hooks && typeof f.json.hooks === 'object' && !Array.isArray(f.json.hooks) ? f.json.hooks : {};
-  if (f.json.hooks !== undefined && hooks !== f.json.hooks) throw new UserError(`${path}: "hooks" is not an object. Nothing was changed.`);
+  const hooks = hooksObject(f.json, path);
   const want = claudeHooks(d.cli);
   d.log(`  File: ${tilde(path, d.home)}${f.exists ? '' : ' (new)'}`);
   if (claudeState(hooks, want) === 'installed') { d.log('  Already installed; nothing to do.'); return 0; }
@@ -255,7 +265,7 @@ function claudeInstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
 function claudeUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
   const path = claudeSettings(o, d);
   const f = readObject(path);
-  const hooks = f.json.hooks && typeof f.json.hooks === 'object' ? f.json.hooks : {};
+  const hooks = hooksObject(f.json, path);
   const rest = withoutPrism(hooks);
   if (!f.exists || JSON.stringify(rest) === JSON.stringify(hooks)) { d.log(`  No PRISM hooks in ${tilde(path, d.home)}. Nothing to remove.`); return 0; }
   write(path, f.text, true, render(withHooks(f.json, rest)), o, d);
@@ -280,7 +290,7 @@ function status(clients: Client[], d: AgentHooksDeps): number {
         } else {
           const path = claudeSettings(o, d);
           const f = readObject(path);
-          line = `${claudeState(f.json.hooks && typeof f.json.hooks === 'object' ? f.json.hooks : {}, claudeHooks(d.cli))}  ${tilde(path, d.home)}`;
+          line = `${claudeState(hooksObject(f.json, path), claudeHooks(d.cli))}  ${tilde(path, d.home)}`;
         }
       } catch (e: any) { line = `unreadable: ${String(e?.message || e).split('\n')[0]}`; } // any: a read error, message only
       d.log(`  ${c} (${global ? 'global' : 'project'}): ${line}`);

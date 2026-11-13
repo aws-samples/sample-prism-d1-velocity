@@ -247,10 +247,10 @@ export function bypassReason(cmd: string): string | null {
   return null;
 }
 
-const oneLine = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
+export const oneLine = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
+export const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
 
-function capBytes(s: string, max: number): string {
+export function capBytes(s: string, max: number): string {
   if (Buffer.byteLength(s, 'utf8') <= max) return s;
   const note = '\n[PRISM: list truncated]';
   const cps = Array.from(s);

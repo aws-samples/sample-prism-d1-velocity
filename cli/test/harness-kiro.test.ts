@@ -115,6 +115,21 @@ test('kiro push gate: a high finding allows the push (exit 0); the Stop hook han
   assert.equal(r.calls().length, before, 'the finish gate is off: Stop scans and reviews nothing');
 });
 
+test('kiro: push findings survive a Stop hook that fails, and are handed over by the next one', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  r.write('src/db.ts', 'const q = "SELECT " + id;\n');
+  r.commit('db');
+  r.reply([finding('src/db.ts', 1)]);
+  assert.equal(runKiroHook('pre-push', payload('PreToolUse', r), deps(r)).exit, 0);
+  const boom = { env: { PRISM_HARNESS_FINISH_GATE: '1' }, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks, now: () => { throw new Error('boom'); } } };
+  const failed = runKiroHook('stop', payload('Stop', r), boom);
+  assert.equal(failed.exit, 0);
+  assert.equal(failed.stdout, '');
+  const next = JSON.parse(runKiroHook('stop', payload('Stop', r), deps(r)).stdout);
+  assert.match(next.reason, /The push is allowed/, 'kept, then handed over');
+});
+
 test('kiro fail closed: an internal error on a push is exit 2; on other events and commands it is exit 0', () => {
   const r = rig();
   const boom = { env: {}, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks, now: () => { throw new Error('boom'); } } };

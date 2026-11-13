@@ -185,3 +185,17 @@ test('invalid JSON in a hook file is reported and nothing is changed', () => {
   assert.match(x.text(), /is not valid JSON/);
   assert.equal(readFileSync(kiroPath(x.repo), 'utf8'), '{ nope');
 });
+
+test('claude: a "hooks" value that is not an object is refused by install, uninstall and status alike', () => {
+  const x = rig();
+  const p = join(x.repo, '.claude', 'settings.json');
+  mkdirSync(join(x.repo, '.claude'));
+  writeFileSync(p, JSON.stringify({ hooks: [{ command: 'prism-cli codewatch hook --client claude --event stop' }] }));
+  const before = readFileSync(p, 'utf8');
+  assert.equal(x.run({ client: 'claude' }), 1);
+  assert.equal(x.run({ client: 'claude', uninstall: true }), 1);
+  assert.match(x.text(), /"hooks" is not an object/);
+  assert.equal(readFileSync(p, 'utf8'), before, 'the file shape is never changed');
+  x.run({ status: true, client: 'claude' });
+  assert.match(x.text(), /claude \(project\): unreadable/);
+});
