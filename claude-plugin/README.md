@@ -107,14 +107,18 @@ The once-per-session marker is an empty file under the plugin's data directory. 
 | Hook | What it does | Default |
 |---|---|---|
 | `SessionStart` | Records the session's baseline in `.prism/harness/<session>.json`: a snapshot of the working tree, taken without touching your index | always |
-| `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. `fix` denies the push with the reason; a secret always denies it. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
+| `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. A secret (also in any pushed commit), a failed secret scan or a change to the checks denies the push; review findings never do, they come back to Claude as context. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
 | `PreToolUse` on Bash, `if: "Bash(*git*config*)"` and `"Bash(*git*-c*)"` | The same bypass check for `git config` and `git -c` commands, with no review | on |
 | `Stop`, `SubagentStop` | Finish gate: `fix` keeps Claude working with the findings (`decision: "block"`), at most 2 rounds | off |
 | `SessionEnd` | Deletes the session's state file | always |
 
-What blocks: secrets and high findings on lines Claude changed. Medium and low findings are shown
-but do not block. When the reviewer is missing or fails, the gate fails open with a warning; the
-git pre-push review and the CI gate still run.
+What blocks a push: only secrets, in the changed lines or in any commit the push would send, plus a
+secret scan that failed or did not finish and changes to the checks themselves (gitleaks config,
+`gitleaks:allow`, hook or PRISM config). Review findings, high ones included, never deny a push:
+you get a message listing them and Claude gets them as context for a follow-up. The finish gate,
+when on, blocks on secrets and high findings on lines Claude changed (`harness.block_on`). When the
+reviewer is missing or fails, the gate fails open with a warning; the git pre-push review and the
+CI gate still run.
 
 The push check is a guardrail, not a sandbox. prism-cli reads the Bash command with a quote-aware
 tokenizer: it sees `git push` behind `VAR=val`, `env`, git's global options (`-C dir`,

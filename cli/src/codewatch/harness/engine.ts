@@ -207,7 +207,10 @@ function committedAction(hits: CommitSecret[], base: string | undefined): string
 }
 
 /** Fixed-template text for the agent. Never contains reviewer prose. */
-function nextAction(v: HarnessVerdict, integ?: Integrity, base?: string): string {
+function nextAction(v: HarnessVerdict, integ?: Integrity, base?: string, event?: HarnessEvent): string {
+  if (v.verdict === 'pass' && event === 'pre-push' && v.findings.length) {
+    return `The push is allowed: the PRISM push check blocks only on secrets, secret-scan failures and changes to the checks. The review found ${plural(v.findings.length, 'issue')} in this push, listed below; they are candidates for a follow-up change.`;
+  }
   if (v.verdict === 'pass') return v.findings.length ? 'No blocking findings. The non-blocking findings are listed for information.' : 'No blocking findings.';
   if (v.verdict === 'stop') {
     switch (v.human_why) {
@@ -559,7 +562,8 @@ function scopeFindings(r: Run, d: Diffs, findings: Finding[], v: HarnessVerdict)
     if (!added) { v.dropped.unknown_file++; continue; }
     const introduced = f.line !== null && added.has(f.line);
     if (r.scope === 'new-lines' && f.line !== null && !introduced) { v.dropped.out_of_scope++; continue; }
-    const blocking = (f.severity === 'high' && r.cfg.block_on.includes('high')) || (f.severity === 'medium' && r.cfg.block_on.includes('medium'));
+    // D4: at push only secrets and tamper block; block_on is the finish gate's.
+    const blocking = r.event !== 'pre-push' && ((f.severity === 'high' && r.cfg.block_on.includes('high')) || (f.severity === 'medium' && r.cfg.block_on.includes('medium')));
     v.findings.push({ ...f, file, introduced_in_session: r.scope === 'new-lines' ? true : introduced, blocking });
   }
   v.findings.sort((a, b) => Number(b.blocking) - Number(a.blocking) || SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0));
@@ -602,7 +606,7 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
   v.human_why = why;
   v.human_needed = why !== null;
   v.fail_open = rev.failOpen;
-  v.next_action = nextAction(v, integ, base);
+  v.next_action = nextAction(v, integ, base, r.event);
   v.reasons = reasons(v);
 }
 
@@ -644,6 +648,9 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
   const now = opts.now ?? (() => new Date());
   const warnings: string[] = [];
   const cfg = readHarnessConfig(opts.repoRoot, warnings);
+  if (opts.event === 'pre-push' && cfg.block_on_set && cfg.block_on.some((b) => b !== 'secret')) {
+    warnings.push(`harness.block_on (${cfg.block_on.join(', ')}) applies to the finish gate only; the push check blocks only on secrets, secret-scan failures and changes to the checks`);
+  }
   const session = opts.session ?? null;
   let maxRounds = opts.maxRounds ?? cfg.max_rounds;
   if (maxRounds > HARNESS_MAX_ROUNDS_CEILING) {

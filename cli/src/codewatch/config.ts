@@ -139,8 +139,10 @@ export interface HarnessConfig {
   /** True when `.prism/config.json` sets harness.push_gate itself (to true or false), not by default. */
   push_gate_set: boolean;
   finish_gate: boolean;
-  /** Always contains 'secret'. */
+  /** Always contains 'secret'. Applies to the finish gate (and direct reviews); the push gate blocks on secrets and tamper only (D4). */
   block_on: BlockOn[];
+  /** True when `.prism/config.json` sets harness.block_on itself. */
+  block_on_set: boolean;
   max_rounds: number;
   timeout_seconds: number;
   skip_paths: string[];
@@ -208,6 +210,7 @@ export function readHarnessConfig(repoRoot: string, warnings: string[] = []): Ha
     push_gate_set: typeof h.push_gate === 'boolean',
     finish_gate: bool('finish_gate', false),
     block_on: blockOn,
+    block_on_set: h.block_on !== undefined,
     max_rounds: maxRounds,
     timeout_seconds: timeout,
     skip_paths: skip,
