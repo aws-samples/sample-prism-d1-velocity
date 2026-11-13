@@ -33,6 +33,8 @@ export const SESSION_TIMEOUT_S = 15;
 export const GUARD_TIMEOUT_S = 30;
 /** The Claude Code plugin ships the harness hooks from 0.3.0. */
 export const PLUGIN_HOOKS_MINOR = 3;
+/** What a project (committed) hook file calls. */
+export const PORTABLE_CLI = 'prism-cli';
 
 export interface AgentHooksOptions { client?: string; global?: boolean; dryRun?: boolean; status?: boolean; uninstall?: boolean; force?: boolean }
 
@@ -279,18 +281,19 @@ function status(clients: Client[], d: AgentHooksDeps): number {
   for (const c of clients) {
     for (const global of [false, true]) {
       const o = { global };
+      const cli = global ? d.cli : PORTABLE_CLI;
       if (!global && !d.repoRoot) { d.log(`  ${c} (project): not in a git repository`); continue; }
       let line: string;
       try {
         if (c === 'kiro') {
           const path = join(kiroDir(o, d), KIRO_FILE);
           const f = readObject(path);
-          const st = kiroState(f.json, kiroHookFile(d.cli));
+          const st = kiroState(f.json, kiroHookFile(cli));
           line = `${st.state}  ${tilde(path, d.home)}${st.others ? ` (also ${st.others} other hook(s))` : ''}`;
         } else {
           const path = claudeSettings(o, d);
           const f = readObject(path);
-          line = `${claudeState(hooksObject(f.json, path), claudeHooks(d.cli))}  ${tilde(path, d.home)}`;
+          line = `${claudeState(hooksObject(f.json, path), claudeHooks(cli))}  ${tilde(path, d.home)}`;
         }
       } catch (e: any) { line = `unreadable: ${String(e?.message || e).split('\n')[0]}`; } // any: a read error, message only
       d.log(`  ${c} (${global ? 'global' : 'project'}): ${line}`);
@@ -313,6 +316,12 @@ export function enableAgentHooks(o: AgentHooksOptions, d: AgentHooksDeps): numbe
   if (!c) { d.error(`Error: --client is required: ${CLIENTS.join(' | ')}.`); return 1; }
   if (!o.global && !d.repoRoot) { d.error('Error: not inside a git repository. Run it in the repo, or pass --global.'); return 1; }
   const client = c as Client;
+  // A project file is committed and shared, so it names `prism-cli` on PATH: a machine-specific
+  // absolute path would exit 127 on a teammate's machine, which Kiro treats as "let it through".
+  if (!o.global && d.cli !== PORTABLE_CLI) {
+    d.log(`  ! This prism-cli is not on the system PATH (${d.cli}). The project file still calls "${PORTABLE_CLI}" so it works for everyone who commits and shares it; make sure prism-cli is on the PATH your agent starts with, or use --global, which writes this machine's absolute path.`);
+    d = { ...d, cli: PORTABLE_CLI };
+  }
   d.log(`\n🔌 enable agent-hooks --client ${client}${o.global ? ' --global' : ''}${o.uninstall ? ' --uninstall' : ''}${o.dryRun ? ': dry run, nothing is changed' : ''}\n`);
   d.log(`  Command: ${d.cli} codewatch hook --client ${client} ...`);
   try {

@@ -83,15 +83,22 @@ const block = (reason: string): KiroHookResult => ({ exit: 0, stdout: JSON.strin
 /** `.prism/harness/<session>.push-notice.json`: the push findings the agent has not seen yet. */
 const noticePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.push-notice.json`);
 
-/** Several pushes in one prompt: each one's findings are kept, newest last; over the reason cap, only the newest. */
+/**
+ * Several pushes in one prompt: each one's findings are kept, newest last; over the reason cap, only the newest.
+ * shortcut: no lock, so two pushes at the same moment in one session can lose one notice (both stay
+ * in the result files); move to one file per push if parallel pushes show up.
+ */
 function savePushNotice(repoRoot: string, session: string, text: string): void {
   ensureHarnessDir(repoRoot);
   const p = noticePath(repoRoot, session);
   const prev = readPushNotice(repoRoot, session);
   const joined = prev ? `${prev}\n\nA later push:\n${text}` : text;
   const all = Buffer.byteLength(joined, 'utf8') <= MAX_REASON_BYTES ? joined : `[Findings of earlier pushes omitted here; they are in .prism/results/.]\n${text}`;
-  writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify({ version: 1, text: all }) + '\n', { mode: 0o600 });
-  renameSync(`${p}.${process.pid}.tmp`, p);
+  const tmp = `${p}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ version: 1, text: all }) + '\n', { mode: 0o600 });
+    renameSync(tmp, p);
+  } finally { rmSync(tmp, { force: true }); }
 }
 
 /** The pending push notice, or null. It is deleted only once a Stop hook has handed it over (clearPushNotice). */

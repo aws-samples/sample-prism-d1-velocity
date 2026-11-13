@@ -547,10 +547,10 @@ Verdict to output:
 | `stop` | exit 0 with `systemMessage` for the person and `additionalContext` telling Claude to report what remains | deny for a secret (also committed), tamper, a failed or incomplete secret scan, or an unknown push target; review findings never reach `stop` at push |
 
 **Kiro CLI V3 and Kiro IDE.** `prism-cli enable agent-hooks --client kiro` writes
-`.kiro/hooks/prism-harness.json` (or `~/.kiro/hooks/prism-harness.json` with `--global`). The
-command is the resolved prism-cli path (`prism-cli`, or the absolute node and entry script when
-prism-cli is not on the system PATH, as for the Claude Code status line). Shown here with
-`prism-cli`, descriptions left out:
+`.kiro/hooks/prism-harness.json` (or `~/.kiro/hooks/prism-harness.json` with `--global`). A project
+file calls `prism-cli`, since it is committed and shared; `--global` writes the resolved path
+(`prism-cli`, or the absolute node and entry script when prism-cli is not on the system PATH, as for
+the Claude Code status line). Descriptions left out:
 
 ```json
 { "version": "v1", "hooks": [
@@ -972,9 +972,11 @@ Where 1.12.0 differs from or settles something in the text above, for Kiro:
 - **Cost of the push matcher.** `shell` selects every shell call, so prism-cli starts for each one:
   about 80 ms for a command that is not a push (measured, median of 7, most of it node start-up).
 - **Installed path.** prism-cli missing from the hook's PATH makes the shell exit 127, which Kiro
-  treats as a failed hook and lets the push run; D5 cannot cover a process that never starts. The
-  installer writes the absolute node and entry script when prism-cli is not on the system PATH, and
-  `--status` reports a file whose command differs as `outdated`.
+  treats as a failed hook and lets the push run; D5 cannot cover a process that never starts. A
+  project file (committed, shared) always calls `prism-cli` on PATH, because an absolute path from
+  one machine would be missing on the next; the installer warns when prism-cli is not on the system
+  PATH. `--global` writes the absolute node and entry script in that case, and `--status` reports a
+  file whose command differs as `outdated`.
 - **Engine unchanged.** The Kiro adapter calls the same `runHarnessReview` as the Claude adapter and
   reuses its tokenizer, bypass check and finding quoting.
 

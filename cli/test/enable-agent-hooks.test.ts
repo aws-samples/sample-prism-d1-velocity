@@ -199,3 +199,17 @@ test('claude: a "hooks" value that is not an object is refused by install, unins
   x.run({ status: true, client: 'claude' });
   assert.match(x.text(), /claude \(project\): unreadable/);
 });
+
+test('a project file always calls prism-cli (it is committed and shared); --global writes this machine\'s path', () => {
+  const abs = "'/opt/node/bin/node' '/opt/prism/dist/bin/prism-cli.js'";
+  const x = rig({ cli: abs });
+  x.run({ client: 'kiro' });
+  assert.deepEqual(readJ(kiroPath(x.repo)), kiroHookFile('prism-cli'));
+  assert.match(x.text(), /not on the system PATH/);
+  x.run({ client: 'kiro', global: true });
+  assert.deepEqual(readJ(kiroPath(x.home)), kiroHookFile(abs));
+  x.out.length = 0;
+  x.run({ status: true, client: 'kiro' });
+  assert.match(x.text(), /kiro \(project\): installed/);
+  assert.match(x.text(), /kiro \(global\): installed/);
+});

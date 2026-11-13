@@ -1083,8 +1083,10 @@ prism-cli enable agent-hooks --client kiro --uninstall
 
 - Every write shows a diff and backs the file up first as `<file>.bak-<timestamp>`. Running it
   again with nothing to change writes nothing.
-- The hooks call this prism-cli: `prism-cli`, or its absolute node and script path when prism-cli
-  is not on the PATH a desktop app or IDE starts with (an nvm or Volta install).
+- The hooks call `prism-cli`. A project file always does, because it is committed and shared, so
+  prism-cli must be on the PATH the agent starts with (it warns when it is not on the system PATH).
+  With `--global` it writes this machine's absolute node and script path when prism-cli is not on
+  the PATH a desktop app or IDE starts with (an nvm or Volta install).
 - For Claude Code it merges the hooks the plugin ships into the settings file and keeps your other
   hooks and keys. When the PRISM plugin is installed it skips the install, so the hooks do not run
   twice; update an older plugin (before 0.3.0) instead.
