@@ -83,12 +83,13 @@ const block = (reason: string): KiroHookResult => ({ exit: 0, stdout: JSON.strin
 /** `.prism/harness/<session>.push-notice.json`: the push findings the agent has not seen yet. */
 const noticePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.push-notice.json`);
 
-/** Several pushes in one prompt: each one's findings are kept, newest last, within the reason cap. */
+/** Several pushes in one prompt: each one's findings are kept, newest last; over the reason cap, only the newest. */
 function savePushNotice(repoRoot: string, session: string, text: string): void {
   ensureHarnessDir(repoRoot);
   const p = noticePath(repoRoot, session);
   const prev = readPushNotice(repoRoot, session);
-  const all = prev ? capBytes(`${prev}\n\nA later push:\n${text}`, MAX_REASON_BYTES) : text;
+  const joined = prev ? `${prev}\n\nA later push:\n${text}` : text;
+  const all = Buffer.byteLength(joined, 'utf8') <= MAX_REASON_BYTES ? joined : text;
   writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify({ version: 1, text: all }) + '\n', { mode: 0o600 });
   renameSync(`${p}.${process.pid}.tmp`, p);
 }
