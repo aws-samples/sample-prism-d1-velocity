@@ -296,6 +296,10 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
   push: (g) => refspecBypass(g),
   branch: (g) => {
     if (g.args.some((a) => /^-[a-zA-Z]*u/.test(a) || a === '--set-upstream-to' || a.startsWith('--set-upstream-to=') || a === '--unset-upstream')) return `git branch --set-upstream-to ${MOVES_UPSTREAM}`;
+    // `git branch -d -r origin/main` (also `-dr`, `-Dr`) deletes a remote-tracking ref.
+    const short = g.args.filter((a) => /^-[a-zA-Z]+$/.test(a)).join('');
+    const deletes = /[dD]/.test(short) || hasOpt(g, '--delete');
+    if (deletes && (short.includes('r') || hasOpt(g, '--remotes'))) return `git branch --delete --remotes ${MOVES_REF}`;
     const name = createdName(g, ['-l', '--list', '-a', '--all', '-r', '--remotes', '-d', '-D', '--delete', '-v', '-vv', '--show-current', '--contains', '--merged', '--no-merged', '--points-at']);
     return name && SHADOW_NAME.test(name) ? `git branch ${quoted(name)} creates a branch that ${SHADOWS}` : null;
   },
@@ -306,6 +310,7 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
   checkout: (g) => createFlagBypass(g),
   switch: (g) => createFlagBypass(g),
   // rename and remove move or delete refs/remotes/<name>/*; set-branches, set-url and a mirror remote change what a later fetch writes there.
+  // `git remote prune` (like `git fetch --prune`) is allowed: it deletes only refs whose branch is gone from the real remote.
   remote: (g) => (['rename', 'remove', 'rm', 'set-branches', 'set-url'].includes(g.args[0] ?? '') || (g.args[0] === 'add' && g.args.some((a) => a === '--mirror' || a.startsWith('--mirror=')))
     ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
   config: (g) => {
@@ -322,6 +327,8 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
 /** A fetch or push refspec (or `--refmap=`) whose destination is a remote-tracking ref, or a branch or tag named like one. */
 function refspecBypass(g: GitCall): string | null {
   // A shadow-named destination matters only when it lands in this repository: fetch and pull, or a push to `.`.
+  // shortcut: other spellings of this repository (`./`, its absolute path, file://) are not recognized; full
+  // refs/remotes/* destinations are denied for every remote, and the engine reads full ref names anyway.
   const local = g.sub !== 'push' || positionals(g.args)[0] === '.';
   const shadowsOrMoves = (d: string) => { const s = d.replace(/^\+/, ''); return s.startsWith('refs/') ? movesTracking(s) : local && SHADOW_NAME.test(s); };
   const specs = [...positionals(g.args), ...g.args.filter((a) => a.startsWith('--refmap=')).map((a) => a.slice('--refmap='.length))];
