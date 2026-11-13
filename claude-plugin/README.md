@@ -97,7 +97,10 @@ their descriptions and cap each message at 2,000 characters.
 
 The plugin's hooks run `prism-cli codewatch hook --client claude` (through
 `scripts/harness-hook.mjs`, which only passes the hook JSON through and always exits 0). prism-cli
-decides everything; the full behavior is in the
+decides everything. When prism-cli is missing, older than 1.11.0, or its hook fails, nothing is
+blocked and you see one line per session saying the check is off and why, for example
+`PRISM push check is off: prism-cli 1.11.0 or later is needed (found 1.10.1). Run npm i -g @prism-d1/cli@latest.`
+The once-per-session marker is an empty file under the plugin's data directory. The full behavior is in the
 [User Guide](../USER_GUIDE.md#agent-harness-loop) and the
 [design](../docs/DESIGN-harness-loop.md).
 

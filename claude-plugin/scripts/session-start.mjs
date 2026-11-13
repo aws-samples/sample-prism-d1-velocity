@@ -34,7 +34,10 @@ const SEVERITIES = new Set(['high', 'medium', 'low']);
 const CATEGORIES = new Set(['quality', 'security']);
 const CLI_TIMEOUT_MS = 5000;
 const SESSION_HOOK = 'claude-session-context';
-const PLUGIN_VERSION = '0.1.0';
+/** The plugin's own version, from its manifest, so the MCP clientInfo never goes stale. */
+export const PLUGIN_VERSION = (() => {
+  try { return String(JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version || '0.0.0'); } catch { return '0.0.0'; }
+})();
 
 const isWin = process.platform === 'win32';
 /** The prism-cli to run: $PRISM_CLI (an absolute path, for nvm installs Claude Code cannot see), else prism-cli on PATH. */
