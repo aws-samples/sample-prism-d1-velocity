@@ -1,0 +1,139 @@
+{
+  "schema": "prism.dashboard.v2",
+  "generated_at": "2026-11-12T17:30:00.000Z",
+  "scope": { "current_repo": null },
+  "repos": [
+    {
+      "name": "checkout-service",
+      "label": "checkout-service",
+      "path": "/home/dev/src/checkout-service",
+      "current": false,
+      "spend": { "cost": 4.85, "sessions": 6 },
+      "codewatch": {
+        "hasResults": true,
+        "lastRunAt": "2026-11-12T16:55:00.000Z",
+        "lastReviewId": "a1b2c3d-20261112T165500000Z-pre-push-review",
+        "latestByBranch": [{ "branch": "main", "review": { "commit": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", "started_at": "2026-11-12T16:55:00.000Z" } }],
+        "findingsTruncated": false,
+        "findings": [
+          { "severity": "high", "category": "security", "rule": "command-injection", "file": "src/lookup.ts", "line": 3, "message": "User-supplied SKU is interpolated into a shell command passed to exec(). Use execFile with an argument array instead.", "branch": "main", "commit": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", "started_at": "2026-11-12T16:55:00.000Z" },
+          { "severity": "medium", "category": "security", "rule": "path-traversal", "file": "src/files/download.ts", "line": 27, "message": "The receipt file name from the query string is joined to the storage folder without rejecting '..' segments.", "branch": "main", "commit": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", "started_at": "2026-11-12T16:55:00.000Z" },
+          { "severity": "low", "category": "quality", "rule": "magic-number", "file": "src/cart/totals.ts", "line": 41, "message": "Tax rate 0.0825 is hard-coded; move it to configuration.", "branch": "main", "commit": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", "started_at": "2026-11-12T16:55:00.000Z" },
+          { "severity": "low", "category": "quality", "rule": "unused-import", "file": "src/lookup.ts", "line": 1, "message": "'readFileSync' is imported but never used.", "branch": "main", "commit": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", "started_at": "2026-11-12T16:55:00.000Z" }
+        ],
+        "scans": [
+          { "id": "a1b2c3d-20261112T165500000Z-pre-push-review", "started_at": "2026-11-12T16:55:00.000Z", "branch": "main", "tool": "kiro", "status": "findings", "high": 1, "medium": 1, "low": 2, "reason": null }
+        ]
+      },
+      "setup": { "status": "ok", "reviewer": "kiro", "detail": "pre-commit and pre-push hooks installed", "fix": "" },
+      "security": { "status": "ok", "detail": "AWS Security Agent workflow present in .github/workflows", "fix": "" }
+    },
+    {
+      "name": "web-storefront",
+      "label": "web-storefront",
+      "path": "/home/dev/src/web-storefront",
+      "current": false,
+      "spend": { "cost": 3.10, "sessions": 4 },
+      "codewatch": {
+        "hasResults": true,
+        "lastRunAt": "2026-11-12T15:25:00.000Z",
+        "lastReviewId": "e4f5a6b-20261112T152500000Z-pre-push-review",
+        "findingsTruncated": false,
+        "findings": [],
+        "scans": [
+          { "id": "e4f5a6b-20261112T152500000Z-pre-push-review", "started_at": "2026-11-12T15:25:00.000Z", "branch": "main", "tool": "claude", "status": "clean", "high": 0, "medium": 0, "low": 0, "reason": null }
+        ]
+      },
+      "setup": { "status": "ok", "reviewer": "claude", "detail": "pre-commit and pre-push hooks installed", "fix": "" },
+      "security": { "status": "ok", "detail": "AWS Security Agent workflow present in .github/workflows", "fix": "" }
+    },
+    {
+      "name": "payments-api",
+      "label": "payments-api",
+      "path": "/home/dev/src/payments-api",
+      "current": false,
+      "spend": { "cost": 2.95, "sessions": 3 },
+      "codewatch": {
+        "hasResults": true,
+        "lastRunAt": "2026-11-11T21:40:00.000Z",
+        "lastReviewId": "9c8d7e6-20261111T214000000Z-pre-push-review",
+        "findingsTruncated": false,
+        "findings": [],
+        "scans": [
+          { "id": "9c8d7e6-20261111T214000000Z-pre-push-review", "started_at": "2026-11-11T21:40:00.000Z", "branch": "main", "tool": "kiro", "status": "clean", "high": 0, "medium": 0, "low": 0, "reason": null }
+        ]
+      },
+      "setup": { "status": "ok", "reviewer": "kiro", "detail": "pre-commit and pre-push hooks installed", "fix": "" },
+      "security": { "status": "ok", "detail": "AWS Security Agent workflow present in .github/workflows", "fix": "" }
+    },
+    {
+      "name": "infra-cdk",
+      "label": "infra-cdk",
+      "path": "/home/dev/src/infra-cdk",
+      "current": false,
+      "spend": { "cost": 1.50, "sessions": 2 },
+      "codewatch": {
+        "hasResults": true,
+        "lastRunAt": "2026-11-10T18:05:00.000Z",
+        "lastReviewId": "1f2e3d4-20261110T180500000Z-pre-push-review",
+        "findingsTruncated": false,
+        "findings": [],
+        "scans": [
+          { "id": "1f2e3d4-20261110T180500000Z-pre-push-review", "started_at": "2026-11-10T18:05:00.000Z", "branch": "main", "tool": "kiro", "status": "clean", "high": 0, "medium": 0, "low": 0, "reason": null }
+        ]
+      },
+      "setup": { "status": "ok", "reviewer": "kiro", "detail": "pre-commit and pre-push hooks installed", "fix": "" },
+      "security": { "status": "ok", "detail": "AWS Security Agent workflow present in .github/workflows", "fix": "" }
+    }
+  ],
+  "overview": {
+    "counts": { "repos": 6, "codewatch": 4 },
+    "setup": [
+      { "name": "checkout-service", "label": "checkout-service", "path": "/home/dev/src/checkout-service", "status": "ok", "reviewer": "kiro", "detail": "pre-commit and pre-push hooks installed" },
+      { "name": "web-storefront", "label": "web-storefront", "path": "/home/dev/src/web-storefront", "status": "ok", "reviewer": "claude", "detail": "pre-commit and pre-push hooks installed" },
+      { "name": "payments-api", "label": "payments-api", "path": "/home/dev/src/payments-api", "status": "ok", "reviewer": "kiro", "detail": "pre-commit and pre-push hooks installed" },
+      { "name": "infra-cdk", "label": "infra-cdk", "path": "/home/dev/src/infra-cdk", "status": "ok", "reviewer": "kiro", "detail": "pre-commit and pre-push hooks installed" }
+    ],
+    "codewatch": [
+      { "name": "checkout-service", "label": "checkout-service", "path": "/home/dev/src/checkout-service", "high": 1, "medium": 1, "low": 2, "lastRunAt": "2026-11-12T16:55:00.000Z", "reviewer": "kiro" },
+      { "name": "web-storefront", "label": "web-storefront", "path": "/home/dev/src/web-storefront", "high": 0, "medium": 0, "low": 0, "lastRunAt": "2026-11-12T15:25:00.000Z", "reviewer": "claude" },
+      { "name": "payments-api", "label": "payments-api", "path": "/home/dev/src/payments-api", "high": 0, "medium": 0, "low": 0, "lastRunAt": "2026-11-11T21:40:00.000Z", "reviewer": "kiro" },
+      { "name": "infra-cdk", "label": "infra-cdk", "path": "/home/dev/src/infra-cdk", "high": 0, "medium": 0, "low": 0, "lastRunAt": "2026-11-10T18:05:00.000Z", "reviewer": "kiro" }
+    ]
+  },
+  "machine": {
+    "setup": [
+      { "id": "codeburn", "label": "codeburn installed", "status": "ok", "detail": "0.9.24", "fix": "" },
+      { "id": "codeburn-sync", "label": "Scheduled codeburn sync push", "status": "ok", "detail": "cron entry installed; last sync log write 2026-11-12T17:00:04.000Z", "fix": "" },
+      { "id": "gitleaks", "label": "gitleaks available", "status": "ok", "detail": "8.21.2", "fix": "" },
+      { "id": "aws-credentials", "label": "AWS credentials configured", "status": "ok", "detail": "AWS config present (config and credentials files; not validated)", "fix": "" },
+      { "id": "codewatch-global", "label": "Codewatch global hooks", "status": "ok", "detail": "core.hooksPath -> ~/.prism/hooks; every repo is covered", "fix": "" },
+      { "id": "kirocrew-app", "label": "Kiro Crew app", "status": "info", "detail": "0.2.2 installed (current)", "fix": "" }
+    ],
+    "codeburnSync": { "mode": "team" }
+  },
+  "usage": {
+    "status": "ok",
+    "message": null,
+    "currency": "USD",
+    "updatedAt": "2026-11-12T17:26:00.000Z",
+    "stale": false,
+    "today": { "cost": 12.40, "calls": 64, "sessions": 9 },
+    "month": { "cost": 186.75, "calls": 912, "sessions": 131, "from": "2026-11-01", "to": "2026-11-12" },
+    "topModels": [
+      { "name": "Claude Sonnet 4.5", "cost": 142.30, "calls": 655 },
+      { "name": "Kiro (auto)", "cost": 44.45, "calls": 257 }
+    ],
+    "topProjects": [
+      { "name": "/home/dev/src/checkout-service", "cost": 71.20, "sessions": 48 },
+      { "name": "/home/dev/src/web-storefront", "cost": 54.85, "sessions": 39 },
+      { "name": "/home/dev/src/payments-api", "cost": 38.10, "sessions": 27 },
+      { "name": "/home/dev/src/infra-cdk", "cost": 22.60, "sessions": 17 }
+    ]
+  },
+  "summary": {
+    "spend": { "status": "ok", "currency": "USD", "today": 12.40, "month": 186.75, "message": null, "updatedAt": "2026-11-12T17:26:00.000Z" },
+    "warnings": { "count": 0, "first": null },
+    "review": { "repo": "checkout-service", "at": "2026-11-12T16:55:00.000Z", "status": "findings", "reason": null, "high": 1, "medium": 1, "low": 2, "reviewer": "kiro" }
+  }
+}
