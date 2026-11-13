@@ -402,7 +402,7 @@ and `-c core.hooksPath=` are denied with a message to the agent. So, since 1.12.
 command that moves what the push check measures against (D4): a remote-tracking ref
 (`git update-ref refs/remotes/...` or `--stdin`, `git branch -d -r`, `git push . --delete refs/remotes/...`, a `git fetch`, `git pull` or `git push` refspec whose
 destination is `refs/remotes/*` or a glob that can expand into it (`refs/*`), `git symbolic-ref refs/remotes/... <target>`, `git remote rename`,
-`remove`, `set-branches` or `set-url`, `git remote add --mirror`, a write to `remote.<name>.fetch` or `.url` (also one-shot through `git -c`, on any subcommand), a `--refmap`, a branch or tag named like one (`origin/...`, `upstream/...`,
+`remove`, `set-branches` or `set-url`, `git remote add --mirror`, a write to `remote.<name>.fetch`, `.url` or `url.<base>.insteadOf` (also one-shot through `git -c`, on any subcommand), a `--refmap`, a git alias definition (the check reads the subcommand literally), a branch or tag named like one (`origin/...`, `upstream/...`,
 `remotes/...`, `refs/...`, by `git branch`, `git tag`, `git checkout -b`, `git switch -c`,
 `git update-ref refs/heads/origin/...`, or a fetch or push refspec destination; defense in depth,
 since the engine reads full `refs/remotes/...` names, so other remote names are not listed), and the

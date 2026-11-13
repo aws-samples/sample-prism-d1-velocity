@@ -252,8 +252,10 @@ const refspecDst = (spec: string) => { const i = spec.indexOf(':'); return i < 0
 const MOVES_REF = 'moves a remote-tracking ref (refs/remotes/...), which the PRISM push check compares the push against';
 const MOVES_UPSTREAM = 'changes the branch\'s upstream, which the PRISM push check compares the push against';
 const SHADOWS = 'shadows a remote-tracking ref the PRISM push check reads';
-/** Config keys that decide where an ordinary `git fetch` writes remote-tracking refs. */
-const REMOTE_FETCH_KEY = /^remote\..+\.(fetch|url)$/i;
+/** Config keys that decide where an ordinary `git fetch` writes remote-tracking refs (a URL rewrite included). */
+const REMOTE_FETCH_KEY = /^(remote\..+\.(fetch|url)|url\..+\.insteadof)$/i;
+/** `alias.*`: the check reads the subcommand literally, so an alias defined now would hide a ref move from it. */
+const ALIAS_KEY = /^alias\../i;
 const MOVES_FETCH = 'changes where git fetch writes remote-tracking refs, which the PRISM push check compares the push against';
 /** Config sections that hold a branch's upstream or a remote's fetch setup. */
 const TRACKING_SECTION = /^(branch|remote)\../i;
@@ -315,12 +317,14 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
     ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
   config: (g) => {
     const up = configWrite(g, /^branch\..+\.(merge|remote)$/i);
-    if (up) return `git config ${up.slice(0, MAX_REASON_ARG)} ${MOVES_UPSTREAM}`;
+    if (up) return `git config ${quoted(up)} ${MOVES_UPSTREAM}`;
     const fetch = configWrite(g, REMOTE_FETCH_KEY);
-    if (fetch) return `git config ${fetch.slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}`;
+    if (fetch) return `git config ${quoted(fetch)} ${MOVES_FETCH}`;
+    const alias = configWrite(g, ALIAS_KEY);
+    if (alias) return `git config ${quoted(alias)} defines a git alias, which the PRISM push check cannot see through`;
     const i = g.args.findIndex((a) => a === '--remove-section' || a === '--rename-section' || a === 'remove-section' || a === 'rename-section');
     const section = i >= 0 ? g.args[i + 1] : undefined;
-    return section && TRACKING_SECTION.test(section) ? `git config ${g.args[i]} ${section.slice(0, MAX_REASON_ARG)} ${MOVES_UPSTREAM}` : null;
+    return section && TRACKING_SECTION.test(section) ? `git config ${g.args[i]} ${quoted(section)} ${MOVES_UPSTREAM}` : null;
   },
 };
 
@@ -342,10 +346,10 @@ function refspecBypass(g: GitCall): string | null {
   // `git push . --delete <ref>` deletes a ref in this repository.
   if (g.sub === 'push' && local && hasOpt(g, '-d', '--delete')) {
     const gone = positionals(g.args).slice(1).find(shadowsOrMoves);
-    if (gone) return `git push . --delete ${gone.slice(0, MAX_REASON_ARG)} ${MOVES_REF}`;
+    if (gone) return `git push . --delete ${quoted(gone)} ${MOVES_REF}`;
   }
   const dst = specs.map(refspecDst).find((d) => d !== null && shadowsOrMoves(d));
-  return dst ? `a git ${g.sub} refspec that writes ${dst.slice(0, MAX_REASON_ARG)} ${MOVES_REF}` : null;
+  return dst ? `a git ${g.sub} refspec that writes ${quoted(dst)} ${MOVES_REF}` : null;
 }
 
 const CREATE_FLAGS = ['-b', '-B', '-c', '-C', '--create', '--force-create', '--orphan'];
@@ -357,15 +361,21 @@ function createFlagBypass(g: GitCall): string | null {
     const a = g.args[i];
     if (CREATE_FLAGS.includes(a)) name = g.args[i + 1];
     else if (a.startsWith('--') && CREATE_FLAGS.includes(a.split('=')[0]) && a.includes('=')) name = a.slice(a.indexOf('=') + 1);
-    else if (/^-[bBcC]./.test(a)) name = a.slice(2);
+    else if (/^-[a-zA-Z]/.test(a) && !a.startsWith('--')) {
+      // A short-option cluster (`-fb`, `-borigin/main`): the create flag takes the rest of the word, else the next word.
+      const k = a.slice(1).search(/[bBcC]/);
+      if (k >= 0) name = a.slice(k + 2) || g.args[i + 1];
+    }
   }
   return name && SHADOW_NAME.test(name) ? `git ${g.sub} creating ${quoted(name)} makes a branch that ${SHADOWS}` : null;
 }
 
 const refBypass = (g: GitCall) => {
-  // `git -c remote.<name>.fetch=...` or `.url=` remaps any fetch this run does (fetch, pull, remote update, ...).
+  // `git -c remote.<name>.fetch=...`, `.url=` or `url.<x>.insteadOf=` remaps any fetch this run does; `-c alias.x=...` hides the subcommand.
   const oneShot = g.configs.find((c) => REMOTE_FETCH_KEY.test(c.split('=')[0]));
-  if (oneShot) return `git -c ${oneShot.split('=')[0].slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}`;
+  if (oneShot) return `git -c ${quoted(oneShot.split('=')[0])} ${MOVES_FETCH}`;
+  const alias = g.configs.find((c) => ALIAS_KEY.test(c));
+  if (alias) return `git -c ${quoted(alias.split('=')[0])} defines a git alias, which the PRISM push check cannot see through`;
   return g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null;
 };
 

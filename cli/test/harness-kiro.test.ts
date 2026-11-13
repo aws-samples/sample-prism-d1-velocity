@@ -266,10 +266,13 @@ const REF_MOVES = [
   'git pull . HEAD:origin/main', 'git branch -d -r origin/main', 'git branch -dr origin/main', 'git branch --delete --remotes origin/main',
   "git fetch ../crafted '+refs/*:refs/*'", 'git fetch ../crafted +*:*', "git fetch ../crafted 'refs/remotes/*:refs/remotes/*'",
   'git push . --delete refs/remotes/origin/main', 'git push . -d refs/remotes/origin/main',
+  'git config url.".".insteadOf https://example.com/r.git', 'git -c url.".".insteadOf=https://example.com/r.git fetch origin',
+  'git config alias.ur update-ref', "git -c alias.x='update-ref refs/remotes/origin/main HEAD' x", 'git checkout -fb origin/main', 'git switch -fc origin/main',
 ];
 const ORDINARY = [
   'git branch -t feat origin/main', 'git push origin HEAD:upstream/sync', 'git remote add fork ../other', 'git remote prune origin', 'git fetch --prune', 'git branch -D feat/old',
-  "git fetch origin '+refs/heads/*:refs/heads/*'", 'git push origin --delete feat/old', 'git push . --delete refs/heads/tmp', 'git pull', 'git pull origin main', 'git remote show origin', 'git remote get-url origin', 'git config --get remote.origin.url', 'git config --list',
+  "git fetch origin '+refs/heads/*:refs/heads/*'", 'git push origin --delete feat/old', 'git push . --delete refs/heads/tmp',
+  'git config --get alias.co', 'git checkout -f main', 'git checkout -fb feat/x', 'git pull', 'git pull origin main', 'git remote show origin', 'git remote get-url origin', 'git config --get remote.origin.url', 'git config --list',
   'git tag -a -m "release" v1.3', 'git remote -v', 'git remote add fork https://example.com/r.git', 'git config --get remote.origin.fetch', 'git update-ref refs/heads/feat/x HEAD',
   'git fetch origin', 'git fetch origin main', 'git fetch --all --prune', 'git branch', 'git branch -a', 'git branch -r', 'git branch feat/x', 'git branch feat/x origin/main',
   'git branch -d origin/old', 'git symbolic-ref refs/remotes/origin/HEAD', 'git symbolic-ref --short HEAD', 'git tag v1.2', 'git tag -l', 'git checkout main',
