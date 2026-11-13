@@ -217,41 +217,67 @@ prism-eval-gate:
             # into HTTP headers, so let it read the patch off disk itself.
             git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES} > /tmp/mr-diff.patch
 
-            set +e
-            REVIEW_OUTPUT=$(kiro-cli chat --no-interactive --trust-all-tools --model auto \
-              "Review /tmp/mr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}")
-            set -e
+            # One retry, only when the reply cannot be parsed. Attempt 2 re-runs
+            # the same review (same model, same diff file) with one sentence
+            # added that asks for a single JSON object. It does not hand the bad
+            # reply back for "repair": a broken reply is often truncated, and
+            # repairing it would make the model invent the missing findings.
+            # Nothing is repaired by regex; two unparseable replies fail closed.
+            REVIEW_PROMPT="Review /tmp/mr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}"
+            RETRY_NOTE="Your previous reply was not valid JSON. Return exactly one JSON object matching that schema and nothing else: no prose, no code fences."
+            # Per-attempt cap. The retry gets the same budget as the first attempt.
+            REVIEW_TIMEOUT_SECS=600
+            REVIEW_JSON=""
+            REVIEW_ATTEMPT=""
+            for ATTEMPT in 1 2; do
+              PROMPT="${REVIEW_PROMPT}"
+              if [ "${ATTEMPT}" = "2" ]; then PROMPT="${REVIEW_PROMPT} ${RETRY_NOTE}"; fi
+              set +e
+              REVIEW_OUTPUT=$(timeout "${REVIEW_TIMEOUT_SECS}" kiro-cli chat --no-interactive --trust-all-tools --model auto "${PROMPT}")
+              set -e
 
-            # Extract the LAST JSON object that parses and has a numeric score
-            # and a findings array. kiro-cli writes reasoning notes first, and
-            # they quote code with braces, so a greedy first-brace-to-last-brace
-            # match is not the verdict.
-            CLEANED=$(printf '%s' "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
-            REVIEW_JSON=$(printf '%s' "${CLEANED}" | python3 -c 'if True:
-                import json, math, sys
-                text = sys.stdin.read()
-                dec = json.JSONDecoder(strict=False)
-                pos = text.rfind("{")
-                while pos != -1:
-                    try:
-                        obj = dec.raw_decode(text, pos)[0]
-                    except ValueError:
-                        obj = None
-                    score = obj.get("score") if isinstance(obj, dict) else None
-                    if (isinstance(score, (int, float)) and not isinstance(score, bool)
-                            and math.isfinite(score) and isinstance(obj.get("findings"), list)):
-                        print(json.dumps(obj))
-                        sys.exit(0)
-                    pos = text.rfind("{", 0, pos)
-                sys.exit(1)
-            ' || true)
+              # Extract the LAST JSON object that parses and has a numeric score
+              # and a findings array. kiro-cli writes reasoning notes first, and
+              # they quote code with braces, so a greedy first-brace-to-last-brace
+              # match is not the verdict.
+              CLEANED=$(printf '%s' "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
+              REVIEW_JSON=$(printf '%s' "${CLEANED}" | python3 -c 'if True:
+                  import json, math, sys
+                  text = sys.stdin.read()
+                  dec = json.JSONDecoder(strict=False)
+                  pos = text.rfind("{")
+                  while pos != -1:
+                      try:
+                          obj = dec.raw_decode(text, pos)[0]
+                      except ValueError:
+                          obj = None
+                      score = obj.get("score") if isinstance(obj, dict) else None
+                      if (isinstance(score, (int, float)) and not isinstance(score, bool)
+                              and math.isfinite(score) and isinstance(obj.get("findings"), list)):
+                          print(json.dumps(obj))
+                          sys.exit(0)
+                      pos = text.rfind("{", 0, pos)
+                  sys.exit(1)
+              ' || true)
 
-            if [ -z "${REVIEW_JSON}" ] || ! printf '%s' "${REVIEW_JSON}" | jq -e '.score' >/dev/null 2>&1; then
-              echo "❌ Could not parse kiro-cli review output — failing closed."
+              if [ -n "${REVIEW_JSON}" ] && printf '%s' "${REVIEW_JSON}" | jq -e '.score' >/dev/null 2>&1; then
+                REVIEW_ATTEMPT="${ATTEMPT}"
+                break
+              fi
+              REVIEW_JSON=""
+              echo "⚠  Attempt ${ATTEMPT}: could not parse kiro-cli review output. Raw output (first 2000 chars):"
               printf '%s' "${REVIEW_OUTPUT:-<empty>}" | head -c 2000
               echo ""
+              if [ "${ATTEMPT}" = "1" ]; then
+                echo "Retrying the review once."
+              fi
+            done
+
+            if [ -z "${REVIEW_JSON}" ]; then
+              echo "❌ Could not parse kiro-cli review output on either attempt (both unparseable) — failing closed."
               REVIEW_RESULT="ERROR"
             else
+              echo "Review verdict parsed on attempt ${REVIEW_ATTEMPT} of 2."
               printf '%s' "${REVIEW_JSON}" > /tmp/kiro-review.json
               REVIEW_SCORE=$(jq -r '.score' /tmp/kiro-review.json)
               REVIEW_HIGH=$(jq '[.findings[] | select(.severity=="high")] | length' /tmp/kiro-review.json)

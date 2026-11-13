@@ -105,3 +105,39 @@ for (const [label, input] of [
     assert.equal(r.out, '');
   });
 }
+
+test('trailing prose after the verdict is ignored', () => {
+  const v = verdict('{"findings":[],"score":0.9,"summary":"ok"}\n\nLet me know if you want more detail on any of these {points}.');
+  assert.equal(v.score, 0.9);
+});
+
+test('of two complete verdicts the last one wins', () => {
+  const v = verdict('Draft: {"findings":[],"score":0.99,"summary":"draft"}\nFinal: {"findings":[{"severity":"high"}],"score":0.4,"summary":"final"}');
+  assert.equal(v.score, 0.4);
+  assert.equal(v.findings.length, 1);
+});
+
+// PR #85: the reply was a complete verdict (score 0.92, low findings only) with
+// one typo, `"line":152",`. The parser must still reject it -- there is no
+// lenient repair -- and the workflow's single retry is what recovers the run.
+test('the PR #85 `"line":152",` typo fails closed in the parser', () => {
+  const text = readFileSync(join(FIX, 'pr85-line-typo.txt'), 'utf8');
+  assert.ok(text.includes('"line":152",'));
+  const r = run(text);
+  assert.notEqual(r.code, 0);
+  assert.equal(r.out, '');
+});
+
+test('huge output: notes full of braces before the verdict still parse quickly', () => {
+  const notes = 'quoting `catch { }` and `${x}` { not json }\n'.repeat(50_000); // ~2 MB
+  const t0 = Date.now();
+  const v = verdict(notes + '{"findings":[],"score":0.87,"summary":"big"}');
+  assert.equal(v.score, 0.87);
+  assert.ok(Date.now() - t0 < 10_000, 'extractor took too long on a large reply');
+});
+
+test('huge output with no verdict fails closed', () => {
+  const r = run('{ "findings": [ { "file": "a" } ] } '.repeat(50_000));
+  assert.notEqual(r.code, 0);
+  assert.equal(r.out, '');
+});

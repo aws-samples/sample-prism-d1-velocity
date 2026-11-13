@@ -1487,7 +1487,7 @@ Installs:
 2. **gitleaks installs and scans first**, before anything else runs (see [Secret Scanning](#secret-scanning-gitleaks) for why the order matters)
 3. kiro-cli installs **only if the `KIRO_API_KEY` secret is present** — on a fork PR the install is skipped rather than piping `curl` into `bash` for a binary that will never be invoked
 4. kiro-cli reads the changed files + the diff via `--trust-all-tools`
-5. Outputs structured JSON: findings with file/line, severity, score
+5. Outputs structured JSON: findings with file/line, severity, score. If the reply is not valid JSON, the gate re-runs the same review once with an instruction to return only the JSON object, and the job summary records which attempt was used. If both replies are unparseable, the gate fails closed
 6. Gate fails if any high-severity finding, score < 0.82, **or any gitleaks finding**
 7. PR comment posted with the review verdict and the secret-scan result
 

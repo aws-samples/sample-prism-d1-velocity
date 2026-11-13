@@ -282,49 +282,85 @@ jobs:
           # on long content. Use a minimal CLI arg prompt and let kiro read files itself.
           git diff "${BASE_SHA}..${HEAD_SHA}" -- ${FILES} > /tmp/pr-diff.patch
 
-          REVIEW_OUTPUT=$(kiro-cli chat --no-interactive \
-            --trust-all-tools \
-            --model auto \
-            "Review /tmp/pr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}") || true
+          # One retry, only when the reply cannot be parsed. Attempt 2 re-runs the
+          # same review (same model, same diff file) with one sentence added that
+          # asks for a single JSON object. It does not hand the bad reply back
+          # for "repair": a broken reply is often truncated, and repairing it
+          # would make the model invent the missing findings. Each attempt reads
+          # the diff, so any accepted verdict comes from a real review. Nothing
+          # is repaired by regex; two unparseable replies still fail closed.
+          REVIEW_PROMPT="Review /tmp/pr-diff.patch for code quality. Read it, then output ONLY JSON: {\"findings\":[{\"file\":\"path\",\"line\":1,\"severity\":\"high|medium|low\",\"category\":\"str\",\"message\":\"str\"}],\"score\":0.0,\"summary\":\"str\"}"
+          RETRY_NOTE="Your previous reply was not valid JSON. Return exactly one JSON object matching that schema and nothing else: no prose, no code fences."
+          # Per-attempt cap. The retry gets the same budget as the first attempt.
+          REVIEW_TIMEOUT_SECS=600
+          REVIEW_JSON=""
+          REVIEW_ATTEMPT=""
+          for ATTEMPT in 1 2; do
+            PROMPT="${REVIEW_PROMPT}"
+            if [ "${ATTEMPT}" = "2" ]; then PROMPT="${REVIEW_PROMPT} ${RETRY_NOTE}"; fi
+            REVIEW_OUTPUT=$(timeout "${REVIEW_TIMEOUT_SECS}" kiro-cli chat --no-interactive \
+              --trust-all-tools \
+              --model auto \
+              "${PROMPT}") || true
 
-          # Strip ANSI escapes, then extract the LAST JSON object that parses and
-          # has a numeric score and a findings array. kiro-cli writes reasoning
-          # notes first, and they quote code with braces, so a greedy
-          # first-brace-to-last-brace match is not the verdict.
-          CLEANED=$(echo "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
-          REVIEW_JSON=$(printf '%s' "${CLEANED}" | python3 -c 'if True:
-              import json, math, sys
-              text = sys.stdin.read()
-              dec = json.JSONDecoder(strict=False)
-              pos = text.rfind("{")
-              while pos != -1:
-                  try:
-                      obj = dec.raw_decode(text, pos)[0]
-                  except ValueError:
-                      obj = None
-                  score = obj.get("score") if isinstance(obj, dict) else None
-                  if (isinstance(score, (int, float)) and not isinstance(score, bool)
-                          and math.isfinite(score) and isinstance(obj.get("findings"), list)):
-                      print(json.dumps(obj))
-                      sys.exit(0)
-                  pos = text.rfind("{", 0, pos)
-              sys.exit(1)
-          ' || true)
+            # Strip ANSI escapes, then extract the LAST JSON object that parses and
+            # has a numeric score and a findings array. kiro-cli writes reasoning
+            # notes first, and they quote code with braces, so a greedy
+            # first-brace-to-last-brace match is not the verdict. Same rule as
+            # extractReviewJson in cli/src/codewatch/reviewers/types.ts; the copy
+            # in each eval-gate workflow is kept identical by cli/test/eval-gate-extract.test.ts.
+            CLEANED=$(echo "${REVIEW_OUTPUT}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | tr -d '\r')
+            REVIEW_JSON=$(printf '%s' "${CLEANED}" | python3 -c 'if True:
+                import json, math, sys
+                text = sys.stdin.read()
+                dec = json.JSONDecoder(strict=False)
+                pos = text.rfind("{")
+                while pos != -1:
+                    try:
+                        obj = dec.raw_decode(text, pos)[0]
+                    except ValueError:
+                        obj = None
+                    score = obj.get("score") if isinstance(obj, dict) else None
+                    if (isinstance(score, (int, float)) and not isinstance(score, bool)
+                            and math.isfinite(score) and isinstance(obj.get("findings"), list)):
+                        print(json.dumps(obj))
+                        sys.exit(0)
+                    pos = text.rfind("{", 0, pos)
+                sys.exit(1)
+            ' || true)
 
-          if [ -z "${REVIEW_JSON}" ] || ! echo "${REVIEW_JSON}" | jq -e '.score' > /dev/null 2>&1; then
-            # FAIL CLOSED: a gate that can't evaluate must not pass
-            echo "::group::Debug: raw kiro-cli output (first 2000 chars)"
+            if [ -n "${REVIEW_JSON}" ] && echo "${REVIEW_JSON}" | jq -e '.score' > /dev/null 2>&1; then
+              REVIEW_ATTEMPT="${ATTEMPT}"
+              break
+            fi
+            REVIEW_JSON=""
+
+            # The reply is untrusted model output. Workflow commands are paused
+            # while it is printed, so a "::" line in it is shown, not executed.
+            STOP_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            echo "::group::Debug: attempt ${ATTEMPT} raw kiro-cli output (first 2000 chars)"
+            echo "::stop-commands::${STOP_TOKEN}"
             echo "${REVIEW_OUTPUT:-<empty>}" | head -c 2000
             echo ""
-            echo "::endgroup::"
-            echo "::group::Debug: cleaned output"
+            echo "--- cleaned ---"
             echo "${CLEANED:-<empty>}" | head -c 2000
             echo ""
+            echo "::${STOP_TOKEN}::"
             echo "::endgroup::"
-            echo "::error::Could not parse kiro-cli review output -- failing closed"
+            if [ "${ATTEMPT}" = "1" ]; then
+              echo "::warning::Attempt 1: could not parse kiro-cli review output -- retrying the review once"
+            fi
+          done
+
+          if [ -z "${REVIEW_JSON}" ]; then
+            # FAIL CLOSED: a gate that can't evaluate must not pass
+            echo "::error::Could not parse kiro-cli review output on either attempt (both unparseable) -- failing closed"
             echo "result=ERROR" >> "$GITHUB_OUTPUT"
+            echo "Eval gate review: both attempts returned unparseable output -- failed closed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          echo "Review verdict parsed on attempt ${REVIEW_ATTEMPT} of 2"
+          echo "attempt=${REVIEW_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
           SCORE=$(echo "${REVIEW_JSON}" | jq -r '.score')
           FINDINGS=$(echo "${REVIEW_JSON}" | jq '.findings | length')
@@ -343,10 +379,13 @@ jobs:
           # Determine pass/fail (awk instead of bc -- no extra package needed)
           PASS=$(awk -v s="${SCORE}" 'BEGIN { print (s >= 0.82) ? "true" : "false" }')
           if [ "${HIGH}" -gt 0 ] || [ "${PASS}" != "true" ]; then
-            echo "result=FAIL" >> "$GITHUB_OUTPUT"
+            RESULT=FAIL
           else
-            echo "result=PASS" >> "$GITHUB_OUTPUT"
+            RESULT=PASS
           fi
+          echo "result=${RESULT}" >> "$GITHUB_OUTPUT"
+          # Only numbers and fixed words here; no model text reaches the summary.
+          echo "Eval gate review: ${RESULT} (score ${SCORE}, ${HIGH} high), verdict parsed on attempt ${REVIEW_ATTEMPT} of 2." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post PR comment
         if: always()
@@ -372,7 +411,7 @@ jobs:
             if (result === 'SKIPPED') {
               body = '⚠️ **PRISM Eval Gate** -- Review skipped (no source files changed or no API key on fork PRs).';
             } else if (result === 'ERROR') {
-              body = '❌ **PRISM Eval Gate** -- Review output could not be parsed. Failing closed; re-run the workflow or review manually.';
+              body = '❌ **PRISM Eval Gate** -- Review output could not be parsed on either attempt (the review is retried once). Failing closed; re-run the workflow or review manually.';
             } else {
                 const score = process.env.REVIEW_SCORE || '?';
                 const findings = process.env.REVIEW_FINDINGS || '0';
