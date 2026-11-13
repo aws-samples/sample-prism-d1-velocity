@@ -486,6 +486,9 @@ npm install -g @prism-d1/cli
 prism-cli version        # installed version, newer release on npm, other copies on PATH
 ```
 
+Why checking changes on your machine, with a separate reviewer model, improves PRs, and how to
+measure it: [Why Local Code Review](docs/WHY-LOCAL-CODE-REVIEW.md).
+
 ### Where PRISM shows up
 
 The local results (codewatch reviews, AI spend, the setup checklist) appear in these tools. All of

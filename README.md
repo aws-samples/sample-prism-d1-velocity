@@ -112,6 +112,7 @@ Full instructions for OIDC, per-repo workflows, eval gates, the AWS Continuum se
 | **[Data Architecture](docs/DATA-ARCHITECTURE.md)** | Anyone extending it | Data sources, event schema, the attribution pipeline, metrics catalog with known gaps, alarms, dashboard design decisions |
 | **[Bedrock Protection](docs/BEDROCK-PROTECTION.md)** | Engineers and security leaders | Layered defence against LLMjacking: gitleaks in CI and full-history repo scans, IAM credential hygiene, Bedrock spend guardrails across both billing surfaces |
 | **[Leader Guide](docs/LEADER_GUIDE.md)** | Engineering leaders | Executive readout template, ROI model, maturity progression |
+| **[Why Local Code Review](docs/WHY-LOCAL-CODE-REVIEW.md)** | Engineering leaders | The evidence for reviewing changes before push, why the reviewer should be a separate model or agent, how PRISM does it, its limits and what to measure |
 | **[prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md)** | Engineering managers | The prism-cli commands by job, what each costs and touches in AWS, safety defaults, decisions and open questions |
 | **[prism-cli Command Reference](docs/CLI-REFERENCE.md)** | Anyone running prism-cli | Every command and flag, generated from `--help` |
 | **[Editor extension](editor-extension/README.md)**, **[Kiro Crew app](kirocrew-app/README.md)**, **[Coding agent](coding-agent/README.md)** | Users and maintainers of each component | Install, features, security, build and release |
