@@ -283,7 +283,7 @@ and outcomes come from the codewatch pre-push review result files.
 | Longest | 66 s |
 | Reported findings | 11 |
 | Clean | 7 |
-| Skipped (no reviewable diff, docs-only, or hook disabled) | 15 |
+| Skipped, all with reason "No changes against upstream" (a push with nothing new versus the upstream branch) | 15 |
 
 **Result.** Local review was well under 1% of total AI spend (about $3 of about $602) and added
 about 11 seconds to a typical push.
@@ -338,7 +338,7 @@ that is a sanity check, not a validation of the assumed token counts.
 |---|---|---|
 | Small, fast reviewer model | Lower price per token and lower latency | `eval.model` in `.prism/config.json`; `PRISM_REVIEW_MODEL` for CI |
 | Cache by diff hash | An unchanged diff is not reviewed twice | Planned in the harness loop ([PR #92](https://github.com/aws-samples/sample-prism-d1-velocity/pull/92)) |
-| Skip docs-only and empty diffs | No model call when nothing reviewable changed | Codewatch on `main` skips a push with no diff against upstream; the docs-only skip (`harness.skip_paths`, default `*.md` and similar) is planned in the harness loop. 15 of the 33 measured pushes were skipped |
+| Skip docs-only and empty diffs | No model call when nothing reviewable changed | Codewatch on `main` skips a push with no diff against upstream; the docs-only skip (`harness.skip_paths`, default `*.md` and similar) is only proposed in the harness-loop design ([PR #92](https://github.com/aws-samples/sample-prism-d1-velocity/pull/92)). All 15 skipped pushes in section 5.1 were pushes with no changes against upstream |
 | Finish gate opt-in | No review on every agent turn unless the team turns it on | `harness.finish_gate`, off by default in the harness-loop design |
 | Block only on secrets and high findings | Fewer fix rounds spent on low-severity advice | Planned `harness.block_on`, default `["secret", "high"]`. Local review on `main` never blocks; the CI gate fails on a secret, a high finding or a score under 0.82 |
 
