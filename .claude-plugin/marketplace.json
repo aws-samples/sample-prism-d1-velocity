@@ -1,0 +1,17 @@
+{
+  "name": "prism-d1-velocity",
+  "description": "PRISM D1 Velocity plugins for Claude Code: codewatch findings, review reports, AI spend and setup status from prism-cli.",
+  "owner": {
+    "name": "PRISM D1 Velocity maintainers",
+    "url": "https://github.com/aws-samples/sample-prism-d1-velocity"
+  },
+  "plugins": [
+    {
+      "name": "prism",
+      "source": "./claude-plugin",
+      "description": "PRISM codewatch findings, review reports, AI spend and setup status in Claude Code, from prism-cli mcp.",
+      "category": "development",
+      "tags": ["prism", "codewatch", "code-review", "ai-spend"]
+    }
+  ]
+}
