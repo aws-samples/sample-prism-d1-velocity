@@ -27,6 +27,10 @@ export const MAX_CONTEXT_BYTES = 2048;
 export const MAX_ROWS = 5;
 export const MAX_MESSAGE_CHARS = 200;
 const MCP_TIMEOUT_MS = 15000;
+/** prism_findings answers are capped at 50 KB; a reply far past that is dropped. */
+const MAX_MCP_BUFFER_CHARS = 256 * 1024;
+const SEVERITIES = new Set(['high', 'medium', 'low']);
+const CATEGORIES = new Set(['quality', 'security']);
 const CLI_TIMEOUT_MS = 5000;
 const SESSION_HOOK = 'claude-session-context';
 const PLUGIN_VERSION = '0.1.0';
@@ -34,14 +38,20 @@ const PLUGIN_VERSION = '0.1.0';
 const isWin = process.platform === 'win32';
 /** The prism-cli to run: $PRISM_CLI (an absolute path, for nvm installs Claude Code cannot see), else prism-cli on PATH. */
 export const prismCli = (env = process.env) => env.PRISM_CLI || (isWin ? 'prism-cli.cmd' : 'prism-cli');
-// shortcut: on Windows the npm shim is a .cmd that needs a shell, so a PRISM_CLI path with spaces breaks there; quote it if Windows users report it.
+// On Windows the npm shim is a .cmd, which only runs through a shell: quote the path so spaces and cmd.exe metacharacters stay literal.
 const spawnOpts = { shell: isWin, windowsHide: true };
+const cliCommand = (cli) => (isWin ? `"${cli.replace(/"/g, '')}"` : cli);
 
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}...` : s);
 const oneLine = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
 
 function readJson(file) {
-  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; }
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch { return null; } // no file: nothing registered there
+  try { return JSON.parse(text); } catch {
+    process.stderr.write(`prism plugin SessionStart: could not parse ${file}; treating it as having no ${SESSION_HOOK} hook\n`);
+    return null;
+  }
 }
 
 /** True when a settings file Claude Code reads already runs `prism-cli git claude-session-context` on SessionStart. */
@@ -55,7 +65,7 @@ export function manualHookRegistered(projectDir, env = process.env, home = homed
 
 /** The additionalContext `prism-cli git claude-session-context` returns for this event, or ''. */
 function sessionContext(raw, cwd) {
-  const r = spawnSync(prismCli(), ['git', SESSION_HOOK], { ...spawnOpts, input: raw, cwd, encoding: 'utf8', timeout: CLI_TIMEOUT_MS });
+  const r = spawnSync(cliCommand(prismCli()), ['git', SESSION_HOOK], { ...spawnOpts, input: raw, cwd, encoding: 'utf8', timeout: CLI_TIMEOUT_MS });
   if (r.status !== 0 || !r.stdout) return '';
   try { return oneLine(JSON.parse(r.stdout)?.hookSpecificOutput?.additionalContext); } catch { return ''; }
 }
@@ -71,7 +81,7 @@ export function callMcpTool(name, args, cwd, cli = prismCli()) {
   return new Promise((done) => {
     let settled = false;
     let buf = '';
-    const child = spawn(cli, ['mcp'], { ...spawnOpts, cwd, stdio: ['pipe', 'pipe', 'ignore'] });
+    const child = spawn(cliCommand(cli), ['mcp'], { ...spawnOpts, cwd, stdio: ['pipe', 'pipe', 'ignore'] });
     const finish = (v) => {
       if (settled) return;
       settled = true;
@@ -85,8 +95,10 @@ export function callMcpTool(name, args, cwd, cli = prismCli()) {
     child.on('error', () => finish(null));
     child.on('close', () => finish(null));
     child.stdin.on('error', () => finish(null));
+    child.stdout.setEncoding('utf8'); // decodes characters split across chunks
     child.stdout.on('data', (chunk) => {
       buf += chunk;
+      if (buf.length > MAX_MCP_BUFFER_CHARS) return finish(null);
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, nl);
@@ -107,13 +119,13 @@ export function callMcpTool(name, args, cwd, cli = prismCli()) {
   });
 }
 
-/** Cuts `s` to at most `max` UTF-8 bytes without splitting a character. */
-function capBytes(s, max) {
+/** Cuts `s` to at most `max` UTF-8 bytes, trimming whole code points so no character is split. */
+export function capBytes(s, max) {
   if (Buffer.byteLength(s, 'utf8') <= max) return s;
   const note = '\n[PRISM context truncated]';
-  let out = s.slice(0, max);
-  while (out && Buffer.byteLength(out + note, 'utf8') > max) out = out.slice(0, -1);
-  return out + note;
+  const cps = Array.from(s.slice(0, max));
+  while (cps.length && Buffer.byteLength(cps.join('') + note, 'utf8') > max) cps.pop();
+  return cps.join('') + note;
 }
 
 /**
@@ -133,7 +145,10 @@ export function formatFindings(body, branch, maxBytes = MAX_CONTEXT_BYTES) {
   ];
   const rows = body.findings.slice(0, MAX_ROWS).map((f) => {
     const where = `${oneLine(f.file) || '?'}${Number.isInteger(f.line) ? `:${f.line}` : ''}`;
-    return `- ${oneLine(f.severity)} ${oneLine(f.category)} ${JSON.stringify(clip(where, 200))} ${JSON.stringify(clip(oneLine(f.message), MAX_MESSAGE_CHARS))}`;
+    // Severity and category go in unquoted, so only known values pass.
+    const sev = SEVERITIES.has(f.severity) ? f.severity : 'unknown';
+    const cat = CATEGORIES.has(f.category) ? f.category : 'other';
+    return `- ${sev} ${cat} ${JSON.stringify(clip(where, 200))} ${JSON.stringify(clip(oneLine(f.message), MAX_MESSAGE_CHARS))}`;
   });
   const more = body.total > rows.length ? [`(${body.total - rows.length} more not shown)`] : [];
   return capBytes([...head, ...rows, ...more].join('\n'), maxBytes);
