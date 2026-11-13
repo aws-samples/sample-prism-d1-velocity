@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -139,6 +139,17 @@ test('without CLAUDE_CONFIG_DIR it writes ~/.claude/settings.json under the give
   const x = deps({ home, env: {} });
   assert.equal(await run({ yes: true }, x), 0);
   assert.deepEqual(read(join(home, '.claude')).statusLine, OURS);
+});
+
+test('a symlinked settings.json is written at its target; the link stays', async () => {
+  const x = deps();
+  const real = join(tmp('prism-cc-dotfiles-'), 'settings.json');
+  writeFileSync(real, JSON.stringify({ model: 'opus' }));
+  mkdirSync(x.dir, { recursive: true });
+  symlinkSync(real, join(x.dir, 'settings.json'));
+  assert.equal(await run({ yes: true }, x), 0);
+  assert.ok(lstatSync(join(x.dir, 'settings.json')).isSymbolicLink());
+  assert.deepEqual(JSON.parse(readFileSync(real, 'utf8')), { model: 'opus', statusLine: OURS });
 });
 
 test('invalid settings JSON: error, nothing written', async () => {

@@ -368,25 +368,26 @@ async function setup(ctx: ToolContext): Promise<Record<string, unknown>> {
 async function snapshot(ctx: ToolContext, a: Args): Promise<Record<string, unknown>> {
   const open = a.open ?? false;
   if (typeof open !== 'boolean') throw new ToolError('open must be true or false');
+  const usage = cachedUsage(ctx);
   const html = await buildSnapshotHtml({
     cwd: ctx.cwd, home: ctx.home, root: ctx.root, version: ctx.version, pathEnv: ctx.pathEnv,
     machineDeps: { home: ctx.home, ...ctx.machineDeps }, env: ctx.env, now: ctx.now,
     // The cached usage only, as every tool here: never a codeburn export.
     usage: async () => {
-      const u = cachedUsage(ctx);
-      return { usage: u ?? emptyUsage('no-data', NO_CACHE), cacheHit: !!u };
+      return { usage: usage ?? emptyUsage('no-data', NO_CACHE), cacheHit: !!usage };
     },
   });
   const dir = mkdtempSync(join(ctx.tmpDir ?? tmpdir(), 'prism-mcp-snapshot-'));
   const file = join(dir, 'prism-dashboard.html');
   const bytes = writeSnapshot(file, html);
   const env = ctx.env ?? process.env;
+  // The opener runs detached and may still fail after this returns, so "opened" means "asked the opener".
   let opened = false;
   let note: string;
   if (!open) note = 'not opened (open was false); open the file in a browser';
   else if (!canOpen(env, process.platform)) note = 'not opened: no display here (an SSH session?); copy the file to a machine with a browser';
-  else { (ctx.open ?? openBrowser)(file); opened = true; note = 'asked the system opener to show it in the default browser'; }
-  return { path: file, bytes, opened, note, usageCached: !!cachedUsage(ctx) };
+  else { (ctx.open ?? openBrowser)(file); opened = true; note = 'asked the system opener (xdg-open, open or start) to show it; if no browser appears, open the path yourself'; }
+  return { path: file, bytes, opened, note, usageCached: !!usage };
 }
 
 const REPO_PROP = { type: 'string', description: 'Repo name (as the dashboard shows it) or path to its top level. Must be a repo prism-cli found under your home directory.' };

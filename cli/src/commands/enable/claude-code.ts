@@ -154,8 +154,14 @@ function backup(path: string, now: Date): string {
   return b;
 }
 
-/** Writes beside the file and renames it into place, keeping the file's mode (0600 for a new file). */
-function writeAtomic(path: string, text: string): void {
+/**
+ * Writes beside the file and renames it into place, keeping the file's mode
+ * (0600 for a new file). A symlinked settings.json (a dotfiles repo) is
+ * written at its target, so the link stays a link.
+ */
+function writeAtomic(link: string, text: string): void {
+  let path = link;
+  try { path = realpathSync(link); } catch { /* new file */ }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const mode = existsSync(path) ? statSync(path).mode & 0o777 : 0o600;
   const tmp = `${path}.tmp-${process.pid}`;

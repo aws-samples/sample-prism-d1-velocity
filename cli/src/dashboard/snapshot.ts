@@ -58,17 +58,20 @@ export function canOpen(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): bool
   return !!(env.DISPLAY || env.WAYLAND_DISPLAY);
 }
 
-/** Opens the URL (or file) in the default browser. argv only, detached; failure is non-fatal. */
+/**
+ * Opens the URL (or file) in the default browser. argv only, detached; failure
+ * is non-fatal and goes to stderr, never stdout (the MCP server's protocol stream).
+ */
 export function openBrowser(url: string): void {
   const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
     : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
       : ['xdg-open', [url]];
   try {
     const child = spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
-    child.on('error', () => console.log('  (could not open a browser; open the URL above)'));
+    child.on('error', () => process.stderr.write('  (could not open a browser; open the URL above)\n'));
     child.unref();
   } catch {
-    console.log('  (could not open a browser; open the URL above)');
+    process.stderr.write('  (could not open a browser; open the URL above)\n');
   }
 }
 
