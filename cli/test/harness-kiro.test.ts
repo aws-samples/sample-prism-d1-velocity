@@ -264,9 +264,12 @@ const REF_MOVES = [
   'git branch -m origin/main', 'git config --remove-section branch.feat', 'git config --rename-section branch.feat branch.other',
   'git branch -uorigin/x', 'git branch -fu origin/x', 'git remote add --mirror=fetch m ../other', 'git -c remote.origin.fetch=+refs/heads/x:refs/remotes/origin/main remote update',
   'git pull . HEAD:origin/main', 'git branch -d -r origin/main', 'git branch -dr origin/main', 'git branch --delete --remotes origin/main',
+  "git fetch ../crafted '+refs/*:refs/*'", 'git fetch ../crafted +*:*', "git fetch ../crafted 'refs/remotes/*:refs/remotes/*'",
+  'git push . --delete refs/remotes/origin/main', 'git push . -d refs/remotes/origin/main',
 ];
 const ORDINARY = [
-  'git branch -t feat origin/main', 'git push origin HEAD:upstream/sync', 'git remote add fork ../other', 'git remote prune origin', 'git fetch --prune', 'git branch -D feat/old', 'git pull', 'git pull origin main', 'git remote show origin', 'git remote get-url origin', 'git config --get remote.origin.url', 'git config --list',
+  'git branch -t feat origin/main', 'git push origin HEAD:upstream/sync', 'git remote add fork ../other', 'git remote prune origin', 'git fetch --prune', 'git branch -D feat/old',
+  "git fetch origin '+refs/heads/*:refs/heads/*'", 'git push origin --delete feat/old', 'git push . --delete refs/heads/tmp', 'git pull', 'git pull origin main', 'git remote show origin', 'git remote get-url origin', 'git config --get remote.origin.url', 'git config --list',
   'git tag -a -m "release" v1.3', 'git remote -v', 'git remote add fork https://example.com/r.git', 'git config --get remote.origin.fetch', 'git update-ref refs/heads/feat/x HEAD',
   'git fetch origin', 'git fetch origin main', 'git fetch --all --prune', 'git branch', 'git branch -a', 'git branch -r', 'git branch feat/x', 'git branch feat/x origin/main',
   'git branch -d origin/old', 'git symbolic-ref refs/remotes/origin/HEAD', 'git symbolic-ref --short HEAD', 'git tag v1.2', 'git tag -l', 'git checkout main',

@@ -330,10 +330,20 @@ function refspecBypass(g: GitCall): string | null {
   // shortcut: other spellings of this repository (`./`, its absolute path, file://) are not recognized; full
   // refs/remotes/* destinations are denied for every remote, and the engine reads full ref names anyway.
   const local = g.sub !== 'push' || positionals(g.args)[0] === '.';
-  const shadowsOrMoves = (d: string) => { const s = d.replace(/^\+/, ''); return s.startsWith('refs/') ? movesTracking(s) : local && SHADOW_NAME.test(s); };
+  const shadowsOrMoves = (d: string) => {
+    const s = d.replace(/^\+/, '');
+    // A glob destination (`refs/*`, `*`) can expand into refs/remotes/.
+    if (s.includes('*')) return 'refs/remotes/'.startsWith(s.slice(0, s.indexOf('*'))) || s.startsWith('refs/remotes/');
+    return s.startsWith('refs/') ? movesTracking(s) : local && SHADOW_NAME.test(s);
+  };
   const specs = [...positionals(g.args), ...g.args.filter((a) => a.startsWith('--refmap=')).map((a) => a.slice('--refmap='.length))];
   const refmap = g.args.indexOf('--refmap');
   if (refmap >= 0 && g.args[refmap + 1]) specs.push(g.args[refmap + 1]);
+  // `git push . --delete <ref>` deletes a ref in this repository.
+  if (g.sub === 'push' && local && hasOpt(g, '-d', '--delete')) {
+    const gone = positionals(g.args).slice(1).find(shadowsOrMoves);
+    if (gone) return `git push . --delete ${gone.slice(0, MAX_REASON_ARG)} ${MOVES_REF}`;
+  }
   const dst = specs.map(refspecDst).find((d) => d !== null && shadowsOrMoves(d));
   return dst ? `a git ${g.sub} refspec that writes ${dst.slice(0, MAX_REASON_ARG)} ${MOVES_REF}` : null;
 }
