@@ -1005,7 +1005,7 @@ The git hooks for people do not change: `pre-push` stays report-only and never b
 
 | Gate | Hook | Default | What it does |
 |---|---|---|---|
-| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. Only a secret, a failed secret scan or a change to the checks denies the push, and the reason tells Claude to tell you which hook blocked it. Review findings let the push go ahead and come back to Claude as context. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath` |
+| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. Only a secret, a failed secret scan or a change to the checks denies the push, and the reason tells Claude to tell you which hook blocked it. Review findings let the push go ahead and come back to Claude as context. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath`, and commands that move the refs the push check measures against: `git update-ref refs/remotes/...`, a fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, a branch or tag named `origin/...`, and changing the branch's upstream |
 | Finish gate | `Stop` and `SubagentStop` | off | Reviews when Claude says it is done and keeps it working on blocking findings, at most 2 rounds |
 
 Turn the finish gate on for yourself in Claude Code with `/config` (the plugin's
@@ -1035,7 +1035,7 @@ kiro-cli chat --no-interactive --agent-engine v3 "..."
 
 | Gate | Hook | Default | What it does |
 |---|---|---|---|
-| Push gate | `PreToolUse`, matcher `shell` (every shell command) | on | Before the agent's `git push`: gitleaks and the review. A secret, a failed secret scan, a change to the checks, a push that does not say what it sends, or a hook bypass (`--no-verify`, `core.hooksPath`, `git config prism.*`) denies the push. Other shell commands pass after a parse of about 80 ms |
+| Push gate | `PreToolUse`, matcher `shell` (every shell command) | on | Before the agent's `git push`: gitleaks and the review. A secret, a failed secret scan, a change to the checks, a push that does not say what it sends, or a hook bypass (`--no-verify`, `core.hooksPath`, `git config prism.*`, or moving a remote-tracking ref or the upstream, as in Claude Code) denies the push. Other shell commands pass after a parse of about 80 ms |
 | Finish gate | `Stop` | off | Reviews the session's changes when the agent finishes and keeps it working on blocking findings |
 
 How it differs from Claude Code, because of how Kiro hooks work:

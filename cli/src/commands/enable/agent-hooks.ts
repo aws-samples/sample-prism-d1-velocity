@@ -185,6 +185,9 @@ function kiroUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
 
 // ------------------------------------------------------------ claude
 
+/** The plugin's bash-guard `if` rules (claude-plugin/hooks/hooks.json): the bypass check only, never a review. */
+export const BASH_GUARD_IFS = ['Bash(*git*config*)', 'Bash(*git*-c*)', 'Bash(*git*ref*)', 'Bash(*git*fetch*)', 'Bash(*git*branch*)', 'Bash(*git*tag*)', 'Bash(*git*checkout*)', 'Bash(*git*switch*)'];
+
 /** The plugin's harness hooks (claude-plugin/hooks/hooks.json), calling prism-cli directly instead of the plugin's script. */
 export function claudeHooks(cli: string): Record<string, unknown[]> {
   const c = (event: string, timeout: number, extra: object = {}) => ({ type: 'command', ...extra, command: hookCmd(cli, 'claude', event), timeout });
@@ -194,8 +197,7 @@ export function claudeHooks(cli: string): Record<string, unknown[]> {
     SubagentStop: [{ hooks: [c('stop', REVIEW_TIMEOUT_S)] }],
     PreToolUse: [{ matcher: 'Bash', hooks: [
       c('pre-push', REVIEW_TIMEOUT_S, { if: 'Bash(*git*push*)' }),
-      c('bash-guard', GUARD_TIMEOUT_S, { if: 'Bash(*git*config*)' }),
-      c('bash-guard', GUARD_TIMEOUT_S, { if: 'Bash(*git*-c*)' }),
+      ...BASH_GUARD_IFS.map((rule) => c('bash-guard', GUARD_TIMEOUT_S, { if: rule })),
     ] }],
     SessionEnd: [{ hooks: [c('session-end', SESSION_TIMEOUT_S)] }],
   };

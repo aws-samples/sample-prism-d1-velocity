@@ -233,7 +233,72 @@ export function parsePushTarget(cmd: string): PushTarget | null {
 /** git accepts any unambiguous prefix of a long option; `--no-v` is the shortest that means `--no-verify` for push. */
 const isNoVerify = (a: string) => a.length >= '--no-v'.length && '--no-verify'.startsWith(a);
 
-/** A command that would turn off or route around PRISM's hooks (section 6.2). */
+/** A ref under refs/remotes/: the remote-tracking refs the push range and the upstream base are read from. */
+const isRemoteRef = (r: string) => /^(refs\/)?remotes\//.test(r.replace(/^\+/, ''));
+/** A branch or tag name that would shadow a remote-tracking short name (`origin/main`) or a full ref. */
+const SHADOW_NAME = /^(refs\/|remotes\/|origin\/|upstream\/)/;
+/** Words after a git subcommand that are not options. */
+const positionals = (args: string[]) => args.filter((a) => !a.startsWith('-'));
+/** The destination of a `src:dst` refspec, or null for a refspec without one. */
+const refspecDst = (spec: string) => { const i = spec.indexOf(':'); return i < 0 ? null : spec.slice(i + 1); };
+
+const MOVES_REF = 'moves a remote-tracking ref (refs/remotes/...), which the PRISM push check compares the push against';
+const MOVES_UPSTREAM = 'changes the branch\'s upstream, which the PRISM push check compares the push against';
+
+/** Remote-tracking refs and the upstream: what the push range and the finish gate's upstream base are read from (D4). */
+function refBypass(g: GitCall): string | null {
+  const pos = positionals(g.args);
+  const has = (...o: string[]) => g.args.some((a) => o.includes(a));
+  switch (g.sub) {
+    case 'update-ref':
+      if (has('--stdin')) return `git update-ref --stdin can move any ref, including remote-tracking refs the PRISM push check compares the push against`;
+      return pos.some(isRemoteRef) ? `git update-ref ${MOVES_REF}` : null;
+    case 'symbolic-ref': {
+      const named = g.args.filter((a, i) => !a.startsWith('-') && !['-m'].includes(g.args[i - 1] ?? ''));
+      const writes = named.length >= 2 || has('-d', '--delete');
+      return writes && named.length && isRemoteRef(named[0]) ? `git symbolic-ref ${MOVES_REF}` : null;
+    }
+    case 'fetch':
+    case 'push': {
+      const dst = pos.map(refspecDst).find((d) => d !== null && (isRemoteRef(d) || (g.sub === 'fetch' && SHADOW_NAME.test(d.replace(/^\+/, '')))));
+      return dst ? `a git ${g.sub} refspec that writes ${dst.slice(0, 80)} ${MOVES_REF}` : null;
+    }
+    case 'branch':
+      if (g.args.some((a) => a === '-u' || a === '--set-upstream-to' || a.startsWith('--set-upstream-to=') || a === '--unset-upstream')) return `git branch --set-upstream-to ${MOVES_UPSTREAM}`;
+      if (has('-l', '--list', '-a', '--all', '-r', '--remotes', '-d', '-D', '--delete', '-v', '-vv', '--show-current', '--contains', '--merged', '--no-merged', '--points-at')) return null;
+      // `git branch <new> [<start>]` names the new branch first; -m/-M/-c/-C (rename, copy) name it last.
+      const made = has('-m', '-M', '-c', '-C', '--move', '--copy') ? pos[pos.length - 1] : pos[0];
+      return made && SHADOW_NAME.test(made) ? `git branch ${JSON.stringify(made.slice(0, 80))} creates a branch that shadows a remote-tracking ref the PRISM push check reads` : null;
+    case 'tag':
+      if (has('-l', '--list', '-d', '--delete', '-v', '--verify', '-n', '--contains', '--points-at', '--merged', '--no-merged')) return null;
+      return pos[0] && SHADOW_NAME.test(pos[0]) ? `git tag ${JSON.stringify(pos[0].slice(0, 80))} creates a tag that shadows a remote-tracking ref the PRISM push check reads` : null;
+    case 'checkout':
+    case 'switch': {
+      const i = g.args.findIndex((a) => ['-b', '-B', '-c', '-C', '--create', '--force-create', '--orphan'].includes(a));
+      const name = i >= 0 ? g.args[i + 1] : undefined;
+      return name && SHADOW_NAME.test(name) ? `git ${g.sub} creating ${JSON.stringify(name.slice(0, 80))} makes a branch that shadows a remote-tracking ref the PRISM push check reads` : null;
+    }
+    case 'config': {
+      const k = g.args.findIndex((a) => /^branch\..+\.(merge|remote)$/i.test(a));
+      if (k < 0) return null;
+      const reads = has('--get', '--get-all', '--get-regexp', '-l', '--list') || g.args[0] === 'get' || g.args[0] === 'list';
+      const writes = has('--unset', '--unset-all', '--add', '--replace-all') || g.args[0] === 'set' || g.args[0] === 'unset' || (!reads && positionals(g.args.slice(k + 1)).length > 0);
+      return writes ? `git config ${g.args[k].slice(0, 80)} ${MOVES_UPSTREAM}` : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * A command that would turn off or route around PRISM's hooks (section 6.2), or move what the
+ * push check measures against (D4): a remote-tracking ref (`git update-ref refs/remotes/...`, a
+ * fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`),
+ * a branch or tag named like one (`origin/main`), or the branch's upstream.
+ *
+ * shortcut: a direct write to `.git/refs/remotes/` or `.git/packed-refs` by a non-git command is
+ * not seen; the git pre-push review and the CI gate are the backstop.
+ */
 export function bypassReason(cmd: string): string | null {
   for (const g of gitCalls(cmd)) {
     if (g.configs.some((c) => c.toLowerCase().startsWith('core.hookspath='))) return '-c core.hooksPath= routes around the git hooks';
@@ -243,6 +308,8 @@ export function bypassReason(cmd: string): string | null {
       if (keys.includes('core.hookspath')) return 'git config core.hooksPath changes which git hooks run';
       if (keys.some((k) => k.startsWith('prism.'))) return 'git config prism.* changes PRISM codewatch settings';
     }
+    const ref = refBypass(g);
+    if (ref) return ref;
   }
   return null;
 }

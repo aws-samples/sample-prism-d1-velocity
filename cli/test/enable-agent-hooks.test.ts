@@ -6,8 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { claudeHooks, enableAgentHooks, KIRO_FILE, kiroHookFile, mergeClaude, withoutPrism, type AgentHooksDeps, type AgentHooksOptions } from '../src/commands/enable/agent-hooks.js';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { BASH_GUARD_IFS, claudeHooks, enableAgentHooks, KIRO_FILE, kiroHookFile, mergeClaude, withoutPrism, type AgentHooksDeps, type AgentHooksOptions } from '../src/commands/enable/agent-hooks.js';
 import { PLUGIN_ID } from '../src/commands/enable/claude-code.js';
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
@@ -128,7 +129,7 @@ test('claude: merges the plugin\'s hooks into settings.json, keeping other hooks
   assert.deepEqual(Object.keys(s), ['model', 'hooks', 'env'], 'key order kept');
   assert.deepEqual(s.hooks.PreToolUse[0], mine, 'the user\'s hook first, untouched');
   const ours = s.hooks.PreToolUse[1];
-  assert.deepEqual(ours.hooks.map((h: any) => h.if), ['Bash(*git*push*)', 'Bash(*git*config*)', 'Bash(*git*-c*)'], 'the plugin\'s if rules');
+  assert.deepEqual(ours.hooks.map((h: any) => h.if), ['Bash(*git*push*)', ...BASH_GUARD_IFS], 'the plugin\'s if rules');
   assert.equal(ours.hooks[0].command, 'prism-cli codewatch hook --client claude --event pre-push');
   for (const ev of ['SessionStart', 'Stop', 'SubagentStop', 'SessionEnd']) assert.ok(s.hooks[ev], ev);
   assert.ok(s.hooks.Notification, 'other events kept');
@@ -219,4 +220,14 @@ test('a project file always calls prism-cli (it is committed and shared); --glob
   x.run({ status: true, client: 'kiro' });
   assert.match(x.text(), /kiro \(project\): installed/);
   assert.match(x.text(), /kiro \(global\): installed/);
+});
+
+test('claude: the settings hooks have the same events, if rules and handlers as the plugin ships', () => {
+  const plugin = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'claude-plugin', 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const ours = claudeHooks('prism-cli') as Record<string, any>;
+  const shape = (groups: any[], ev: (h: any) => string) => groups.map((g) => ({ matcher: g.matcher, hooks: g.hooks.map((h: any) => [h.if ?? null, ev(h)]) }));
+  for (const event of ['Stop', 'SubagentStop', 'PreToolUse', 'SessionEnd']) {
+    assert.deepEqual(shape(ours[event], (h) => h.command.split(' ').pop()), shape(plugin[event], (h) => h.args[1]), event);
+  }
+  assert.ok(ours.PreToolUse[0].hooks.some((h: any) => h.if === 'Bash(*git*ref*)'), 'the ref-move guard reaches the hook');
 });

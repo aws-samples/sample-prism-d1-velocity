@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FAIL_CLOSED, KIRO_DENY_TAIL, KIRO_PERSON_NOTE, KIRO_ROUND_NOTE, runKiroHook, type KiroHookResult } from '../src/codewatch/harness/kiro.js';
-import { UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { bypassReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
 import { loadState } from '../src/codewatch/harness/state.js';
 import { FAKE_SECRET, finding, leak, rig, type Rig } from './harness-rig.js';
 
@@ -243,4 +243,43 @@ test('kiro through the CLI: exit 2 and stderr on a denied push, exit 0 and silen
   assert.equal(allow.status, 0, allow.stderr);
   assert.equal(allow.stdout, '');
   assert.ok(!existsSync(join(r.dir, '.prism', 'results')), 'a non-push writes nothing');
+});
+
+// ---------------------------------------------------------------- ref moves (D4): shared tokenizer, both adapters
+
+/** Commands that move what the push range or the upstream base is read from. */
+const REF_MOVES = [
+  'git update-ref refs/remotes/origin/main HEAD', 'git update-ref -d refs/remotes/origin/main', 'git update-ref --stdin',
+  'git branch -f origin/main HEAD', 'git branch origin/main', 'git branch -m old origin/main',
+  'git fetch . HEAD:refs/remotes/origin/main', 'git fetch origin +HEAD:refs/remotes/origin/main', 'git fetch . HEAD:origin/main',
+  'git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/feat', 'git push . HEAD:refs/remotes/origin/main',
+  'git tag origin/main', 'git checkout -b origin/main', 'git switch -c remotes/origin/main',
+  'git branch -u main', 'git branch --set-upstream-to=origin/x', 'git config branch.feat.merge refs/heads/x', 'git config set branch.feat.remote .',
+  'sh -c "git update-ref refs/remotes/origin/main HEAD"', 'cd x && git -C y update-ref refs/remotes/o/m HEAD',
+];
+const ORDINARY = [
+  'git fetch origin', 'git fetch origin main', 'git fetch --all --prune', 'git branch', 'git branch -a', 'git branch -r', 'git branch feat/x', 'git branch feat/x origin/main',
+  'git branch -d origin/old', 'git symbolic-ref refs/remotes/origin/HEAD', 'git symbolic-ref --short HEAD', 'git tag v1.2', 'git tag -l', 'git checkout main',
+  'git checkout -b feat/y', 'git switch -c fix/z', 'git config branch.feat.merge', 'git config --get branch.feat.remote', 'git update-ref refs/heads/x HEAD',
+  'git push origin feat', 'git push -u origin feat', 'git rev-parse origin/main', 'git log origin/main..HEAD',
+];
+
+test('bypassReason: moving a remote-tracking ref, a shadowing branch or tag, or the upstream is a bypass; ordinary ref commands are not', () => {
+  for (const c of REF_MOVES) assert.ok(bypassReason(c), c);
+  for (const c of ORDINARY) assert.equal(bypassReason(c), null, c);
+  assert.match(bypassReason('git update-ref refs/remotes/origin/main HEAD')!, /moves a remote-tracking ref \(refs\/remotes\/\.\.\.\), which the PRISM push check compares the push against/);
+});
+
+test('ref moves are denied by both adapters with the --no-verify wording, before any review', () => {
+  const r = rig();
+  for (const c of ['git update-ref refs/remotes/origin/main HEAD', 'git fetch . HEAD:refs/remotes/origin/main', 'git branch -f origin/main HEAD']) {
+    const k = runKiroHook('pre-push', payload('PreToolUse', r, { command: c }), deps(r));
+    assert.equal(k.exit, 2, c);
+    assert.match(k.stderr, /^PRISM harness: .+\. Do not bypass or reconfigure the hooks\./);
+    const cl = JSON.parse(runClaudeHook('bash-guard', JSON.stringify({ session_id: 'cc-r', cwd: r.dir, tool_input: { command: c } }), { env: {} }));
+    assert.equal(cl.hookSpecificOutput.permissionDecision, 'deny', c);
+    assert.match(cl.hookSpecificOutput.permissionDecisionReason, /Do not bypass or reconfigure the hooks/);
+  }
+  assert.deepEqual(r.calls(), [], 'no gitleaks, no reviewer');
+  assert.equal(runClaudeHook('bash-guard', JSON.stringify({ cwd: r.dir, tool_input: { command: 'git fetch origin' } }), { env: {} }), '');
 });
