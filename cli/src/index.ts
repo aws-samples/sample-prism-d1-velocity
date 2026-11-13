@@ -88,11 +88,22 @@ async function registerOne(program: any, category: string, command: string): Pro
     const p = resolve(categoryDir, candidate);
     if (existsSync(p)) { file = p; break; }
   }
-  if (!file) return false;
-
-  const mod = await import(pathToFileURL(file).href);
-  attach(program, category, command, mod.default || mod);
-  return true;
+  if (file) {
+    const mod = await import(pathToFileURL(file).href);
+    const def = mod.default || mod;
+    // The file is not the command when the module names another one (it is found below under that name).
+    if (!(typeof def.name === 'string' && def.name && def.name !== command)) {
+      attach(program, category, command, def);
+      return true;
+    }
+  }
+  // A module whose file is named otherwise (`name` in its default export): look in this category only.
+  for (const f of readdirSync(categoryDir).filter((n) => /\.(js|ts)$/.test(n) && !n.endsWith('.d.ts'))) {
+    const mod = await import(pathToFileURL(resolve(categoryDir, f)).href);
+    const def = mod.default || mod;
+    if (def?.name === command) { attach(program, category, command, def); return true; }
+  }
+  return false;
 }
 
 /** Full registration — imports every command module. Used for --help and unmatched invocations. */
@@ -114,10 +125,11 @@ async function registerAll(program: any) {
     const files = readdirSync(categoryDir).filter((f) => f.endsWith('.js') && !f.endsWith('.d.ts'));
 
     for (const file of files) {
-      const commandName = basename(file, '.js');
       const modulePath = pathToFileURL(resolve(categoryDir, file)).href;
       const mod = await import(modulePath);
-      attach(program, category, commandName, mod.default || mod);
+      const def = mod.default || mod;
+      // A module may name its command (`name`) when the file name must differ from it.
+      attach(program, category, typeof def.name === 'string' && def.name ? def.name : basename(file, '.js'), def);
     }
   }
 }
@@ -129,7 +141,7 @@ async function registerAll(program: any) {
  *   commands/
  *     _top/<name>.js       → becomes `prism-cli <name>` (top-level command)
  *     <category>/          → becomes `prism-cli <category>`
- *       <command>.js       → becomes `prism-cli <category> <command>`
+ *       <command>.js       → becomes `prism-cli <category> <command>` (or the module's `name`)
  *
  * Each command file must export a default object:
  *   { description: string, options?: [{flags, description, default?}], action: (options) => void }

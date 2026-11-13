@@ -5,10 +5,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BASH_GUARD_IFS, claudeHooks, enableAgentHooks, KIRO_FILE, kiroHookFile, mergeClaude, withoutPrism, type AgentHooksDeps, type AgentHooksOptions } from '../src/commands/enable/agent-hooks.js';
+import { BASH_GUARD_IFS, claudeHooks, enableAgentHooks, KIRO_FILE, kiroHookFile, mergeClaude, withoutPrism, type AgentHooksDeps, type AgentHooksOptions } from '../src/commands/enable/harness-hooks.js';
 import { PLUGIN_ID } from '../src/commands/enable/claude-code.js';
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
@@ -230,4 +231,15 @@ test('claude: the settings hooks have the same events, if rules and handlers as 
     assert.deepEqual(shape(ours[event], (h) => h.command.split(' ').pop()), shape(plugin[event], (h) => h.args[1]), event);
   }
   assert.ok(ours.PreToolUse[0].hooks.some((h: any) => h.if === 'Bash(*git*ref*)'), 'the ref-move guard reaches the hook');
+});
+
+test('the command is still `enable agent-hooks` although its file is harness-hooks.ts', () => {
+  const cliDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const run = (...args: string[]) => spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), join(cliDir, 'bin', 'prism-cli.ts'), ...args], { encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
+  const help = run('enable', 'agent-hooks', '--help');
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /Usage: prism-cli enable agent-hooks/);
+  assert.match(help.stdout, /--client <client>/);
+  // The group listing (`enable --help`) needs the built .js files, so it is checked against dist in the release build, not here.
+  assert.doesNotMatch(run('enable', 'harness-hooks', '--help').stdout, /Usage: prism-cli enable harness-hooks/, 'the file name is not a command');
 });
