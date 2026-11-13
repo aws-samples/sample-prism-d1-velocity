@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { HARNESS_MAX_ROUNDS_CEILING, modelLabel, readEvalConfig, readHarnessConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY, type BlockOn, type HarnessConfig } from '../config.js';
-import { gitleaksInstallHint, safeWrite, scanCommits, scanFiles, type CommitScan, type CommitSecret, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
+import { GITLEAKS_SCAN_TIMEOUT_MS, gitleaksInstallHint, safeWrite, scanCommits, scanFiles, type CommitScan, type CommitSecret, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
 import { ensureResultsExcluded, makeResult, type Finding, type Severity } from '../results.js';
 import { ADAPTERS, detectReviewers, findOnPath, normalizeReview, resolveReviewer, runReview, toolVersion, type ReviewerAdapter, type ReviewRequest, type ReviewRun } from '../reviewers/index.js';
 import { fallbackPushBase, type PushBase } from '../pushbase.js';
@@ -118,6 +118,17 @@ export interface HarnessOptions {
   /** false when the push gate is off: the AI review is skipped, gitleaks still runs. */
   aiReview?: boolean;
   event?: HarnessEvent;
+  /**
+   * Absolute time (epoch ms) the whole run must finish by: every gitleaks scan
+   * and reviewer attempt gets only what is left, minus a reserve for writing
+   * the result. Hooks set it below the client's kill time. Unset: no deadline.
+   */
+  deadlineMs?: number;
+  /**
+   * Returns true the first time a notice with this key may be shown in the
+   * current session, false after. Unset: every notice shows.
+   */
+  noticeOnce?: (key: string) => boolean;
   /** pre-push: what the agent's `git push` command writes (parsed by the adapter). */
   push?: PushTarget;
   /** PATH for reviewer detection (tests). */
@@ -201,14 +212,17 @@ function committedAction(hits: CommitSecret[], base: string | undefined): string
 }
 
 /** Fixed-template text for the agent. Never contains reviewer prose. */
-function nextAction(v: HarnessVerdict, integ?: Integrity, base?: string): string {
+function nextAction(v: HarnessVerdict, integ?: Integrity, base?: string, event?: HarnessEvent): string {
+  if (v.verdict === 'pass' && event === 'pre-push' && v.findings.length) {
+    return `The push is allowed: the PRISM push check blocks only on secrets, secret-scan failures and changes to the checks. The review found ${plural(v.findings.length, 'issue')} in this push, listed below; they are candidates for a follow-up change.`;
+  }
   if (v.verdict === 'pass') return v.findings.length ? 'No blocking findings. The non-blocking findings are listed for information.' : 'No blocking findings.';
   if (v.verdict === 'stop') {
     switch (v.human_why) {
       case 'tamper': return integ && (integ.tamper.length || integ.allowMarkers.length)
         ? tamperAction(integ, v.session !== null)
         : 'Stop. This change touched PRISM, secret-scan or hook configuration. Tell the person what you changed there and why; do not undo or repeat the change to get past the check.';
-      case 'secrets-scan-failed': return 'Stop. The secret scan ran but gave no verdict, so the push is held. Tell the person to check gitleaks and its config.';
+      case 'secrets-scan-failed': return 'Stop. The secret scan did not finish or gave no verdict, so the push is held. Tell the person why (see the warnings): a timeout means the scan needs more time than the hook allows; otherwise check gitleaks and its config.';
       case 'push-unknown': return 'Stop. PRISM could not tell which commits this push would send, so it is held. Push one branch at a time with an explicit remote and branch (git push origin <branch>), or tell the person why it was held.';
       case 'max-rounds': return `Stop fixing: the ${plural(v.max_rounds, 'fix round')} for this session are used. Report the remaining blocking findings to the person${v.secrets.length ? ', and do not push while a secret remains' : ''}.`;
       case 'no-progress': return 'Stop: nothing changed since the last review. Report the remaining blocking findings to the person instead of trying again.';
@@ -271,6 +285,8 @@ interface Diffs {
   diff: ParsedDiff;
   /** What this session changed (baseline to now); the same as `diff` without a session. */
   sessionDiff: ParsedDiff;
+  /** The history was rewritten past the session's start commit: the session diff no longer describes the agent's edits. */
+  rewritten: boolean;
 }
 
 interface Integrity { tamper: string[]; allowMarkers: ParsedDiff['allowMarkers'] }
@@ -289,13 +305,13 @@ interface ReviewOutcome {
 }
 
 /** Loads the session state and picks the session's baseline; may narrow the scope to `files`. */
-function loadSession(r: Run): { state: SessionState | null; sessionBase: string } {
+function loadSession(r: Run): { state: SessionState | null; sessionBase: string; rewritten: boolean } {
   const { repoRoot, session, head, warnings } = r;
   let state: SessionState | null = session ? loadState(repoRoot, session, warnings) : null;
   if (session && !state) {
     state = { version: STATE_VERSION, session, client: r.opts.client ?? null, started_at: r.started, head, baseline_tree: null, rounds: 0, last: null };
   }
-  if (!state) return { state, sessionBase: head };
+  if (!state) return { state, sessionBase: head, rewritten: false };
   let sessionBase = head;
   if (state.baseline_tree && objectExists(repoRoot, state.baseline_tree)) sessionBase = state.baseline_tree;
   else {
@@ -303,11 +319,24 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string 
     else warnings.push('no session baseline (the SessionStart hook did not run); uncommitted work from before the session counts as session work');
     sessionBase = state.head && objectExists(repoRoot, state.head) ? state.head : head;
   }
-  if (state.head && r.scope === 'new-lines' && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok) {
+  // A reset or rebase past the commit the session started on makes the session diff describe the
+  // rewrite, not the agent's edits: nothing judged on it (tamper) may decide this run.
+  let rewritten = !!state.head && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok;
+  if (rewritten && state.head && r.event === 'pre-push') {
+    // At a push, commits after the fork point with the session's start commit were all made
+    // during the session (earlier ones are its ancestors), so they still describe session work;
+    // tamper then counts only what the push carries (integrityChecks).
+    const fork = gitIn(repoRoot, ['merge-base', state.head, 'HEAD']);
+    if (fork.ok && fork.stdout) {
+      sessionBase = fork.stdout;
+      rewritten = false;
+    }
+  }
+  if (rewritten && r.scope === 'new-lines') {
     warnings.push('HEAD is no longer a descendant of the commit the session started on (branch switch or rebase); judging whole changed files this run');
     r.scope = 'files';
   }
-  return { state, sessionBase };
+  return { state, sessionBase, rewritten };
 }
 
 /** The current tree, the base it is compared with, and the review and session diffs; or why the push target is unknown. */
@@ -315,7 +344,7 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
   const { repoRoot, opts, warnings, head } = r;
   const push = opts.push;
   if (push?.unknown) return { unknown: push.unknown };
-  const { state, sessionBase } = loadSession(r);
+  const { state, sessionBase, rewritten } = loadSession(r);
   // A push of something other than HEAD (`git push origin other:main`) reviews that commit's tree.
   let tip = head;
   let current: string | null = null;
@@ -350,19 +379,30 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
   const sessionDiff = state && reviewBase !== sessionBase && opts.mode !== 'staged'
     ? parseDiff(diffTrees(repoRoot, sessionBase, current) ?? '')
     : diff;
-  return { state, tip, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
+  return { state, rewritten, tip, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
 }
 
 /**
  * Tamper rules (section 6.2). With a session: any listed path the session
- * changed, and any `gitleaks:allow` it added. Without one there are no fix
- * rounds to guard and a branch may legitimately tune its own config, so only
- * added `gitleaks:allow` lines count; the scanner config is handled by
- * scanning with the base's copy instead (scannerOverride).
+ * changed, and any `gitleaks:allow` it added. At a push, only what this push
+ * also carries counts: the baseline survives resume and a reused session id,
+ * so a path that differs from the baseline only because history was reset
+ * since then would otherwise deny a push that does not touch it. Without a
+ * session (or, outside a push, after a rewrite past its start) there are no fix rounds to
+ * guard and a branch may legitimately tune its own config, so only added
+ * `gitleaks:allow` lines count; the scanner config is handled by scanning
+ * with the base's copy instead (scannerOverride).
  */
-function integrityChecks(d: Diffs): Integrity {
-  if (d.state) return { tamper: touchedPaths(d.sessionDiff).filter(isTamperPath), allowMarkers: d.sessionDiff.allowMarkers };
-  return { tamper: [], allowMarkers: d.diff.allowMarkers };
+function integrityChecks(r: Run, d: Diffs): Integrity {
+  if (!d.state || d.rewritten) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  const tamper = touchedPaths(d.sessionDiff).filter(isTamperPath);
+  if (r.event !== 'pre-push') return { tamper, allowMarkers: d.sessionDiff.allowMarkers };
+  const inPush = new Set(touchedPaths(d.diff));
+  const added = new Map(d.diff.files.map((f) => [f.path, f.added]));
+  return {
+    tamper: tamper.filter((p) => inPush.has(p)),
+    allowMarkers: d.sessionDiff.allowMarkers.filter((m) => added.get(m.file)?.has(m.line)),
+  };
 }
 
 /**
@@ -370,7 +410,7 @@ function integrityChecks(d: Diffs): Integrity {
  * the base's version of it, so a change cannot allowlist itself.
  */
 function scannerOverride(r: Run, d: Diffs): ScannerConfigOverride | undefined {
-  if (d.state) return undefined;
+  if (d.state && !d.rewritten) return undefined;
   const changed = touchedPaths(d.diff).filter((p) => SCANNER_CONFIG.has(p));
   if (!changed.length) return undefined;
   const blobs = readBlobs(r.repoRoot, d.reviewBase, [...SCANNER_CONFIG]);
@@ -387,8 +427,13 @@ function secretScan(r: Run, d: Diffs): SecretScan {
   const { repoRoot, warnings, opts } = r;
   const override = scannerOverride(r, d);
   const scanPaths = d.diff.files.filter((f) => !f.deleted && f.added.size && !SCANNER_CONFIG.has(f.path)).map((f) => f.path);
-  const blobs = readBlobs(repoRoot, d.current, scanPaths);
-  const scan = scanFiles(repoRoot, [...blobs].map(([path, content]) => ({ path, content })), opts.gitleaksBin, { override });
+  const unreadable: string[] = [];
+  const blobs = readBlobs(repoRoot, d.current, scanPaths, unreadable);
+  const scan = timedScan(r, 'the changed files', (timeoutMs) =>
+    scanFiles(repoRoot, [...blobs].map(([path, content]) => ({ path, content })), opts.gitleaksBin, { override, timeoutMs }),
+  { status: 'error', findings: [], version: null, reason: null, skipped: [] });
+  // A path git cannot hand over one per line is unscanned, like an unsafe one: never a clean result.
+  scan.skipped.push(...unreadable);
   if (scan.status === 'missing') warnings.push(`secrets not scanned: ${scan.reason}. Install it: ${gitleaksInstallHint()}`);
   if (scan.status === 'error') warnings.push(`secrets not scanned: ${scan.reason}`);
   if (scan.skipped.length) warnings.push(`secrets not scanned in ${scan.skipped.length} file(s) with an unsafe path: ${scan.skipped.slice(0, 5).map((p) => JSON.stringify(p.slice(0, 200))).join(', ')}`);
@@ -414,19 +459,47 @@ function commitScan(r: Run, d: Diffs, override: ScannerConfigOverride | undefine
   const range = revParse(r.repoRoot, `${d.reviewBase}^{commit}`) ? `${d.reviewBase}..${d.tip}` : d.tip;
   const count = gitIn(r.repoRoot, ['rev-list', '--count', range]);
   if (!count.ok || count.stdout === '0') return null;
-  const h = scanCommits(r.repoRoot, range, r.opts.gitleaksBin, { override });
+  const h = timedScan(r, 'the pushed commits', (timeoutMs) => scanCommits(r.repoRoot, range, r.opts.gitleaksBin, { override, timeoutMs }),
+    { status: 'error', findings: [], reason: null });
   if (h.status === 'error') r.warnings.push(`commits not scanned for secrets: ${h.reason}`);
   return h;
 }
 
-/** Runs the reviewer once, plus one retry when the reply cannot be parsed. */
+/** Time kept back from the deadline for writing the state and the result and printing the answer. */
+export const DEADLINE_RESERVE_MS = 5000;
+/** Below this, a step is not started at all: it could not finish in time. */
+const MIN_STEP_MS = 1000;
+
+/** Milliseconds a step may still use under the run's deadline (Infinity without one). */
+function remainingMs(r: Run): number {
+  return r.opts.deadlineMs === undefined ? Infinity : r.opts.deadlineMs - Date.now() - DEADLINE_RESERVE_MS;
+}
+
+/**
+ * Runs one gitleaks scan inside what is left of the deadline. When too little
+ * time is left to start, or the scan is cut off, the result is an error with a
+ * reason that says so; at push that holds the push (secrets-scan-failed)
+ * rather than letting the client kill the hook.
+ */
+function timedScan<T extends { status: string; reason: string | null }>(r: Run, what: string, run: (timeoutMs: number | undefined) => T, failed: T): T {
+  const left = remainingMs(r);
+  if (left < MIN_STEP_MS) return { ...failed, reason: `no time left in the hook's budget to scan ${what}` };
+  const res = run(Number.isFinite(left) ? Math.min(left, GITLEAKS_SCAN_TIMEOUT_MS) : undefined);
+  return res.status === 'error' && res.reason?.includes('timed out') ? { ...res, reason: `scanning ${what} did not finish in time (${res.reason})` } : res;
+}
+
+/** Runs the reviewer once, plus one retry when the reply cannot be parsed, each attempt inside the remaining deadline. */
 function callReviewer(r: Run, adapter: ReviewerAdapter, req: ReviewRequest): { res: ReviewRun; attempts: number } {
   const bin = findOnPath(adapter.binary, r.pathEnv) || adapter.binary;
-  const timeoutMs = (r.opts.timeoutSeconds ?? r.cfg.timeout_seconds) * 1000;
+  const perAttempt = (r.opts.timeoutSeconds ?? r.cfg.timeout_seconds) * 1000;
+  const budget = () => Math.min(perAttempt, remainingMs(r));
+  const outOfTime: ReviewRun = { ok: false, review: null, error: 'no time left in the hook\'s budget for the review', rawStdout: '' };
   const childEnv = { [HARNESS_CHILD_ENV]: '1' };
-  const res = runReview(adapter, req, timeoutMs, bin, childEnv);
+  if (budget() < MIN_STEP_MS) return { res: outOfTime, attempts: 0 };
+  const res = runReview(adapter, req, budget(), bin, childEnv);
   if (res.ok || !res.unparseable) return { res, attempts: 1 };
-  return { res: runReview(adapter, { ...req, retryNote: RETRY_NOTE }, timeoutMs, bin, childEnv), attempts: 2 };
+  if (budget() < MIN_STEP_MS) return { res, attempts: 1 };
+  return { res: runReview(adapter, { ...req, retryNote: RETRY_NOTE }, budget(), bin, childEnv), attempts: 2 };
 }
 
 /** The AI review (section 2.4 step 5), from the cache when the diff hash was seen. `skipWhy` set: no reviewer call. */
@@ -520,7 +593,8 @@ function scopeFindings(r: Run, d: Diffs, findings: Finding[], v: HarnessVerdict)
     if (!added) { v.dropped.unknown_file++; continue; }
     const introduced = f.line !== null && added.has(f.line);
     if (r.scope === 'new-lines' && f.line !== null && !introduced) { v.dropped.out_of_scope++; continue; }
-    const blocking = (f.severity === 'high' && r.cfg.block_on.includes('high')) || (f.severity === 'medium' && r.cfg.block_on.includes('medium'));
+    // D4: at push only secrets and tamper block; block_on is the finish gate's.
+    const blocking = r.event !== 'pre-push' && ((f.severity === 'high' && r.cfg.block_on.includes('high')) || (f.severity === 'medium' && r.cfg.block_on.includes('medium')));
     v.findings.push({ ...f, file, introduced_in_session: r.scope === 'new-lines' ? true : introduced, blocking });
   }
   v.findings.sort((a, b) => Number(b.blocking) - Number(a.blocking) || SEV_RANK[a.severity] - SEV_RANK[b.severity] || a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0));
@@ -544,7 +618,10 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
   }
 
   let round = 1;
-  if (state) {
+  // At a push every deny (secret, tamper, scan failure) is recomputed from the range each run, so
+  // pushes neither spend nor read the finish gate's rounds: a reused or rewritten session's
+  // counter can never decide a push (D4).
+  if (state && r.event !== 'pre-push') {
     const last = state.last;
     round = Math.min(state.rounds + 1, r.maxRounds + 1);
     if (verdict === 'fix') {
@@ -563,7 +640,7 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
   v.human_why = why;
   v.human_needed = why !== null;
   v.fail_open = rev.failOpen;
-  v.next_action = nextAction(v, integ, base);
+  v.next_action = nextAction(v, integ, base, r.event);
   v.reasons = reasons(v);
 }
 
@@ -605,6 +682,11 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
   const now = opts.now ?? (() => new Date());
   const warnings: string[] = [];
   const cfg = readHarnessConfig(opts.repoRoot, warnings);
+  // D4: block_on is the finish gate's. Say so at push only when the team changed it, and once per session.
+  const defaultBlockOn = cfg.block_on.length === 2 && cfg.block_on.includes('secret') && cfg.block_on.includes('high');
+  if (opts.event === 'pre-push' && cfg.block_on_set && !defaultBlockOn && (opts.noticeOnce?.('block-on') ?? true)) {
+    warnings.push(`harness.block_on (${cfg.block_on.join(', ')}) applies to the finish gate and direct reviews only; the push check blocks only on secrets, secret-scan failures and changes to the checks`);
+  }
   const session = opts.session ?? null;
   let maxRounds = opts.maxRounds ?? cfg.max_rounds;
   if (maxRounds > HARNESS_MAX_ROUNDS_CEILING) {
@@ -650,7 +732,7 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
     return v;
   }
 
-  const integ = integrityChecks(d);
+  const integ = integrityChecks(r, d);
   const sec = secretScan(r, d);
   v.secrets = sec.secrets;
   v.commit_secrets = sec.history?.findings ?? [];

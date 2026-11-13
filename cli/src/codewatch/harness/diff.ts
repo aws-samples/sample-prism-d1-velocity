@@ -150,10 +150,16 @@ export function touchedPaths(d: ParsedDiff): string[] {
 
 /**
  * Contents of `<rev>:<path>` for each path, through one `git cat-file --batch`.
- * Missing paths are absent from the map.
+ * Missing paths are absent from the map. A path holding a newline cannot be
+ * sent on the batch protocol's one-line-per-object input (it would desync
+ * every object after it; `-z` needs git 2.43), so it is left out and pushed
+ * onto `unreadable` for the caller to report.
  */
-export function readBlobs(repoRoot: string, rev: string, paths: string[]): Map<string, Buffer> {
+export function readBlobs(repoRoot: string, rev: string, paths: string[], unreadable: string[] = []): Map<string, Buffer> {
   const out = new Map<string, Buffer>();
+  const ok = paths.filter((p) => !/[\n\r]/.test(p));
+  unreadable.push(...paths.filter((p) => /[\n\r]/.test(p)));
+  paths = ok;
   if (!paths.length) return out;
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of GIT_HOOK_ENV) delete env[k];

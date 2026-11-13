@@ -18,7 +18,8 @@ Decided on 2026-11-13. The rest of this document follows them.
 |---|---|---|
 | D1 | **Fail open in the agent loop.** When the reviewer is missing, times out, crashes or replies with unparseable output twice (after the single retry), the verdict is `pass` with a visible warning, because the git pre-push hook and the CI gate still run. Secrets are the exception: a gitleaks finding always blocks the agent's push. A missing gitleaks binary is a warning and `secrets_scanned: false`, never a pass of the secrets check | [Section 12](#12-failure-modes) |
 | D2 | **Push gate on, finish gate opt-in.** With the Claude Code plugin installed, the `PreToolUse` hook on `git push` is on by default. The `Stop` hook (finish gate) is off in 1.11.0 and turned on with `harness.finish_gate: true` in `.prism/config.json` or the plugin's `finish_gate` option. Revisit the default once reviewer cost is measured. Other clients get the same defaults when their adapters land | [Section 8.3](#83-per-client-wiring), [config keys](#config-keys) |
-| D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"` | [Section 3](#3-verdict-schema) |
+| D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"`. Since D4 this applies to the finish gate only | [Section 3](#3-verdict-schema) |
+| D4 | **The push gate blocks only on secrets** (decided by the user on 2026-11-13, superseding D3 at push). The agent's `git push` is denied for a secret in the changed lines or in a commit of the pushed range, a secret scan that failed or did not finish, tamper (scanner config, `gitleaks:allow`, hook or PRISM config edits, since tamper is how a secret gets past the scan), and a push whose target the command does not name. AI review findings of any severity never deny a push: the push goes ahead, the person gets a `systemMessage` and Claude gets the findings as `additionalContext` (quoted as untrusted) for a follow-up. They never start a fix round or a `stop` at push. `harness.block_on` is the finish gate's (and direct reviews'); a value other than the default `["secret", "high"]` adds a warning at push, once per session. A push neither spends nor reads the finish gate's rounds or last verdict, and its messages carry no round count. Session state cannot deny a push on its own: a committed secret is recomputed from the pushed range, and tamper counts only paths and `gitleaks:allow` lines the push itself carries. When history was reset or rebased past the session's start commit, the push compares against the fork point with that commit instead of the session baseline | [Section 8.3](#83-per-client-wiring) |
 
 ## 1. Problem and goals
 
@@ -151,7 +152,7 @@ All keys live in a `harness` block in `.prism/config.json`, next to the existing
 |---|---|---|
 | `harness.push_gate` | `true` | AI review before the agent's `git push` (D2). `false` turns the review off for the repo; the gitleaks check before a push still runs, so secrets still block |
 | `harness.finish_gate` | `false` | Review before the agent finishes (`Stop` hook) (D2). Opt-in in 1.11.0 |
-| `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix` (D3). Allowed values: `secret`, `high`, `medium`. `secret` is always applied, even when left out; the engine adds a warning when it is missing |
+| `harness.block_on` | `["secret", "high"]` | What makes the finish gate's verdict `fix` (D3; the push gate blocks only on secrets and tamper, D4). Allowed values: `secret`, `high`, `medium`. `secret` is always applied, even when left out; the engine adds a warning when it is missing |
 | `harness.max_rounds` | `2` | Fix rounds before `stop`; hard ceiling 3 |
 | `harness.timeout_seconds` | `120` | Per-attempt reviewer timeout in the agent loop |
 | `harness.skip_paths` | docs, text and image globs | Paths whose changes get gitleaks only |
@@ -536,9 +537,10 @@ Verdict to output:
 | Verdict | Stop | PreToolUse `git push` |
 |---|---|---|
 | `pass` | exit 0, no output | exit 0, no decision (normal permission flow) |
-| `pass` with warnings | `hookSpecificOutput.additionalContext` with the warning | `systemMessage` with the warning |
-| `fix` | `decision: "block"`, `reason`: `next_action` plus quoted findings | `permissionDecision: "deny"` with the same text |
-| `stop` | exit 0 with `systemMessage` for the person and `additionalContext` telling Claude to report what remains | deny if secrets or tamper; otherwise allow with `systemMessage` |
+| `pass` with warnings | `systemMessage` with the warning (phase 1: not `additionalContext`, which would continue the turn) | `systemMessage` with the warning |
+| `pass` with review findings (at push always, since D4) | `systemMessage` | no decision (the push goes ahead); `systemMessage` for the person and `hookSpecificOutput.additionalContext` with the quoted findings for a follow-up |
+| `fix` (at push: a secret only) | `decision: "block"`, `reason`: `next_action` plus quoted findings | `permissionDecision: "deny"` with the same text |
+| `stop` | exit 0 with `systemMessage` for the person and `additionalContext` telling Claude to report what remains | deny for a secret (also committed), tamper, a failed or incomplete secret scan, or an unknown push target; review findings never reach `stop` at push |
 
 **Kiro CLI V3 and Kiro IDE.** Files in `.kiro/hooks/prism-harness.json`:
 
@@ -816,6 +818,22 @@ Where 1.11.0 differs from or settles something in the text above:
   secret scan with no verdict. `codewatch review` and `prism_review` in branch scope use the same
   chain, and the git pre-push hook uses its fallback steps for a new branch instead of skipping
   the review.
+- **Push gate precedence.** The text above says a gate runs when either the repo key or the plugin
+  option turns it on. That holds for the finish gate. For the push gate's AI review it would mean
+  the plugin's `push_gate` option could never turn it off, since `harness.push_gate` defaults to
+  true. So: an explicit `harness.push_gate` in `.prism/config.json` (true or false) wins; when the
+  repo leaves it unset, the plugin option decides; with neither, it is on. gitleaks runs before a
+  push in every case.
+- **One time budget per hook run.** The Claude adapter gives the whole run a deadline of 270 s
+  (`HOOK_BUDGET_MS`, under the plugin script's 290 s cap and the 300 s hook timeout). Each gitleaks
+  scan (files, then commits) and each reviewer attempt gets only what is left, less a 5 s reserve
+  for writing the result, and a step with under a second left is not started. A secret scan that
+  cannot finish in time is `stop` with `secrets-scan-failed` at push, so the push is denied rather
+  than the client killing the hook; a review that runs out of time fails open (D1).
+- **A file name with a newline** cannot go through `git cat-file --batch` (its input is one path per
+  line; `-z` needs git 2.43), so that file's working-tree copy is not scanned and the run reports
+  `secrets_scanned: false` with a warning. At push, the per-commit scan (`gitleaks git`) still reads
+  the file from history.
 - **Secrets in the pushed commits.** In branch scope (the push gate, `codewatch review` without a
   session, `prism_review` without `session`) gitleaks also runs `gitleaks git --log-opts=<base>..<tip>`
   over every commit of the range (the whole history on a first push), because the tree diff misses
