@@ -292,10 +292,18 @@ function globalAction(opts: { reviewer?: string; model?: string; uninstall?: boo
   if (opts.model !== undefined) {
     const key = reviewModelGitKey(modelTool!);
     if (isDefaultModel(opts.model)) {
-      run('git', ['config', '--global', '--unset', key]);
+      // --unset also fails when the key was not set; only a key still present is a failure.
+      if (!run('git', ['config', '--global', '--unset', key]).ok && run('git', ['config', '--global', '--get', key]).ok) {
+        console.error(`Error: could not unset git config --global ${key}`);
+        process.exit(1);
+      }
       console.log(`✓ Review model: ${modelTool} default (unset git config --global ${key})`);
     } else {
-      run('git', ['config', '--global', key, opts.model.trim()]);
+      const w = run('git', ['config', '--global', key, opts.model.trim()]);
+      if (!w.ok) {
+        console.error(`Error: could not write git config --global ${key}: ${w.stderr.trim() || 'git failed'}`);
+        process.exit(1);
+      }
       console.log(`✓ Review model: git config --global ${key} ${opts.model.trim()} (used only when ${modelTool} reviews; a repo's eval.model for ${modelTool} overrides)`);
     }
   }

@@ -591,6 +591,18 @@ test('enable codewatch --global --model sets and clears git config --global pris
   const clear = enableCli(home, ['--global', '--model', 'default'], home, bin);
   assert.equal(clear.status, 0, clear.stderr);
   assert.equal(get('prism.claudeModel'), '');
+  // clearing a key that is not set is not an error; a write git refuses is
+  assert.equal(enableCli(home, ['--global', '--model', 'default'], home, bin).status, 0);
+  if (process.getuid?.() !== 0) {
+    chmodSync(home, 0o555); // git cannot create ~/.gitconfig.lock
+    try {
+      const fail = enableCli(home, ['--global', '--reviewer', 'claude', '--model', 'opus'], home, bin);
+      assert.equal(fail.status, 1, fail.stdout);
+      assert.match(fail.stderr, /could not write git config --global prism.claudeModel/);
+    } finally {
+      chmodSync(home, 0o755);
+    }
+  }
 });
 
 test('pre-push passes the resolved model to the reviewer and logs it', () => {
