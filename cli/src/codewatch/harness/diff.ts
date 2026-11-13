@@ -30,19 +30,27 @@ export function gitIn(repoRoot: string, args: string[], extraEnv: Record<string,
   return { ok: r.status === 0 && !r.error, stdout: (r.stdout || '').replace(/\n$/, ''), stderr: r.stderr || '' };
 }
 
-/** Tree object of the whole working tree (tracked plus untracked, honoring .gitignore), or null. */
-export function snapshotTree(repoRoot: string): string | null {
+/**
+ * Tree object of the whole working tree (tracked plus untracked, honoring
+ * .gitignore), or null. A partial snapshot (a file git could not read) still
+ * returns a tree and says what was left out in `warnings`.
+ */
+export function snapshotTree(repoRoot: string, warnings: string[] = []): string | null {
   const idx = gitIn(repoRoot, ['rev-parse', '--path-format=absolute', '--git-path', 'index']);
   const dir = mkdtempSync(join(tmpdir(), 'prism-harness-idx-'));
+  const firstLine = (s: string) => s.trim().split('\n')[0].slice(0, 200);
   try {
     const tmpIndex = join(dir, 'index');
     if (idx.ok && idx.stdout && existsSync(idx.stdout)) copyFileSync(idx.stdout, tmpIndex);
     const env = { GIT_INDEX_FILE: tmpIndex };
     // --ignore-errors: an unreadable file is left out rather than failing the snapshot.
-    gitIn(repoRoot, ['add', '-A', '--ignore-errors', '--', '.'], env);
+    const add = gitIn(repoRoot, ['add', '-A', '--ignore-errors', '--', '.'], env);
+    if (!add.ok) warnings.push(`the working-tree snapshot left out files git could not add (${firstLine(add.stderr)}); changes in them are not reviewed`);
     // PRISM's own output never counts, even where git does not ignore it. (An exclude
     // pathspec on `git add` errors when the path is also ignored, so remove it after.)
-    gitIn(repoRoot, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', RESULTS_DIR, HARNESS_DIR], env);
+    // The diff excludes these paths too, so a failure here only costs a warning.
+    const rm = gitIn(repoRoot, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', RESULTS_DIR, HARNESS_DIR], env);
+    if (!rm.ok) warnings.push(`could not drop PRISM's own output from the snapshot (${firstLine(rm.stderr)})`);
     const t = gitIn(repoRoot, ['write-tree'], env);
     return t.ok && /^[0-9a-f]{40,64}$/.test(t.stdout) ? t.stdout : null;
   } finally {

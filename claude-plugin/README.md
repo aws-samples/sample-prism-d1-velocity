@@ -115,6 +115,11 @@ What blocks: secrets and high findings on lines Claude changed. Medium and low f
 but do not block. When the reviewer is missing or fails, the gate fails open with a warning; the
 git pre-push review and the CI gate still run.
 
+The push check is a guardrail, not a sandbox. prism-cli reads the Bash command with a quote-aware
+tokenizer: it sees `git push` behind `VAR=val`, `env`, git's global options (`-C dir`,
+`--git-dir=...`) and one level of `sh -c '...'`, but not behind `$(...)`, backticks, `eval`, an
+alias or a script. A push it does not see still meets the git pre-push hook and the CI gate.
+
 Options (`/config`, or when you enable the plugin):
 
 | Option | Default | Meaning |

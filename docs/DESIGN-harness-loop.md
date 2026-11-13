@@ -798,10 +798,12 @@ Where 1.11.0 differs from or settles something in the text above:
 - **A `stop` sticks.** Once a session's verdict is `stop` for a diff hash, a later run on the same
   diff returns the same `stop` instead of starting a new fix round (section 5 only named the
   `fix`-then-unchanged case).
-- **Tamper needs a session.** The tamper check reads the session diff (baseline to now). A stateless
-  run (no session: `prism_review` without `session`, `codewatch review` without `--session`) has no
-  fix rounds to guard and skips it; otherwise any branch that legitimately touched
-  `.prism/config.json` would always stop.
+- **Tamper without a session.** The full tamper list reads the session diff (baseline to now). A
+  stateless run (no session: `prism_review` without `session`, `codewatch review` without
+  `--session`) has no fix rounds to guard, and a branch may legitimately tune its own config, so it
+  does not stop on those paths. Two parts still apply: an added `gitleaks:allow` line gives `stop`
+  (`tamper`), and when the change edits `.gitleaks.toml`, `.gitleaksignore` or the gitleaks
+  baseline, gitleaks runs with the base branch's copy of them, so a change cannot allowlist itself.
 - **`human_why: secrets-scan-failed`** is added for "gitleaks ran but gave no verdict" at push
   (section 12), which holds the push.
 - **`fail_open`** is also a top-level verdict field, not only in the result file.
@@ -815,6 +817,12 @@ Where 1.11.0 differs from or settles something in the text above:
   `prism-cli codewatch hook --client claude` (the `$PRISM_CLI` and Windows `.cmd` handling of
   `session-start.mjs`). Two more `PreToolUse` entries (`Bash(git -c *)`, `Bash(git config *)`) let
   the adapter deny `-c core.hooksPath=` and `git config prism.*` / `core.hooksPath`.
+- **Shell command parsing.** The `pre-push` adapter splits the command with a small quote-aware
+  tokenizer (no backtracking regex): leading `VAR=val` words and `env` are skipped, git's global
+  options (`-C`, `-c`, `--git-dir`, `--work-tree`, `--no-pager`, ...) are walked to the subcommand,
+  and one level of `sh -c '...'` / `bash -c "..."` is read. `$(...)`, backticks, `eval`, aliases
+  and scripts are not expanded: this check is a guardrail, and the git pre-push hook and the CI
+  gate are the backstop.
 - **Not in 1.11.0**: `harness.context_scan` (section 6.3, measured in 1.12.0), the per-edit
   `--no-review` hook, the status-line marker and per-commit dashboard view (section 11.2; harness
   results show in the dashboard's run trend and are skipped by the pre-push review views), and

@@ -180,56 +180,96 @@ export interface FileScan {
   findings: Finding[];
   version: string | null;
   reason: string | null;
+  /** Paths left out of the scan because they are not safe relative paths. */
+  skipped: string[];
 }
 
-const SAFE_REL = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\0]+$/;
+/** A repo-relative path that cannot leave the scan dir: not absolute, no `..` segment, no NUL. */
+export function isSafeRelPath(p: string): boolean {
+  return !!p && !p.startsWith('/') && !p.includes('\0') && !p.split('/').includes('..');
+}
+
+/** Default cap on one `gitleaks dir` run. */
+export const GITLEAKS_SCAN_TIMEOUT_MS = 120_000;
+
+/** Scanner config contents to use instead of the working tree's; null means "absent". */
+export interface ScannerConfigOverride {
+  config?: Buffer | null;
+  ignore?: Buffer | null;
+  baseline?: Buffer | null;
+}
+
+export interface ScanOptions {
+  timeoutMs?: number;
+  /**
+   * Use these versions of `.gitleaks.toml`, `.gitleaksignore` and the baseline
+   * (the base branch's) instead of the working tree's, so a change under review
+   * cannot widen its own allowlist.
+   */
+  override?: ScannerConfigOverride;
+}
 
 /**
  * `gitleaks dir` over the given file contents, with the repo's own
- * `.gitleaks.toml`, `.gitleaksignore` and baseline. The contents are copied to
- * a private temp dir (mode 0700, removed afterwards) and scanned from there, so
- * report paths are repo-relative and the repo's allowlist paths still match.
- * `--redact`, and only location and rule fields are read (parseGitleaksReport).
+ * `.gitleaks.toml`, `.gitleaksignore` and baseline (or `opts.override`). The
+ * contents are copied to a private temp dir (mode 0700, removed afterwards)
+ * and scanned from there, so report paths are repo-relative and the repo's
+ * allowlist paths still match. `--redact`, and only location and rule fields
+ * are read (parseGitleaksReport). A path that is not a safe relative path is
+ * not scanned and is listed in `skipped`.
  */
-export function scanFiles(repoRoot: string, files: FileToScan[], gitleaksBin = 'gitleaks'): FileScan {
+export function scanFiles(repoRoot: string, files: FileToScan[], gitleaksBin = 'gitleaks', opts: ScanOptions = {}): FileScan {
   const version = toolVersion(gitleaksBin, ['version']);
   const parsed = parseGitleaksVersion(version);
-  if (!parsed) return { status: 'missing', findings: [], version: null, reason: 'gitleaks is not installed' };
+  if (!parsed) return { status: 'missing', findings: [], version: null, reason: 'gitleaks is not installed', skipped: [] };
   const [maj, min] = parsed;
   if (maj < GITLEAKS_MIN_DIR_VERSION[0] || (maj === GITLEAKS_MIN_DIR_VERSION[0] && min < GITLEAKS_MIN_DIR_VERSION[1])) {
-    return { status: 'missing', findings: [], version, reason: `gitleaks ${version} has no dir command (needs ${GITLEAKS_MIN_DIR_VERSION.join('.')} or later)` };
+    return { status: 'missing', findings: [], version, reason: `gitleaks ${version} has no dir command (needs ${GITLEAKS_MIN_DIR_VERSION.join('.')} or later)`, skipped: [] };
   }
-  if (!files.length) return { status: 'ok', findings: [], version, reason: null };
+  const skipped = files.filter((f) => !isSafeRelPath(f.path)).map((f) => f.path);
+  const safe = files.filter((f) => isSafeRelPath(f.path));
+  if (!safe.length) return { status: 'ok', findings: [], version, reason: null, skipped };
 
   const dir = mkdtempSync(join(tmpdir(), 'prism-harness-gl-'));
   try {
     const src = join(dir, 'src');
+    const cfgDir = join(dir, 'cfg');
     const empty = join(dir, 'empty');
-    mkdirSync(src, { mode: 0o700 });
-    mkdirSync(empty, { mode: 0o700 });
-    for (const f of files) {
-      if (!SAFE_REL.test(f.path)) continue;
+    for (const d of [src, cfgDir, empty]) mkdirSync(d, { mode: 0o700 });
+    for (const f of safe) {
       const dest = join(src, f.path);
       mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
       writeFileSync(dest, f.content, { mode: 0o600 });
     }
+    /** The file gitleaks reads for one config: the override (written to cfgDir), the repo's own file, or none. */
+    const pick = (key: keyof ScannerConfigOverride, repoPath: string, name: string): string | null => {
+      if (opts.override && key in opts.override) {
+        const c = opts.override[key];
+        if (!c) return null;
+        const p = join(cfgDir, name);
+        writeFileSync(p, c, { mode: 0o600 });
+        return p;
+      }
+      const p = resolve(repoRoot, repoPath);
+      return existsSync(p) ? p : null;
+    };
     const report = join(dir, 'report.json');
     const args = ['dir', '.', '--redact', '--no-banner', '--exit-code=1', '--report-format=json', `--report-path=${report}`];
-    const cfg = resolve(repoRoot, GITLEAKS_CONFIG_PATH);
-    if (existsSync(cfg)) args.push(`--config=${cfg}`);
-    const baseline = resolve(repoRoot, GITLEAKS_BASELINE_PATH);
-    if (existsSync(baseline)) args.push(`--baseline-path=${baseline}`);
-    // Only the repo's own .gitleaksignore counts, never one in the scanned copy.
-    const ignore = resolve(repoRoot, '.gitleaksignore');
-    args.push(`--gitleaks-ignore-path=${existsSync(ignore) ? ignore : empty}`);
-    const r = spawnSync(gitleaksBin, args, { cwd: src, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+    const cfg = pick('config', GITLEAKS_CONFIG_PATH, 'gitleaks.toml');
+    if (cfg) args.push(`--config=${cfg}`);
+    const baseline = pick('baseline', GITLEAKS_BASELINE_PATH, 'baseline.json');
+    if (baseline) args.push(`--baseline-path=${baseline}`);
+    // Only the repo's own .gitleaksignore (or its override) counts, never one in the scanned copy.
+    const ignore = pick('ignore', '.gitleaksignore', '.gitleaksignore');
+    args.push(`--gitleaks-ignore-path=${ignore ?? empty}`);
+    const r = spawnSync(gitleaksBin, args, { cwd: src, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: opts.timeoutMs ?? GITLEAKS_SCAN_TIMEOUT_MS });
     let findings: Finding[] | null = null;
     try { findings = parseGitleaksReport(readFileSync(report, 'utf8')); } catch { findings = null; }
     if (findings) findings = findings.map((f) => ({ ...f, file: f.file.replace(/^\.\//, '') }));
-    if (r.status === 0 && findings !== null && findings.length === 0) return { status: 'ok', findings: [], version, reason: null };
-    if (r.status === 1 && findings && findings.length > 0) return { status: 'findings', findings, version, reason: null };
+    if (r.status === 0 && findings !== null && findings.length === 0) return { status: 'ok', findings: [], version, reason: null, skipped };
+    if (r.status === 1 && findings && findings.length > 0) return { status: 'findings', findings, version, reason: null, skipped };
     const why = (r.error?.message || r.stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
-    return { status: 'error', findings: [], version, reason: `gitleaks exited ${r.status} without a readable report: ${why}` };
+    return { status: 'error', findings: [], version, reason: `gitleaks exited ${r.status} without a readable report: ${why}`, skipped };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

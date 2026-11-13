@@ -38,22 +38,118 @@ export function pushGateOn(repoKey: boolean, env: NodeJS.ProcessEnv): boolean {
   return repoKey || truthy(env.CLAUDE_PLUGIN_OPTION_PUSH_GATE);
 }
 
-/** Shell segments of a command line, split on ; && || | and newlines (quotes are not parsed: this errs toward matching). */
-const segments = (cmd: string) => cmd.split(/&&|\|\||[;|\n]/).map((s) => s.trim()).filter(Boolean);
-const GIT_PUSH = /^(?:\S+=\S*\s+)*git(?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+push\b/;
+/**
+ * Splits a shell command line into simple commands, each a list of words, in
+ * one linear pass (no backtracking regex). Understands single and double
+ * quotes, backslash escapes, and the separators ; & | && || and newlines.
+ *
+ * shortcut: this is a guardrail, not a shell. `$(...)`, backticks, `eval`,
+ * aliases, functions and scripts are not expanded, so a push hidden behind one
+ * of them is not seen here. The git pre-push hook and the CI gate are the
+ * backstop for those.
+ */
+export function shellCommands(cmd: string): string[][] {
+  const out: string[][] = [];
+  let words: string[] = [];
+  let word = '';
+  let inWord = false;
+  let quote: '' | "'" | '"' = '';
+  const endWord = () => { if (inWord) words.push(word); word = ''; inWord = false; };
+  const endCmd = () => { endWord(); if (words.length) out.push(words); words = []; };
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (quote === "'") { if (ch === "'") quote = ''; else word += ch; continue; }
+    if (quote === '"') {
+      if (ch === '"') quote = '';
+      else if (ch === '\\' && i + 1 < cmd.length && '"\\$`\n'.includes(cmd[i + 1])) word += cmd[++i];
+      else word += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
+    if (ch === '\\' && i + 1 < cmd.length) { if (cmd[i + 1] !== '\n') { word += cmd[i + 1]; inWord = true; } i++; continue; }
+    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n') { endCmd(); continue; }
+    if (ch === ' ' || ch === '\t' || ch === '\r') { endWord(); continue; }
+    word += ch;
+    inWord = true;
+  }
+  endCmd();
+  return out;
+}
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+/** git global options that take the next word as their value when written without '='. */
+const GIT_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
+const base = (w: string) => w.slice(w.lastIndexOf('/') + 1);
+
+export interface GitCall {
+  /** The subcommand (`push`, `config`), or null for a bare `git`. */
+  sub: string | null;
+  /** Values of `-c name=value` options. */
+  configs: string[];
+  /** Words after the subcommand. */
+  args: string[];
+}
+
+/** Drops leading VAR=val words and a leading `env` with its options and VAR=val words. */
+function stripPrefix(w: string[]): string[] {
+  let i = 0;
+  while (i < w.length && ASSIGNMENT.test(w[i])) i++;
+  if (i < w.length && base(w[i]) === 'env') {
+    i++;
+    while (i < w.length && (ASSIGNMENT.test(w[i]) || w[i].startsWith('-'))) {
+      if (w[i] === '-u' || w[i] === '--unset' || w[i] === '-C' || w[i] === '--chdir') i++;
+      i++;
+    }
+  }
+  return w.slice(i);
+}
+
+/** The git invocations in a command line, including one level of `sh -c '...'`. */
+export function gitCalls(cmd: string, depth = 0): GitCall[] {
+  const calls: GitCall[] = [];
+  for (const raw of shellCommands(cmd)) {
+    const w = stripPrefix(raw);
+    if (!w.length) continue;
+    if (SHELLS.has(base(w[0]))) {
+      if (depth > 0) continue;
+      // `sh -c 'script'`, `bash -lc "script"`: the first word after a flag group holding c is the script.
+      const c = w.findIndex((x, k) => k > 0 && /^-[A-Za-z]+$/.test(x) && x.includes('c'));
+      if (c > 0 && c + 1 < w.length) calls.push(...gitCalls(w[c + 1], depth + 1));
+      continue;
+    }
+    if (base(w[0]) !== 'git') continue;
+    const configs: string[] = [];
+    let i = 1;
+    while (i < w.length && w[i].startsWith('-')) {
+      const opt = w[i];
+      if (GIT_VALUE_OPTS.has(opt)) {
+        if (opt === '-c' && i + 1 < w.length) configs.push(w[i + 1]);
+        i += 2;
+      } else {
+        if (opt.startsWith('-c') && opt.length > 2) configs.push(opt.slice(2)); // -cname=value
+        i++;
+      }
+    }
+    calls.push({ sub: i < w.length ? w[i] : null, configs, args: w.slice(i + 1) });
+  }
+  return calls;
+}
 
 export function isGitPush(cmd: string): boolean {
-  return segments(cmd).some((s) => GIT_PUSH.test(s));
+  return gitCalls(cmd).some((g) => g.sub === 'push');
 }
 
 /** A command that would turn off or route around PRISM's hooks (section 6.2). */
 export function bypassReason(cmd: string): string | null {
-  for (const s of segments(cmd)) {
-    if (!/^(?:\S+=\S*\s+)*git\b/.test(s)) continue;
-    if (GIT_PUSH.test(s) && /(^|\s)--no-verify(\s|$)/.test(s.replace(/^.*?\spush\b/, ' '))) return 'git push --no-verify skips the git hooks';
-    if (/-c\s+core\.hookspath=/i.test(s)) return '-c core.hooksPath= routes around the git hooks';
-    if (/\sconfig\b.*\score\.hookspath\b/i.test(s)) return 'git config core.hooksPath changes which git hooks run';
-    if (/\sconfig\b.*\sprism\.\S+/i.test(s)) return 'git config prism.* changes PRISM codewatch settings';
+  for (const g of gitCalls(cmd)) {
+    if (g.configs.some((c) => c.toLowerCase().startsWith('core.hookspath='))) return '-c core.hooksPath= routes around the git hooks';
+    if (g.sub === 'push' && g.args.includes('--no-verify')) return 'git push --no-verify skips the git hooks';
+    if (g.sub === 'config') {
+      const keys = g.args.map((a) => a.toLowerCase());
+      if (keys.includes('core.hookspath')) return 'git config core.hooksPath changes which git hooks run';
+      if (keys.some((k) => k.startsWith('prism.'))) return 'git config prism.* changes PRISM codewatch settings';
+    }
   }
   return null;
 }

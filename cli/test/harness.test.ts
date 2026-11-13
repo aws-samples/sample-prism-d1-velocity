@@ -17,11 +17,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { exitCodeFor, isTamperPath, runHarnessReview, TAMPER_GLOBS, VERDICT_SCHEMA, type HarnessOptions, type HarnessVerdict } from '../src/codewatch/harness/engine.js';
-import { agentText, bypassReason, isGitPush, MAX_REASON_BYTES, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { agentText, bypassReason, gitCalls, isGitPush, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
 import { globToRegExp, matchesAny, parseDiff } from '../src/codewatch/harness/diff.js';
 import { loadState, recordBaseline, sanitizeSession, statePath } from '../src/codewatch/harness/state.js';
 import { readHarnessConfig } from '../src/codewatch/config.js';
 import { readResults } from '../src/codewatch/results.js';
+import { isSafeRelPath, scanFiles } from '../src/codewatch/gitleaks.js';
 import { collectCodewatch } from '../src/dashboard/codewatch.js';
 import { callTool, TOOLS } from '../src/mcp/tools.js';
 import { runPrePush } from '../src/codewatch/prepush.js';
@@ -92,6 +93,7 @@ function rig(): Rig {
     `if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi`,
     `cat > '${tools}/last-prompt.txt'`,
     `echo reviewer >> '${log}'`,
+    `echo "child=$PRISM_HARNESS_CHILD" > '${tools}/reviewer-env'`,
     `n=$(cat '${tools}/n' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${tools}/n'`,
     `f='${replies}/'$n; [ -f "$f" ] || f=$(ls '${replies}' | sort -n | tail -1 | sed "s|^|${replies}/|")`,
     `if [ -f "$f.sleep" ]; then sleep 5; fi`,
@@ -102,6 +104,7 @@ function rig(): Rig {
   const gitleaks = exe(join(tools, 'gitleaks'), [
     `if [ "$1" = "version" ] || [ "$1" = "--version" ]; then echo "v8.28.0"; exit 0; fi`,
     `echo gitleaks >> '${log}'`,
+    `echo "$@" > '${tools}/gl-args'`,
     `for a in "$@"; do case "$a" in --report-path=*) rp="\${a#--report-path=}";; esac; done`,
     `if [ -f '${glReport}' ]; then cp '${glReport}' "$rp"; else echo '[]' > "$rp"; fi`,
     `exit $(cat '${glExit}' 2>/dev/null || echo 0)`,
@@ -434,6 +437,46 @@ test('tamper is judged on the session diff only: not on what the branch already 
 
 // ---------------------------------------------------------------- block_on
 
+test('stateless: an added gitleaks:allow still stops; a changed scanner config is replaced by the base copy', () => {
+  const r = rig();
+  r.write('src/a.ts', 'const k = "x"; // gitleaks:allow\n');
+  const v = runHarnessReview(r.opts());
+  assert.deepEqual([v.verdict, v.human_why, v.session], ['stop', 'tamper', null]);
+  assert.ok(v.warnings.some((w) => /this change adds src\/a\.ts:1 \(gitleaks:allow\)/.test(w)));
+
+  const s = rig();
+  s.write('.gitleaks.toml', '[base]\n');
+  s.commit('base config');
+  git(s.dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  s.write('.gitleaks.toml', '[allowlist]\npaths = [".*"]\n');
+  s.write('.gitleaksignore', 'everything\n');
+  s.write('src/a.ts', 'x\n');
+  const w = runHarnessReview(s.opts());
+  assert.notEqual(w.human_why, 'tamper');
+  assert.ok(w.warnings.some((x) => /base's version of the gitleaks config/.test(x)));
+  const args = readFileSync(join(dirname(s.log), 'gl-args'), 'utf8');
+  const cfg = /--config=(\S+)/.exec(args)?.[1];
+  assert.ok(cfg && !cfg.startsWith(s.dir), 'not the working tree copy');
+  assert.ok(!args.includes(join(s.dir, '.gitleaksignore')), 'the branch-added ignore file is not used');
+});
+
+test('scanFiles: an unsafe path is skipped and reported, not silently passed', () => {
+  const r = rig();
+  const gl = join(dirname(r.log), 'gitleaks');
+  const out = scanFiles(r.dir, [{ path: '../escape.ts', content: Buffer.from('x') }, { path: 'ok.ts', content: Buffer.from('y') }], gl);
+  assert.deepEqual(out.skipped, ['../escape.ts']);
+  assert.equal(out.status, 'ok');
+  assert.ok(isSafeRelPath('a/b.ts') && !isSafeRelPath('/abs') && !isSafeRelPath('a/../b') && !isSafeRelPath('a\0b'));
+});
+
+test('the reviewer gets PRISM_HARNESS_CHILD=1 without it being set in this process', () => {
+  const r = rig();
+  r.write('src/a.ts', 'x\n');
+  runHarnessReview(r.opts());
+  assert.equal(readFileSync(join(dirname(r.log), 'reviewer-env'), 'utf8').trim(), 'child=1');
+  assert.equal(process.env.PRISM_HARNESS_CHILD, undefined);
+});
+
 test('block_on: high blocks, medium and low are reported; "medium" makes medium block; secret is always on', () => {
   const r = rig();
   r.write('src/a.ts', 'x\n');
@@ -675,9 +718,18 @@ test('claude: hook bypasses are denied; git push detection', () => {
   for (const c of ['git push --no-verify', 'git -c core.hooksPath=/dev/null push', 'git config core.hooksPath x', 'git config --global prism.codewatch false', 'cd x && git push --no-verify origin main']) {
     assert.ok(bypassReason(c), c);
   }
-  for (const c of ['git push', 'git push -n', 'git config user.name x', 'echo --no-verify']) assert.equal(bypassReason(c), null, c);
-  for (const c of ['git push', 'git -C repo push origin x', 'cd a && git push', 'GIT_TRACE=1 git push', 'git --no-pager push']) assert.ok(isGitPush(c), c);
-  for (const c of ['git status', 'echo git push', 'git pushx', 'npm run push']) assert.ok(!isGitPush(c), c);
+  for (const c of ['git push', 'git push -n', 'git config user.name x', 'echo --no-verify', 'echo "git push --no-verify"']) assert.equal(bypassReason(c), null, c);
+  for (const c of ['git push', 'git -C repo push origin x', 'cd a && git push', 'GIT_TRACE=1 git push', 'git --no-pager push', 'env git push', 'env -u X A=1 git push',
+    'git --git-dir=/x push', 'git --git-dir /x --work-tree /y push', 'git -C dir push', '/usr/bin/git push', 'sh -c "git push origin x"', "bash -lc 'cd a && git push'", 'git "push"']) assert.ok(isGitPush(c), c);
+  for (const c of ['git status', 'echo git push', 'git pushx', 'npm run push', 'git log --grep push', 'git -C push status', "echo 'git push'", 'sh -c "sh -c \'git push\'"']) assert.ok(!isGitPush(c), c);
+  for (const c of ['FOO=1 git push --no-verify', 'env git push --no-verify', 'git -cCore.hooksPath=/x push', 'bash -c "git config --local prism.reviewer none"']) assert.ok(bypassReason(c), c);
+  assert.deepEqual(gitCalls('A=1 git -c a=b --no-pager -C d push o b'), [{ sub: 'push', configs: ['a=b'], args: ['o', 'b'] }]);
+  assert.deepEqual(shellCommands(`a 'b c' "d \\"e\\"" f\\ g; h | i && j`), [['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']]);
+  // Linear time: no backtracking on adversarial input.
+  const t0 = Date.now();
+  const evil = 'git ' + ' -C --=!'.repeat(5000);
+  isGitPush(evil); bypassReason(evil); isGitPush('a='.repeat(50_000)); bypassReason(`sh -c "${'-c '.repeat(20_000)}"`);
+  assert.ok(Date.now() - t0 < 500, `took ${Date.now() - t0} ms`);
   const r = rig();
   const out = JSON.parse(runClaudeHook('pre-push', hookInput(r, { tool_input: { command: 'git push --no-verify' } }), { env: {} }));
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');

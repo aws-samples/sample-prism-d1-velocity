@@ -80,9 +80,11 @@ export interface ReviewRun {
  * Runs one adapter and parses its output. Never throws: a missing binary, a
  * timeout, a non-zero exit and unparseable output all come back as ok:false.
  */
-export function runReview(adapter: ReviewerAdapter, req: ReviewRequest, timeoutMs: number, binaryPath?: string): ReviewRun {
+export function runReview(adapter: ReviewerAdapter, req: ReviewRequest, timeoutMs: number, binaryPath?: string, extraEnv: Record<string, string> = {}): ReviewRun {
   const env = { ...process.env };
   for (const k of GIT_HOOK_ENV) delete env[k];
+  // Child only: this process's own environment is never changed.
+  Object.assign(env, extraEnv);
   let inv;
   try {
     inv = adapter.invocation(req);
