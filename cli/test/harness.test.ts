@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEADLINE_RESERVE_MS, exitCodeFor, isTamperPath, runHarnessReview, TAMPER_GLOBS, VERDICT_SCHEMA, type HarnessOptions, type HarnessVerdict } from '../src/codewatch/harness/engine.js';
-import { agentText, bypassReason, DENY_TAIL, pushGateOn, gitCalls, isGitPush, parsePushTarget, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { agentText, bypassReason, DENY_TAIL, noticeOnce, pushGateOn, gitCalls, isGitPush, parsePushTarget, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
 import { globToRegExp, matchesAny, parseDiff, readBlobs, snapshotTree } from '../src/codewatch/harness/diff.js';
 import { loadState, recordBaseline, sanitizeSession, statePath } from '../src/codewatch/harness/state.js';
 import { readHarnessConfig } from '../src/codewatch/config.js';
@@ -679,10 +679,34 @@ test('D4: the finish gate still blocks on a high finding; block_on at push only 
   const v = runHarnessReview(s.opts({ event: 'pre-push', scope: 'branch' }));
   assert.equal(v.verdict, 'pass');
   assert.equal(v.findings[0].blocking, false);
-  assert.ok(v.warnings.some((w) => /block_on .* applies to the finish gate only/.test(w)), v.warnings.join('|'));
+  assert.ok(v.warnings.some((w) => /block_on .* applies to the finish gate and direct reviews only/.test(w)), v.warnings.join('|'));
   const direct = runHarnessReview(s.opts({ scope: 'branch' }));
   assert.equal(direct.verdict, 'fix', 'a direct codewatch review still applies block_on');
-  assert.ok(!direct.warnings.some((w) => /finish gate only/.test(w)));
+  assert.ok(!direct.warnings.some((w) => /finish gate/.test(w)));
+});
+
+test('the block_on notice at push: silent for the default, once per session through the adapter', () => {
+  const blockOnNotes = (v: HarnessVerdict) => v.warnings.filter((w) => /harness\.block_on .* applies to the finish gate and direct reviews only/.test(w)).length;
+  const d = rig();
+  d.write('.prism/config.json', JSON.stringify({ harness: { block_on: ['secret', 'high'] } }));
+  d.commit();
+  d.write('src/a.ts', 'x\n');
+  assert.equal(blockOnNotes(runHarnessReview(d.opts({ event: 'pre-push', scope: 'branch' }))), 0, 'the default written out is not a change');
+
+  const s = rig();
+  s.write('.prism/config.json', JSON.stringify({ harness: { block_on: ['high', 'medium'] } }));
+  s.commit();
+  const env = { CLAUDE_PLUGIN_DATA: tmp('plugin-data') };
+  const deps = { env, engine: { pathEnv: s.bin, gitleaksBin: join(dirname(s.log), 'gitleaks') } };
+  const push = hookInput(s, { tool_input: { command: 'git push' } });
+  s.write('src/a.ts', 'x\n');
+  assert.match(JSON.parse(runClaudeHook('pre-push', push, deps)).systemMessage, /applies to the finish gate and direct reviews only/);
+  s.write('src/a.ts', 'y\n');
+  assert.ok(!runClaudeHook('pre-push', push, deps).includes('finish gate'), 'not again in the same session');
+  assert.ok(existsSync(join(env.CLAUDE_PLUGIN_DATA, 'harness-notices', 'cc-1-block-on')), 'the plugin\'s marker directory and naming');
+  s.write('src/a.ts', 'z\n');
+  assert.match(runClaudeHook('pre-push', hookInput(s, { session_id: 'cc-2', tool_input: { command: 'git push' } }), deps), /finish gate and direct reviews only/, 'a new session hears it once');
+  assert.equal(noticeOnce(null, 'block-on', env), true, 'no session id: always shown');
 });
 
 test('claude push gate: harness.push_gate false skips the AI review but not gitleaks, and the plugin option cannot override it', () => {

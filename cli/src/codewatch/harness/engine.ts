@@ -124,6 +124,11 @@ export interface HarnessOptions {
    * the result. Hooks set it below the client's kill time. Unset: no deadline.
    */
   deadlineMs?: number;
+  /**
+   * Returns true the first time a notice with this key may be shown in the
+   * current session, false after. Unset: every notice shows.
+   */
+  noticeOnce?: (key: string) => boolean;
   /** pre-push: what the agent's `git push` command writes (parsed by the adapter). */
   push?: PushTarget;
   /** PATH for reviewer detection (tests). */
@@ -648,8 +653,10 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
   const now = opts.now ?? (() => new Date());
   const warnings: string[] = [];
   const cfg = readHarnessConfig(opts.repoRoot, warnings);
-  if (opts.event === 'pre-push' && cfg.block_on_set && cfg.block_on.some((b) => b !== 'secret')) {
-    warnings.push(`harness.block_on (${cfg.block_on.join(', ')}) applies to the finish gate only; the push check blocks only on secrets, secret-scan failures and changes to the checks`);
+  // D4: block_on is the finish gate's. Say so at push only when the team changed it, and once per session.
+  const defaultBlockOn = cfg.block_on.length === 2 && cfg.block_on.includes('secret') && cfg.block_on.includes('high');
+  if (opts.event === 'pre-push' && cfg.block_on_set && !defaultBlockOn && (opts.noticeOnce?.('block-on') ?? true)) {
+    warnings.push(`harness.block_on (${cfg.block_on.join(', ')}) applies to the finish gate and direct reviews only; the push check blocks only on secrets, secret-scan failures and changes to the checks`);
   }
   const session = opts.session ?? null;
   let maxRounds = opts.maxRounds ?? cfg.max_rounds;

@@ -7,6 +7,9 @@
  * Events: session-start (record the baseline), stop (finish gate, opt-in),
  * pre-push (PreToolUse on Bash git push, on by default), session-end.
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict, type PushTarget } from './engine.js';
@@ -34,6 +37,26 @@ export interface ClaudeHookDeps {
 }
 
 const truthy = (v: string | undefined) => v !== undefined && /^(1|true|yes|on)$/i.test(v.trim());
+
+/**
+ * True the first time a notice may show in this Claude Code session, false
+ * after. The same marker the plugin's harness-hook.mjs uses for its
+ * old-CLI notice: an empty file `<session>-<key>` under
+ * `$CLAUDE_PLUGIN_DATA/harness-notices` (or the OS temp dir). No session id,
+ * or a marker that cannot be written, shows the notice.
+ */
+export function noticeOnce(session: string | null, key: string, env: NodeJS.ProcessEnv): boolean {
+  if (!session || !/^[A-Za-z0-9_-]{1,40}$/.test(key)) return true;
+  const base = env.CLAUDE_PLUGIN_DATA || join(tmpdir(), `prism-plugin-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
+  const dir = join(base, 'harness-notices');
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, `${session}-${key}`), '', { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (e: any) { // any: fs error, only its code is read
+    return e?.code !== 'EEXIST';
+  }
+}
 
 /** Finish gate: on when the repo key or the plugin option (or PRISM_HARNESS_FINISH_GATE) turns it on. */
 export function finishGateOn(repoKey: boolean, env: NodeJS.ProcessEnv): boolean {
@@ -338,7 +361,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
     }
 
     // pre-push: a git push (checked above)
-    const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
+    const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
     const reason = () => agentText(v, { maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
     if (v.verdict === 'stop') {
