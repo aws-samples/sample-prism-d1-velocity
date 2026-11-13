@@ -295,7 +295,7 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
   pull: (g) => refspecBypass(g),
   push: (g) => refspecBypass(g),
   branch: (g) => {
-    if (g.args.some((a) => a === '-u' || a === '--set-upstream-to' || a.startsWith('--set-upstream-to=') || a === '--unset-upstream')) return `git branch --set-upstream-to ${MOVES_UPSTREAM}`;
+    if (g.args.some((a) => /^-[a-zA-Z]*u/.test(a) || a === '--set-upstream-to' || a.startsWith('--set-upstream-to=') || a === '--unset-upstream')) return `git branch --set-upstream-to ${MOVES_UPSTREAM}`;
     const name = createdName(g, ['-l', '--list', '-a', '--all', '-r', '--remotes', '-d', '-D', '--delete', '-v', '-vv', '--show-current', '--contains', '--merged', '--no-merged', '--points-at']);
     return name && SHADOW_NAME.test(name) ? `git branch ${quoted(name)} creates a branch that ${SHADOWS}` : null;
   },
@@ -305,8 +305,9 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
   },
   checkout: (g) => createFlagBypass(g),
   switch: (g) => createFlagBypass(g),
-  // rename and remove move or delete refs/remotes/<name>/*; set-branches and set-url change what a later fetch writes there.
-  remote: (g) => (['rename', 'remove', 'rm', 'set-branches', 'set-url'].includes(g.args[0] ?? '') ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
+  // rename and remove move or delete refs/remotes/<name>/*; set-branches, set-url and a mirror remote change what a later fetch writes there.
+  remote: (g) => (['rename', 'remove', 'rm', 'set-branches', 'set-url'].includes(g.args[0] ?? '') || (g.args[0] === 'add' && g.args.some((a) => a === '--mirror' || a.startsWith('--mirror=')))
+    ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
   config: (g) => {
     const up = configWrite(g, /^branch\..+\.(merge|remote)$/i);
     if (up) return `git config ${up.slice(0, MAX_REASON_ARG)} ${MOVES_UPSTREAM}`;
@@ -320,10 +321,9 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
 
 /** A fetch or push refspec (or `--refmap=`) whose destination is a remote-tracking ref, or a branch or tag named like one. */
 function refspecBypass(g: GitCall): string | null {
-  // `git -c remote.<name>.fetch=...` or `.url=` remaps an ordinary fetch for this one run.
-  const oneShot = g.configs.find((c) => REMOTE_FETCH_KEY.test(c.split('=')[0]));
-  if (oneShot) return `git -c ${oneShot.split('=')[0].slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}`;
-  const shadowsOrMoves = (d: string) => { const s = d.replace(/^\+/, ''); return s.startsWith('refs/') ? movesTracking(s) : SHADOW_NAME.test(s); };
+  // A shadow-named destination matters only when it lands in this repository: fetch and pull, or a push to `.`.
+  const local = g.sub !== 'push' || positionals(g.args)[0] === '.';
+  const shadowsOrMoves = (d: string) => { const s = d.replace(/^\+/, ''); return s.startsWith('refs/') ? movesTracking(s) : local && SHADOW_NAME.test(s); };
   const specs = [...positionals(g.args), ...g.args.filter((a) => a.startsWith('--refmap=')).map((a) => a.slice('--refmap='.length))];
   const refmap = g.args.indexOf('--refmap');
   if (refmap >= 0 && g.args[refmap + 1]) specs.push(g.args[refmap + 1]);
@@ -345,7 +345,12 @@ function createFlagBypass(g: GitCall): string | null {
   return name && SHADOW_NAME.test(name) ? `git ${g.sub} creating ${quoted(name)} makes a branch that ${SHADOWS}` : null;
 }
 
-const refBypass = (g: GitCall) => (g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null);
+const refBypass = (g: GitCall) => {
+  // `git -c remote.<name>.fetch=...` or `.url=` remaps any fetch this run does (fetch, pull, remote update, ...).
+  const oneShot = g.configs.find((c) => REMOTE_FETCH_KEY.test(c.split('=')[0]));
+  if (oneShot) return `git -c ${oneShot.split('=')[0].slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}`;
+  return g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null;
+};
 
 /**
  * A command that would turn off or route around PRISM's hooks (section 6.2), or move what the

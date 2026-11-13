@@ -402,7 +402,7 @@ and `-c core.hooksPath=` are denied with a message to the agent. So, since 1.12.
 command that moves what the push check measures against (D4): a remote-tracking ref
 (`git update-ref refs/remotes/...` or `--stdin`, a `git fetch`, `git pull` or `git push` refspec whose
 destination is `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, `git remote rename`,
-`remove`, `set-branches` or `set-url`, a write to `remote.<name>.fetch` or `.url` (also one-shot through `git -c`), a `--refmap`, a branch or tag named like one (`origin/...`, `upstream/...`,
+`remove`, `set-branches` or `set-url`, `git remote add --mirror`, a write to `remote.<name>.fetch` or `.url` (also one-shot through `git -c`, on any subcommand), a `--refmap`, a branch or tag named like one (`origin/...`, `upstream/...`,
 `remotes/...`, `refs/...`, by `git branch`, `git tag`, `git checkout -b`, `git switch -c`,
 `git update-ref refs/heads/origin/...`, or a fetch or push refspec destination; defense in depth,
 since the engine reads full `refs/remotes/...` names, so other remote names are not listed), and the
@@ -941,7 +941,7 @@ Where 1.11.0 differs from or settles something in the text above:
   `env`, `sh -c` and `/usr/bin/git` are not stripped, so `Bash(git push*)` would miss
   `env git push`, `git -C dir push` and `sh -c 'git push'`. The plugin uses
   `Bash(*git*push*)` for the `pre-push` event, and `Bash(*git*config*)`, `Bash(*git*-c*)`,
-  `Bash(*git*ref*)`, `Bash(*git*remote*)`, `Bash(*git*fetch*)`, `Bash(*git*branch*)`, `Bash(*git*tag*)`,
+  `Bash(*git*ref*)`, `Bash(*git*remote*)`, `Bash(*git*fetch*)`, `Bash(*git*pull*)`, `Bash(*git*branch*)`, `Bash(*git*tag*)`,
   `Bash(*git*checkout*)` and `Bash(*git*switch*)` (1.12.0, the ref moves in D4) for
   a `bash-guard` event that runs only the bypass check (never a review, so a command matched by
   two rules is reviewed once). A command that only looks like a push to the filter

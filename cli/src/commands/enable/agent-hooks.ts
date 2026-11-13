@@ -186,7 +186,7 @@ function kiroUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
 // ------------------------------------------------------------ claude
 
 /** The plugin's bash-guard `if` rules (claude-plugin/hooks/hooks.json): the bypass check only, never a review. */
-export const BASH_GUARD_IFS = ['Bash(*git*config*)', 'Bash(*git*-c*)', 'Bash(*git*ref*)', 'Bash(*git*remote*)', 'Bash(*git*fetch*)', 'Bash(*git*branch*)', 'Bash(*git*tag*)', 'Bash(*git*checkout*)', 'Bash(*git*switch*)'];
+export const BASH_GUARD_IFS = ['Bash(*git*config*)', 'Bash(*git*-c*)', 'Bash(*git*ref*)', 'Bash(*git*remote*)', 'Bash(*git*fetch*)', 'Bash(*git*pull*)', 'Bash(*git*branch*)', 'Bash(*git*tag*)', 'Bash(*git*checkout*)', 'Bash(*git*switch*)'];
 
 /** The plugin's harness hooks (claude-plugin/hooks/hooks.json), calling prism-cli directly instead of the plugin's script. */
 export function claudeHooks(cli: string): Record<string, unknown[]> {
