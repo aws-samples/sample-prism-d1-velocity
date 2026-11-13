@@ -192,6 +192,15 @@ test('newest review is chosen by the timestamp in the file name, not the listing
   assert.equal(readReview(dir, 'main')!.status, 'ok');
 });
 
+test('at most MAX_REVIEWS_PARSED files are parsed: an old review of this branch falls back to the newest', () => {
+  const dir = repo('r', 'old');
+  review(dir, '2026-11-01T00:00:00.000Z', [{ severity: 'high' }], 'old');
+  for (let i = 0; i < 25; i++) review(dir, `2026-11-12T10:00:00.${String(i).padStart(3, '0')}Z`, [], 'other');
+  const r = readReview(dir, 'old')!;
+  assert.equal(r.otherBranch, true);
+  assert.equal(r.branch, 'other');
+});
+
 test('timing: in-process work stays far under the 50 ms budget', () => {
   const home = tmp('prism-sl-home-');
   usageCache(home, NOW.getTime());

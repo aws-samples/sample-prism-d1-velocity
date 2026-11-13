@@ -33,6 +33,8 @@ export const MAX_WALK_UP = 40;
 /** Result files larger than this are not parsed (a status line must stay cheap). */
 export const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 export const MAX_USAGE_BYTES = 1024 * 1024;
+/** Newest review files parsed when looking for the checked-out branch's; older ones are not read. */
+export const MAX_REVIEWS_PARSED = 20;
 /** Longest repo or branch name printed. */
 export const MAX_NAME_CHARS = 40;
 export const DEFAULT_COLUMNS = 120;
@@ -207,7 +209,9 @@ function parseReview(file: string): any | null {
 /**
  * The newest pre-push review of the checked-out branch, else the newest
  * review of any branch (flagged otherBranch). Files are ordered by the
- * timestamp in their names; only the files needed are parsed.
+ * timestamp in their names, and at most MAX_REVIEWS_PARSED of them are parsed.
+ * shortcut: a branch whose last review is older than the newest 20 shows the
+ * newest review of another branch; keep a per-branch index if that matters.
  */
 export function readReview(top: string, branch: string | null): ReviewInfo | null {
   const dir = join(top, RESULTS_SUBDIR);
@@ -215,7 +219,7 @@ export function readReview(top: string, branch: string | null): ReviewInfo | nul
   try { names = readdirSync(dir).filter((n) => n.endsWith(REVIEW_SUFFIX)); } catch { return null; }
   names.sort((a, b) => (stampOf(b) < stampOf(a) ? -1 : stampOf(b) > stampOf(a) ? 1 : 0));
   let fallback: { file: string; r: any } | null = null;
-  for (const n of names) {
+  for (const n of names.slice(0, MAX_REVIEWS_PARSED)) {
     const file = join(dir, n);
     const r = parseReview(file);
     if (!r) continue;
