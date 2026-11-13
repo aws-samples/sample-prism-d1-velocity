@@ -727,7 +727,10 @@ test('claude: hook bypasses are denied; git push detection', () => {
   for (const c of ['git push', 'git -C repo push origin x', 'cd a && git push', 'GIT_TRACE=1 git push', 'git --no-pager push', 'env git push', 'env -u X A=1 git push',
     'git --git-dir=/x push', 'git --git-dir /x --work-tree /y push', 'git -C dir push', '/usr/bin/git push', 'sh -c "git push origin x"', "bash -lc 'cd a && git push'", 'git "push"']) assert.ok(isGitPush(c), c);
   for (const c of ['git status', 'echo git push', 'git pushx', 'npm run push', 'git log --grep push', 'git -C push status', "echo 'git push'", 'sh -c "sh -c \'git push\'"']) assert.ok(!isGitPush(c), c);
-  for (const c of ['FOO=1 git push --no-verify', 'env git push --no-verify', 'git -cCore.hooksPath=/x push', 'bash -c "git config --local prism.reviewer none"']) assert.ok(bypassReason(c), c);
+  for (const c of ['FOO=1 git push --no-verify', 'env git push --no-verify', 'git -cCore.hooksPath=/x push', 'bash -c "git config --local prism.reviewer none"',
+    'git push --no-verif', 'git push --no-v origin x', 'git --config-env core.hooksPath=HP push', 'git --config-env=core.hooksPath=HP push']) assert.ok(bypassReason(c), c);
+  assert.equal(bypassReason('git push --no- origin x'), null, '--no- alone is ambiguous');
+  for (const c of ['(git push)', '{ git push; }', 'if true; then git push; fi', 'git push>log 2>&1', 'exec git push', 'nohup git push &', '! git push']) assert.ok(isGitPush(c), c);
   assert.deepEqual(gitCalls('A=1 git -c a=b --no-pager -C d push o b'), [{ sub: 'push', configs: ['a=b'], args: ['o', 'b'] }]);
   assert.deepEqual(shellCommands(`a 'b c' "d \\"e\\"" f\\ g; h | i && j`), [['a', 'b c', 'd "e"', 'f g'], ['h'], ['i'], ['j']]);
   // Linear time: no backtracking on adversarial input.

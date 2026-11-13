@@ -81,9 +81,11 @@ export const ifMatches = (rule, cmd) => subcommands(cmd).some((s) => ruleMatches
 const PUSHES = ['git push', 'git -C repo push origin x', 'cd a && git push', 'GIT_TRACE=1 git push', 'git --no-pager push', 'env git push',
   'env -u X A=1 git push', 'git --git-dir=/x push', 'git --git-dir /x --work-tree /y push', 'git -C dir push', '/usr/bin/git push',
   'sh -c "git push origin x"', "bash -lc 'cd a && git push'", 'git "push"', 'FOO=1 git push --no-verify', 'env git push --no-verify',
-  'git -c core.hooksPath=/dev/null push', 'timeout 60 git push', 'echo $(git push)'];
+  'git -c core.hooksPath=/dev/null push', 'timeout 60 git push', 'echo $(git push)',
+  '(git push)', '{ git push; }', 'if true; then git push; fi', 'git push>log 2>&1', 'exec git push', 'nohup git push &', '! git push'];
 const BYPASSES = ['git config core.hooksPath x', 'git config --global prism.codewatch false', 'git -cCore.hooksPath=/x push',
-  'bash -c "git config --local prism.reviewer none"', 'git -c core.hooksPath=/dev/null commit -m x', 'cd x && git push --no-verify origin main'];
+  'bash -c "git config --local prism.reviewer none"', 'git -c core.hooksPath=/dev/null commit -m x', 'cd x && git push --no-verify origin main',
+  'git push --no-verif', 'git --config-env core.hooksPath=HP push', 'git --config-env=core.hooksPath=HP commit'];
 
 test('every push form the tokenizer handles reaches the pre-push handler', () => {
   const rules = rulesFor('pre-push');

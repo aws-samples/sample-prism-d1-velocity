@@ -43,7 +43,8 @@ export function pushGateOn(repoKey: boolean, env: NodeJS.ProcessEnv): boolean {
 /**
  * Splits a shell command line into simple commands, each a list of words, in
  * one linear pass (no backtracking regex). Understands single and double
- * quotes, backslash escapes, and the separators ; & | && || and newlines.
+ * quotes, backslash escapes, the separators ; & | && || ( ) and newlines, and
+ * treats < and > as word ends (redirects).
  *
  * shortcut: this is a guardrail, not a shell. `$(...)`, backticks, `eval`,
  * aliases, functions and scripts are not expanded, so a push hidden behind one
@@ -69,8 +70,9 @@ export function shellCommands(cmd: string): string[][] {
     }
     if (ch === "'" || ch === '"') { quote = ch; inWord = true; continue; }
     if (ch === '\\' && i + 1 < cmd.length) { if (cmd[i + 1] !== '\n') { word += cmd[i + 1]; inWord = true; } i++; continue; }
-    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n') { endCmd(); continue; }
-    if (ch === ' ' || ch === '\t' || ch === '\r') { endWord(); continue; }
+    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n' || ch === '(' || ch === ')') { endCmd(); continue; }
+    // A redirect ends the word before it: `git push>log` is `git push` writing to `log`.
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '<' || ch === '>') { endWord(); continue; }
     word += ch;
     inWord = true;
   }
@@ -93,18 +95,24 @@ export interface GitCall {
   args: string[];
 }
 
-/** Drops leading VAR=val words and a leading `env` with its options and VAR=val words. */
+/** Words that start a command without being it: grouping, negation, control keywords, and wrappers that run their argument. */
+const LEADERS = new Set(['{', '}', '!', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', 'exec', 'command', 'builtin', 'nohup', 'time', 'noglob']);
+
+/** Drops leading VAR=val words, grouping and control keywords, simple wrappers, and `env` with its options and VAR=val words. */
 function stripPrefix(w: string[]): string[] {
   let i = 0;
-  while (i < w.length && ASSIGNMENT.test(w[i])) i++;
-  if (i < w.length && base(w[i]) === 'env') {
-    i++;
-    while (i < w.length && (ASSIGNMENT.test(w[i]) || w[i].startsWith('-'))) {
-      if (w[i] === '-u' || w[i] === '--unset' || w[i] === '-C' || w[i] === '--chdir') i++;
+  for (;;) {
+    while (i < w.length && (ASSIGNMENT.test(w[i]) || LEADERS.has(w[i]))) i++;
+    if (i < w.length && base(w[i]) === 'env') {
       i++;
+      while (i < w.length && (ASSIGNMENT.test(w[i]) || w[i].startsWith('-'))) {
+        if (w[i] === '-u' || w[i] === '--unset' || w[i] === '-C' || w[i] === '--chdir') i++;
+        i++;
+      }
+      continue;
     }
+    return w.slice(i);
   }
-  return w.slice(i);
 }
 
 /** The git invocations in a command line, including one level of `sh -c '...'`. */
@@ -126,10 +134,12 @@ export function gitCalls(cmd: string, depth = 0): GitCall[] {
     while (i < w.length && w[i].startsWith('-')) {
       const opt = w[i];
       if (GIT_VALUE_OPTS.has(opt)) {
-        if (opt === '-c' && i + 1 < w.length) configs.push(w[i + 1]);
+        // -c name=value and --config-env name=ENVVAR both set a config key for this run.
+        if ((opt === '-c' || opt === '--config-env') && i + 1 < w.length) configs.push(w[i + 1]);
         i += 2;
       } else {
         if (opt.startsWith('-c') && opt.length > 2) configs.push(opt.slice(2)); // -cname=value
+        if (opt.startsWith('--config-env=')) configs.push(opt.slice('--config-env='.length));
         i++;
       }
     }
@@ -142,11 +152,14 @@ export function isGitPush(cmd: string): boolean {
   return gitCalls(cmd).some((g) => g.sub === 'push');
 }
 
+/** git accepts any unambiguous prefix of a long option; `--no-v` is the shortest that means `--no-verify` for push. */
+const isNoVerify = (a: string) => a.length >= '--no-v'.length && '--no-verify'.startsWith(a);
+
 /** A command that would turn off or route around PRISM's hooks (section 6.2). */
 export function bypassReason(cmd: string): string | null {
   for (const g of gitCalls(cmd)) {
     if (g.configs.some((c) => c.toLowerCase().startsWith('core.hookspath='))) return '-c core.hooksPath= routes around the git hooks';
-    if (g.sub === 'push' && g.args.includes('--no-verify')) return 'git push --no-verify skips the git hooks';
+    if (g.sub === 'push' && g.args.some(isNoVerify)) return 'git push --no-verify skips the git hooks';
     if (g.sub === 'config') {
       const keys = g.args.map((a) => a.toLowerCase());
       if (keys.includes('core.hookspath')) return 'git config core.hooksPath changes which git hooks run';
