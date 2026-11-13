@@ -491,29 +491,28 @@ prism-cli version        # installed version, newer release on npm, other copies
 The local results (codewatch reviews, AI spend, the setup checklist) appear in these tools. All of
 them read the same local data as `prism-cli dashboard` and make no AWS calls.
 
-| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code (WIP / planned) |
+| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code plugin (v0.1, WIP) |
 |---|---|---|---|
-| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes, through the `prism_findings` MCP tool |
-| Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes, through the `prism_report` MCP tool |
-| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes, through the `prism_spend` MCP tool; a status line is planned |
-| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes, through the `prism_setup` MCP tool |
-| MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: today's only integration besides the SessionStart hook |
+| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes: `/prism:findings`, and a summary of the branch's open findings at session start |
+| Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes: `/prism:report` |
+| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes: `/prism:spend`; a status line is planned |
+| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes: `/prism` lists failing items with fix commands |
+| MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: the plugin's `prism` MCP server |
 | Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
-| Plugin, slash commands | No | No | Planned |
+| Plugin, slash commands | No | No | Yes: `/prism`, `/prism:findings`, `/prism:report`, `/prism:fix`, `/prism:spend` |
 | Where it runs | With a repo open or without one (machine mode), and on the remote host over Remote-SSH | The Kiro Crew gateway's machine | Wherever `claude` runs |
-| Install | `code --install-extension prism-d1-<version>.vsix` (`kiro` or `cursor` instead of `code`), from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true) | `prism-cli enable kirocrew` | `claude mcp add prism -- prism-cli mcp` |
+| Install | `code --install-extension prism-d1-<version>.vsix` (`kiro` or `cursor` instead of `code`), from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true) | `prism-cli enable kirocrew` | `/plugin marketplace add aws-samples/sample-prism-d1-velocity`, then `/plugin install prism@prism-d1-velocity` |
 
-Claude Code support is a work in progress. Today it is the [MCP server](#mcp-server-prism-cli-mcp)
-and the SessionStart hook `prism-cli git claude-session-context`, which the retired git-hook
-installer used to register and which is kept for hooks already installed. A Claude Code plugin,
-slash commands and a status line are planned.
+Claude Code support is a work in progress. The [Claude Code plugin](#claude-code-plugin) (v0.1)
+bundles the [MCP server](#mcp-server-prism-cli-mcp), slash commands and a SessionStart hook. A
+status line and a review loop that runs before Claude finishes are planned.
 
 ### Commands by job
 
 Most features run on a developer machine with no AWS deployment: the
 [codewatch git hooks](#codewatch-local-git-hooks), the [local dashboard](#local-dashboard), the
 [editor extension](#editor-extension), the [MCP server](#mcp-server-prism-cli-mcp), the
-[Kiro Crew app](#kiro-crew-app) and the read-only
+[Kiro Crew app](#kiro-crew-app), the [Claude Code plugin](#claude-code-plugin) and the read-only
 [AWS account checks](#aws-account-advice-aws-connect-check-recommend).
 
 | Job | Commands | How-to |
@@ -587,7 +586,8 @@ Kiro (`~/.kiro/settings/mcp.json`, or `.kiro/settings/mcp.json` in a workspace):
 }
 ```
 
-Claude Code:
+Claude Code: install the [Claude Code plugin](#claude-code-plugin), which registers this server for
+you. To add only the server, without the plugin:
 
 ```bash
 claude mcp add prism -- prism-cli mcp
@@ -596,6 +596,27 @@ claude mcp add prism -- prism-cli mcp
 With an nvm install, a client started outside your shell may not have nvm's directory on PATH. Use
 the absolute path that `command -v prism-cli` prints as the command, for example
 `"command": "/path/from/command-v/prism-cli"`.
+
+### Claude Code plugin
+
+[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.1, work in progress), and
+this repository is its plugin marketplace. It registers `prism-cli mcp` as the `prism` MCP server
+and adds these slash commands: `/prism` (status), `/prism:findings` (the latest review of this
+branch), `/prism:report` (the scan report as an HTML file or Markdown), `/prism:fix [n]` (fix one
+finding, or all high and medium ones, in at most 2 rounds) and `/prism:spend`. Its SessionStart
+hook adds a short summary of the branch's open findings to Claude's context, capped at 2 KB, with
+the finding text quoted. The hook also runs `prism-cli git claude-session-context`, unless your
+settings already register that command. Every command treats finding text as untrusted reviewer
+output. None of them pushes or bypasses the git hooks. The plugin needs prism-cli 1.8.0 or later
+on the PATH Claude Code sees.
+
+```text
+/plugin marketplace add aws-samples/sample-prism-d1-velocity
+/plugin install prism@prism-d1-velocity
+```
+
+The [plugin README](claude-plugin/README.md) covers the nvm `PRISM_CLI` override, how to remove the
+old manual SessionStart hook, why a plugin can't set the status line, and how to uninstall.
 
 ### Kiro Crew app
 
