@@ -285,7 +285,7 @@ interface Diffs {
   diff: ParsedDiff;
   /** What this session changed (baseline to now); the same as `diff` without a session. */
   sessionDiff: ParsedDiff;
-  /** HEAD shares no history with the session's start commit (or that commit is gone): tamper is judged on the review diff. */
+  /** HEAD shares no history with the session's start commit (or that commit is gone): the run is reviewed against the branch's base and tamper is judged on that diff. */
   rewritten: boolean;
 }
 
@@ -321,19 +321,36 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string;
   }
   // A reset or rebase past the commit the session started on makes the baseline diff describe the
   // rewrite, not the agent's edits. Compare against the fork point with the start commit instead:
-  // what came before it is shared with the start commit. Later commits are session work, or
-  // upstream commits a rebase brought in (a push does not carry those, see integrityChecks; at the
-  // finish gate they count, as upstream commits a fast-forward pull brings in already do).
-  // Uncommitted work from before the session then counts as session work.
-  const moved = !!state.head && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok;
+  // what came before it is shared with the start commit. When the branch's upstream base is newer
+  // than the fork point (a rebase onto a newer upstream), start from that base, so upstream commits
+  // the rebase brought in are not session work. Uncommitted work from before the session then
+  // counts as session work. With no fork point at all, resolveDiffs reviews against the branch's
+  // base and the session diff is that review diff.
+  const start = state.head;
   let rewritten = false;
-  if (moved) {
-    const fork = gitIn(repoRoot, ['merge-base', state.head!, 'HEAD']);
-    if (fork.ok && fork.stdout) sessionBase = fork.stdout;
-    else rewritten = true; // unrelated histories, or the start commit is gone
-    const widen = r.scope === 'new-lines';
-    if (widen) r.scope = 'files';
-    warnings.push(`HEAD is no longer a descendant of the commit the session started on (branch switch, reset or rebase); ${rewritten ? 'the two histories do not meet, so tamper is judged on the whole reviewed diff' : 'session changes are counted from where the two histories meet'}${widen ? ', and whole changed files are judged this run' : ''}`);
+  let why: string | null = null;
+  if (start && !objectExists(repoRoot, `${start}^{commit}`)) {
+    rewritten = true;
+    why = 'the commit the session started on is gone, so this run is judged against the branch\'s base instead of the session start';
+  } else if (start && !gitIn(repoRoot, ['merge-base', '--is-ancestor', start, 'HEAD']).ok) {
+    const fork = gitIn(repoRoot, ['merge-base', start, 'HEAD']);
+    if (!fork.ok || !fork.stdout) {
+      rewritten = true;
+      why = 'HEAD shares no history with the commit the session started on, so this run is judged against the branch\'s base instead of the session start';
+    } else {
+      const up = branchBase(repoRoot, head, undefined, r.opts.push, []);
+      const newer = up && !up.emptyTree && up.base !== fork.stdout && gitIn(repoRoot, ['merge-base', '--is-ancestor', fork.stdout, up.base]).ok;
+      sessionBase = newer ? up.base : fork.stdout;
+      why = `HEAD is no longer a descendant of the commit the session started on (branch switch, reset or rebase); session changes are counted from where the two histories meet${newer ? `, leaving out the upstream commits since then (${up.label})` : ''}`;
+    }
+  }
+  if (why) {
+    const parts = [why];
+    if (r.scope === 'new-lines') {
+      r.scope = 'files';
+      parts.push('whole changed files are judged this run');
+    }
+    warnings.push(parts.join('; '));
   }
   return { state, sessionBase, rewritten };
 }
@@ -360,7 +377,7 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
   let reviewBase: string;
   let upstreamLabel: string | null = null;
   if (opts.mode === 'staged') reviewBase = head;
-  else if (r.scope === 'branch' || opts.mode === 'since' || !state || tip !== head) {
+  else if (r.scope === 'branch' || opts.mode === 'since' || !state || rewritten || tip !== head) {
     const b = branchBase(repoRoot, tip, opts.since, push, warnings);
     if (!b) {
       if (r.event === 'pre-push') return { unknown: 'git could not tell which commits this push carries' };
@@ -375,7 +392,8 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
   const diffText = diffTrees(repoRoot, reviewBase, current);
   if (diffText === null) throw new Error('git diff failed');
   const diff = parseDiff(diffText);
-  const sessionDiff = state && reviewBase !== sessionBase && opts.mode !== 'staged'
+  // With no fork point, the session diff is the review diff (judged against the branch's base).
+  const sessionDiff = state && !rewritten && reviewBase !== sessionBase && opts.mode !== 'staged'
     ? parseDiff(diffTrees(repoRoot, sessionBase, current) ?? '')
     : diff;
   return { state, rewritten, tip, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
