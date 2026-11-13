@@ -816,6 +816,22 @@ Where 1.11.0 differs from or settles something in the text above:
   secret scan with no verdict. `codewatch review` and `prism_review` in branch scope use the same
   chain, and the git pre-push hook uses its fallback steps for a new branch instead of skipping
   the review.
+- **Push gate precedence.** The text above says a gate runs when either the repo key or the plugin
+  option turns it on. That holds for the finish gate. For the push gate's AI review it would mean
+  the plugin's `push_gate` option could never turn it off, since `harness.push_gate` defaults to
+  true. So: an explicit `harness.push_gate` in `.prism/config.json` (true or false) wins; when the
+  repo leaves it unset, the plugin option decides; with neither, it is on. gitleaks runs before a
+  push in every case.
+- **One time budget per hook run.** The Claude adapter gives the whole run a deadline of 270 s
+  (`HOOK_BUDGET_MS`, under the plugin script's 290 s cap and the 300 s hook timeout). Each gitleaks
+  scan (files, then commits) and each reviewer attempt gets only what is left, less a 5 s reserve
+  for writing the result, and a step with under a second left is not started. A secret scan that
+  cannot finish in time is `stop` with `secrets-scan-failed` at push, so the push is denied rather
+  than the client killing the hook; a review that runs out of time fails open (D1).
+- **A file name with a newline** cannot go through `git cat-file --batch` (its input is one path per
+  line; `-z` needs git 2.43), so that file's working-tree copy is not scanned and the run reports
+  `secrets_scanned: false` with a warning. At push, the per-commit scan (`gitleaks git`) still reads
+  the file from history.
 - **Secrets in the pushed commits.** In branch scope (the push gate, `codewatch review` without a
   session, `prism_review` without `session`) gitleaks also runs `gitleaks git --log-opts=<base>..<tip>`
   over every commit of the range (the whole history on a first push), because the tree diff misses

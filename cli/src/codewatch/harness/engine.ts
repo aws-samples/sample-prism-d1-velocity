@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { HARNESS_MAX_ROUNDS_CEILING, modelLabel, readEvalConfig, readHarnessConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY, type BlockOn, type HarnessConfig } from '../config.js';
-import { gitleaksInstallHint, safeWrite, scanCommits, scanFiles, type CommitScan, type CommitSecret, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
+import { GITLEAKS_SCAN_TIMEOUT_MS, gitleaksInstallHint, safeWrite, scanCommits, scanFiles, type CommitScan, type CommitSecret, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
 import { ensureResultsExcluded, makeResult, type Finding, type Severity } from '../results.js';
 import { ADAPTERS, detectReviewers, findOnPath, normalizeReview, resolveReviewer, runReview, toolVersion, type ReviewerAdapter, type ReviewRequest, type ReviewRun } from '../reviewers/index.js';
 import { fallbackPushBase, type PushBase } from '../pushbase.js';
@@ -118,6 +118,12 @@ export interface HarnessOptions {
   /** false when the push gate is off: the AI review is skipped, gitleaks still runs. */
   aiReview?: boolean;
   event?: HarnessEvent;
+  /**
+   * Absolute time (epoch ms) the whole run must finish by: every gitleaks scan
+   * and reviewer attempt gets only what is left, minus a reserve for writing
+   * the result. Hooks set it below the client's kill time. Unset: no deadline.
+   */
+  deadlineMs?: number;
   /** pre-push: what the agent's `git push` command writes (parsed by the adapter). */
   push?: PushTarget;
   /** PATH for reviewer detection (tests). */
@@ -208,7 +214,7 @@ function nextAction(v: HarnessVerdict, integ?: Integrity, base?: string): string
       case 'tamper': return integ && (integ.tamper.length || integ.allowMarkers.length)
         ? tamperAction(integ, v.session !== null)
         : 'Stop. This change touched PRISM, secret-scan or hook configuration. Tell the person what you changed there and why; do not undo or repeat the change to get past the check.';
-      case 'secrets-scan-failed': return 'Stop. The secret scan ran but gave no verdict, so the push is held. Tell the person to check gitleaks and its config.';
+      case 'secrets-scan-failed': return 'Stop. The secret scan did not finish or gave no verdict, so the push is held. Tell the person why (see the warnings): a timeout means the scan needs more time than the hook allows; otherwise check gitleaks and its config.';
       case 'push-unknown': return 'Stop. PRISM could not tell which commits this push would send, so it is held. Push one branch at a time with an explicit remote and branch (git push origin <branch>), or tell the person why it was held.';
       case 'max-rounds': return `Stop fixing: the ${plural(v.max_rounds, 'fix round')} for this session are used. Report the remaining blocking findings to the person${v.secrets.length ? ', and do not push while a secret remains' : ''}.`;
       case 'no-progress': return 'Stop: nothing changed since the last review. Report the remaining blocking findings to the person instead of trying again.';
@@ -387,8 +393,13 @@ function secretScan(r: Run, d: Diffs): SecretScan {
   const { repoRoot, warnings, opts } = r;
   const override = scannerOverride(r, d);
   const scanPaths = d.diff.files.filter((f) => !f.deleted && f.added.size && !SCANNER_CONFIG.has(f.path)).map((f) => f.path);
-  const blobs = readBlobs(repoRoot, d.current, scanPaths);
-  const scan = scanFiles(repoRoot, [...blobs].map(([path, content]) => ({ path, content })), opts.gitleaksBin, { override });
+  const unreadable: string[] = [];
+  const blobs = readBlobs(repoRoot, d.current, scanPaths, unreadable);
+  const scan = timedScan(r, 'the changed files', (timeoutMs) =>
+    scanFiles(repoRoot, [...blobs].map(([path, content]) => ({ path, content })), opts.gitleaksBin, { override, timeoutMs }),
+  { status: 'error', findings: [], version: null, reason: null, skipped: [] });
+  // A path git cannot hand over one per line is unscanned, like an unsafe one: never a clean result.
+  scan.skipped.push(...unreadable);
   if (scan.status === 'missing') warnings.push(`secrets not scanned: ${scan.reason}. Install it: ${gitleaksInstallHint()}`);
   if (scan.status === 'error') warnings.push(`secrets not scanned: ${scan.reason}`);
   if (scan.skipped.length) warnings.push(`secrets not scanned in ${scan.skipped.length} file(s) with an unsafe path: ${scan.skipped.slice(0, 5).map((p) => JSON.stringify(p.slice(0, 200))).join(', ')}`);
@@ -414,19 +425,47 @@ function commitScan(r: Run, d: Diffs, override: ScannerConfigOverride | undefine
   const range = revParse(r.repoRoot, `${d.reviewBase}^{commit}`) ? `${d.reviewBase}..${d.tip}` : d.tip;
   const count = gitIn(r.repoRoot, ['rev-list', '--count', range]);
   if (!count.ok || count.stdout === '0') return null;
-  const h = scanCommits(r.repoRoot, range, r.opts.gitleaksBin, { override });
+  const h = timedScan(r, 'the pushed commits', (timeoutMs) => scanCommits(r.repoRoot, range, r.opts.gitleaksBin, { override, timeoutMs }),
+    { status: 'error', findings: [], reason: null });
   if (h.status === 'error') r.warnings.push(`commits not scanned for secrets: ${h.reason}`);
   return h;
 }
 
-/** Runs the reviewer once, plus one retry when the reply cannot be parsed. */
+/** Time kept back from the deadline for writing the state and the result and printing the answer. */
+export const DEADLINE_RESERVE_MS = 5000;
+/** Below this, a step is not started at all: it could not finish in time. */
+const MIN_STEP_MS = 1000;
+
+/** Milliseconds a step may still use under the run's deadline (Infinity without one). */
+function remainingMs(r: Run): number {
+  return r.opts.deadlineMs === undefined ? Infinity : r.opts.deadlineMs - Date.now() - DEADLINE_RESERVE_MS;
+}
+
+/**
+ * Runs one gitleaks scan inside what is left of the deadline. When too little
+ * time is left to start, or the scan is cut off, the result is an error with a
+ * reason that says so; at push that holds the push (secrets-scan-failed)
+ * rather than letting the client kill the hook.
+ */
+function timedScan<T extends { status: string; reason: string | null }>(r: Run, what: string, run: (timeoutMs: number | undefined) => T, failed: T): T {
+  const left = remainingMs(r);
+  if (left < MIN_STEP_MS) return { ...failed, reason: `no time left in the hook's budget to scan ${what}` };
+  const res = run(Number.isFinite(left) ? Math.min(left, GITLEAKS_SCAN_TIMEOUT_MS) : undefined);
+  return res.status === 'error' && res.reason?.includes('timed out') ? { ...res, reason: `scanning ${what} did not finish in time (${res.reason})` } : res;
+}
+
+/** Runs the reviewer once, plus one retry when the reply cannot be parsed, each attempt inside the remaining deadline. */
 function callReviewer(r: Run, adapter: ReviewerAdapter, req: ReviewRequest): { res: ReviewRun; attempts: number } {
   const bin = findOnPath(adapter.binary, r.pathEnv) || adapter.binary;
-  const timeoutMs = (r.opts.timeoutSeconds ?? r.cfg.timeout_seconds) * 1000;
+  const perAttempt = (r.opts.timeoutSeconds ?? r.cfg.timeout_seconds) * 1000;
+  const budget = () => Math.min(perAttempt, remainingMs(r));
+  const outOfTime: ReviewRun = { ok: false, review: null, error: 'no time left in the hook\'s budget for the review', rawStdout: '' };
   const childEnv = { [HARNESS_CHILD_ENV]: '1' };
-  const res = runReview(adapter, req, timeoutMs, bin, childEnv);
+  if (budget() < MIN_STEP_MS) return { res: outOfTime, attempts: 0 };
+  const res = runReview(adapter, req, budget(), bin, childEnv);
   if (res.ok || !res.unparseable) return { res, attempts: 1 };
-  return { res: runReview(adapter, { ...req, retryNote: RETRY_NOTE }, timeoutMs, bin, childEnv), attempts: 2 };
+  if (budget() < MIN_STEP_MS) return { res, attempts: 1 };
+  return { res: runReview(adapter, { ...req, retryNote: RETRY_NOTE }, budget(), bin, childEnv), attempts: 2 };
 }
 
 /** The AI review (section 2.4 step 5), from the cache when the diff hash was seen. `skipWhy` set: no reviewer call. */
