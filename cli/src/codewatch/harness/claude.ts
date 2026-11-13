@@ -266,9 +266,10 @@ function capBytes(s: string, max: number): string {
 /**
  * The text the agent reads: CLI-written next_action first, then the quoted,
  * capped findings list. Reviewer text appears only as JSON strings in the list.
+ * `push`: no round count, since findings start no rounds at a push (D4).
  */
-export function agentText(v: HarnessVerdict, opts: { includeNonBlocking?: boolean; maxBytes?: number } = {}): string {
-  const head = `PRISM harness review: ${v.verdict} (round ${v.round} of ${v.max_rounds}). ${v.next_action}`;
+export function agentText(v: HarnessVerdict, opts: { includeNonBlocking?: boolean; maxBytes?: number; push?: boolean } = {}): string {
+  const head = `PRISM harness review: ${v.verdict}${opts.push ? '' : ` (round ${v.round} of ${v.max_rounds})`}. ${v.next_action}`;
   const rows: string[] = [];
   for (const s of v.secrets) rows.push(`- secret ${JSON.stringify(clip(`${oneLine(s.file)}:${s.line ?? '?'}`, 200))} ${JSON.stringify(clip(oneLine(s.rule), MAX_FINDING_CHARS))}${s.committed ? ' (already committed)' : ''}`);
   for (const s of v.commit_secrets) rows.push(`- secret in commit ${JSON.stringify(s.commit.slice(0, 12))} ${JSON.stringify(clip(`${oneLine(s.file)}:${s.line ?? '?'}`, 200))} ${JSON.stringify(clip(oneLine(s.rule), MAX_FINDING_CHARS))}`);
@@ -362,7 +363,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
 
     // pre-push: a git push (checked above)
     const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
-    const reason = () => agentText(v, { maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
+    const reason = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
     if (v.verdict === 'stop') {
       if (v.secrets.length || v.commit_secrets.length || v.human_why === 'tamper' || v.human_why === 'secrets-scan-failed' || v.human_why === 'push-unknown') return deny(reason(), personText(v));
@@ -372,7 +373,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
     if (v.findings.length) {
       return JSON.stringify({
         systemMessage: personText(v),
-        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: agentText(v, { includeNonBlocking: true }) },
+        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: agentText(v, { includeNonBlocking: true, push: true }) },
       });
     }
     return v.warnings.length ? JSON.stringify({ systemMessage: personText(v) }) : '';

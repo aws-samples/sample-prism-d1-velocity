@@ -285,6 +285,8 @@ interface Diffs {
   diff: ParsedDiff;
   /** What this session changed (baseline to now); the same as `diff` without a session. */
   sessionDiff: ParsedDiff;
+  /** The history was rewritten past the session's start commit: the session diff no longer describes the agent's edits. */
+  rewritten: boolean;
 }
 
 interface Integrity { tamper: string[]; allowMarkers: ParsedDiff['allowMarkers'] }
@@ -303,13 +305,13 @@ interface ReviewOutcome {
 }
 
 /** Loads the session state and picks the session's baseline; may narrow the scope to `files`. */
-function loadSession(r: Run): { state: SessionState | null; sessionBase: string } {
+function loadSession(r: Run): { state: SessionState | null; sessionBase: string; rewritten: boolean } {
   const { repoRoot, session, head, warnings } = r;
   let state: SessionState | null = session ? loadState(repoRoot, session, warnings) : null;
   if (session && !state) {
     state = { version: STATE_VERSION, session, client: r.opts.client ?? null, started_at: r.started, head, baseline_tree: null, rounds: 0, last: null };
   }
-  if (!state) return { state, sessionBase: head };
+  if (!state) return { state, sessionBase: head, rewritten: false };
   let sessionBase = head;
   if (state.baseline_tree && objectExists(repoRoot, state.baseline_tree)) sessionBase = state.baseline_tree;
   else {
@@ -317,11 +319,24 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string 
     else warnings.push('no session baseline (the SessionStart hook did not run); uncommitted work from before the session counts as session work');
     sessionBase = state.head && objectExists(repoRoot, state.head) ? state.head : head;
   }
-  if (state.head && r.scope === 'new-lines' && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok) {
+  // A reset or rebase past the commit the session started on makes the session diff describe the
+  // rewrite, not the agent's edits: nothing judged on it (tamper) may decide this run.
+  let rewritten = !!state.head && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok;
+  if (rewritten && state.head && r.event === 'pre-push') {
+    // At a push, commits after the fork point with the session's start commit were all made
+    // during the session (earlier ones are its ancestors), so they still describe session work;
+    // tamper then counts only what the push carries (integrityChecks).
+    const fork = gitIn(repoRoot, ['merge-base', state.head, 'HEAD']);
+    if (fork.ok && fork.stdout) {
+      sessionBase = fork.stdout;
+      rewritten = false;
+    }
+  }
+  if (rewritten && r.scope === 'new-lines') {
     warnings.push('HEAD is no longer a descendant of the commit the session started on (branch switch or rebase); judging whole changed files this run');
     r.scope = 'files';
   }
-  return { state, sessionBase };
+  return { state, sessionBase, rewritten };
 }
 
 /** The current tree, the base it is compared with, and the review and session diffs; or why the push target is unknown. */
@@ -329,7 +344,7 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
   const { repoRoot, opts, warnings, head } = r;
   const push = opts.push;
   if (push?.unknown) return { unknown: push.unknown };
-  const { state, sessionBase } = loadSession(r);
+  const { state, sessionBase, rewritten } = loadSession(r);
   // A push of something other than HEAD (`git push origin other:main`) reviews that commit's tree.
   let tip = head;
   let current: string | null = null;
@@ -364,19 +379,30 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
   const sessionDiff = state && reviewBase !== sessionBase && opts.mode !== 'staged'
     ? parseDiff(diffTrees(repoRoot, sessionBase, current) ?? '')
     : diff;
-  return { state, tip, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
+  return { state, rewritten, tip, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
 }
 
 /**
  * Tamper rules (section 6.2). With a session: any listed path the session
- * changed, and any `gitleaks:allow` it added. Without one there are no fix
- * rounds to guard and a branch may legitimately tune its own config, so only
- * added `gitleaks:allow` lines count; the scanner config is handled by
- * scanning with the base's copy instead (scannerOverride).
+ * changed, and any `gitleaks:allow` it added. At a push, only what this push
+ * also carries counts: the baseline survives resume and a reused session id,
+ * so a path that differs from the baseline only because history was reset
+ * since then would otherwise deny a push that does not touch it. Without a
+ * session (or, outside a push, after a rewrite past its start) there are no fix rounds to
+ * guard and a branch may legitimately tune its own config, so only added
+ * `gitleaks:allow` lines count; the scanner config is handled by scanning
+ * with the base's copy instead (scannerOverride).
  */
-function integrityChecks(d: Diffs): Integrity {
-  if (d.state) return { tamper: touchedPaths(d.sessionDiff).filter(isTamperPath), allowMarkers: d.sessionDiff.allowMarkers };
-  return { tamper: [], allowMarkers: d.diff.allowMarkers };
+function integrityChecks(r: Run, d: Diffs): Integrity {
+  if (!d.state || d.rewritten) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  const tamper = touchedPaths(d.sessionDiff).filter(isTamperPath);
+  if (r.event !== 'pre-push') return { tamper, allowMarkers: d.sessionDiff.allowMarkers };
+  const inPush = new Set(touchedPaths(d.diff));
+  const added = new Map(d.diff.files.map((f) => [f.path, f.added]));
+  return {
+    tamper: tamper.filter((p) => inPush.has(p)),
+    allowMarkers: d.sessionDiff.allowMarkers.filter((m) => added.get(m.file)?.has(m.line)),
+  };
 }
 
 /**
@@ -384,7 +410,7 @@ function integrityChecks(d: Diffs): Integrity {
  * the base's version of it, so a change cannot allowlist itself.
  */
 function scannerOverride(r: Run, d: Diffs): ScannerConfigOverride | undefined {
-  if (d.state) return undefined;
+  if (d.state && !d.rewritten) return undefined;
   const changed = touchedPaths(d.diff).filter((p) => SCANNER_CONFIG.has(p));
   if (!changed.length) return undefined;
   const blobs = readBlobs(r.repoRoot, d.reviewBase, [...SCANNER_CONFIG]);
@@ -592,7 +618,10 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
   }
 
   let round = 1;
-  if (state) {
+  // At a push every deny (secret, tamper, scan failure) is recomputed from the range each run, so
+  // pushes neither spend nor read the finish gate's rounds: a reused or rewritten session's
+  // counter can never decide a push (D4).
+  if (state && r.event !== 'pre-push') {
     const last = state.last;
     round = Math.min(state.rounds + 1, r.maxRounds + 1);
     if (verdict === 'fix') {
@@ -703,7 +732,7 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
     return v;
   }
 
-  const integ = integrityChecks(d);
+  const integ = integrityChecks(r, d);
   const sec = secretScan(r, d);
   v.secrets = sec.secrets;
   v.commit_secrets = sec.history?.findings ?? [];
