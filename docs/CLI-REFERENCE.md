@@ -215,8 +215,7 @@ Usage: prism-cli assessment deploy-cdk [options]
 Deploy the assessment web app to AWS via CDK (ECS + Cognito + ALB)
 
 Options:
-  --hosted-zone <domain>   Route53 hosted zone domain (e.g.
-                           prism.example.com)
+  --hosted-zone <domain>   Route53 hosted zone domain (e.g. prism.example.com)
   --subdomain <name>       Subdomain for the app (default: "assessment")
   --certificate-arn <arn>  ACM certificate ARN (auto-created if omitted)
   --profile <name>         AWS CLI profile

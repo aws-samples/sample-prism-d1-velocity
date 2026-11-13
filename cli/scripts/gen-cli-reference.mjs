@@ -51,9 +51,6 @@ const GUIDE = {
   'team': ['Step 5: Create Developer Accounts', 'USER_GUIDE.md#step-5-create-developer-accounts'],
 };
 
-// shortcut: `assessment deploy-cdk --help` names a real hosted zone as its example; the
-// reference shows a placeholder until that help string uses an example domain.
-const SCRUB = [[/\bprism\.startups\.aws\.dev\b/g, 'prism.example.com']];
 
 function help(path) {
   let text = execFileSync(process.execPath, [bin, ...path, '--help'], {
@@ -61,7 +58,6 @@ function help(path) {
     env: { PATH: process.env.PATH, NO_COLOR: '1', LANG: 'C' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  for (const [re, to] of SCRUB) text = text.replace(re, to);
   return text.trimEnd();
 }
 
