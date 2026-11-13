@@ -815,8 +815,22 @@ Where 1.11.0 differs from or settles something in the text above:
   the MCP server's `schema: 1` stamp.
 - **Hooks** call `node scripts/harness-hook.mjs <event>`, which passes stdin to
   `prism-cli codewatch hook --client claude` (the `$PRISM_CLI` and Windows `.cmd` handling of
-  `session-start.mjs`). Two more `PreToolUse` entries (`Bash(git -c *)`, `Bash(git config *)`) let
-  the adapter deny `-c core.hooksPath=` and `git config prism.*` / `core.hooksPath`.
+  `session-start.mjs`).
+- **`if` rules on the Bash `PreToolUse` hook.** Claude Code's `if` field uses permission rule
+  syntax: it checks each subcommand (split on `&&`, `||`, `;`, `|`, `|&`, `&`, newlines) and the
+  commands inside `$()` and backticks, strips leading `VAR=value` assignments and a fixed wrapper
+  list (`timeout`, `time`, `nice`, `nohup`, `stdbuf`, `command`, `builtin`, `noglob`, bare
+  `xargs`), and lets `*` match any text anywhere in the rule
+  ([hooks: how `if` patterns match Bash commands](https://code.claude.com/docs/en/hooks#how-if-patterns-match-bash-commands),
+  [permissions: wildcard patterns, wrappers](https://code.claude.com/docs/en/permissions#wildcard-patterns)).
+  `env`, `sh -c` and `/usr/bin/git` are not stripped, so `Bash(git push*)` would miss
+  `env git push`, `git -C dir push` and `sh -c 'git push'`. The plugin uses
+  `Bash(*git*push*)` for the `pre-push` event, and `Bash(*git*config*)` and `Bash(*git*-c*)` for
+  a `bash-guard` event that runs only the bypass check (never a review, so a command matched by
+  two rules is reviewed once). A command that only looks like a push to the filter
+  (`git log --grep push`) costs one tokenize in prism-cli: about 120 ms per hook, measured, most
+  of it node and prism-cli start-up. `claude-plugin/test/hook-if-match.test.mjs` checks each
+  tokenizer form against these rules with a matcher written to the documented semantics.
 - **Shell command parsing.** The `pre-push` adapter splits the command with a small quote-aware
   tokenizer (no backtracking regex): leading `VAR=val` words and `env` are skipped, git's global
   options (`-C`, `-c`, `--git-dir`, `--work-tree`, `--no-pager`, ...) are walked to the subcommand,

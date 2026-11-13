@@ -35,7 +35,7 @@ Every command and option of prism-cli 1.11.0, exactly as `--help` prints it. For
 | &nbsp;&nbsp;[`prism-cli bootstrapper setup-gitlab-oidc`](#prism-cli-bootstrapper-setup-gitlab-oidc) | Set up GitLab OIDC identity provider and IAM role for GitLab CI/CD |
 | &nbsp;&nbsp;[`prism-cli bootstrapper setup-otel-sync`](#prism-cli-bootstrapper-setup-otel-sync) | [deprecated] Alias for "prism-cli enable codeburn" |
 | [`prism-cli codewatch`](#prism-cli-codewatch) | Git hook entry points and scan reports for the local codewatch hooks, and the agent harness loop (review, hook) |
-| &nbsp;&nbsp;[`prism-cli codewatch hook`](#prism-cli-codewatch-hook) | Agent harness loop hook adapter: reads a coding client's hook JSON on stdin and prints its decision JSON. Client: claude. Events: session-start, stop, pre-push, session-end. Always exits 0 |
+| &nbsp;&nbsp;[`prism-cli codewatch hook`](#prism-cli-codewatch-hook) | Agent harness loop hook adapter: reads a coding client's hook JSON on stdin and prints its decision JSON. Client: claude. Events: session-start, stop, pre-push, bash-guard, session-end. Always exits 0 |
 | &nbsp;&nbsp;[`prism-cli codewatch pre-commit`](#prism-cli-codewatch-pre-commit) | pre-commit hook: gitleaks scan of staged changes (blocks on a finding; installed by enable codewatch) |
 | &nbsp;&nbsp;[`prism-cli codewatch pre-push`](#prism-cli-codewatch-pre-push) | pre-push hook: report-only code review of the branch diff (never blocks; installed by enable codewatch) |
 | &nbsp;&nbsp;[`prism-cli codewatch report`](#prism-cli-codewatch-report) | Write a codewatch scan report (one pre-push review and its secret scans) as Markdown, HTML or JSON |
@@ -755,7 +755,7 @@ Commands:
   hook [options]      Agent harness loop hook adapter: reads a coding client's
                       hook JSON on stdin and prints its decision JSON. Client:
                       claude. Events: session-start, stop, pre-push,
-                      session-end. Always exits 0
+                      bash-guard, session-end. Always exits 0
   pre-commit          pre-commit hook: gitleaks scan of staged changes (blocks
                       on a finding; installed by enable codewatch)
   pre-push [options]  pre-push hook: report-only code review of the branch diff
@@ -775,11 +775,12 @@ Usage: prism-cli codewatch hook [options]
 
 Agent harness loop hook adapter: reads a coding client's hook JSON on stdin and
 prints its decision JSON. Client: claude. Events: session-start, stop,
-pre-push, session-end. Always exits 0
+pre-push, bash-guard, session-end. Always exits 0
 
 Options:
   --client <client>  Coding client: claude
-  --event <event>    Hook event: session-start | stop | pre-push | session-end
+  --event <event>    Hook event: session-start | stop | pre-push | bash-guard |
+                     session-end
   -h, --help         display help for command
 ```
 

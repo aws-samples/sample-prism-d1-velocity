@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const EVENTS = new Set(['session-start', 'stop', 'pre-push', 'session-end']);
+export const EVENTS = new Set(['session-start', 'stop', 'pre-push', 'bash-guard', 'session-end']);
 /** The first prism-cli with `codewatch hook`. */
 export const MIN_CLI = '1.11.0';
 export const UPGRADE = 'Run npm i -g @prism-d1/cli@latest.';
@@ -24,7 +24,7 @@ export const UPGRADE = 'Run npm i -g @prism-d1/cli@latest.';
 const CLI_TIMEOUT_MS = 290_000;
 const VERSION_TIMEOUT_MS = 5000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
-const CHECK_NAME = { 'pre-push': 'PRISM push check', stop: 'PRISM finish check', 'session-start': 'PRISM push and finish checks', 'session-end': 'PRISM push and finish checks' };
+const CHECK_NAME = { 'pre-push': 'PRISM push check', 'bash-guard': 'PRISM push check', stop: 'PRISM finish check', 'session-start': 'PRISM push and finish checks', 'session-end': 'PRISM push and finish checks' };
 
 const isWin = process.platform === 'win32';
 /** $PRISM_CLI (an absolute path, for nvm installs Claude Code cannot see), else prism-cli on PATH. Same rule as session-start.mjs. */

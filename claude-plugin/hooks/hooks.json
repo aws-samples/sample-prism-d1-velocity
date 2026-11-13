@@ -49,23 +49,23 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git push*)",
+            "if": "Bash(*git*push*)",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "pre-push"],
             "timeout": 300
           },
           {
             "type": "command",
-            "if": "Bash(git -c *)",
+            "if": "Bash(*git*config*)",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "pre-push"],
-            "timeout": 300
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "bash-guard"],
+            "timeout": 30
           },
           {
             "type": "command",
-            "if": "Bash(git config *)",
+            "if": "Bash(*git*-c*)",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "pre-push"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "bash-guard"],
             "timeout": 30
           }
         ]

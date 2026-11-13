@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { exitCodeFor, isTamperPath, runHarnessReview, TAMPER_GLOBS, VERDICT_SCHEMA, type HarnessOptions, type HarnessVerdict } from '../src/codewatch/harness/engine.js';
-import { agentText, bypassReason, gitCalls, isGitPush, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { agentText, bypassReason, DENY_TAIL, gitCalls, isGitPush, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
 import { globToRegExp, matchesAny, parseDiff } from '../src/codewatch/harness/diff.js';
 import { loadState, recordBaseline, sanitizeSession, statePath } from '../src/codewatch/harness/state.js';
 import { readHarnessConfig } from '../src/codewatch/config.js';
@@ -733,6 +733,15 @@ test('claude: hook bypasses are denied; git push detection', () => {
   const r = rig();
   const out = JSON.parse(runClaudeHook('pre-push', hookInput(r, { tool_input: { command: 'git push --no-verify' } }), { env: {} }));
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.ok(out.hookSpecificOutput.permissionDecisionReason.endsWith(DENY_TAIL), 'says which hook blocked it');
+  // bash-guard: the bypass check only, never a review.
+  const guard = { env: {}, engine: { pathEnv: r.bin, gitleaksBin: join(dirname(r.log), 'gitleaks') } };
+  r.write('src/a.ts', 'x\n');
+  assert.equal(JSON.parse(runClaudeHook('bash-guard', hookInput(r, { tool_input: { command: 'git config core.hooksPath x' } }), guard)).hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(runClaudeHook('bash-guard', hookInput(r, { tool_input: { command: 'git -c core.hooksPath=x push' } }), guard).includes('deny'), true);
+  assert.equal(runClaudeHook('bash-guard', hookInput(r, { tool_input: { command: 'git push origin x' } }), guard), '');
+  assert.equal(runClaudeHook('pre-push', hookInput(r, { tool_input: { command: 'git log --grep push' } }), guard), '');
+  assert.deepEqual(r.calls(), [], 'no gitleaks or reviewer for a guard or a non-push');
 });
 
 test('claude: findings reach the model quoted, cut and capped; an engine error is no decision', () => {

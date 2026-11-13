@@ -105,8 +105,8 @@ test('hooks.json wires every harness event through harness-hook.mjs with enough 
   assert.deepEqual(ev('SubagentStop'), ['stop']);
   assert.deepEqual(ev('SessionEnd'), ['session-end']);
   const pre = hooks.PreToolUse.find((g) => g.matcher === 'Bash');
-  assert.ok(pre.hooks.some((h) => h.if === 'Bash(git push*)' && h.args[1] === 'pre-push'));
-  for (const h of [...harness(hooks.Stop), ...pre.hooks.filter((x) => x.if === 'Bash(git push*)')]) assert.ok(h.timeout >= 300, 'above the engine worst case');
+  assert.ok(pre.hooks.some((h) => h.if === 'Bash(*git*push*)' && h.args[1] === 'pre-push'));
+  for (const h of [...harness(hooks.Stop), ...pre.hooks.filter((x) => x.args[1] === 'pre-push')]) assert.ok(h.timeout >= 300, 'above the engine worst case');
   for (const name of Object.keys(hooks)) for (const h of harness(hooks[name])) assert.ok(EVENTS.has(h.args[1]), h.args[1]);
   // The original SessionStart summary hook stays.
   assert.ok(hooks.SessionStart[0].hooks.some((h) => h.args[0].endsWith('/scripts/session-start.mjs')));

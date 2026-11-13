@@ -25,4 +25,4 @@ jobs:
       - name: JSON files parse
         run: for f in .claude-plugin/marketplace.json claude-plugin/.claude-plugin/plugin.json claude-plugin/.mcp.json claude-plugin/hooks/hooks.json; do node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$f" || exit 1; done
       - name: Hook script tests
-        run: node --test claude-plugin/test/session-start.test.mjs claude-plugin/test/harness-hook.test.mjs
+        run: node --test claude-plugin/test/session-start.test.mjs claude-plugin/test/harness-hook.test.mjs claude-plugin/test/hook-if-match.test.mjs

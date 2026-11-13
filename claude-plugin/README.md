@@ -107,7 +107,8 @@ The once-per-session marker is an empty file under the plugin's data directory. 
 | Hook | What it does | Default |
 |---|---|---|
 | `SessionStart` | Records the session's baseline in `.prism/harness/<session>.json`: a snapshot of the working tree, taken without touching your index | always |
-| `PreToolUse` on Bash `git push` | Push gate: gitleaks, then the review. `fix` denies the push with the reason; a secret always denies it. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath` | on |
+| `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. `fix` denies the push with the reason; a secret always denies it. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
+| `PreToolUse` on Bash, `if: "Bash(*git*config*)"` and `"Bash(*git*-c*)"` | The same bypass check for `git config` and `git -c` commands, with no review | on |
 | `Stop`, `SubagentStop` | Finish gate: `fix` keeps Claude working with the findings (`decision: "block"`), at most 2 rounds | off |
 | `SessionEnd` | Deletes the session's state file | always |
 
@@ -119,6 +120,12 @@ The push check is a guardrail, not a sandbox. prism-cli reads the Bash command w
 tokenizer: it sees `git push` behind `VAR=val`, `env`, git's global options (`-C dir`,
 `--git-dir=...`) and one level of `sh -c '...'`, but not behind `$(...)`, backticks, `eval`, an
 alias or a script. A push it does not see still meets the git pre-push hook and the CI gate.
+Claude Code starts the hook only when an `if` rule matches; its rules check each subcommand and
+strip leading `VAR=value`, but not `env` or `sh -c`, so the rules start with `*`
+(`Bash(*git*push*)`) to reach every form the tokenizer reads
+([how `if` patterns match Bash commands](https://code.claude.com/docs/en/hooks#how-if-patterns-match-bash-commands)).
+A command that only looks like a push (`git log --grep push`) still starts the hook, which
+answers in about 120 ms without touching git.
 
 Options (`/config`, or when you enable the plugin):
 
@@ -248,7 +255,7 @@ claude-plugin/
   .claude-plugin/plugin.json        manifest
   .mcp.json                         MCP server "prism" -> ${PRISM_CLI:-prism-cli} mcp
   hooks/hooks.json                  SessionStart -> session-start.mjs; SessionStart, Stop, SubagentStop,
-                                    PreToolUse (Bash git push), SessionEnd -> harness-hook.mjs
+                                    PreToolUse (Bash: git push, git config, git -c), SessionEnd -> harness-hook.mjs
   scripts/session-start.mjs
   scripts/harness-hook.mjs          passes hook JSON to prism-cli codewatch hook --client claude
   skills/<name>/SKILL.md            prism, findings, report, fix, review, spend, dashboard

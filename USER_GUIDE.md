@@ -988,7 +988,7 @@ The git hooks for people do not change: `pre-push` stays report-only and never b
 
 | Gate | Hook | Default | What it does |
 |---|---|---|---|
-| Push gate | `PreToolUse` on Bash `git push` | on | Runs gitleaks and the review before Claude's `git push`. `fix` denies the push and tells Claude why; a secret always denies it. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath` |
+| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. `fix` denies the push and tells Claude why, and to tell you which hook blocked it; a secret always denies it. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath` |
 | Finish gate | `Stop` and `SubagentStop` | off | Reviews when Claude says it is done and keeps it working on blocking findings, at most 2 rounds |
 
 Turn the finish gate on for yourself in Claude Code with `/config` (the plugin's
