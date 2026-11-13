@@ -152,8 +152,8 @@ function stop(input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv): Kir
   const session = sanitizeSession(input.session_id);
   const pushNotice = session ? readPushNotice(repoRoot, session) : null;
   const r = finishCheck(repoRoot, session, pushNotice, deps, env);
-  // Every output that blocks carries the notice, so it is handed over; an error above keeps it for the next Stop.
-  if (pushNotice && r.stdout) clearPushNotice(repoRoot, session!);
+  // Clear the notice only once it reached the agent in full; a cut or failed output keeps it for the next Stop.
+  if (pushNotice && r.stdout && (JSON.parse(r.stdout).reason as string).includes(pushNotice)) clearPushNotice(repoRoot, session!);
   return r;
 }
 
@@ -163,7 +163,10 @@ function finishCheck(repoRoot: string, session: string | null, pushNotice: strin
 
   const before = session ? loadState(repoRoot, session) : null;
   const v: HarnessVerdict = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, ...deps.engine, repoRoot, session, client: 'kiro', event: 'stop', mode: 'working' });
-  const withNotice = (s: string) => (pushNotice ? `${s}\n\nAlso, from your earlier push:\n${pushNotice}` : s);
+  // The verdict text gets what the notice leaves of the cap (at least 1 KB), so the notice is not cut off the end.
+  const withNotice = (s: string) => (pushNotice
+    ? `${capBytes(s, Math.max(1024, MAX_REASON_BYTES - Buffer.byteLength(pushNotice, 'utf8') - 64))}\n\nAlso, from your earlier push:\n${pushNotice}`
+    : s);
   if (v.verdict === 'fix') return block(withNotice(`${agentText(v)}\n${KIRO_ROUND_NOTE}`));
   if (v.verdict === 'stop') {
     // The same stop again: the agent already reported it, so let the prompt end.

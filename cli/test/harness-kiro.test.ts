@@ -147,6 +147,23 @@ test('kiro: two pushes with findings in one prompt hand both over at Stop', () =
   assert.match(reason, /A later push:/);
 });
 
+test('kiro: with the finish gate on, a fix verdict and the push findings arrive together, and the notice is cleared only then', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  r.write('src/db.ts', 'const q = "SELECT " + id;\n');
+  r.commit('db');
+  r.reply([finding('src/db.ts', 1, 'high', 'push finding')]);
+  runKiroHook('pre-push', payload('PreToolUse', r), deps(r));
+  r.write('src/new.ts', 'const z = "SELECT " + id;\n');
+  r.reply([finding('src/new.ts', 1, 'high', 'x'.repeat(5000))]);
+  const on = deps(r, { PRISM_HARNESS_FINISH_GATE: '1' });
+  const reason = JSON.parse(runKiroHook('stop', payload('Stop', r), on).stdout).reason;
+  assert.match(reason, /PRISM harness review: fix/);
+  assert.ok(reason.includes('"push finding"'), 'a long verdict does not cut the push findings off');
+  assert.ok(Buffer.byteLength(reason) <= 4096);
+  assert.ok(!existsSync(join(r.dir, '.prism', 'harness', `${SESSION}.push-notice.json`)), 'handed over in full, so cleared');
+});
+
 test('kiro fail closed: an internal error on a push is exit 2; on other events and commands it is exit 0', () => {
   const r = rig();
   const boom = { env: {}, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks, now: () => { throw new Error('boom'); } } };

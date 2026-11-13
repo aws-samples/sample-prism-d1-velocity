@@ -52,11 +52,11 @@ export interface AgentHooksDeps {
 
 /**
  * A command PRISM wrote: `prism-cli codewatch hook --client <c> ...`, or the same behind one
- * interpreter word (`'<node>' '<dir>/prism-cli.js' codewatch hook ...`). Anchored at the start, so a
- * user's own hook that only chains the PRISM command is not taken for PRISM's.
+ * interpreter word (`'<node>' '<dir>/prism-cli.js' codewatch hook ...`). Anchored at both ends, so a
+ * user's own hook that chains the PRISM command before or after its own is not taken for PRISM's.
  */
 const isPrismCommand = (c: unknown, client: Client) => typeof c === 'string'
-  && new RegExp(`^(?:(?:'[^']*'|"[^"]*"|\\S+)\\s+)?(?:'[^']*|"[^"]*|\\S*?)prism-cli(\\.[cm]?[jt]s)?['"]?\\s+codewatch\\s+hook\\s+--client\\s+${client}\\b`).test(c);
+  && new RegExp(`^(?:(?:'[^']*'|"[^"]*"|\\S+)\\s+)?(?:'[^']*|"[^"]*|\\S*?)prism-cli(\\.[cm]?[jt]s)?['"]?\\s+codewatch\\s+hook\\s+--client\\s+${client}\\s+--event\\s+[a-z-]+\\s*$`).test(c);
 const hookCmd = (cli: string, client: Client, event: string) => `${cli} codewatch hook --client ${client} --event ${event}`;
 const tilde = (p: string, home: string) => (p === home || p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
 
