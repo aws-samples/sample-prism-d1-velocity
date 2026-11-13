@@ -19,6 +19,8 @@ export interface ReviewRequest {
   diff: string;
   /** Requested model, if the team pinned one. */
   model?: string;
+  /** Added to the prompt on the single retry after an unparseable reply. */
+  retryNote?: string;
 }
 
 export interface Invocation {
@@ -33,6 +35,8 @@ export interface ParsedReview {
   score: number | null;
   /** Model the tool reported using, if its output says. */
   model: string | null;
+  /** Cost the tool reported for this review (Claude Code's total_cost_usd); absent when it reports none. */
+  cost_usd?: number | null;
 }
 
 /**

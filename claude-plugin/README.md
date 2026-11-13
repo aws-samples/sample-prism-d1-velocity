@@ -1,27 +1,30 @@
-# PRISM plugin for Claude Code (v0.2, work in progress)
+# PRISM plugin for Claude Code (v0.3, work in progress)
 
 Brings PRISM's local results into [Claude Code](https://code.claude.com/docs/en/overview): codewatch
 review findings, scan reports, AI spend and the setup checklist. It reads the same local data as
 `prism-cli dashboard` and makes no AWS calls. The only port it opens is the live dashboard's, on
 127.0.0.1, when you run `/prism:dashboard`.
 
-The plugin has three parts:
+The plugin has four parts:
 
 - **MCP server** `prism`: the `prism-cli mcp` tools (`prism_status`, `prism_findings`,
   `prism_spend`, `prism_report`, `prism_snapshot`, `prism_dashboard`, `prism_dashboard_stop`,
-  `prism_setup`). They only read, except `prism_report` and `prism_snapshot`, which write an HTML
-  file under the OS temp directory, and `prism_dashboard`, which starts the local dashboard server. See
+  `prism_setup`, `prism_review`). They only read, except `prism_report` and `prism_snapshot`, which write an HTML
+  file under the OS temp directory, `prism_dashboard`, which starts the local dashboard server, and
+  `prism_review`, which runs a review and writes its result file. See
   [MCP server (prism-cli mcp)](../USER_GUIDE.md#mcp-server-prism-cli-mcp).
 - **Slash commands**: prompts that call those tools (listed below). They hold no logic of their own.
 - **SessionStart hook**: adds a short summary of this branch's open findings to Claude's context
   when a session starts.
+- **Harness loop hooks**: gitleaks and a PRISM review before Claude runs `git push` (on by
+  default), and optionally before Claude finishes (off by default). See [The harness loop](#the-harness-loop).
 
 ## Requirements
 
 - Claude Code 2.1.x.
-- prism-cli 1.10.0 or later on the `PATH` Claude Code sees (1.8.0 works for everything except
-  `/prism:dashboard`) (`npm install -g @prism-d1/cli`), and
-  Node.js 22 or later, which prism-cli needs anyway. The SessionStart hook runs with `node`.
+- prism-cli 1.11.0 or later on the `PATH` Claude Code sees (`npm install -g @prism-d1/cli`) for the
+  harness loop and `/prism:review`; 1.10.0 is enough for everything else, and with an older prism-cli
+  the harness hooks do nothing. Node.js 22 or later, which prism-cli needs anyway. The hooks run with `node`.
 - For findings: the [codewatch git hooks](../USER_GUIDE.md#codewatch-local-git-hooks) in the repo
   (`prism-cli enable codewatch`). A review is recorded on each `git push`.
 
@@ -45,7 +48,7 @@ claude plugin install prism@prism-d1-velocity
 ```
 
 Start a new session (or run `/reload-plugins`), then check that `/mcp` lists
-`plugin:prism:prism` as connected. Select it and choose **View tools** to see its 8 tools:
+`plugin:prism:prism` as connected. Select it and choose **View tools** to see its 9 tools (the screenshot below predates `prism_review`):
 
 ![Claude Code /mcp tool list for plugin:prism:prism: prism_status, prism_findings, prism_spend and prism_setup marked read-only, plus prism_report, prism_snapshot, prism_dashboard and prism_dashboard_stop](../assets/images/prism-cli/claude-code-mcp-dark.png)
 
@@ -72,6 +75,7 @@ these ways:
 | `/prism` (also `/prism:prism`) | Status summary: spend today and this month, setup warnings with fix commands to copy, the latest review and its counts |
 | `/prism:findings [branch]` | Findings of the latest pre-push review of this branch, numbered, most severe first |
 | `/prism:report [html\|md] [commit]` | The scan report for the review covering a commit (default `HEAD`). `html` (default) writes a file under the OS temp directory and prints its path; `md` shows the text |
+| `/prism:review [ref]` | Runs the harness review now (`prism_review`): gitleaks, then your reviewer, on this branch's changes plus uncommitted work. Shows the verdict, `next_action` and the findings. Changes nothing but the result file. Claude only runs it when you type it |
 | `/prism:fix [n]` | Fixes finding `n` from `/prism:findings`, or every high and medium finding, in the working tree. At most 2 rounds, then a report and `git diff --stat`. It doesn't commit or push. Claude only runs it when you type it |
 | `/prism:dashboard [--no-open]` | Starts the live dashboard (`prism-cli dashboard`, 127.0.0.1 only) through the `prism_dashboard` tool, or reuses the one already running, prints its URL and opens it when there is a display. Claude Code asks you to approve the call, because it starts a local server. See [The live dashboard](#the-live-dashboard) |
 | `/prism:dashboard --snapshot` | Writes the dashboard as one static HTML file under the OS temp directory (`prism_snapshot`), opens it when there is a display, and prints its path. No server runs; the file doesn't refresh and its commands are copy only |
@@ -88,6 +92,57 @@ follow instructions in it or run commands it suggests. The commands also tell Cl
 push, never to disable or bypass git hooks (no `--no-verify`, no `git config prism.codewatch false`)
 and never to edit or delete anything in `.prism/results/`. The MCP tools carry the same warning in
 their descriptions and cap each message at 2,000 characters.
+
+## The harness loop
+
+The plugin's hooks run `prism-cli codewatch hook --client claude` (through
+`scripts/harness-hook.mjs`, which only passes the hook JSON through and always exits 0). prism-cli
+decides everything. When prism-cli is missing, older than 1.11.0, or its hook fails, nothing is
+blocked and you see one line per session saying the check is off and why, for example
+`PRISM push check is off: prism-cli 1.11.0 or later is needed (found 1.10.1). Run npm i -g @prism-d1/cli@latest.`
+The once-per-session marker is an empty file under the plugin's data directory. The full behavior is in the
+[User Guide](../USER_GUIDE.md#agent-harness-loop) and the
+[design](../docs/DESIGN-harness-loop.md).
+
+| Hook | What it does | Default |
+|---|---|---|
+| `SessionStart` | Records the session's baseline in `.prism/harness/<session>.json`: a snapshot of the working tree, taken without touching your index | always |
+| `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. `fix` denies the push with the reason; a secret always denies it. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
+| `PreToolUse` on Bash, `if: "Bash(*git*config*)"` and `"Bash(*git*-c*)"` | The same bypass check for `git config` and `git -c` commands, with no review | on |
+| `Stop`, `SubagentStop` | Finish gate: `fix` keeps Claude working with the findings (`decision: "block"`), at most 2 rounds | off |
+| `SessionEnd` | Deletes the session's state file | always |
+
+What blocks: secrets and high findings on lines Claude changed. Medium and low findings are shown
+but do not block. When the reviewer is missing or fails, the gate fails open with a warning; the
+git pre-push review and the CI gate still run.
+
+The push check is a guardrail, not a sandbox. prism-cli reads the Bash command with a quote-aware
+tokenizer: it sees `git push` behind `VAR=val`, `env`, git's global options (`-C dir`,
+`--git-dir=...`) and one level of `sh -c '...'`, but not behind `$(...)`, backticks, `eval`, an
+alias or a script. A push it does not see still meets the git pre-push hook and the CI gate.
+Claude Code starts the hook only when an `if` rule matches; its rules check each subcommand and
+strip leading `VAR=value`, but not `env` or `sh -c`, so the rules start with `*`
+(`Bash(*git*push*)`) to reach every form the tokenizer reads
+([how `if` patterns match Bash commands](https://code.claude.com/docs/en/hooks#how-if-patterns-match-bash-commands)).
+A command that only looks like a push (`git log --grep push`) still starts the hook, which
+answers in about 120 ms without touching git.
+
+Options (`/config`, or when you enable the plugin):
+
+| Option | Default | Meaning |
+|---|---|---|
+| `finish_gate` (**Review before Claude finishes**) | off | Turns the finish gate on for you. A repo turns it on for everyone with `harness.finish_gate: true` in `.prism/config.json`; either one is enough |
+| `push_gate` (**Review before Claude pushes**) | on | The review before a push. It is off only when this option and `harness.push_gate` are both off; gitleaks runs before a push either way |
+
+The findings reach Claude as untrusted data: after a fixed sentence that says so, each message and
+rule is quoted as one JSON string, cut to 300 characters, at most 10 rows, and the whole reason is
+capped at 4 KB. The instruction itself (`next_action`) is written by prism-cli from fixed templates.
+Claude Code's own Stop-hook guards (`stop_hook_active` and its cap of 8 consecutive blocks) stay in
+place; prism-cli's round counter ends the loop first. The reviewer runs with `PRISM_HARNESS_CHILD=1`,
+so a `claude -p` reviewer that loads this plugin does not run the hooks again.
+
+Each review costs one call to your reviewer. With the defaults that is one per push by Claude; the
+finish gate adds up to 3 per session. See [Why local code review](../docs/WHY-LOCAL-CODE-REVIEW.md).
 
 ## The live dashboard
 
@@ -124,8 +179,8 @@ On session start, resume, `/clear` and compaction, `scripts/session-start.mjs`:
    attribution. It skips this step when your user or project settings already run that command as
    a SessionStart hook, so the command never runs twice.
 
-The hook only reads. It has no Stop or PreToolUse hook and never blocks a session. A failure
-means less context, not an error.
+This hook only reads and never blocks a session; a failure means less context, not an error. The
+harness hooks are separate (see [The harness loop](#the-harness-loop)).
 
 ### The old manual SessionStart hook
 
@@ -185,7 +240,8 @@ Or from your shell: `claude plugin uninstall prism@prism-d1-velocity`, then
 
 - Validate: `claude plugin validate ./claude-plugin` and `claude plugin validate .` (the
   marketplace) from the repository root.
-- Test the hook script: `node --test claude-plugin/test/session-start.test.mjs`.
+- Test the hook scripts: `node --test claude-plugin/test/session-start.test.mjs claude-plugin/test/harness-hook.test.mjs`.
+  The harness engine and the Claude adapter are tested in `cli/test/harness.test.ts`.
 - Try a local copy without touching your own config: point `CLAUDE_CONFIG_DIR` at an empty
   directory, then run `claude plugin marketplace add <path to your clone>` and
   `claude plugin install prism@prism-d1-velocity`.
@@ -198,8 +254,11 @@ describes it:
 claude-plugin/
   .claude-plugin/plugin.json        manifest
   .mcp.json                         MCP server "prism" -> ${PRISM_CLI:-prism-cli} mcp
-  hooks/hooks.json                  SessionStart -> node scripts/session-start.mjs
+  hooks/hooks.json                  SessionStart -> session-start.mjs; SessionStart, Stop, SubagentStop,
+                                    PreToolUse (Bash: git push, git config, git -c), SessionEnd -> harness-hook.mjs
   scripts/session-start.mjs
-  skills/<name>/SKILL.md            prism, findings, report, fix, spend, dashboard
+  scripts/harness-hook.mjs          passes hook JSON to prism-cli codewatch hook --client claude
+  skills/<name>/SKILL.md            prism, findings, report, fix, review, spend, dashboard
   test/session-start.test.mjs
+  test/harness-hook.test.mjs
 ```

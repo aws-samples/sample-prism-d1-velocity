@@ -1,8 +1,8 @@
 {
   "name": "prism",
   "displayName": "PRISM",
-  "version": "0.2.0",
-  "description": "PRISM codewatch findings, review reports, AI spend, setup status and a static dashboard snapshot in Claude Code: the prism-cli MCP tools, /prism slash commands and a SessionStart summary of this branch's open findings. Needs prism-cli 1.10.0 or later on PATH (1.8.0 for everything but /prism:dashboard).",
+  "version": "0.3.0",
+  "description": "PRISM codewatch in Claude Code: the harness loop (gitleaks and a PRISM review before Claude runs git push, and optionally before it finishes), the prism-cli MCP tools, /prism slash commands and a SessionStart summary of this branch's open findings. Needs prism-cli 1.11.0 or later on PATH for the harness loop and /prism:review (1.10.0 for the rest).",
   "author": {
     "name": "PRISM D1 Velocity maintainers",
     "url": "https://github.com/aws-samples/sample-prism-d1-velocity"
@@ -10,5 +10,19 @@
   "homepage": "https://github.com/aws-samples/sample-prism-d1-velocity/tree/main/claude-plugin#readme",
   "repository": "https://github.com/aws-samples/sample-prism-d1-velocity",
   "license": "MIT",
-  "keywords": ["prism", "codewatch", "code-review", "ai-spend", "mcp"]
+  "keywords": ["prism", "codewatch", "code-review", "ai-spend", "mcp", "gitleaks"],
+  "userConfig": {
+    "finish_gate": {
+      "type": "boolean",
+      "title": "Review before Claude finishes",
+      "description": "Run the PRISM review when Claude stops and keep it working on blocking findings (at most 2 rounds). Costs one reviewer call per finish.",
+      "default": false
+    },
+    "push_gate": {
+      "type": "boolean",
+      "title": "Review before Claude pushes",
+      "description": "Run gitleaks and the PRISM review before Claude runs git push. Secrets block the push either way.",
+      "default": true
+    }
+  }
 }

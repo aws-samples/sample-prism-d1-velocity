@@ -1,9 +1,10 @@
 # Design: the harness loop (agents review and fix their own changes)
 
-> **Status: Proposed.** Nothing in this document has shipped. Three decisions are settled (see
-> [Decisions](#decisions)). Command names, flags and file
-> layouts are proposals and may change in review. For shipped behavior see the
-> [User Guide](../USER_GUIDE.md#using-prism-locally) and the [command reference](CLI-REFERENCE.md).
+> **Status: Phase 1 implemented in 1.11.0** (engine, Claude Code adapter, `prism_review`; see
+> [Rollout](#13-rollout)). Phases for Kiro, Cursor, Codex and AgentCore are still proposals. Three
+> decisions are settled (see [Decisions](#decisions)). Where phase 1 differs from this text, see
+> [Phase 1 implementation notes](#phase-1-implementation-notes). For shipped behavior see the
+> [User Guide](../USER_GUIDE.md#agent-harness-loop) and the [command reference](CLI-REFERENCE.md).
 >
 > Research date: November 2026, against `main` at prism-cli 1.10.0. Hook behavior of each coding
 > tool was read from its official documentation on that date (see [Sources](#sources)). Anything
@@ -784,6 +785,105 @@ other hooks; installing twice changes nothing.
 
 Tests: golden pairs per client, including the D2 defaults; for AgentCore, a harness eval fixture where the first patch has a
 finding and the second round fixes it.
+
+## Phase 1 implementation notes
+
+Where 1.11.0 differs from or settles something in the text above:
+
+- **Stop hook output on `pass` and repeated `stop`.** Claude Code's `hookSpecificOutput.additionalContext`
+  on `Stop` continues the turn, so using it for a `pass` with warnings or non-blocking findings would
+  cost one more model turn at every finish. 1.11.0 sends those to the person as `systemMessage`
+  only. A `stop` sends `additionalContext` once so Claude reports what remains; the same `stop` again
+  (same diff hash) prints nothing, so the turn ends.
+- **A `stop` sticks.** Once a session's verdict is `stop` for a diff hash, a later run on the same
+  diff returns the same `stop` instead of starting a new fix round (section 5 only named the
+  `fix`-then-unchanged case).
+- **Tamper without a session.** The full tamper list reads the session diff (baseline to now). A
+  stateless run (no session: `prism_review` without `session`, `codewatch review` without
+  `--session`) has no fix rounds to guard, and a branch may legitimately tune its own config, so it
+  does not stop on those paths. Two parts still apply: an added `gitleaks:allow` line gives `stop`
+  (`tamper`), and when the change edits `.gitleaks.toml`, `.gitleaksignore` or the gitleaks
+  baseline, gitleaks runs with the base branch's copy of them, so a change cannot allowlist itself.
+- **What a push carries.** The push gate reviews the commits that would leave the machine and never
+  falls back to uncommitted changes only. The base is the upstream; else what the push command
+  writes to (`refs/remotes/<remote>/<dst>` from `git push [-u] <remote> [<src>:]<dst>`); else
+  `<remote>/<current branch>`, `<remote>/HEAD`, `<remote>/main` or `master` (and the same for
+  `origin`); else the commits on no remote (`HEAD --not --remotes`); and on a first push to an
+  empty remote, the whole tree against the empty tree, with a warning. A refspec whose source is
+  not HEAD (`git push origin other:main`) reviews that commit's tree. When the command does not say
+  what it pushes (`--all`, `--mirror`, `--tags`, several refspecs, a glob, or several pushes in one
+  command), the verdict is `stop` with `human_why: push-unknown` and the push is denied, as for a
+  secret scan with no verdict. `codewatch review` and `prism_review` in branch scope use the same
+  chain, and the git pre-push hook uses its fallback steps for a new branch instead of skipping
+  the review.
+- **Secrets in the pushed commits.** In branch scope (the push gate, `codewatch review` without a
+  session, `prism_review` without `session`) gitleaks also runs `gitleaks git --log-opts=<base>..<tip>`
+  over every commit of the range (the whole history on a first push), because the tree diff misses
+  a secret one commit adds and a later one removes, and that commit still leaves with the push. A
+  hit gives `stop` with `human_why: secret-committed` and a `commit_secrets` list (commit, file,
+  line, rule; never the value), the push is denied, and the AI review is skipped. It is computed
+  from the range on every run, so a later "fix" commit or a `pass` elsewhere cannot clear it; only
+  rewriting the unpushed history so no commit holds the key does. `next_action` names the commit,
+  says a new commit does not help, and tells the agent to have the person rotate the key and
+  rewrite the history, offering to do the rewrite only if asked. The finish gate (session lines)
+  does not scan commits. The git pre-push hook for people runs no gitleaks of its own: it records
+  each pushed commit that has no pre-commit scan, and the pre-commit hook scanned each commit's
+  staged changes when it was made, so it has no combined-diff gap.
+- **A `gitleaks:allow` committed before the session starts is not a tamper hit in the hook path.**
+  The SessionStart baseline snapshots the working tree, so a marker already there (committed or
+  not) is the person's work, not the agent's, and the session diff never shows it. A stateless run
+  over the branch (`codewatch review --since origin/main`, or `prism_review` without `session`)
+  does see it and stops with `tamper`. This is intended: the loop guards against the agent
+  tampering in a fix round, not against what the branch carried before. The secret scan still runs
+  on the agent's own changed lines, the AI reviewer still sees the marker if the agent's diff
+  touches that code, and the git pre-push review and the CI gate review the whole branch.
+- **The tamper stop names what tripped it.** `next_action` lists the guarded files changed and
+  the `gitleaks:allow` markers added (each path quoted, at most five of each, then "and N more"),
+  and words a marker as "added a gitleaks:allow marker at ..." rather than a configuration change.
+- **`harness.timeout_seconds` has a ceiling of 135**, so two reviewer attempts plus gitleaks fit
+  inside the plugin hook script's 290 s cap and the hook's 300 s timeout (section 10.2). A larger
+  value is used as 135 with a warning. The `--timeout` flag of a direct `codewatch review` run is
+  not capped.
+- **`.prism/results/**` and `.prism/harness/**` are not on the code's tamper list**: every diff
+  and snapshot excludes PRISM's own output, so a change there is never seen (the section 6.2
+  non-goal).
+- **`human_why: secrets-scan-failed`** is added for "gitleaks ran but gave no verdict" at push
+  (section 12), which holds the push.
+- **`fail_open`** is also a top-level verdict field, not only in the result file.
+- **Secrets are filtered to added lines in every scope**, not only `new-lines`, so a pre-existing
+  secret in a touched file does not block.
+- **No result file for an empty diff**: it passes at once and costs nothing, and writing one per
+  idle `Stop` would only add noise.
+- **`prism_review`** answers carry the verdict's own `schema` (`prism.harness.verdict`) in place of
+  the MCP server's `schema: 1` stamp.
+- **Hooks** call `node scripts/harness-hook.mjs <event>`, which passes stdin to
+  `prism-cli codewatch hook --client claude` (the `$PRISM_CLI` and Windows `.cmd` handling of
+  `session-start.mjs`).
+- **`if` rules on the Bash `PreToolUse` hook.** Claude Code's `if` field uses permission rule
+  syntax: it checks each subcommand (split on `&&`, `||`, `;`, `|`, `|&`, `&`, newlines) and the
+  commands inside `$()` and backticks, strips leading `VAR=value` assignments and a fixed wrapper
+  list (`timeout`, `time`, `nice`, `nohup`, `stdbuf`, `command`, `builtin`, `noglob`, bare
+  `xargs`), and lets `*` match any text anywhere in the rule
+  ([hooks: how `if` patterns match Bash commands](https://code.claude.com/docs/en/hooks#how-if-patterns-match-bash-commands),
+  [permissions: wildcard patterns, wrappers](https://code.claude.com/docs/en/permissions#wildcard-patterns)).
+  `env`, `sh -c` and `/usr/bin/git` are not stripped, so `Bash(git push*)` would miss
+  `env git push`, `git -C dir push` and `sh -c 'git push'`. The plugin uses
+  `Bash(*git*push*)` for the `pre-push` event, and `Bash(*git*config*)` and `Bash(*git*-c*)` for
+  a `bash-guard` event that runs only the bypass check (never a review, so a command matched by
+  two rules is reviewed once). A command that only looks like a push to the filter
+  (`git log --grep push`) costs one tokenize in prism-cli: about 120 ms per hook, measured, most
+  of it node and prism-cli start-up. `claude-plugin/test/hook-if-match.test.mjs` checks each
+  tokenizer form against these rules with a matcher written to the documented semantics.
+- **Shell command parsing.** The `pre-push` adapter splits the command with a small quote-aware
+  tokenizer (no backtracking regex): leading `VAR=val` words and `env` are skipped, git's global
+  options (`-C`, `-c`, `--git-dir`, `--work-tree`, `--no-pager`, ...) are walked to the subcommand,
+  and one level of `sh -c '...'` / `bash -c "..."` is read. `$(...)`, backticks, `eval`, aliases
+  and scripts are not expanded: this check is a guardrail, and the git pre-push hook and the CI
+  gate are the backstop.
+- **Not in 1.11.0**: `harness.context_scan` (section 6.3, measured in 1.12.0), the per-edit
+  `--no-review` hook, the status-line marker and per-commit dashboard view (section 11.2; harness
+  results show in the dashboard's run trend and are skipped by the pre-push review views), and
+  `allow-config` (open question 3).
 
 ## Open questions
 

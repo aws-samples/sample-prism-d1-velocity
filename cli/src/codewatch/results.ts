@@ -52,9 +52,34 @@ export interface Finding {
  * `secrets` = gitleaks; `review` = the reviewer (kiro-cli / Claude Code);
  * `security-review` = an AWS Security Agent code review job;
  * `security-threat-model` = an AWS Security Agent threat model job;
- * `security-pentest` = an AWS Security Agent penetration test job.
+ * `security-pentest` = an AWS Security Agent penetration test job;
+ * `agent-harness` = one run of the agent harness loop (`codewatch review`, hook `agent`).
+ * Readers that do not know a kind must skip it.
  */
-export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model' | 'security-pentest' | 'aws-check';
+export type ResultKind = 'secrets' | 'review' | 'security-review' | 'security-threat-model' | 'security-pentest' | 'aws-check' | 'agent-harness';
+
+/** agent-harness only: the verdict behind the result (docs/DESIGN-harness-loop.md section 11). */
+export interface HarnessResultInfo {
+  client: string | null;
+  event: string;
+  session: string | null;
+  verdict: 'pass' | 'fix' | 'stop';
+  round: number;
+  max_rounds: number;
+  scope: string;
+  secrets: number;
+  dropped_out_of_scope: number;
+  cached: boolean;
+  human_needed: boolean;
+  human_why: string | null;
+  fail_open: boolean;
+  secrets_scanned: boolean;
+  block_on: string[];
+  blocking_findings: number;
+  nonblocking_findings: number;
+  wall_s: number;
+  cost_usd: number | null;
+}
 
 /**
  * aws-check only: one `prism-cli aws check` run. The audit findings live in
@@ -164,7 +189,8 @@ export interface PentestInfo {
   service_duration_s?: number | null;
   wall_s?: number | null;
 }
-export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual';
+/** `agent`: an AI agent's own hook or tool call (the harness loop), never a person's git hook. */
+export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual' | 'agent';
 /**
  * ok        ran, nothing found
  * findings  ran, found something
@@ -216,6 +242,8 @@ export interface PrismResult {
   pentest?: PentestInfo;
   /** Present on kind aws-check. */
   aws_check?: AwsCheckInfo;
+  /** Present on kind agent-harness. */
+  harness?: HarnessResultInfo;
 }
 
 export type ResultInit = Omit<PrismResult, 'schema_version' | 'tool_version' | 'model' | 'commit' | 'tree' | 'branch' | 'upstream' | 'base' | 'summary' | 'score' | 'reason' | 'findings'>
@@ -273,13 +301,18 @@ export function resultFileName(r: PrismResult): string {
  * clean without touching any tracked file. Outside a git repo it does nothing.
  */
 export function ensureResultsExcluded(repoRoot: string): boolean {
-  const probe = run('git', ['-C', repoRoot, 'check-ignore', '-q', `${RESULTS_DIR}/probe.json`]);
+  return ensureDirExcluded(repoRoot, RESULTS_DIR, 'prism-cli codewatch results (local)');
+}
+
+/** Adds `/<dir>/` to `.git/info/exclude` unless git already ignores it. */
+export function ensureDirExcluded(repoRoot: string, dir: string, comment: string): boolean {
+  const probe = run('git', ['-C', repoRoot, 'check-ignore', '-q', `${dir}/probe.json`]);
   if (probe.ok) return false;
   const p = run('git', ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude']);
   if (!p.ok || !p.stdout) return false;
   mkdirSync(dirname(p.stdout), { recursive: true });
   const prefix = fileExists(p.stdout) && !readFileSync(p.stdout, 'utf8').endsWith('\n') ? '\n' : '';
-  appendFileSync(p.stdout, `${prefix}# prism-cli codewatch results (local)\n/${RESULTS_DIR}/\n`);
+  appendFileSync(p.stdout, `${prefix}# ${comment}\n/${dir}/\n`);
   return true;
 }
 

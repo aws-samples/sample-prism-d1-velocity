@@ -19,7 +19,7 @@ export const GROUP_DESCRIPTIONS: Record<string, string> = {
   aws: 'Connect an AWS profile, run read-only account checks and turn them into a fix list',
   'bedrock-protection': 'Audit an AWS account, organization or repo for LLMjacking exposure',
   bootstrapper: 'Install PRISM CI workflows, the eval harness and the coding agent, and set up CI OIDC roles',
-  codewatch: 'Git hook entry points and scan reports for the local codewatch hooks',
+  codewatch: 'Git hook entry points and scan reports for the local codewatch hooks, and the agent harness loop (review, hook)',
   enable: 'Turn on a PRISM feature on this machine or repo: codewatch hooks, codeburn sync, Security Agent, the Kiro Crew app',
   export: 'Push local usage data to PRISM now',
   git: 'Claude Code session hook, and the retired AI-origin commit trailers',

@@ -7,12 +7,13 @@
  * bug in this file. The push is never blocked by this gate.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { run } from '../utils/exec.js';
-import { getAssetPath } from '../utils/root.js';
-import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY, RULES_PATH } from './config.js';
+import { fallbackPushBase } from './pushbase.js';
+import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY } from './config.js';
+import { loadReviewRules } from './rules.js';
 import { safeWrite } from './gitleaks.js';
 import { countBySeverity, makeResult, readResults, type PrismResult } from './results.js';
 import { ADAPTERS, detectReviewers, findOnPath, resolveReviewer, runReview, toolVersion, type ReviewerAdapter } from './reviewers/index.js';
@@ -23,7 +24,7 @@ export const MAX_DIFF_CHARS = 200_000;
 /** Upper bound on commits checked for a missing pre-commit scan per push. */
 const MAX_SKIP_CHECK_COMMITS = 50;
 /** Lock files are noise to a reviewer and can be megabytes. */
-const DIFF_EXCLUDES = [':(exclude,glob)**/package-lock.json', ':(exclude,glob)**/yarn.lock', ':(exclude,glob)**/pnpm-lock.yaml', ':(exclude,glob)**/poetry.lock', ':(exclude,glob)**/Cargo.lock'];
+export const DIFF_EXCLUDES = [':(exclude,glob)**/package-lock.json', ':(exclude,glob)**/yarn.lock', ':(exclude,glob)**/pnpm-lock.yaml', ':(exclude,glob)**/poetry.lock', ':(exclude,glob)**/Cargo.lock'];
 
 export interface PushRef {
   localRef: string;
@@ -55,7 +56,7 @@ function git(args: string[]): string | null {
  * the remote already has for this ref, else the remote's default branch (a
  * first push of a new branch). The diff is merge-base based (`base...sha`).
  */
-export function resolveBase(ref: PushRef, remote: string | null): { base: string | null; upstream: string | null } {
+export function resolveBase(ref: PushRef, remote: string | null, repoRoot = '.'): { base: string | null; upstream: string | null; emptyTree?: boolean } {
   const branch = ref.localRef.startsWith('refs/heads/') ? ref.localRef.slice('refs/heads/'.length) : null;
   if (branch) {
     const up = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`]);
@@ -74,6 +75,11 @@ export function resolveBase(ref: PushRef, remote: string | null): { base: string
       if (sha) return { base: sha, upstream: head.replace(/^refs\/remotes\//, '') };
     }
   }
+  // No upstream and no remote HEAD (a first push with no -u): the remote's branch, its
+  // main/master, the commits on no remote, or on a first push the whole tree.
+  const dst = ref.remoteRef.startsWith('refs/heads/') ? ref.remoteRef.slice('refs/heads/'.length) : null;
+  const fb = fallbackPushBase(repoRoot, { remote, dst, branch, tip: ref.localSha });
+  if (fb && fb.base !== ref.localSha) return { base: fb.base, upstream: fb.emptyTree ? null : fb.label, emptyTree: fb.emptyTree };
   return { base: null, upstream: null };
 }
 
@@ -132,9 +138,9 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
   const { repoRoot } = opts;
   const started = new Date().toISOString();
   const branch = ref.localRef.startsWith('refs/heads/') ? ref.localRef.slice(11) : ref.localRef;
-  const { base, upstream } = resolveBase(ref, opts.remote);
+  const { base, upstream, emptyTree } = resolveBase(ref, opts.remote, repoRoot);
 
-  const unscanned = recordUnscannedCommits(repoRoot, base, ref.localSha, branch, upstream);
+  const unscanned = recordUnscannedCommits(repoRoot, emptyTree ? null : base, ref.localSha, branch, upstream);
   if (unscanned > 0) log(`prism: ${unscanned} pushed commit(s) have no pre-commit secret scan (recorded in .prism/results/)`);
 
   const common = { kind: 'review' as const, hook: 'pre-push' as const, commit: ref.localSha, branch, upstream, base, started_at: started };
@@ -165,7 +171,7 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
 
   // spawnSync rather than run(): run() inherits execFileSync's 1 MB buffer,
   // which a large branch diff exceeds.
-  const d = spawnSync('git', ['diff', '--no-color', '--no-ext-diff', `${base}...${ref.localSha}`, '--', '.', ...DIFF_EXCLUDES],
+  const d = spawnSync('git', ['diff', '--no-color', '--no-ext-diff', ...(emptyTree ? [base, ref.localSha] : [`${base}...${ref.localSha}`]), '--', '.', ...DIFF_EXCLUDES],
     { cwd: repoRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   let diff = d.status === 0 ? d.stdout : null;
   if (diff === null) {
@@ -177,19 +183,8 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
   let truncated = false;
   if (diff.length > MAX_DIFF_CHARS) { diff = diff.slice(0, MAX_DIFF_CHARS); truncated = true; }
 
-  // A repo covered only by the global hooks has no rules file of its own:
-  // fall back to the bundled default, the same rules enable codewatch installs.
-  let rulesPath = RULES_PATH;
-  let rulesText = existsSync(resolve(repoRoot, RULES_PATH)) ? readFileSync(resolve(repoRoot, RULES_PATH), 'utf8') : '';
-  if (!rulesText) {
-    try {
-      rulesPath = getAssetPath(import.meta.url, 'bootstrapper/eval-harness/steering/code-review.md');
-      rulesText = readFileSync(rulesPath, 'utf8');
-    } catch {
-      rulesPath = RULES_PATH;
-      log(`prism: ${RULES_PATH} not found; reviewing without the shared rules`);
-    }
-  }
+  const { rulesPath, rulesText, note: rulesNote } = loadReviewRules(repoRoot);
+  if (rulesNote) log(`prism: ${rulesNote}`);
 
   const tmp = mkdtempSync(join(tmpdir(), 'prism-review-'));
   try {
