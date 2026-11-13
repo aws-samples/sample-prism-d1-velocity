@@ -338,9 +338,13 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string;
       rewritten = true;
       why = 'HEAD shares no history with the commit the session started on, so this run is judged against the branch\'s base instead of the session start';
     } else {
-      const up = branchBase(repoRoot, head, undefined, r.opts.push, []);
+      // shortcut: trusts the local remote-tracking ref, which an agent could move with update-ref;
+      // a deliberately hostile agent is a non-goal (section 1), the CI gate covers that case.
+      const notes: string[] = [];
+      const up = branchBase(repoRoot, head, undefined, r.opts.push, notes);
       const newer = up && !up.emptyTree && up.base !== fork.stdout && gitIn(repoRoot, ['merge-base', '--is-ancestor', fork.stdout, up.base]).ok;
       sessionBase = newer ? up.base : fork.stdout;
+      if (newer) warnings.push(...notes);
       why = `HEAD is no longer a descendant of the commit the session started on (branch switch, reset or rebase); session changes are counted from where the two histories meet${newer ? `, leaving out the upstream commits since then (${up.label})` : ''}`;
     }
   }
