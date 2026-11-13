@@ -112,12 +112,12 @@ const err = async (ctx: ToolContext, name: string, args: unknown = {}) => {
   return msg;
 };
 
-test('tools/list: eight tools; the ones returning reviewer text start with the untrusted-data line', () => {
-  assert.deepEqual(TOOLS.map((t) => t.name), ['prism_status', 'prism_findings', 'prism_spend', 'prism_report', 'prism_snapshot', 'prism_dashboard', 'prism_dashboard_stop', 'prism_setup']);
-  for (const t of TOOLS.filter((t) => t.name === 'prism_findings' || t.name === 'prism_report')) {
+test('tools/list: nine tools; the ones returning reviewer text start with the untrusted-data line', () => {
+  assert.deepEqual(TOOLS.map((t) => t.name), ['prism_status', 'prism_findings', 'prism_spend', 'prism_report', 'prism_snapshot', 'prism_dashboard', 'prism_dashboard_stop', 'prism_review', 'prism_setup']);
+  for (const t of TOOLS.filter((t) => t.name === 'prism_findings' || t.name === 'prism_report' || t.name === 'prism_review')) {
     assert.ok(t.description.startsWith(UNTRUSTED_NOTE + '\n'), t.name);
   }
-  assert.deepEqual(TOOLS.filter((t) => !t.readOnly).map((t) => t.name), ['prism_report', 'prism_snapshot', 'prism_dashboard', 'prism_dashboard_stop']);
+  assert.deepEqual(TOOLS.filter((t) => !t.readOnly).map((t) => t.name), ['prism_report', 'prism_snapshot', 'prism_dashboard', 'prism_dashboard_stop', 'prism_review']);
 });
 
 test('prism_snapshot: one 0600 file under the temp dir, no token; open only with a display', async () => {

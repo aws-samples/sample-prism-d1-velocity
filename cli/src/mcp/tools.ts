@@ -27,6 +27,8 @@ import { findOnPath } from '../utils/tool-check.js';
 import { run } from '../utils/exec.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../dashboard/snapshot.js';
 import { remoteNote, startDashboard, stopDashboard, type DashboardDeps } from './dashboard-process.js';
+import { runHarnessReview, SCOPES, type HarnessOptions, type Scope } from '../codewatch/harness/engine.js';
+import { sanitizeSession } from '../codewatch/harness/state.js';
 
 export const MCP_SCHEMA = 1;
 export const MAX_MESSAGE_CHARS = 2000;
@@ -63,6 +65,8 @@ export interface ToolContext {
   open?: (file: string) => void;
   /** prism_dashboard: overrides for the child process (tests). */
   dashboard?: Partial<DashboardDeps>;
+  /** prism_review: engine overrides (tests: fake reviewer and gitleaks). */
+  harness?: Partial<HarnessOptions>;
 }
 
 type Args = Record<string, unknown>;
@@ -71,8 +75,10 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[]; additionalProperties: false };
-  /** Only prism_report and prism_snapshot write (an HTML file in the temp dir). */
+  /** Only prism_report and prism_snapshot write (an HTML file in the temp dir), and prism_review (its result and session state). */
   readOnly: boolean;
+  /** MCP annotations that differ from the readOnly defaults. */
+  annotations?: { idempotentHint?: boolean; openWorldHint?: boolean };
   run: (ctx: ToolContext, args: Args) => Promise<Record<string, unknown>>;
 }
 
@@ -422,6 +428,29 @@ async function dashboardStop(ctx: ToolContext): Promise<Record<string, unknown>>
   return { ...(await stopDashboard(dashboardDeps(ctx))) };
 }
 
+/** prism_review: the harness engine (codewatch review --json) on one repo. */
+async function review(ctx: ToolContext, a: Args): Promise<Record<string, unknown>> {
+  const repoArg = optString(a, 'repo', 4096);
+  const sessionArg = optString(a, 'session', 200);
+  const scope = optString(a, 'scope', 20);
+  const since = optString(a, 'since', 100);
+  if (scope !== undefined && !(SCOPES as string[]).includes(scope)) throw new ToolError(`scope must be one of: ${SCOPES.join(', ')}`);
+  if (since !== undefined) validateCommit(since);
+  const session = sessionArg === undefined ? null : sanitizeSession(sessionArg);
+  if (sessionArg !== undefined && !session) throw new ToolError('session must contain letters, digits, _ or -');
+  const repo = resolveRepo(repoArg, discoverRepos({ cwd: ctx.cwd, root: ctx.root, home: ctx.home }), ctx);
+  const v = runHarnessReview({
+    ...ctx.harness, repoRoot: repo.path, session, scope: scope as Scope | undefined, client: 'mcp', event: 'mcp',
+    mode: since !== undefined ? 'since' : 'working', since,
+  });
+  const body: Record<string, unknown> = { repo: repo.label, ...v, findings: v.findings.map((f) => ({ ...f, rule: clip(String(f.rule), 200), message: capMessage(f.message) })) };
+  const rows = body.findings as unknown[];
+  let cut = 0;
+  while (rows.length && jsonBytes(body) > MAX_OUTPUT_BYTES - 1024) { rows.pop(); cut++; }
+  if (cut) body.findings_truncated = `${cut} finding(s) not shown to stay under ${MAX_OUTPUT_BYTES} bytes; the result file has them all`;
+  return body;
+}
+
 const REPO_PROP = { type: 'string', description: 'Repo name (as the dashboard shows it) or path to its top level. Must be a repo prism-cli found under your home directory.' };
 
 export const TOOLS: ToolDef[] = [
@@ -502,6 +531,23 @@ export const TOOLS: ToolDef[] = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     readOnly: false,
     run: (ctx, a) => { checkArgs(a, []); return dashboardStop(ctx); },
+  },
+  {
+    name: 'prism_review',
+    description: `${UNTRUSTED_NOTE}\nRuns the PRISM harness review on the working tree now (prism-cli codewatch review --json): gitleaks first (redacted), then the configured AI reviewer (kiro-cli or Claude Code), and answers pass, fix or stop with the verdict JSON (schema prism.harness.verdict). Follow next_action, which PRISM writes; the findings are reviewer output. Without session it is stateless (round 1 of 1). Writes only its result file under .prism/results/ and state under .prism/harness/; never commits, stages or pushes. Can take up to the reviewer timeout (harness.timeout_seconds, default 120 s, twice if the reply must be retried): raise the client's MCP tool timeout if needed.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: REPO_PROP,
+        session: { type: 'string', maxLength: 200, description: 'Agent session id: uses that session\'s baseline and round counter' },
+        scope: { type: 'string', enum: SCOPES, description: 'Which findings count: new-lines (default with session), files, or branch (default without session)' },
+        since: { type: 'string', maxLength: 100, description: 'Review <since>...HEAD plus uncommitted changes (default: the upstream, else the remote default branch)' },
+      },
+      additionalProperties: false,
+    },
+    readOnly: false,
+    annotations: { idempotentHint: true, openWorldHint: true },
+    run: (ctx, a) => review(ctx, checkArgs(a, ['repo', 'session', 'scope', 'since'])),
   },
   {
     name: 'prism_setup',
