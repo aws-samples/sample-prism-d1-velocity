@@ -8,6 +8,8 @@
 #     .kiro/steering/code-review.md in your repo (review rules)
 #   - (Optional) PRISM_METRICS_ROLE_ARN for EventBridge metrics emission
 #   - (Optional) AWS Continuum configured for security scanning
+#   - (Optional) Review model: repository variable PRISM_REVIEW_MODEL, else
+#     eval.model in .prism/config.json on the base branch, else `auto`
 #
 # Secret scanning (gitleaks) needs no setup and no secret. It installs itself
 # and always runs, so it is the only gate that still functions on a fork PR.
@@ -226,9 +228,49 @@ jobs:
           KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
+          # Repository variable (Settings > Secrets and variables > Actions > Variables).
+          PRISM_REVIEW_MODEL: ${{ vars.PRISM_REVIEW_MODEL }}
         run: |
           # Trim whitespace/newlines from API key (GitHub Secrets can add trailing chars)
           export KIRO_API_KEY=$(echo -n "${KIRO_API_KEY}" | tr -d '[:space:]')
+
+          # --- review model: start (identical in every eval-gate workflow; cli/test/eval-gate-retry.test.ts checks) ---
+          # Order: the PRISM_REVIEW_MODEL variable, then eval.model in the BASE
+          # commit's .prism/config.json, then auto. Never the PR head's config:
+          # the PR author controls it, and a PR must not pick a weaker model to
+          # pass its own review. The value reaches a CLI argument, so it is
+          # validated here and never echoed when invalid.
+          REVIEW_MODEL="${PRISM_REVIEW_MODEL:-}"
+          REVIEW_MODEL_SOURCE="the PRISM_REVIEW_MODEL variable"
+          MODEL_ERROR=""
+          if [ -z "${REVIEW_MODEL}" ]; then
+            REVIEW_MODEL_SOURCE="the default"
+            if [ -n "${BASE_SHA}" ] && git cat-file -e "${BASE_SHA}:.prism/config.json" 2>/dev/null; then
+              if ! BASE_CFG_MODEL=$(git show "${BASE_SHA}:.prism/config.json" | jq -r '.eval.model? // empty | tostring'); then
+                MODEL_ERROR="the base branch's .prism/config.json could not be read as JSON"
+              elif [ -n "${BASE_CFG_MODEL}" ]; then
+                REVIEW_MODEL="${BASE_CFG_MODEL}"
+                REVIEW_MODEL_SOURCE="eval.model in the base branch's .prism/config.json"
+              fi
+            fi
+            REVIEW_MODEL="${REVIEW_MODEL:-auto}"
+          fi
+          if [ -z "${MODEL_ERROR}" ] && ! [[ "${REVIEW_MODEL}" =~ ^[A-Za-z0-9._:/-]{1,100}$ ]]; then
+            MODEL_ERROR="the model from ${REVIEW_MODEL_SOURCE} must match ^[A-Za-z0-9._:/-]{1,100}\$"
+          fi
+          # --- review model: end ---
+
+          if [ -n "${MODEL_ERROR}" ]; then
+            # FAIL CLOSED: a misconfigured model must not fall back silently.
+            echo "::error::Invalid review model: ${MODEL_ERROR}. Failing closed."
+            echo "result=ERROR" >> "$GITHUB_OUTPUT"
+            echo "model_error=true" >> "$GITHUB_OUTPUT"
+            echo "Eval gate review: invalid review model (${MODEL_ERROR}) -- failed closed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Review model: ${REVIEW_MODEL} (from ${REVIEW_MODEL_SOURCE})"
+          echo "model=${REVIEW_MODEL}" >> "$GITHUB_OUTPUT"
+          echo "Eval gate review model: \`${REVIEW_MODEL}\` (from ${REVIEW_MODEL_SOURCE})." >> "$GITHUB_STEP_SUMMARY"
 
           # Fork PRs don't receive secrets -- report neutral, never silently pass
           if [ "${HAS_KIRO_KEY}" != "true" ]; then
@@ -273,7 +315,7 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::kiro-cli smoke test"
-          echo "Say hello in JSON" | kiro-cli chat --no-interactive --model auto || echo "SMOKE TEST FAILED"
+          echo "Say hello in JSON" | kiro-cli chat --no-interactive --model "${REVIEW_MODEL}" || echo "SMOKE TEST FAILED"
           echo "::endgroup::"
 
           echo "Reviewing ${FILES}"
@@ -300,7 +342,7 @@ jobs:
             if [ "${ATTEMPT}" = "2" ]; then PROMPT="${REVIEW_PROMPT} ${RETRY_NOTE}"; fi
             REVIEW_OUTPUT=$(timeout "${REVIEW_TIMEOUT_SECS}" kiro-cli chat --no-interactive \
               --trust-all-tools \
-              --model auto \
+              --model "${REVIEW_MODEL}" \
               "${PROMPT}") || true
 
             # Strip ANSI escapes, then extract the LAST JSON object that parses and
@@ -397,6 +439,8 @@ jobs:
           REVIEW_MEDIUM: ${{ steps.review.outputs.medium }}
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
           REVIEW_SUMMARY: ${{ steps.review.outputs.summary }}
+          REVIEW_MODEL: ${{ steps.review.outputs.model }}
+          REVIEW_MODEL_ERROR: ${{ steps.review.outputs.model_error }}
           GITLEAKS_LEAKS: ${{ steps.gitleaks.outputs.leaks }}
           GITLEAKS_ERROR: ${{ steps.gitleaks.outputs.error }}
           GITLEAKS_INSTALL_ERROR: ${{ steps.gitleaks-install.outputs.error }}
@@ -410,6 +454,8 @@ jobs:
             const result = process.env.REVIEW_RESULT || 'ERROR';
             if (result === 'SKIPPED') {
               body = '⚠️ **PRISM Eval Gate** -- Review skipped (no source files changed or no API key on fork PRs).';
+            } else if (result === 'ERROR' && process.env.REVIEW_MODEL_ERROR === 'true') {
+              body = '❌ **PRISM Eval Gate** -- The review model is invalid (see the job summary). Failing closed; fix `PRISM_REVIEW_MODEL` or `eval.model` in `.prism/config.json`.';
             } else if (result === 'ERROR') {
               body = '❌ **PRISM Eval Gate** -- Review output could not be parsed on either attempt (the review is retried once). Failing closed; re-run the workflow or review manually.';
             } else {
@@ -440,7 +486,8 @@ jobs:
                   body += `| File | Line | Severity | Category | Issue |\n|---|---|---|---|---|\n${table}\n\n`;
                 }
 
-                body += `> Powered by kiro-cli headless - Model: claude-haiku-4.5 - Threshold: 0.82`;
+                // The model the review step resolved and validated, not a fixed label.
+                body += `> Powered by kiro-cli headless - Model: ${process.env.REVIEW_MODEL || '?'} - Threshold: 0.82`;
             }
 
             // Secret scanning is reported for every result path, including the
@@ -501,6 +548,7 @@ jobs:
           REVIEW_RESULT: ${{ steps.review.outputs.result }}
           REVIEW_FINDINGS: ${{ steps.review.outputs.findings }}
           REVIEW_HIGH: ${{ steps.review.outputs.high }}
+          REVIEW_MODEL: ${{ steps.review.outputs.model }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Only emit when we have a real score (not SKIPPED/ERROR)
@@ -518,9 +566,10 @@ jobs:
             --arg findings "${REVIEW_FINDINGS:-0}" \
             --arg high "${REVIEW_HIGH:-0}" \
             --arg pr_number "${PR_NUMBER}" \
+            --arg model "${REVIEW_MODEL}" \
             '{team_id:$team_id,repo:$repo,timestamp:$timestamp,prism_level:2,
               metric:{name:"eval_score",value:($score|tonumber),unit:"score"},
-              ai_context:{tool:"kiro-cli",model:"claude-haiku-4.5",origin:"ai-generated"},
+              ai_context:{tool:"kiro-cli",model:$model,origin:"ai-generated"},
               eval:{score:($score|tonumber),result:$result,rubric:"kiro-headless",
                     findings:($findings|tonumber),high_findings:($high|tonumber),
                     pr_number:($pr_number|tonumber),method:"kiro-headless"}}')
@@ -862,6 +911,7 @@ jobs:
           REVIEW_HIGH: ${{ steps.review.outputs.high }}
           REVIEW_SCORE: ${{ steps.review.outputs.score }}
           REVIEW_SUMMARY: ${{ steps.review.outputs.summary }}
+          REVIEW_MODEL_ERROR: ${{ steps.review.outputs.model_error }}
           SEC_CRITICAL: ${{ steps.security-gate.outputs.critical }}
           SEC_HIGH: ${{ steps.security-gate.outputs.high }}
           SEC_SCAN_ERROR: ${{ steps.security-gate.outputs.scan_error }}
@@ -880,7 +930,9 @@ jobs:
             echo "  Rotate the credential first -- deleting it from the branch does not un-expose it."
             echo "  False positive? Add an allowlist entry to .gitleaks.toml."
           fi
-          if [ "${REVIEW_RESULT}" = "ERROR" ]; then
+          if [ "${REVIEW_MODEL_ERROR}" = "true" ]; then
+            echo "❌ Eval gate failed closed: the review model is invalid (see the job summary)"
+          elif [ "${REVIEW_RESULT}" = "ERROR" ]; then
             echo "❌ Eval gate failed closed: review output could not be parsed"
           elif [ "${REVIEW_RESULT}" = "FAIL" ]; then
             echo "❌ Kiro found ${REVIEW_HIGH:-?} high-severity issues (score: ${REVIEW_SCORE:-?})"
