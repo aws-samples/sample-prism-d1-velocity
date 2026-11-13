@@ -285,7 +285,7 @@ interface Diffs {
   diff: ParsedDiff;
   /** What this session changed (baseline to now); the same as `diff` without a session. */
   sessionDiff: ParsedDiff;
-  /** The history was rewritten past the session's start commit: the session diff no longer describes the agent's edits. */
+  /** HEAD shares no history with the session's start commit (or that commit is gone): tamper is judged on the review diff. */
   rewritten: boolean;
 }
 
@@ -319,20 +319,21 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string;
     else warnings.push('no session baseline (the SessionStart hook did not run); uncommitted work from before the session counts as session work');
     sessionBase = state.head && objectExists(repoRoot, state.head) ? state.head : head;
   }
-  // A reset or rebase past the commit the session started on makes the session diff describe the
-  // rewrite, not the agent's edits: nothing judged on it (tamper) may decide this run.
-  let rewritten = !!state.head && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok;
-  if (rewritten && state.head && r.event === 'pre-push') {
-    // At a push, commits after the fork point with the session's start commit were all made
-    // during the session (earlier ones are its ancestors), so they still describe session work;
-    // tamper then counts only what the push carries (integrityChecks).
-    const fork = gitIn(repoRoot, ['merge-base', state.head, 'HEAD']);
+  // A reset or rebase past the commit the session started on makes the baseline diff describe the
+  // rewrite, not the agent's edits. Compare against the fork point with the start commit instead:
+  // what came before it is shared with the start commit. Later commits are session work, or
+  // upstream commits a rebase brought in (a push does not carry those, see integrityChecks).
+  // Uncommitted work from before the session then counts as session work.
+  const moved = !!state.head && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok;
+  let rewritten = false;
+  if (moved) {
+    const fork = gitIn(repoRoot, ['merge-base', state.head!, 'HEAD']);
     if (fork.ok && fork.stdout) {
       sessionBase = fork.stdout;
-      rewritten = false;
-    }
+      warnings.push('HEAD is no longer a descendant of the commit the session started on; session changes are counted from where the two histories meet');
+    } else rewritten = true; // unrelated histories, or the start commit is gone
   }
-  if (rewritten && r.scope === 'new-lines') {
+  if (moved && r.scope === 'new-lines') {
     warnings.push('HEAD is no longer a descendant of the commit the session started on (branch switch or rebase); judging whole changed files this run');
     r.scope = 'files';
   }
@@ -388,13 +389,15 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
  * also carries counts: the baseline survives resume and a reused session id,
  * so a path that differs from the baseline only because history was reset
  * since then would otherwise deny a push that does not touch it. Without a
- * session (or, outside a push, after a rewrite past its start) there are no fix rounds to
+ * session there are no fix rounds to
  * guard and a branch may legitimately tune its own config, so only added
  * `gitleaks:allow` lines count; the scanner config is handled by scanning
  * with the base's copy instead (scannerOverride).
  */
 function integrityChecks(r: Run, d: Diffs): Integrity {
-  if (!d.state || d.rewritten) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  if (!d.state) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  // No fork point with the session's start: judge what this run reviews, not nothing.
+  if (d.rewritten) return { tamper: touchedPaths(d.diff).filter(isTamperPath), allowMarkers: d.diff.allowMarkers };
   const tamper = touchedPaths(d.sessionDiff).filter(isTamperPath);
   if (r.event !== 'pre-push') return { tamper, allowMarkers: d.sessionDiff.allowMarkers };
   const inPush = new Set(touchedPaths(d.diff));
@@ -410,7 +413,7 @@ function integrityChecks(r: Run, d: Diffs): Integrity {
  * the base's version of it, so a change cannot allowlist itself.
  */
 function scannerOverride(r: Run, d: Diffs): ScannerConfigOverride | undefined {
-  if (d.state && !d.rewritten) return undefined;
+  if (d.state) return undefined;
   const changed = touchedPaths(d.diff).filter((p) => SCANNER_CONFIG.has(p));
   if (!changed.length) return undefined;
   const blobs = readBlobs(r.repoRoot, d.reviewBase, [...SCANNER_CONFIG]);

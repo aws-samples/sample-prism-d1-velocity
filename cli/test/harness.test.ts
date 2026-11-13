@@ -726,6 +726,19 @@ test('a tamper path that differs from an old baseline only because history was r
   assert.equal(JSON.parse(runClaudeHook('pre-push', pushIn(r, 'git push origin main'), deps)).hookSpecificOutput.permissionDecision, 'deny');
 });
 
+test('after a reset past the session start, the finish gate still stops on a hook edit made since', () => {
+  const r = rig();
+  r.write('.prism/review/rules.md', 'x\n');
+  r.commit('before the session');
+  recordBaseline(r.dir, 's1', 'claude');
+  git(r.dir, 'reset', '-q', '--hard', 'HEAD~1');
+  const clean = runHarnessReview(r.opts({ session: 's1' }));
+  assert.notEqual(clean.human_why, 'tamper', 'what the reset alone changed is not tamper');
+  r.write('.claude/settings.json', '{}\n');
+  const v = runHarnessReview(r.opts({ session: 's1' }));
+  assert.deepEqual([v.verdict, v.human_why], ['stop', 'tamper']);
+});
+
 test('the block_on notice at push: silent for the default, once per session through the adapter', () => {
   const blockOnNotes = (v: HarnessVerdict) => v.warnings.filter((w) => /harness\.block_on .* applies to the finish gate and direct reviews only/.test(w)).length;
   const d = rig();
