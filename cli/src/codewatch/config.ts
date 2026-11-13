@@ -117,3 +117,86 @@ export function writeEvalConfig(repoRoot: string, patch: EvalConfig): void {
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
 }
+
+// ------------------------------------------------------------ harness block
+
+export const HARNESS_BLOCK_ON_VALUES = ['secret', 'high', 'medium'] as const;
+export type BlockOn = typeof HARNESS_BLOCK_ON_VALUES[number];
+export const HARNESS_DEFAULT_MAX_ROUNDS = 2;
+export const HARNESS_MAX_ROUNDS_CEILING = 3;
+export const HARNESS_DEFAULT_TIMEOUT_SECONDS = 120;
+export const HARNESS_DEFAULT_STATE_TTL_DAYS = 7;
+export const HARNESS_DEFAULT_SKIP_PATHS = ['*.md', 'docs/**', '*.txt', '*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.webp', '*.ico'];
+
+/** The `harness` block of `.prism/config.json`, with defaults applied (docs/DESIGN-harness-loop.md, config keys). */
+export interface HarnessConfig {
+  push_gate: boolean;
+  finish_gate: boolean;
+  /** Always contains 'secret'. */
+  block_on: BlockOn[];
+  max_rounds: number;
+  timeout_seconds: number;
+  skip_paths: string[];
+  state_ttl_days: number;
+}
+
+/**
+ * Reads the harness block. A missing or mistyped key takes its default; a
+ * wrong value is reported in `warnings`, never thrown, because a typo in a
+ * team's config must not trap an agent.
+ */
+export function readHarnessConfig(repoRoot: string, warnings: string[] = []): HarnessConfig {
+  const raw = readPrismConfig(repoRoot).harness;
+  const h: Record<string, unknown> = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const bool = (k: string, def: boolean): boolean => {
+    if (h[k] === undefined) return def;
+    if (typeof h[k] === 'boolean') return h[k] as boolean;
+    warnings.push(`ignored harness.${k} in ${CONFIG_PATH} (expected true or false)`);
+    return def;
+  };
+  const posInt = (k: string, def: number): number => {
+    if (h[k] === undefined) return def;
+    const n = h[k];
+    if (typeof n === 'number' && Number.isInteger(n) && n > 0) return n;
+    warnings.push(`ignored harness.${k} in ${CONFIG_PATH} (expected a whole number above 0)`);
+    return def;
+  };
+
+  let blockOn: BlockOn[] = ['secret', 'high'];
+  if (h.block_on !== undefined) {
+    if (Array.isArray(h.block_on)) {
+      const vals = h.block_on.map((v) => String(v).toLowerCase());
+      const bad = vals.filter((v) => !(HARNESS_BLOCK_ON_VALUES as readonly string[]).includes(v));
+      if (bad.length) warnings.push(`ignored harness.block_on value(s) ${bad.map((b) => JSON.stringify(b.slice(0, 40))).join(', ')} (allowed: ${HARNESS_BLOCK_ON_VALUES.join(', ')})`);
+      blockOn = HARNESS_BLOCK_ON_VALUES.filter((v) => vals.includes(v));
+    } else {
+      warnings.push(`ignored harness.block_on in ${CONFIG_PATH} (expected a list such as ["secret", "high"])`);
+    }
+  }
+  if (!blockOn.includes('secret')) {
+    warnings.push('harness.block_on has no "secret"; secrets always block, so it was added');
+    blockOn = ['secret', ...blockOn];
+  }
+
+  let maxRounds = posInt('max_rounds', HARNESS_DEFAULT_MAX_ROUNDS);
+  if (maxRounds > HARNESS_MAX_ROUNDS_CEILING) {
+    warnings.push(`harness.max_rounds ${maxRounds} is above the ceiling of ${HARNESS_MAX_ROUNDS_CEILING}; using ${HARNESS_MAX_ROUNDS_CEILING}`);
+    maxRounds = HARNESS_MAX_ROUNDS_CEILING;
+  }
+
+  let skip = HARNESS_DEFAULT_SKIP_PATHS;
+  if (h.skip_paths !== undefined) {
+    if (Array.isArray(h.skip_paths) && h.skip_paths.every((p) => typeof p === 'string')) skip = h.skip_paths as string[];
+    else warnings.push(`ignored harness.skip_paths in ${CONFIG_PATH} (expected a list of glob strings)`);
+  }
+
+  return {
+    push_gate: bool('push_gate', true),
+    finish_gate: bool('finish_gate', false),
+    block_on: blockOn,
+    max_rounds: maxRounds,
+    timeout_seconds: posInt('timeout_seconds', HARNESS_DEFAULT_TIMEOUT_SECONDS),
+    skip_paths: skip,
+    state_ttl_days: posInt('state_ttl_days', HARNESS_DEFAULT_STATE_TTL_DAYS),
+  };
+}

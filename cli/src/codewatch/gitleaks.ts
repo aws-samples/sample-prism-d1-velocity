@@ -2,9 +2,9 @@
  * gitleaks: shared starter config, report parsing, and the pre-commit scan.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { GITLEAKS_BASELINE_PATH, GITLEAKS_CONFIG_PATH } from './config.js';
 import { makeResult, REASON_GITLEAKS_MISSING, writeResult, type Finding, type PrismResult } from './results.js';
 import { run } from '../utils/exec.js';
@@ -157,4 +157,80 @@ export function runPreCommit(repoRoot: string, gitleaksBin = 'gitleaks'): PreCom
 /** A result that cannot be written must never change the hook's verdict. */
 export function safeWrite(repoRoot: string, r: PrismResult): string | null {
   try { return writeResult(repoRoot, r); } catch { return null; }
+}
+
+/** `gitleaks dir` arrived in 8.19; older versions count as missing for the working-tree scan. */
+export const GITLEAKS_MIN_DIR_VERSION: [number, number] = [8, 19];
+
+/** "v8.28.0" / "gitleaks version 8.28.0" -> [8, 28]; null when there is no version. */
+export function parseGitleaksVersion(v: string | null): [number, number] | null {
+  const m = /(\d+)\.(\d+)(?:\.\d+)?/.exec(v || '');
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+export interface FileToScan {
+  /** Repo-relative path, as git reports it. */
+  path: string;
+  content: Buffer;
+}
+
+export interface FileScan {
+  /** missing: no usable gitleaks; error: it ran but gave no verdict. */
+  status: 'ok' | 'findings' | 'missing' | 'error';
+  findings: Finding[];
+  version: string | null;
+  reason: string | null;
+}
+
+const SAFE_REL = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\0]+$/;
+
+/**
+ * `gitleaks dir` over the given file contents, with the repo's own
+ * `.gitleaks.toml`, `.gitleaksignore` and baseline. The contents are copied to
+ * a private temp dir (mode 0700, removed afterwards) and scanned from there, so
+ * report paths are repo-relative and the repo's allowlist paths still match.
+ * `--redact`, and only location and rule fields are read (parseGitleaksReport).
+ */
+export function scanFiles(repoRoot: string, files: FileToScan[], gitleaksBin = 'gitleaks'): FileScan {
+  const version = toolVersion(gitleaksBin, ['version']);
+  const parsed = parseGitleaksVersion(version);
+  if (!parsed) return { status: 'missing', findings: [], version: null, reason: 'gitleaks is not installed' };
+  const [maj, min] = parsed;
+  if (maj < GITLEAKS_MIN_DIR_VERSION[0] || (maj === GITLEAKS_MIN_DIR_VERSION[0] && min < GITLEAKS_MIN_DIR_VERSION[1])) {
+    return { status: 'missing', findings: [], version, reason: `gitleaks ${version} has no dir command (needs ${GITLEAKS_MIN_DIR_VERSION.join('.')} or later)` };
+  }
+  if (!files.length) return { status: 'ok', findings: [], version, reason: null };
+
+  const dir = mkdtempSync(join(tmpdir(), 'prism-harness-gl-'));
+  try {
+    const src = join(dir, 'src');
+    const empty = join(dir, 'empty');
+    mkdirSync(src, { mode: 0o700 });
+    mkdirSync(empty, { mode: 0o700 });
+    for (const f of files) {
+      if (!SAFE_REL.test(f.path)) continue;
+      const dest = join(src, f.path);
+      mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+      writeFileSync(dest, f.content, { mode: 0o600 });
+    }
+    const report = join(dir, 'report.json');
+    const args = ['dir', '.', '--redact', '--no-banner', '--exit-code=1', '--report-format=json', `--report-path=${report}`];
+    const cfg = resolve(repoRoot, GITLEAKS_CONFIG_PATH);
+    if (existsSync(cfg)) args.push(`--config=${cfg}`);
+    const baseline = resolve(repoRoot, GITLEAKS_BASELINE_PATH);
+    if (existsSync(baseline)) args.push(`--baseline-path=${baseline}`);
+    // Only the repo's own .gitleaksignore counts, never one in the scanned copy.
+    const ignore = resolve(repoRoot, '.gitleaksignore');
+    args.push(`--gitleaks-ignore-path=${existsSync(ignore) ? ignore : empty}`);
+    const r = spawnSync(gitleaksBin, args, { cwd: src, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+    let findings: Finding[] | null = null;
+    try { findings = parseGitleaksReport(readFileSync(report, 'utf8')); } catch { findings = null; }
+    if (findings) findings = findings.map((f) => ({ ...f, file: f.file.replace(/^\.\//, '') }));
+    if (r.status === 0 && findings !== null && findings.length === 0) return { status: 'ok', findings: [], version, reason: null };
+    if (r.status === 1 && findings && findings.length > 0) return { status: 'findings', findings, version, reason: null };
+    const why = (r.error?.message || r.stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
+    return { status: 'error', findings: [], version, reason: `gitleaks exited ${r.status} without a readable report: ${why}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }

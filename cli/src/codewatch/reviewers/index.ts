@@ -72,6 +72,8 @@ export interface ReviewRun {
   review: ParsedReview | null;
   error: string | null;
   rawStdout: string;
+  /** The tool ran to completion but its reply held no usable review: the one case that is retried. */
+  unparseable?: boolean;
 }
 
 /**
@@ -108,6 +110,6 @@ export function runReview(adapter: ReviewerAdapter, req: ReviewRequest, timeoutM
     return { ok: true, review, error: null, rawStdout: stdout };
   } catch (e: any) {
     const exit = res.status !== 0 ? ` (exit ${res.status}${res.stderr ? `: ${res.stderr.trim().slice(0, 200)}` : ''})` : '';
-    return { ok: false, review: null, error: `${e.message}${exit}`, rawStdout: stdout };
+    return { ok: false, review: null, error: `${e.message}${exit}`, rawStdout: stdout, unparseable: true };
   }
 }

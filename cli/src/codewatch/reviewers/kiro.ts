@@ -19,7 +19,8 @@ export const kiroAdapter: ReviewerAdapter = {
     const prompt =
       `You are a code reviewer. First read the review rules in ${req.rulesPath} and follow them. ` +
       `Then read the diff at ${req.diffPath} and review only the changes it introduces, for code quality and security. ` +
-      OUTPUT_CONTRACT;
+      OUTPUT_CONTRACT +
+      (req.retryNote ? ` ${req.retryNote}` : '');
     return {
       args: ['chat', '--no-interactive', '--trust-tools=fs_read', '--model', req.model || 'auto', prompt],
     };

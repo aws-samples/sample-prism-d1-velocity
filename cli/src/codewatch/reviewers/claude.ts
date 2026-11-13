@@ -25,7 +25,7 @@ export const claudeAdapter: ReviewerAdapter = {
     const input =
       'You are a code reviewer. Review ONLY the changes in the diff below, for code quality and security, ' +
       'against these rules. You may read files in the repository for context but must not modify anything.\n\n' +
-      `<rules>\n${req.rulesText}\n</rules>\n\n<diff>\n${req.diff}\n</diff>\n\n${OUTPUT_CONTRACT}`;
+      `<rules>\n${req.rulesText}\n</rules>\n\n<diff>\n${req.diff}\n</diff>\n\n${OUTPUT_CONTRACT}${req.retryNote ? ` ${req.retryNote}` : ''}`;
     return { args, input };
   },
   parse(stdout) {
@@ -41,6 +41,8 @@ export const claudeAdapter: ReviewerAdapter = {
     const models = env.modelUsage && typeof env.modelUsage === 'object' ? Object.keys(env.modelUsage) : [];
     // modelUsage can list a small helper model too; the one with the most output tokens did the review.
     models.sort((a, b) => (env.modelUsage[b]?.outputTokens ?? 0) - (env.modelUsage[a]?.outputTokens ?? 0));
-    return normalizeReview(extractReviewJson(env.result), models[0] ?? null);
+    const review = normalizeReview(extractReviewJson(env.result), models[0] ?? null);
+    const cost = env.total_cost_usd;
+    return { ...review, cost_usd: typeof cost === 'number' && Number.isFinite(cost) ? cost : null };
   },
 };
