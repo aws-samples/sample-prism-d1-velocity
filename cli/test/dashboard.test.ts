@@ -224,8 +224,11 @@ test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable f
   assert.equal(after.reviewer, 'claude');
   assert.equal(after.model, 'default');
   assert.equal(after.fix, '');
-  git(dir, 'config', 'prism.reviewModel', 'opus');
+  git(dir, 'config', 'prism.claudeModel', 'opus');
   assert.equal((await codewatchSetup(dir, { pathEnv: bin })).model, 'opus');
+  git(dir, 'config', '--unset', 'prism.claudeModel');
+  git(dir, 'config', 'prism.kiroModel', 'model-k');
+  assert.equal((await codewatchSetup(dir, { pathEnv: bin })).model, 'default', "kiro's model is not shown for claude");
 });
 
 test('setup (repo): hooks from before the rename count as missing; paths with spaces are quoted', async () => {

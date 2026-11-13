@@ -903,8 +903,8 @@ pre-push code review (kiro-cli or Claude Code). Turn them off in a repo with
 Options:
   --reviewer <tool>  Team default reviewer: kiro | claude (skips detection)
   --model <id>       Review model: eval.model in .prism/config.json (with
-                     --global: git config --global prism.reviewModel). auto or
-                     default clears it
+                     --global: git config --global prism.<tool>Model, for
+                     --reviewer's tool). auto or default clears it
   --yes              Do not ask for the reviewer or model
   --uninstall        Remove the hooks and restore any hooks they replaced
   --global           Install for every repo: hooks in ~/.prism/hooks and git

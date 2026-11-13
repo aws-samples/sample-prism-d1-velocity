@@ -201,7 +201,7 @@ function oldFacts(repo: string): GitFacts {
   return {
     hooksDir: g(['rev-parse', '--path-format=absolute', '--git-path', 'hooks']) || resolve(repo, '.git/hooks'),
     reviewer: g(['config', '--get', 'prism.reviewer']),
-    reviewModel: g(['config', '--get', 'prism.reviewModel']),
+    reviewModels: { kiro: g(['config', '--get', 'prism.kiroModel']), claude: g(['config', '--get', 'prism.claudeModel']) },
     optedOut: opt === 'false',
     localHooksPath: local ? local : null,
   };
@@ -225,7 +225,7 @@ function parityRepos(): Record<string, string> {
     plain: mk('plain'),
     installed: (() => { const d = mk('installed'); installHooks(join(d, '.git', 'hooks')); return d; })(),
     reviewerTwice: mk('reviewer-twice', ['prism.reviewer', 'kiro'], ['prism.reviewer', ' claude ']),
-    reviewModel: mk('review-model', ['prism.reviewModel', 'model-a'], ['prism.reviewModel', 'model-b']),
+    reviewModel: mk('review-model', ['prism.claudeModel', 'model-a'], ['prism.claudeModel', 'model-b'], ['prism.kiroModel', 'model-k']),
     optFalse: mk('opt-false', ['prism.codewatch', 'false']),
     optNo: mk('opt-no', ['prism.codewatch', 'No']),
     optZero: mk('opt-zero', ['prism.codewatch', '0']),
@@ -296,7 +296,7 @@ test('git facts: one call in the common case; a failed call reads as the old fai
   await readGitFacts(repos.plain, counting);
   await readGitFacts(repos.worktree, counting);
   assert.deepEqual(calls, [GIT_CONFIG_LIST, GIT_CONFIG_LIST]);
-  assert.deepEqual(gitFactsFromConfig('/nowhere', null), { hooksDir: resolve('/nowhere', '.git/hooks'), reviewer: null, reviewModel: null, optedOut: false, localHooksPath: null });
+  assert.deepEqual(gitFactsFromConfig('/nowhere', null), { hooksDir: resolve('/nowhere', '.git/hooks'), reviewer: null, reviewModels: { kiro: null, claude: null }, optedOut: false, localHooksPath: null });
   assert.deepEqual([gitBool(null), gitBool('On'), gitBool(''), gitBool('2'), gitBool('0k'), gitBool('maybe')], [true, true, false, true, false, null]);
 });
 

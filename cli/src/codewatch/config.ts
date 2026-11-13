@@ -6,6 +6,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { isReviewerId, type ReviewerId } from './reviewers/types.js';
 
 export const CONFIG_PATH = '.prism/config.json';
 export const RULES_PATH = '.prism/review/rules.md';
@@ -13,8 +14,13 @@ export const GITLEAKS_BASELINE_PATH = '.prism/gitleaks-baseline.json';
 export const GITLEAKS_CONFIG_PATH = '.gitleaks.toml';
 /** Per-clone override of the team's reviewer choice: `git config prism.reviewer claude`. */
 export const REVIEWER_GIT_CONFIG_KEY = 'prism.reviewer';
-/** Fallback review model for repos that pin none: `git config --global prism.reviewModel <id>`. */
-export const REVIEW_MODEL_GIT_CONFIG_KEY = 'prism.reviewModel';
+/**
+ * A developer's default review model for repos that pin none, one key per tool
+ * so a model id never reaches the other tool: `git config --global prism.claudeModel sonnet`.
+ */
+export function reviewModelGitKey(reviewer: ReviewerId): string {
+  return `prism.${reviewer}Model`;
+}
 /** Same rule the CI eval gate applies to its review model (prism-eval-gate-kiro.yml). */
 export const MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,100}$/;
 export const DEFAULT_REVIEW_TIMEOUT_SECONDS = 300;
@@ -34,25 +40,46 @@ export interface ModelChoice {
 }
 
 /**
- * Precedence: `.prism/config.json` eval.model (the team pin, which the CI gate
- * also reads), then `git config prism.reviewModel` (usually --global: the
- * developer's default for repos that pin none), then the reviewer's default.
- * `auto`/`default` at either level stops the search with the reviewer's default.
- * An invalid value is ignored with a note.
+ * The model for `reviewer`, the tool that actually runs. Precedence:
+ * `.prism/config.json` eval.model (the team pin, which the CI gate also reads),
+ * then `git config prism.<reviewer>Model` (usually --global), then the
+ * reviewer's default. `auto`/`default` at either level stops the search with
+ * the reviewer's default. eval.model belongs to eval.reviewer: when another
+ * tool runs (a per-clone prism.reviewer, or a fallback because the team's tool
+ * is not installed) it is skipped with a note, never passed to that tool. An
+ * invalid value is skipped with a note too.
  */
-export function resolveReviewModel(opts: { prismConfigValue: unknown; gitConfigValue: string | null }): ModelChoice {
-  let note: string | null = null;
+export function resolveReviewModel(opts: {
+  reviewer: ReviewerId | null;
+  prismConfigValue: unknown;
+  /** eval.reviewer, the tool eval.model was chosen for. */
+  prismConfigReviewer?: unknown;
+  /** `git config prism.<reviewer>Model`. */
+  gitConfigValue: string | null;
+}): ModelChoice {
+  const notes: string[] = [];
+  let mismatch: string | null = null;
+  const done = (model: string | null, source: ModelChoice['source']): ModelChoice => {
+    if (mismatch) notes.push(`${mismatch}; using ${model ? `${opts.reviewer} model ${model} from git config ${reviewModelGitKey(opts.reviewer!)}` : `${opts.reviewer} default`}`);
+    return { model, source, note: notes.length ? notes.join('. ') : null };
+  };
   const levels: [unknown, ModelChoice['source'], string][] = [
     [opts.prismConfigValue, 'prism-config', 'eval.model in .prism/config.json'],
-    [opts.gitConfigValue, 'git-config', `git config ${REVIEW_MODEL_GIT_CONFIG_KEY}`],
+    [opts.reviewer ? opts.gitConfigValue : null, 'git-config', opts.reviewer ? `git config ${reviewModelGitKey(opts.reviewer)}` : ''],
   ];
   for (const [raw, source, label] of levels) {
     if (raw === undefined || raw === null || raw === '') continue;
     const v = String(raw).trim();
-    if (!MODEL_ID_RE.test(v)) { note = note || `ignored ${label}="${String(raw).slice(0, 100)}" (must match ${MODEL_ID_RE.source})`; continue; }
-    return { model: isDefaultModel(v) ? null : v, source, note };
+    if (!MODEL_ID_RE.test(v)) { notes.push(`ignored ${label}="${String(raw).slice(0, 100)}" (must match ${MODEL_ID_RE.source})`); continue; }
+    if (isDefaultModel(v)) return done(null, source);
+    const owner = opts.prismConfigReviewer;
+    if (source === 'prism-config' && opts.reviewer && isReviewerId(owner) && owner !== opts.reviewer) {
+      mismatch = `model ${v} was set for ${owner}`;
+      continue;
+    }
+    return done(v, source);
   }
-  return { model: null, source: 'default', note };
+  return done(null, 'default');
 }
 
 /** How a model reads in logs and the dashboard: the id, or the reviewer's default. */

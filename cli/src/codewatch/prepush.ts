@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { run } from '../utils/exec.js';
 import { getAssetPath } from '../utils/root.js';
-import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, REVIEW_MODEL_GIT_CONFIG_KEY, REVIEWER_GIT_CONFIG_KEY, RULES_PATH } from './config.js';
+import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY, RULES_PATH } from './config.js';
 import { safeWrite } from './gitleaks.js';
 import { countBySeverity, makeResult, readResults, type PrismResult } from './results.js';
 import { ADAPTERS, detectReviewers, findOnPath, resolveReviewer, runReview, toolVersion, type ReviewerAdapter } from './reviewers/index.js';
@@ -152,7 +152,10 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
   }
   const adapter: ReviewerAdapter = ADAPTERS[choice.id];
   const bin = findOnPath(adapter.binary, opts.pathEnv) || adapter.binary;
-  const modelChoice = resolveReviewModel({ prismConfigValue: evalCfg.model, gitConfigValue: git(['config', '--get', REVIEW_MODEL_GIT_CONFIG_KEY]) });
+  const modelChoice = resolveReviewModel({
+    reviewer: adapter.id, prismConfigValue: evalCfg.model, prismConfigReviewer: evalCfg.reviewer,
+    gitConfigValue: git(['config', '--get', reviewModelGitKey(adapter.id)]),
+  });
   if (modelChoice.note) log(`prism: ${modelChoice.note}`);
   const model = modelChoice.model;
 

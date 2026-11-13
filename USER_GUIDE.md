@@ -801,7 +801,7 @@ terminal, or with `--yes`, it keeps the existing setting, or picks claude).
 ```bash
 prism-cli enable codewatch --model claude-sonnet-4.5     # syntax example: pin a model for this repo (eval.model)
 prism-cli enable codewatch --model auto                  # clear it: the reviewer's own default
-prism-cli enable codewatch --global --model sonnet       # syntax example: your default for every repo
+prism-cli enable codewatch --global --reviewer claude --model sonnet   # your Claude Code default for every repo
 ```
 
 The model ids above are examples; list the ones your kiro-cli offers with
@@ -817,25 +817,38 @@ full model name.
   `sonnet`, `opus` and `haiku`. Both lists start with "default (recommended)" and end with "other
   (type an id)". Enter keeps the current setting. Without a terminal, or with `--yes`, nothing is
   asked and `eval.model` is left as it is.
-- `--global --model <id>` sets `git config --global prism.reviewModel`; `--global --model default`
-  unsets it.
+- `--global --model <id>` sets your own default for one tool, `git config --global prism.<tool>Model`
+  (`prism.kiroModel` or `prism.claudeModel`). The tool is `--reviewer`, else your global
+  `prism.reviewer`, else the only reviewer on PATH; with none of these the command refuses.
+  `--global --model default` unsets that tool's key.
 
-The pre-push review picks the model in this order:
+A model id belongs to one tool, and it is never passed to the other one:
 
-1. `eval.model` in `.prism/config.json`: the team's pin. `auto` or `default` here also stops the
-   search, with the reviewer's default.
-2. `git config prism.reviewModel`: your own default (usually `--global`) for repos that pin none.
+- `eval.model` belongs to `eval.reviewer`, the tool it was chosen for. When a push is reviewed by
+  the other tool (a per-clone `git config prism.reviewer`, or a fallback because the team's tool is
+  not installed), the hook skips it and prints one line such as
+  `prism: model sonnet was set for claude; using kiro default`. Running `enable codewatch` with a
+  different `--reviewer` removes a model that was set for the old one.
+- `prism.kiroModel` is read only when kiro-cli reviews, and `prism.claudeModel` only when Claude
+  Code does.
+
+The pre-push review picks the model for the tool that actually runs, in this order:
+
+1. `eval.model` in `.prism/config.json`, when it was set for this tool (or `eval.reviewer` is
+   unset): the team's pin. `auto` or `default` here also stops the search, with the reviewer's
+   default.
+2. `git config prism.<tool>Model`: your own default (usually `--global`) for repos that pin none.
 3. The reviewer's default: `auto` for kiro-cli, Claude Code's own default for claude.
 
-An invalid value at either level is ignored, with a note in the hook output. The model is the same
-whichever reviewer runs, so a pin written for one tool (`sonnet`) can fail when a developer's push
-falls back to the other; the review then records an error and the push continues. The hook prints the
+An invalid value at either level is ignored, with a note in the hook output. The hook prints the
 model (`reviewing work against origin/work with kiro-cli, model auto ...`), and the dashboard's Setup
 tab and the `prism_setup` MCP tool show it beside the reviewer.
 
 The CI eval gate uses its own order: the `PRISM_REVIEW_MODEL` repository variable, then `eval.model`
 from the **base branch's** `.prism/config.json` (so a PR cannot change the model that reviews it),
-then `auto`. It never reads `prism.reviewModel`. See [Kiro-CLI Eval Gate](#kiro-cli-eval-gate).
+then `auto`. CI always runs kiro-cli and reads `eval.model` whichever tool it was set for, so a team
+whose `eval.reviewer` is claude should set `PRISM_REVIEW_MODEL` for CI. It never reads
+`prism.<tool>Model`. See [Kiro-CLI Eval Gate](#kiro-cli-eval-gate).
 
 ### What the Hooks Do
 

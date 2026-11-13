@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
 import { run } from '../../utils/exec.js';
 import {
-  GITLEAKS_BASELINE_PATH, isDefaultModel, MODEL_ID_RE, modelLabel, readEvalConfig, resolveReviewModel, REVIEW_MODEL_GIT_CONFIG_KEY,
+  GITLEAKS_BASELINE_PATH, isDefaultModel, MODEL_ID_RE, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey,
   REVIEWER_GIT_CONFIG_KEY, RULES_PATH, writeEvalConfig,
 } from '../../codewatch/config.js';
 import { gitleaksInstallHint, installGitleaksConfig } from '../../codewatch/gitleaks.js';
@@ -116,7 +116,7 @@ export default {
   description: `Install codewatch git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code). Turn them off in a repo with "git config ${OPT_OUT_KEY} false"`,
   options: [
     { flags: '--reviewer <tool>', description: `Team default reviewer: ${REVIEWER_IDS.join(' | ')} (skips detection)` },
-    { flags: '--model <id>', description: `Review model: eval.model in .prism/config.json (with --global: git config --global ${REVIEW_MODEL_GIT_CONFIG_KEY}). auto or default clears it` },
+    { flags: '--model <id>', description: `Review model: eval.model in .prism/config.json (with --global: git config --global prism.<tool>Model, for --reviewer's tool). auto or default clears it` },
     { flags: '--yes', description: 'Do not ask for the reviewer or model' },
     { flags: '--uninstall', description: 'Remove the hooks and restore any hooks they replaced' },
     { flags: '--global', description: 'Install for every repo: hooks in ~/.prism/hooks and git config --global core.hooksPath' },
@@ -170,6 +170,7 @@ export default {
       console.error(`Error: ${e.message}`);
       process.exit(1);
     }
+    const before = readEvalConfig(gitRoot);
     if (choice.id) {
       writeEvalConfig(gitRoot, { reviewer: choice.id });
       console.log(`✓ Reviewer: ${choice.id} (${choice.how}) -> .prism/config.json eval.reviewer`);
@@ -177,11 +178,13 @@ export default {
     } else {
       console.log(`! No reviewer configured (${choice.how}). Pre-push will report "no reviewer" until kiro-cli or claude is installed.`);
     }
+    // eval.model belongs to eval.reviewer: a model chosen for the old tool must not carry over to the new one.
+    const stale = choice.id && before.model && isReviewerId(before.reviewer) && before.reviewer !== choice.id ? before.model : undefined;
 
     let decision: ModelDecision;
     try {
       decision = await chooseModel(opts.model, choice.id, {
-        tty, ask, print: (l) => console.log(l), existing: readEvalConfig(gitRoot).model,
+        tty, ask, print: (l) => console.log(l), existing: stale ? undefined : before.model,
         listKiroModels: () => listKiroModels(findOnPath('kiro-cli') || 'kiro-cli'),
       });
     } catch (e: any) {
@@ -189,9 +192,15 @@ export default {
       process.exit(1);
     }
     if (decision.write) writeEvalConfig(gitRoot, { model: decision.model ?? undefined });
-    const gitModel = run('git', ['config', '--get', REVIEW_MODEL_GIT_CONFIG_KEY]);
-    const eff = resolveReviewModel({ prismConfigValue: readEvalConfig(gitRoot).model, gitConfigValue: gitModel.ok ? gitModel.stdout : null });
-    const from = { 'prism-config': '.prism/config.json eval.model', 'git-config': `git config ${REVIEW_MODEL_GIT_CONFIG_KEY}`, default: 'reviewer default' }[eff.source];
+    else if (stale) {
+      writeEvalConfig(gitRoot, { model: undefined });
+      console.log(`✓ Removed eval.model ${stale} (it was set for ${before.reviewer})`);
+    }
+    const cfg = readEvalConfig(gitRoot);
+    const gitKey = choice.id ? reviewModelGitKey(choice.id) : null;
+    const gitModel = gitKey ? run('git', ['config', '--get', gitKey]) : null;
+    const eff = resolveReviewModel({ reviewer: choice.id, prismConfigValue: cfg.model, prismConfigReviewer: cfg.reviewer, gitConfigValue: gitModel?.ok ? gitModel.stdout : null });
+    const from = { 'prism-config': '.prism/config.json eval.model', 'git-config': `git config ${gitKey}`, default: 'reviewer default' }[eff.source];
     console.log(`✓ Review model: ${modelLabel(choice.id, eff.model)} (${from}${decision.write ? `; ${decision.how}` : ''})`);
     if (eff.note) console.log(`  Note: ${eff.note}`);
 
@@ -242,6 +251,18 @@ function globalAction(opts: { reviewer?: string; model?: string; uninstall?: boo
       process.exit(1);
     }
   }
+  // A global model is stored per tool (prism.<tool>Model): --reviewer, else the
+  // global prism.reviewer, else the only tool on PATH says which.
+  let modelTool: ReviewerId | null = null;
+  if (opts.model !== undefined) {
+    const g = run('git', ['config', '--global', '--get', REVIEWER_GIT_CONFIG_KEY]);
+    const found = detectReviewers();
+    modelTool = isReviewerId(opts.reviewer) ? opts.reviewer : g.ok && isReviewerId(g.stdout) ? g.stdout : found.length === 1 ? found[0] : null;
+    if (!modelTool) {
+      console.error(`Error: --global --model needs --reviewer ${REVIEWER_IDS.join('|')}: the model is stored for one tool (git config --global prism.<tool>Model).`);
+      process.exit(1);
+    }
+  }
   let r;
   try {
     r = installGlobal({ force: opts.force });
@@ -269,12 +290,13 @@ function globalAction(opts: { reviewer?: string; model?: string; uninstall?: boo
       : '! No reviewer on PATH: pre-push will report "no reviewer" until kiro-cli or claude is installed.');
   }
   if (opts.model !== undefined) {
+    const key = reviewModelGitKey(modelTool!);
     if (isDefaultModel(opts.model)) {
-      run('git', ['config', '--global', '--unset', REVIEW_MODEL_GIT_CONFIG_KEY]);
-      console.log(`✓ Review model: reviewer default (unset git config --global ${REVIEW_MODEL_GIT_CONFIG_KEY})`);
+      run('git', ['config', '--global', '--unset', key]);
+      console.log(`✓ Review model: ${modelTool} default (unset git config --global ${key})`);
     } else {
-      run('git', ['config', '--global', REVIEW_MODEL_GIT_CONFIG_KEY, opts.model.trim()]);
-      console.log(`✓ Review model: git config --global ${REVIEW_MODEL_GIT_CONFIG_KEY} ${opts.model.trim()} (a repo's eval.model overrides)`);
+      run('git', ['config', '--global', key, opts.model.trim()]);
+      console.log(`✓ Review model: git config --global ${key} ${opts.model.trim()} (used only when ${modelTool} reviews; a repo's eval.model for ${modelTool} overrides)`);
     }
   }
   if (!findOnPath('gitleaks')) console.log(`\n! gitleaks is not on PATH; commits are allowed but not scanned. Install it: ${gitleaksInstallHint()}`);
