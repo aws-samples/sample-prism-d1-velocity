@@ -322,20 +322,18 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string;
   // A reset or rebase past the commit the session started on makes the baseline diff describe the
   // rewrite, not the agent's edits. Compare against the fork point with the start commit instead:
   // what came before it is shared with the start commit. Later commits are session work, or
-  // upstream commits a rebase brought in (a push does not carry those, see integrityChecks).
+  // upstream commits a rebase brought in (a push does not carry those, see integrityChecks; at the
+  // finish gate they count, as upstream commits a fast-forward pull brings in already do).
   // Uncommitted work from before the session then counts as session work.
   const moved = !!state.head && !gitIn(repoRoot, ['merge-base', '--is-ancestor', state.head, 'HEAD']).ok;
   let rewritten = false;
   if (moved) {
     const fork = gitIn(repoRoot, ['merge-base', state.head!, 'HEAD']);
-    if (fork.ok && fork.stdout) {
-      sessionBase = fork.stdout;
-      warnings.push('HEAD is no longer a descendant of the commit the session started on; session changes are counted from where the two histories meet');
-    } else rewritten = true; // unrelated histories, or the start commit is gone
-  }
-  if (moved && r.scope === 'new-lines') {
-    warnings.push('HEAD is no longer a descendant of the commit the session started on (branch switch or rebase); judging whole changed files this run');
-    r.scope = 'files';
+    if (fork.ok && fork.stdout) sessionBase = fork.stdout;
+    else rewritten = true; // unrelated histories, or the start commit is gone
+    const widen = r.scope === 'new-lines';
+    if (widen) r.scope = 'files';
+    warnings.push(`HEAD is no longer a descendant of the commit the session started on (branch switch, reset or rebase); ${rewritten ? 'the two histories do not meet, so tamper is judged on the whole reviewed diff' : 'session changes are counted from where the two histories meet'}${widen ? ', and whole changed files are judged this run' : ''}`);
   }
   return { state, sessionBase, rewritten };
 }
@@ -413,7 +411,7 @@ function integrityChecks(r: Run, d: Diffs): Integrity {
  * the base's version of it, so a change cannot allowlist itself.
  */
 function scannerOverride(r: Run, d: Diffs): ScannerConfigOverride | undefined {
-  if (d.state) return undefined;
+  if (d.state && !d.rewritten) return undefined;
   const changed = touchedPaths(d.diff).filter((p) => SCANNER_CONFIG.has(p));
   if (!changed.length) return undefined;
   const blobs = readBlobs(r.repoRoot, d.reviewBase, [...SCANNER_CONFIG]);
