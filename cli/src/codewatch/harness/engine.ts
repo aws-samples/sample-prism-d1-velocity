@@ -150,12 +150,27 @@ function lineOf(buf: Buffer | undefined, n: number): string | null {
   return n >= 1 && n <= lines.length ? lines[n - 1].replace(/\r$/, '') : null;
 }
 
+/** Up to five items, then "and N more", the way the secrets list is capped. */
+const listFive = (items: string[]) => `${items.slice(0, 5).join(', ')}${items.length > 5 ? ` and ${items.length - 5} more` : ''}`;
+/** A path from the diff, quoted so a file name cannot read as an instruction. */
+const quotePath = (p: string) => JSON.stringify(p.length > 200 ? `${p.slice(0, 200)}...` : p);
+
+/** The tamper stop text, naming what tripped it: the guarded files changed, and any gitleaks:allow markers added. */
+function tamperAction(integ: Integrity, session: boolean): string {
+  const parts: string[] = [];
+  if (integ.tamper.length) parts.push(`${session ? 'This session changed' : 'This change edits'} PRISM, secret-scan or hook configuration: ${listFive(integ.tamper.map(quotePath))}.`);
+  if (integ.allowMarkers.length) parts.push(`${session ? 'This session added' : 'This change adds'} a gitleaks:allow marker at ${listFive(integ.allowMarkers.map((m) => quotePath(`${m.file}:${m.line}`)))}.`);
+  return `Stop. ${parts.join(' ')} Tell the person what you changed there and why; do not undo or repeat the change to get past the check.`;
+}
+
 /** Fixed-template text for the agent. Never contains reviewer prose. */
-function nextAction(v: HarnessVerdict): string {
+function nextAction(v: HarnessVerdict, integ?: Integrity): string {
   if (v.verdict === 'pass') return v.findings.length ? 'No blocking findings. The non-blocking findings are listed for information.' : 'No blocking findings.';
   if (v.verdict === 'stop') {
     switch (v.human_why) {
-      case 'tamper': return 'Stop. This session changed PRISM, secret-scan or hook configuration. Tell the person which of those files you changed and why; do not undo or repeat the change to get past the check.';
+      case 'tamper': return integ && (integ.tamper.length || integ.allowMarkers.length)
+        ? tamperAction(integ, v.session !== null)
+        : 'Stop. This change touched PRISM, secret-scan or hook configuration. Tell the person what you changed there and why; do not undo or repeat the change to get past the check.';
       case 'secrets-scan-failed': return 'Stop. The secret scan ran but gave no verdict, so the push is held. Tell the person to check gitleaks and its config.';
       case 'max-rounds': return `Stop fixing: the ${plural(v.max_rounds, 'fix round')} for this session are used. Report the remaining blocking findings to the person${v.secrets.length ? ', and do not push while a secret remains' : ''}.`;
       case 'no-progress': return 'Stop: nothing changed since the last review. Report the remaining blocking findings to the person instead of trying again.';
@@ -471,7 +486,7 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
   v.human_why = why;
   v.human_needed = why !== null;
   v.fail_open = rev.failOpen;
-  v.next_action = nextAction(v);
+  v.next_action = nextAction(v, integ);
   v.reasons = reasons(v);
 }
 

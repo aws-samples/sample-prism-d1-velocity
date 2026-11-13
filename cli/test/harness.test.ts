@@ -427,6 +427,21 @@ test('tamper: every listed path, and an added gitleaks:allow, give stop without 
   r.write('src/a.ts', 'const k = "x"; // gitleaks:allow\n');
   const v = runHarnessReview(r.opts({ session: 's1' }));
   assert.deepEqual([v.verdict, v.human_why], ['stop', 'tamper']);
+  assert.match(v.next_action, /This session added a gitleaks:allow marker at "src\/a\.ts:1"\./);
+  assert.ok(!/changed PRISM/.test(v.next_action), 'an allow marker is not called a config change');
+});
+
+test('the tamper stop names what tripped it, capped at five', () => {
+  const r = rig();
+  recordBaseline(r.dir, 's1', 'claude');
+  r.write('.gitleaksignore', 'x\n');
+  for (let i = 1; i <= 7; i++) r.write(`src/f${i}.ts`, `const k${i} = 1; // gitleaks:allow\n`);
+  const v = runHarnessReview(r.opts({ session: 's1' }));
+  assert.equal(v.human_why, 'tamper');
+  assert.match(v.next_action, /This session changed PRISM, secret-scan or hook configuration: "\.gitleaksignore"\./);
+  assert.match(v.next_action, /gitleaks:allow marker at "src\/f1\.ts:1", .* and 2 more\./);
+  assert.match(agentText(v), /\.gitleaksignore/, 'the agent sees it');
+  assert.ok(v.reasons.some((x) => /tamper/.test(x)), 'and the person sees the reason');
 });
 
 test('tamper is judged on the session diff only: not on what the branch already changed, not without a session', () => {

@@ -804,6 +804,17 @@ Where 1.11.0 differs from or settles something in the text above:
   does not stop on those paths. Two parts still apply: an added `gitleaks:allow` line gives `stop`
   (`tamper`), and when the change edits `.gitleaks.toml`, `.gitleaksignore` or the gitleaks
   baseline, gitleaks runs with the base branch's copy of them, so a change cannot allowlist itself.
+- **A `gitleaks:allow` committed before the session starts is not a tamper hit in the hook path.**
+  The SessionStart baseline snapshots the working tree, so a marker already there (committed or
+  not) is the person's work, not the agent's, and the session diff never shows it. A stateless run
+  over the branch (`codewatch review --since origin/main`, or `prism_review` without `session`)
+  does see it and stops with `tamper`. This is intended: the loop guards against the agent
+  tampering in a fix round, not against what the branch carried before. The secret scan still runs
+  on the agent's own changed lines, the AI reviewer still sees the marker if the agent's diff
+  touches that code, and the git pre-push review and the CI gate review the whole branch.
+- **The tamper stop names what tripped it.** `next_action` lists the guarded files changed and
+  the `gitleaks:allow` markers added (each path quoted, at most five of each, then "and N more"),
+  and words a marker as "added a gitleaks:allow marker at ..." rather than a configuration change.
 - **`harness.timeout_seconds` has a ceiling of 135**, so two reviewer attempts plus gitleaks fit
   inside the plugin hook script's 290 s cap and the hook's 300 s timeout (section 10.2). A larger
   value is used as 135 with a warning. The `--timeout` flag of a direct `codewatch review` run is
