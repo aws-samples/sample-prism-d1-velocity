@@ -130,6 +130,22 @@ test('kiro: push findings survive a Stop hook that fails, and are handed over by
   assert.match(next.reason, /The push is allowed/, 'kept, then handed over');
 });
 
+test('kiro: two pushes with findings in one prompt hand both over at Stop', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  r.write('src/db.ts', 'const q = "SELECT " + id;\n');
+  r.commit('db');
+  r.reply([finding('src/db.ts', 1, 'high', 'first push finding')]);
+  runKiroHook('pre-push', payload('PreToolUse', r), deps(r));
+  r.write('src/db2.ts', 'const q2 = "SELECT " + id;\n');
+  r.commit('db2');
+  r.reply([finding('src/db2.ts', 1, 'medium', 'second push finding')]);
+  runKiroHook('pre-push', payload('PreToolUse', r), deps(r));
+  const reason = JSON.parse(runKiroHook('stop', payload('Stop', r), deps(r)).stdout).reason;
+  assert.ok(reason.includes('first push finding') && reason.includes('second push finding'));
+  assert.match(reason, /A later push:/);
+});
+
 test('kiro fail closed: an internal error on a push is exit 2; on other events and commands it is exit 0', () => {
   const r = rig();
   const boom = { env: {}, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks, now: () => { throw new Error('boom'); } } };
@@ -141,6 +157,10 @@ test('kiro fail closed: an internal error on a push is exit 2; on other events a
   assert.equal(stop.exit, 0, 'a PRISM bug never traps the agent at the finish');
   assert.match(stop.stderr, /internal error \(boom\)/);
   assert.equal(runKiroHook('pre-push', '{not json', deps(r)).exit, 2, 'unreadable input cannot be told apart from a push');
+  for (const bad of ['', null, '{}', '[]', JSON.stringify({ tool_name: 'execute_bash', tool_input: {} })]) {
+    assert.equal(runKiroHook('pre-push', bad, deps(r)).exit, 2, `missing input or command fails closed: ${JSON.stringify(bad)}`);
+    assert.equal(runKiroHook('stop', bad, deps(r)).exit, 0);
+  }
   assert.equal(runKiroHook('stop', '{not json', deps(r)).exit, 0);
   assert.equal(runKiroHook('pre-push', payload('PreToolUse', r, { cwd: '/', tool_input: { command: 'git push' } }), deps(r)).exit, 2, 'a push outside any repo is an unknown target');
   assert.deepEqual(runKiroHook('pre-push', payload('PreToolUse', r), { env: { PRISM_HARNESS_CHILD: '1' } }), { exit: 0, stdout: '', stderr: '' }, 'the reviewer child never re-enters');

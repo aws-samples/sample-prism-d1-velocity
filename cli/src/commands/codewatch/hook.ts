@@ -6,8 +6,9 @@ import { failClosed, KIRO_EVENTS, runKiroHook, type KiroEvent } from '../../code
 const CLIENTS = ['claude', 'kiro'] as const;
 const EVENTS: Record<typeof CLIENTS[number], readonly string[]> = { claude: CLAUDE_EVENTS, kiro: KIRO_EVENTS };
 
-function readStdin(): string {
-  try { return readFileSync(0, 'utf8'); } catch { return ''; }
+/** stdin, or null when it cannot be read (the Kiro push check then fails closed). */
+function readStdin(): string | null {
+  try { return readFileSync(0, 'utf8'); } catch { return null; }
 }
 
 /**
@@ -47,7 +48,7 @@ export default {
       return;
     }
     try {
-      const out = runClaudeHook(opts.event as ClaudeEvent, readStdin());
+      const out = runClaudeHook(opts.event as ClaudeEvent, readStdin() ?? '');
       if (out) process.stdout.write(out + '\n');
     } catch (e: any) { // any: never let a PRISM bug block the agent
       try { process.stderr.write(`prism: harness hook failed (${String(e?.message || e).split('\n')[0]}); no decision\n`); } catch { /* ignore */ }

@@ -64,8 +64,11 @@ interface KiroInput {
 const ok = (stderr = ''): KiroHookResult => ({ exit: 0, stdout: '', stderr });
 const short = (v: unknown) => clip(oneLine(v), MAX_FINDING_CHARS);
 
+/** Room for the reason before the deny tail, within the 4 KB cap. */
+const DENY_TEXT_BYTES = MAX_REASON_BYTES - Buffer.byteLength(KIRO_DENY_TAIL) - 1;
+
 function deny(text: string): KiroHookResult {
-  return { exit: KIRO_DENY_EXIT, stdout: '', stderr: `${capBytes(text, MAX_REASON_BYTES - Buffer.byteLength(KIRO_DENY_TAIL) - 1)}\n${KIRO_DENY_TAIL}\n` };
+  return { exit: KIRO_DENY_EXIT, stdout: '', stderr: `${capBytes(text, DENY_TEXT_BYTES)}\n${KIRO_DENY_TAIL}\n` };
 }
 
 /** The push deny for an error inside the check: never let a push through unchecked (Kiro fails open on a crash). */
@@ -80,10 +83,13 @@ const block = (reason: string): KiroHookResult => ({ exit: 0, stdout: JSON.strin
 /** `.prism/harness/<session>.push-notice.json`: the push findings the agent has not seen yet. */
 const noticePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.push-notice.json`);
 
+/** Several pushes in one prompt: each one's findings are kept, newest last, within the reason cap. */
 function savePushNotice(repoRoot: string, session: string, text: string): void {
   ensureHarnessDir(repoRoot);
   const p = noticePath(repoRoot, session);
-  writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify({ version: 1, text }) + '\n', { mode: 0o600 });
+  const prev = readPushNotice(repoRoot, session);
+  const all = prev ? capBytes(`${prev}\n\nA later push:\n${text}`, MAX_REASON_BYTES) : text;
+  writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify({ version: 1, text: all }) + '\n', { mode: 0o600 });
   renameSync(`${p}.${process.pid}.tmp`, p);
 }
 
@@ -118,11 +124,12 @@ function prePush(cmd: string, input: KiroInput, deps: KiroHookDeps, env: NodeJS.
     ...deps.engine, repoRoot, session, client: 'kiro', event: 'pre-push', scope: 'branch',
     push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env),
   });
-  const text = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(KIRO_DENY_TAIL) - 1 });
+  const text = () => agentText(v, { push: true, maxBytes: DENY_TEXT_BYTES });
   if (v.verdict === 'fix') return deny(text());
   if (v.verdict === 'stop' && (v.secrets.length || v.commit_secrets.length || ['tamper', 'secrets-scan-failed', 'push-unknown'].includes(v.human_why ?? ''))) return deny(text());
   // D4: findings never deny. Kiro drops PreToolUse stdout, so the Stop hook hands them over.
   let note = '';
+  if (v.findings.length && !session) note = `PRISM harness: Kiro sent no session id, so the push findings cannot be handed to the agent at Stop; they are only in ${v.result_path ?? 'the result file'}.\n`;
   if (v.findings.length && session) {
     try { savePushNotice(repoRoot, session, `${agentText(v, { includeNonBlocking: true, push: true })}\n${KIRO_PERSON_NOTE} Offer the follow-up change; do not change code or push again unless the person asks.`); } catch (e: any) { // any: fs error, message only
       note = `PRISM harness: could not keep the push findings for the Stop hook (${short(e?.message || e)}); they are only in ${v.result_path ?? 'the result file'}.\n`;
@@ -165,17 +172,23 @@ function finishCheck(repoRoot: string, session: string | null, pushNotice: strin
  * push every internal error is a deny (fail closed); on other events an
  * error is exit 0 with a note on stderr.
  */
-export function runKiroHook(event: KiroEvent, stdin: string, deps: KiroHookDeps = {}): KiroHookResult {
+export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHookDeps = {}): KiroHookResult {
   const env = deps.env ?? process.env;
   if (env[HARNESS_CHILD_ENV] === '1') return ok();
+  // Kiro always sends a JSON object. No input, unreadable input, or a shell call without a command
+  // cannot be told apart from a push, so the push check holds it (D5); other events go on.
   let input: KiroInput;
-  try { input = JSON.parse(stdin || '{}') || {}; } catch {
-    // Unreadable input: it cannot be told apart from a push, so the push check holds it.
-    return event === 'pre-push' ? failClosed('the hook input from Kiro was not valid JSON') : ok();
+  try {
+    if (!stdin || !stdin.trim()) throw new Error('empty');
+    input = JSON.parse(stdin);
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('not an object');
+  } catch {
+    return event === 'pre-push' ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
   if (event === 'pre-push') {
     if (typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell') return ok();
-    const cmd = typeof input.tool_input?.command === 'string' ? input.tool_input.command : '';
+    if (typeof input.tool_input?.command !== 'string') return failClosed('the shell call in the hook input has no command');
+    const cmd = input.tool_input.command;
     let push: boolean;
     try {
       const bypass = bypassReason(cmd);
@@ -194,7 +207,7 @@ export function runKiroHook(event: KiroEvent, stdin: string, deps: KiroHookDeps 
     const session = sanitizeSession(input.session_id);
     if (event === 'session-start') { if (repoRoot && session) recordBaseline(repoRoot, session, 'kiro'); return ok(); }
     if (event === 'session-end') {
-      if (repoRoot && session) { deleteState(repoRoot, session); rmSync(noticePath(repoRoot, session), { force: true }); }
+      if (repoRoot && session) { deleteState(repoRoot, session); clearPushNotice(repoRoot, session); }
       return ok();
     }
     return stop(input, deps, env);
