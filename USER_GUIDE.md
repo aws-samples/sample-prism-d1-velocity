@@ -495,22 +495,23 @@ measure it: [Why Local Code Review](docs/WHY-LOCAL-CODE-REVIEW.md).
 The local results (codewatch reviews, AI spend, the setup checklist) appear in these tools. All of
 them read the same local data as `prism-cli dashboard` and make no AWS calls.
 
-| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code plugin (v0.1, WIP) |
+| Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code plugin |
 |---|---|---|---|
 | Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes: `/prism:findings`, and a summary of the branch's open findings at session start |
 | Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes: `/prism:report` |
-| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes: `/prism:spend`; a status line is planned |
+| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes: `/prism:spend`, and the [status line](#claude-code-status-line) |
 | Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes: `/prism` lists failing items with fix commands |
 | MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: the plugin's `prism` MCP server |
+| Agent harness loop | No | No (Kiro CLI/IDE adapters planned) | Yes: push gate on by default (blocks secrets and hook tampering, reports other findings); finish gate opt-in ([Agent Harness Loop](#agent-harness-loop)) |
 | Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
-| Plugin, slash commands | No | No | Yes: `/prism`, `/prism:findings`, `/prism:report`, `/prism:fix`, `/prism:spend` |
+| Plugin, slash commands | No | No | Yes: `/prism`, `/prism:findings`, `/prism:report`, `/prism:fix`, `/prism:review`, `/prism:spend`, `/prism:dashboard` |
 | Where it runs | With a repo open or without one (machine mode), and on the remote host over Remote-SSH | The Kiro Crew gateway's machine | Wherever `claude` runs |
 | Install | `code --install-extension prism-d1-<version>.vsix` (`kiro` or `cursor` instead of `code`), from the [`ext-v*` releases](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true) | `prism-cli enable kirocrew` | `/plugin marketplace add aws-samples/sample-prism-d1-velocity`, then `/plugin install prism@prism-d1-velocity` |
 
-Claude Code support is a work in progress. The [Claude Code plugin](#claude-code-plugin) (v0.1)
-bundles the [MCP server](#mcp-server-prism-cli-mcp), slash commands and a SessionStart hook. A
-status line and a review loop that runs before Claude finishes are planned.
-The proposed review loop for coding agents is described in [Design: the harness loop](docs/DESIGN-harness-loop.md).
+The [Claude Code plugin](#claude-code-plugin) bundles the [MCP server](#mcp-server-prism-cli-mcp),
+the slash commands, a SessionStart summary and the [harness loop](#agent-harness-loop) hooks. The
+[status line](#claude-code-status-line) comes from `prism-cli enable claude-code`, because a plugin
+cannot set it. How the harness loop is built is in [Design: the harness loop](docs/DESIGN-harness-loop.md).
 
 ### Commands by job
 
@@ -524,6 +525,7 @@ Most features run on a developer machine with no AWS deployment: the
 |-----|----------|--------|
 | Send AI usage to PRISM | `enable codeburn`, `export otel` | [Developer Setup](#developer-setup) |
 | Check changes before they leave your machine | `enable codewatch`, `codewatch report` | [Codewatch](#codewatch-local-git-hooks) |
+| Review agent work before it pushes or finishes | `codewatch review`, the Claude Code plugin | [Agent Harness Loop](#agent-harness-loop) |
 | See results locally | `dashboard`, `mcp`, `enable kirocrew`, the editor extension | [Local Dashboard](#local-dashboard), [Where PRISM shows up](#where-prism-shows-up) |
 | Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security threats`, `security pentest` | [Security Agent Setup](#security-agent-setup-enable-security), [Security Scans from Your Machine](#security-scans-from-your-machine) |
 | Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection scan-account`, `scan-org`, `scan-repo` | [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend), [Bedrock Protection Audit](#bedrock-protection-audit) |
