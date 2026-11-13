@@ -98,6 +98,7 @@ test('canOpen: a display is needed on Linux; SSH blocks macOS and Windows', () =
   assert.equal(canOpen({}, 'linux'), false);
   assert.equal(canOpen({ SSH_CONNECTION: 'x' }, 'linux'), false);
   assert.equal(canOpen({ DISPLAY: ':0' }, 'linux'), true);
+  assert.equal(canOpen({ DISPLAY: 'localhost:10.0', SSH_TTY: '/dev/pts/1' }, 'linux'), false, 'X forwarding over SSH');
   assert.equal(canOpen({ WAYLAND_DISPLAY: 'w' }, 'linux'), true);
   assert.equal(canOpen({}, 'darwin'), true);
   assert.equal(canOpen({ SSH_CONNECTION: 'x' }, 'darwin'), false);

@@ -34,11 +34,12 @@ export default {
     { flags: '--port <n>', description: 'Port on 127.0.0.1 (default: a random free port)' },
     { flags: '--no-open', description: 'Do not open a browser' },
     { flags: '--snapshot <file>', description: 'Write the dashboard as one static HTML file (data embedded, no server, no token, mode 0600) and exit' },
+    { flags: '--exit-on-stdin-close', description: 'Stop the server when stdin closes (prism-cli mcp uses this so the dashboard ends with the session)' },
     { flags: '--open', description: 'With --snapshot: open the file in a browser when a display is available' },
     { flags: '--fresh', description: 'With --json: run the codeburn exports now instead of using the usage cache (~/.prism/cache, 5 minutes)' },
     { flags: '--timing', description: 'With --json: print how long each stage took to stderr' },
   ],
-  async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string }) {
+  async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean }) {
     // stderr, so --json output stays parseable.
     if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
     const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: () => collectUsage() });
@@ -131,5 +132,10 @@ export default {
     const stop = () => { srv!.close().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 2000).unref(); };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
+    if (opts.exitOnStdinClose) {
+      process.stdin.on('end', stop);
+      process.stdin.on('close', stop);
+      process.stdin.resume();
+    }
   },
 };

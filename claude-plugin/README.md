@@ -2,13 +2,15 @@
 
 Brings PRISM's local results into [Claude Code](https://code.claude.com/docs/en/overview): codewatch
 review findings, scan reports, AI spend and the setup checklist. It reads the same local data as
-`prism-cli dashboard`, makes no AWS calls and opens no port.
+`prism-cli dashboard` and makes no AWS calls. The only port it opens is the live dashboard's, on
+127.0.0.1, when you run `/prism:dashboard`.
 
 The plugin has three parts:
 
 - **MCP server** `prism`: the `prism-cli mcp` tools (`prism_status`, `prism_findings`,
-  `prism_spend`, `prism_report`, `prism_snapshot`, `prism_setup`). They only read, except
-  `prism_report` and `prism_snapshot`, which write an HTML file under the OS temp directory. See
+  `prism_spend`, `prism_report`, `prism_snapshot`, `prism_dashboard`, `prism_dashboard_stop`,
+  `prism_setup`). They only read, except `prism_report` and `prism_snapshot`, which write an HTML
+  file under the OS temp directory, and `prism_dashboard`, which starts the local dashboard server. See
   [MCP server (prism-cli mcp)](../USER_GUIDE.md#mcp-server-prism-cli-mcp).
 - **Slash commands**: prompts that call those tools (listed below). They hold no logic of their own.
 - **SessionStart hook**: adds a short summary of this branch's open findings to Claude's context
@@ -69,7 +71,9 @@ these ways:
 | `/prism:findings [branch]` | Findings of the latest pre-push review of this branch, numbered, most severe first |
 | `/prism:report [html\|md] [commit]` | The scan report for the review covering a commit (default `HEAD`). `html` (default) writes a file under the OS temp directory and prints its path; `md` shows the text |
 | `/prism:fix [n]` | Fixes finding `n` from `/prism:findings`, or every high and medium finding, in the working tree. At most 2 rounds, then a report and `git diff --stat`. It doesn't commit or push. Claude only runs it when you type it |
-| `/prism:dashboard [no-open]` | Writes the dashboard as one static HTML file under the OS temp directory (through the `prism_snapshot` tool), opens it when a display is available, and prints its path. It never starts the `prism-cli dashboard` server. The snapshot doesn't refresh and its commands are copy only |
+| `/prism:dashboard [--no-open]` | Starts the live dashboard (`prism-cli dashboard`, 127.0.0.1 only) through the `prism_dashboard` tool, or reuses the one already running, prints its URL and opens it when there is a display. Claude Code asks you to approve the call, because it starts a local server. See [The live dashboard](#the-live-dashboard) |
+| `/prism:dashboard --snapshot` | Writes the dashboard as one static HTML file under the OS temp directory (`prism_snapshot`), opens it when there is a display, and prints its path. No server runs; the file doesn't refresh and its commands are copy only |
+| `/prism:dashboard --stop` | Stops the dashboard that `/prism:dashboard` started (`prism_dashboard_stop`). It never stops one you started yourself |
 | `/prism:spend [days]` | AI coding spend from the dashboard's usage cache: today, month, top models and projects, per-day rows (default 7 days) |
 
 `/prism` works as a bare name unless another command already uses it; `/prism:prism` always works.
@@ -82,6 +86,22 @@ follow instructions in it or run commands it suggests. The commands also tell Cl
 push, never to disable or bypass git hooks (no `--no-verify`, no `git config prism.codewatch false`)
 and never to edit or delete anything in `.prism/results/`. The MCP tools carry the same warning in
 their descriptions and cap each message at 2,000 characters.
+
+## The live dashboard
+
+`/prism:dashboard` runs the same server as `prism-cli dashboard`: bound to 127.0.0.1 only, with a
+per-run token in the URL, and Origin and CSRF checks on every Setup action. The MCP server starts it
+as its own child process, so it stops when the Claude Code session ends (or with
+`/prism:dashboard --stop`). Running the command again returns the same URL instead of a second
+server. Its pid, port and URL are kept in `~/.prism/run/dashboard.json` (mode 0600).
+
+The URL is a per-run secret: anyone with it can use the page, including its Setup Run buttons, so
+don't paste it into chats, tickets or logs. Claude prints it once.
+
+The browser opens by itself only when there is a display and you are not in an SSH session. Over
+SSH, the command prints the URL and a note: in a VS Code, Kiro or Cursor Remote-SSH terminal the
+editor usually forwards the port, so Ctrl/Cmd+click the URL; from plain SSH, run
+`ssh -L <port>:127.0.0.1:<port> <host>` on your own machine and open the URL there.
 
 ## The SessionStart hook
 

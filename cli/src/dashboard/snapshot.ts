@@ -52,9 +52,10 @@ export function writeSnapshot(file: string, html: string): number {
   return Buffer.byteLength(html, 'utf8');
 }
 
-/** True when a browser can be opened here: not an SSH session without a display. */
+/** True when a browser can be opened here: never over SSH; on Linux only with a display. */
 export function canOpen(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
-  if (platform === 'darwin' || platform === 'win32') return !env.SSH_CONNECTION && !env.SSH_TTY;
+  if (env.SSH_CONNECTION || env.SSH_TTY) return false;
+  if (platform === 'darwin' || platform === 'win32') return true;
   return !!(env.DISPLAY || env.WAYLAND_DISPLAY);
 }
 
@@ -62,12 +63,12 @@ export function canOpen(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): bool
  * Opens the URL (or file) in the default browser. argv only, detached; failure
  * is non-fatal and goes to stderr, never stdout (the MCP server's protocol stream).
  */
-export function openBrowser(url: string): void {
-  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
-    : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+export function openBrowser(url: string, spawnFn: typeof spawn = spawn, platform: NodeJS.Platform = process.platform): void {
+  const [cmd, args] = platform === 'darwin' ? ['open', [url]]
+    : platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
       : ['xdg-open', [url]];
   try {
-    const child = spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
+    const child = spawnFn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
     child.on('error', () => process.stderr.write('  (could not open a browser; open the URL above)\n'));
     child.unref();
   } catch {

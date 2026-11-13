@@ -5,7 +5,8 @@
  * codewatch results, report builder, usage cache) in this process. No AWS
  * call, no network, no codeburn export (usage comes from the 5-minute cache
  * the dashboard writes), and no write except the HTML files prism_report
- * and prism_snapshot create under the OS temp dir.
+ * and prism_snapshot create under the OS temp dir. prism_dashboard starts the
+ * loopback `prism-cli dashboard` server as a child (dashboard-process.ts).
  *
  * Finding and report text is written by a reviewer model and quotes code, so
  * it is returned as JSON fields, each message capped, and the whole answer
@@ -25,6 +26,7 @@ import { readResultEntries, type PrismResult } from '../codewatch/results.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { run } from '../utils/exec.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../dashboard/snapshot.js';
+import { remoteNote, startDashboard, stopDashboard, type DashboardDeps } from './dashboard-process.js';
 
 export const MCP_SCHEMA = 1;
 export const MAX_MESSAGE_CHARS = 2000;
@@ -59,6 +61,8 @@ export interface ToolContext {
   /** prism_snapshot's open: environment and opener; injected in tests. */
   env?: NodeJS.ProcessEnv;
   open?: (file: string) => void;
+  /** prism_dashboard: overrides for the child process (tests). */
+  dashboard?: Partial<DashboardDeps>;
 }
 
 type Args = Record<string, unknown>;
@@ -390,6 +394,34 @@ async function snapshot(ctx: ToolContext, a: Args): Promise<Record<string, unkno
   return { path: file, bytes, opened, note, usageCached: !!usage };
 }
 
+function dashboardDeps(ctx: ToolContext): DashboardDeps {
+  return { home: ctx.home, cwd: ctx.cwd, root: ctx.root, env: ctx.env ?? process.env, ...ctx.dashboard };
+}
+
+async function dashboard(ctx: ToolContext, a: Args): Promise<Record<string, unknown>> {
+  const open = a.open ?? true;
+  if (typeof open !== 'boolean') throw new ToolError('open must be true or false');
+  let r;
+  try { r = await startDashboard(dashboardDeps(ctx)); } catch (e: any) { // any: a spawn or start failure; only its message is used.
+    throw new ToolError(String(e?.message || e).split('\n')[0]);
+  }
+  const env = ctx.env ?? process.env;
+  let opened = false;
+  let note: string;
+  if (!open) note = 'not opened (open was false)';
+  else if (!canOpen(env, process.platform)) note = remoteNote(r.port);
+  else { (ctx.open ?? openBrowser)(r.url); opened = true; note = 'asked the system opener (xdg-open, open or start) to show it; if no browser appears, open the URL yourself'; }
+  return {
+    url: r.url, port: r.port, reused: r.reused, opened, note,
+    secret: 'The URL holds a per-run token: it is the only key to the page. Show it to the user once; do not paste it anywhere else.',
+    stops: 'The server stops when this Claude Code session ends, or with prism_dashboard_stop.',
+  };
+}
+
+async function dashboardStop(ctx: ToolContext): Promise<Record<string, unknown>> {
+  return { ...(await stopDashboard(dashboardDeps(ctx))) };
+}
+
 const REPO_PROP = { type: 'string', description: 'Repo name (as the dashboard shows it) or path to its top level. Must be a repo prism-cli found under your home directory.' };
 
 export const TOOLS: ToolDef[] = [
@@ -452,6 +484,24 @@ export const TOOLS: ToolDef[] = [
     },
     readOnly: false,
     run: (ctx, a) => snapshot(ctx, checkArgs(a, ['open'])),
+  },
+  {
+    name: 'prism_dashboard',
+    description: 'Starts the live PRISM dashboard (prism-cli dashboard) on 127.0.0.1 as a child of this MCP server, or returns the one already running, and returns its URL. The URL carries a per-run token (the page\'s only key): show it to the user once. With open true (default) it opens the browser when a display is available and this is not an SSH session; otherwise the answer says how to reach the port. The server stops when this MCP server exits or with prism_dashboard_stop.',
+    inputSchema: {
+      type: 'object',
+      properties: { open: { type: 'boolean', description: 'Open the browser when a display is available (default true)' } },
+      additionalProperties: false,
+    },
+    readOnly: false,
+    run: (ctx, a) => dashboard(ctx, checkArgs(a, ['open'])),
+  },
+  {
+    name: 'prism_dashboard_stop',
+    description: 'Stops the dashboard that prism_dashboard started (recorded in ~/.prism/run/dashboard.json). Never stops a dashboard started another way.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    readOnly: false,
+    run: (ctx, a) => { checkArgs(a, []); return dashboardStop(ctx); },
   },
   {
     name: 'prism_setup',

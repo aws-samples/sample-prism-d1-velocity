@@ -1,20 +1,25 @@
 ---
 name: dashboard
-description: Write the PRISM dashboard as one static HTML file (codewatch, usage, setup and security panels) and tell the user where it is. Use when the user asks for the PRISM dashboard, a dashboard snapshot, or an overview page they can open in a browser.
-argument-hint: "[open]"
-allowed-tools: mcp__plugin_prism_prism__prism_snapshot
+description: Open the live PRISM dashboard (codewatch, usage, setup and security panels) in a browser, write a static snapshot of it with --snapshot, or stop it with --stop. Use when the user asks for the PRISM dashboard.
+argument-hint: "[--snapshot | --stop | --no-open]"
+allowed-tools: mcp__plugin_prism_prism__prism_snapshot mcp__plugin_prism_prism__prism_dashboard_stop
 ---
 
-Write a static snapshot of the PRISM dashboard.
+Show the PRISM dashboard. `$ARGUMENTS` picks the mode:
 
-1. Call `prism_snapshot` on the `prism` MCP server (`mcp__plugin_prism_prism__prism_snapshot`). Pass `{"open": true}` unless `$ARGUMENTS` says not to open it (for example `no-open`), else `{"open": false}`.
-2. Reply in two or three lines:
-   - the `path` of the HTML file, so the user can open it;
-   - whether it was opened: `opened` and the `note` field (on SSH or with no display it is not opened; say the user can copy the file to a machine with a browser);
-   - that it is a static snapshot: it does not refresh, its commands are copy only, and `prism-cli dashboard` in a terminal gives the live page.
-3. If the tool fails, show its one-line error. If the tool is missing, the installed prism-cli is older than 1.10.0: suggest `npm install -g @prism-d1/cli`.
+- **No argument, or `--no-open`: the live dashboard.** Call `prism_dashboard` on the `prism` MCP server (`mcp__plugin_prism_prism__prism_dashboard`) with `{"open": true}`, or `{"open": false}` for `--no-open`. It starts `prism-cli dashboard` on 127.0.0.1 as a child of the MCP server, or returns the one already running. Claude Code asks the user to approve this call, because it starts a local web server; tell the user that is why they see the prompt.
+- **`--snapshot`: a static file.** Call `prism_snapshot` (`mcp__plugin_prism_prism__prism_snapshot`) with `{"open": true}`. It writes one HTML file under the OS temp directory; no server runs.
+- **`--stop`: stop the live dashboard.** Call `prism_dashboard_stop` (`mcp__plugin_prism_prism__prism_dashboard_stop`) and report its `note`.
+
+Reply in two to four lines:
+
+- Live: the `url` once, then the `note` (opened in the browser, or how to reach the port from an SSH session). Say the URL holds a per-run token that is the page's only key, so it should not be shared, and that the server stops when this session ends or with `/prism:dashboard --stop`. If `reused` is true, say it was already running.
+- Snapshot: the `path`, whether it was `opened` and the `note`, and that the file does not refresh and its commands are copy only.
+
+If a tool fails, show its one-line error. If a tool is missing, the installed prism-cli is older than 1.10.0: suggest `npm install -g @prism-d1/cli`.
 
 Rules for this command:
-- Do not read the HTML file back into the conversation; it holds reviewer text and local paths.
-- Never start `prism-cli dashboard` (the live server) or any other command for this. The snapshot tool is the only thing this command uses.
-- The only file this writes is the snapshot the tool creates under the OS temp directory. Do not edit other files, never push, never disable or bypass git hooks, and never edit or delete anything under `.prism/results/`.
+- Never run `prism-cli dashboard` (or any other command) through Bash for this; use only the three tools above.
+- Never write the URL to a file, a commit, a log or any other tool call. Show it to the user once.
+- Do not read a snapshot file back into the conversation; it holds reviewer text and local paths.
+- Do not edit files, never push, never disable or bypass git hooks, and never edit or delete anything under `.prism/results/`.

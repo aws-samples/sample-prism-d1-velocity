@@ -9,7 +9,7 @@ Every command and option of prism-cli 1.10.0, exactly as `--help` prints it. For
 | Command | What it does |
 |---|---|
 | [`prism-cli dashboard`](#prism-cli-dashboard) | Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a Setup page that runs local setup steps. Read-only in AWS. |
-| [`prism-cli mcp`](#prism-cli-mcp) | MCP server on stdio for Kiro, Claude Code and other MCP clients: read-only codewatch findings and reports, cached spend and the setup checklist, plus a static dashboard snapshot file. No network listener; exits when stdin closes. |
+| [`prism-cli mcp`](#prism-cli-mcp) | MCP server on stdio for Kiro, Claude Code and other MCP clients: read-only codewatch findings and reports, cached spend and the setup checklist, a static dashboard snapshot file, and the live dashboard on 127.0.0.1 as a child process. The MCP server itself opens no port; it exits when stdin closes, stopping that dashboard. |
 | [`prism-cli statusline`](#prism-cli-statusline) | Claude Code status line: reads Claude Code's status JSON on stdin and prints the latest codewatch review counts, spend today and this month, and the session's cost, lines, context and cache. Reads cached files only; set it up with prism-cli enable claude-code. |
 | [`prism-cli version`](#prism-cli-version) | Print the CLI version, check npm for a newer release, and warn about other prism-cli copies on PATH |
 | [`prism-cli assessment`](#prism-cli-assessment) | Run the PRISM D1 Velocity assessment: scan a repo, or run or deploy the assessment web app |
@@ -98,9 +98,11 @@ Commands:
                         local setup steps. Read-only in AWS.
   mcp                   MCP server on stdio for Kiro, Claude Code and other MCP
                         clients: read-only codewatch findings and reports,
-                        cached spend and the setup checklist, plus a static
-                        dashboard snapshot file. No network listener; exits
-                        when stdin closes.
+                        cached spend and the setup checklist, a static
+                        dashboard snapshot file, and the live dashboard on
+                        127.0.0.1 as a child process. The MCP server itself
+                        opens no port; it exits when stdin closes, stopping
+                        that dashboard.
   statusline [options]  Claude Code status line: reads Claude Code's status
                         JSON on stdin and prints the latest codewatch review
                         counts, spend today and this month, and the session's
@@ -149,21 +151,23 @@ Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a
 Setup page that runs local setup steps. Read-only in AWS.
 
 Options:
-  --json             Print the dashboard data as JSON and exit (no server)
-  --root <dir>       Where to look for git repos, 3 levels deep (default: your
-                     home directory)
-  --all              [deprecated, no effect] every repo under --root is now
-                     shown by default
-  --port <n>         Port on 127.0.0.1 (default: a random free port)
-  --no-open          Do not open a browser
-  --snapshot <file>  Write the dashboard as one static HTML file (data
-                     embedded, no server, no token, mode 0600) and exit
-  --open             With --snapshot: open the file in a browser when a display
-                     is available
-  --fresh            With --json: run the codeburn exports now instead of using
-                     the usage cache (~/.prism/cache, 5 minutes)
-  --timing           With --json: print how long each stage took to stderr
-  -h, --help         display help for command
+  --json                 Print the dashboard data as JSON and exit (no server)
+  --root <dir>           Where to look for git repos, 3 levels deep (default:
+                         your home directory)
+  --all                  [deprecated, no effect] every repo under --root is now
+                         shown by default
+  --port <n>             Port on 127.0.0.1 (default: a random free port)
+  --no-open              Do not open a browser
+  --snapshot <file>      Write the dashboard as one static HTML file (data
+                         embedded, no server, no token, mode 0600) and exit
+  --exit-on-stdin-close  Stop the server when stdin closes (prism-cli mcp uses
+                         this so the dashboard ends with the session)
+  --open                 With --snapshot: open the file in a browser when a
+                         display is available
+  --fresh                With --json: run the codeburn exports now instead of
+                         using the usage cache (~/.prism/cache, 5 minutes)
+  --timing               With --json: print how long each stage took to stderr
+  -h, --help             display help for command
 ```
 
 ## `prism-cli mcp`
@@ -174,8 +178,10 @@ Guide: [MCP server](../USER_GUIDE.md#mcp-server-prism-cli-mcp)
 Usage: prism-cli mcp [options]
 
 MCP server on stdio for Kiro, Claude Code and other MCP clients: read-only
-codewatch findings and reports, cached spend and the setup checklist, plus a
-static dashboard snapshot file. No network listener; exits when stdin closes.
+codewatch findings and reports, cached spend and the setup checklist, a static
+dashboard snapshot file, and the live dashboard on 127.0.0.1 as a child
+process. The MCP server itself opens no port; it exits when stdin closes,
+stopping that dashboard.
 
 Options:
   -h, --help  display help for command

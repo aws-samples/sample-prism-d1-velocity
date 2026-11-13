@@ -555,8 +555,9 @@ Checking the download, Remote-SSH, features, settings and security:
 
 `prism-cli mcp` is an [MCP](https://modelcontextprotocol.io) server that gives an AI agent (Kiro,
 Claude Code or any MCP client) the same local data as the dashboard. The client starts it and talks
-to it over stdin and stdout; it opens no port, starts no background process and exits when the
-client closes stdin. It makes no AWS or network calls and never runs a fix. It needs prism-cli 1.8.0
+to it over stdin and stdout and opens no port itself. The one process it can start is the live
+dashboard (`prism_dashboard`), on 127.0.0.1 as its child, which it stops when the client closes
+stdin and it exits. It makes no AWS or network calls and never runs a fix. It needs prism-cli 1.8.0
 or later.
 
 | Tool | Arguments | Returns |
@@ -566,6 +567,8 @@ or later.
 | `prism_spend` | `days` (at most 31) | Today, this month, calls, sessions, top models, top projects (folder names), per-day rows, `updatedAt` and `stale` |
 | `prism_report` | `repo`, `commit` (default `HEAD`), `format` (`md` or `html`) | The scan report for the review covering the commit, or the latest review, and which branch and range it covers. `md` returns the text; `html` writes a file under the OS temp directory and returns its path |
 | `prism_snapshot` | `open` (default false) | Writes the dashboard as one static HTML file (see [Static snapshot](#static-snapshot)) under a new folder in the OS temp directory and returns its path, and with `open` true opens it when a display is available. Needs prism-cli 1.10.0 |
+| `prism_dashboard` | `open` (default true) | Starts `prism-cli dashboard` (127.0.0.1, per-run token) as a child of the MCP server, or returns the one it already started, and returns its URL. Opens the browser only with a display and outside SSH; otherwise it says how to forward the port. The server stops when the MCP server exits. Needs prism-cli 1.10.0 |
+| `prism_dashboard_stop` | none | Stops the dashboard `prism_dashboard` started (recorded in `~/.prism/run/dashboard.json`, mode 0600), never another one |
 | `prism_setup` | none | The setup checklist: each item's status, detail and a fix command to copy |
 
 `repo` is a repo name as the dashboard shows it, or the path to a repo's top level; it must be a repo
@@ -604,9 +607,12 @@ the absolute path that `command -v prism-cli` prints as the command, for example
 this repository is its plugin marketplace. It registers `prism-cli mcp` as the `prism` MCP server
 and adds these slash commands: `/prism` (status), `/prism:findings` (the latest review of this
 branch), `/prism:report` (the scan report as an HTML file or Markdown), `/prism:fix [n]` (fix one
-finding, or all high and medium ones, in at most 2 rounds), `/prism:spend` and `/prism:dashboard`
-(a [static snapshot](#static-snapshot) of the dashboard, written to the temp directory and opened
-when there is a display; it never starts the dashboard server). Its SessionStart
+finding, or all high and medium ones, in at most 2 rounds), `/prism:spend` and `/prism:dashboard`.
+`/prism:dashboard` starts the live [dashboard](#local-dashboard) on 127.0.0.1 as a child of the
+MCP server (Claude Code asks you to approve it), reuses it on the next call, opens it when there is a
+display and outside SSH, and stops it when the session ends or with `/prism:dashboard --stop`. The
+URL carries the per-run token, so treat it as a secret. `/prism:dashboard --snapshot` writes a
+[static snapshot](#static-snapshot) instead, with no server. Its SessionStart
 hook adds a short summary of the branch's open findings to Claude's context, capped at 2 KB, with
 the finding text quoted. The hook also runs `prism-cli git claude-session-context`, unless your
 settings already register that command. Every command treats finding text as untrusted reviewer
