@@ -136,6 +136,8 @@ export const HARNESS_DEFAULT_SKIP_PATHS = ['*.md', 'docs/**', '*.txt', '*.png', 
 /** The `harness` block of `.prism/config.json`, with defaults applied (docs/DESIGN-harness-loop.md, config keys). */
 export interface HarnessConfig {
   push_gate: boolean;
+  /** True when `.prism/config.json` sets harness.push_gate itself (to true or false), not by default. */
+  push_gate_set: boolean;
   finish_gate: boolean;
   /** Always contains 'secret'. */
   block_on: BlockOn[];
@@ -203,6 +205,7 @@ export function readHarnessConfig(repoRoot: string, warnings: string[] = []): Ha
 
   return {
     push_gate: bool('push_gate', true),
+    push_gate_set: typeof h.push_gate === 'boolean',
     finish_gate: bool('finish_gate', false),
     block_on: blockOn,
     max_rounds: maxRounds,

@@ -998,7 +998,9 @@ The git hooks for people do not change: `pre-push` stays report-only and never b
 
 Turn the finish gate on for yourself in Claude Code with `/config` (the plugin's
 **Review before Claude finishes** option, `finish_gate`), or for everyone working in a repo with
-`harness.finish_gate: true` in `.prism/config.json`. A gate runs when either one turns it on. With
+`harness.finish_gate: true` in `.prism/config.json`. The finish gate runs when either one turns it
+on. The push gate's review is the other way round: a `harness.push_gate` the repo sets wins, and
+the plugin's `push_gate` option only decides when the repo leaves it unset. With
 the finish gate off, the `Stop` hook exits before it reads any diff and costs nothing.
 
 `/prism:review` runs the same review on demand and shows the verdict; it changes nothing.
@@ -1009,7 +1011,7 @@ All in a `harness` block in `.prism/config.json`, next to `eval`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `harness.push_gate` | `true` | AI review before the agent's `git push`. `false` (with the plugin's `push_gate` option also off) skips the review; gitleaks still runs and secrets still block |
+| `harness.push_gate` | `true` | AI review before the agent's `git push`. Set here (true or false) it wins over the plugin's `push_gate` option; left unset, the option decides. `false` skips the review; gitleaks still runs and secrets still block |
 | `harness.finish_gate` | `false` | Review before the agent finishes |
 | `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix`: `secret`, `high`, `medium`. `secret` always applies |
 | `harness.max_rounds` | `2` | Fix rounds per session before `stop`; at most 3 |

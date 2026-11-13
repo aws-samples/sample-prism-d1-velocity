@@ -16,9 +16,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { exitCodeFor, isTamperPath, runHarnessReview, TAMPER_GLOBS, VERDICT_SCHEMA, type HarnessOptions, type HarnessVerdict } from '../src/codewatch/harness/engine.js';
-import { agentText, bypassReason, DENY_TAIL, gitCalls, isGitPush, parsePushTarget, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
-import { globToRegExp, matchesAny, parseDiff } from '../src/codewatch/harness/diff.js';
+import { DEADLINE_RESERVE_MS, exitCodeFor, isTamperPath, runHarnessReview, TAMPER_GLOBS, VERDICT_SCHEMA, type HarnessOptions, type HarnessVerdict } from '../src/codewatch/harness/engine.js';
+import { agentText, bypassReason, DENY_TAIL, pushGateOn, gitCalls, isGitPush, parsePushTarget, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { globToRegExp, matchesAny, parseDiff, readBlobs, snapshotTree } from '../src/codewatch/harness/diff.js';
 import { loadState, recordBaseline, sanitizeSession, statePath } from '../src/codewatch/harness/state.js';
 import { readHarnessConfig } from '../src/codewatch/config.js';
 import { readResults } from '../src/codewatch/results.js';
@@ -104,6 +104,8 @@ function rig(): Rig {
   const glGitReport = join(tools, 'gl-git-report.json');
   const gitleaks = exe(join(tools, 'gitleaks'), [
     `if [ "$1" = "version" ] || [ "$1" = "--version" ]; then echo "v8.28.0"; exit 0; fi`,
+    // A slow scan: the engine's deadline must cut it off.
+    `if [ -f '${tools}/gl-sleep' ]; then exec sleep 30; fi`,
     `for a in "$@"; do case "$a" in --report-path=*) rp="\${a#--report-path=}";; esac; done`,
     // `gitleaks git` (the per-commit scan) has its own log and report, so dir-mode call orders stay as they were.
     `if [ "$1" = "git" ]; then echo "$@" >> '${log}.git'; if [ -f '${glGitReport}' ]; then cp '${glGitReport}' "$rp"; exit 1; fi; echo '[]' > "$rp"; exit 0; fi`,
@@ -651,7 +653,7 @@ test('claude push gate: blocks on a secret and on a high finding, passes otherwi
   assert.equal(runClaudeHook('pre-push', hookInput(r, { tool_input: { command: 'git status' } }), deps), '');
 });
 
-test('claude push gate: push_gate false in both places skips the AI review but not gitleaks', () => {
+test('claude push gate: harness.push_gate false skips the AI review but not gitleaks, and the plugin option cannot override it', () => {
   const r = rig();
   r.write('.prism/config.json', JSON.stringify({ harness: { push_gate: false } }));
   r.commit();
@@ -663,7 +665,75 @@ test('claude push gate: push_gate false in both places skips the AI review but n
   assert.deepEqual(r.calls(), ['gitleaks']);
   r.write('src/a.ts', 'y\n');
   runClaudeHook('pre-push', push, { ...deps, env: { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'true' } });
-  assert.deepEqual(r.calls(), ['gitleaks', 'gitleaks', 'reviewer'], 'the plugin option turns it back on');
+  assert.deepEqual(r.calls(), ['gitleaks', 'gitleaks'], 'an explicit repo key wins over the plugin option');
+});
+
+test('pushGateOn: explicit repo key, then the plugin option, then on', () => {
+  const unset = { push_gate: true, push_gate_set: false };
+  const on = { push_gate: true, push_gate_set: true };
+  const off = { push_gate: false, push_gate_set: true };
+  assert.equal(pushGateOn(unset, {}), true, 'default on');
+  assert.equal(pushGateOn(unset, { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'false' }), false, 'the option turns it off when the repo says nothing');
+  assert.equal(pushGateOn(unset, { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'true' }), true);
+  assert.equal(pushGateOn(unset, { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'garbage' }), true, 'an unreadable option keeps the default');
+  assert.equal(pushGateOn(on, { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'false' }), true, 'repo true wins');
+  assert.equal(pushGateOn(off, { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'true' }), false, 'repo false wins');
+  const r = rig();
+  assert.equal(readHarnessConfig(r.dir).push_gate_set, false);
+  r.write('.prism/config.json', JSON.stringify({ harness: { push_gate: true } }));
+  assert.deepEqual([readHarnessConfig(r.dir).push_gate, readHarnessConfig(r.dir).push_gate_set], [true, true]);
+});
+
+test('claude push gate: the plugin option alone turns the AI review off when the repo sets no push_gate', () => {
+  const r = rig();
+  r.write('src/a.ts', 'x\n');
+  r.reply([finding('src/a.ts', 1)]);
+  runClaudeHook('pre-push', hookInput(r, { tool_input: { command: 'git push' } }),
+    { env: { CLAUDE_PLUGIN_OPTION_PUSH_GATE: 'false' }, engine: { pathEnv: r.bin, gitleaksBin: join(dirname(r.log), 'gitleaks') } });
+  assert.deepEqual(r.calls(), ['gitleaks']);
+});
+
+test('deadline: a secret scan that cannot finish in the hook budget holds the push (fake slow gitleaks)', () => {
+  const r = rig();
+  r.write('src/a.ts', 'x\n');
+  writeFileSync(join(dirname(r.log), 'gl-sleep'), '');
+  const t0 = Date.now();
+  const v = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch', deadlineMs: Date.now() + DEADLINE_RESERVE_MS + 1500 }));
+  assert.ok(Date.now() - t0 < 6000, `bounded by the deadline, took ${Date.now() - t0} ms`);
+  assert.deepEqual([v.verdict, v.human_why, v.secrets_scanned], ['stop', 'secrets-scan-failed', false]);
+  assert.ok(v.warnings.some((w) => /did not finish in time/.test(w)), v.warnings.join('|'));
+  assert.ok(!r.calls().includes('reviewer'), 'no review is started after the scan ran out of time');
+  // Through the adapter the push is denied, not left to the client's kill.
+  const out = JSON.parse(runClaudeHook('pre-push', hookInput(r, { tool_input: { command: 'git push' } }),
+    { env: {}, engine: { pathEnv: r.bin, gitleaksBin: join(dirname(r.log), 'gitleaks'), deadlineMs: Date.now() + DEADLINE_RESERVE_MS + 1500 } }));
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  // No time left at all: nothing is started.
+  const none = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch', deadlineMs: Date.now() }));
+  assert.equal(none.human_why, 'secrets-scan-failed');
+  assert.ok(none.warnings.some((w) => /no time left in the hook's budget/.test(w)));
+});
+
+test('deadline: with under a second left nothing is started; at the finish the review fails open', () => {
+  const r = rig();
+  r.write('src/a.ts', 'x\n');
+  r.reply([finding('src/a.ts', 1)]);
+  const v = runHarnessReview(r.opts({ event: 'stop', deadlineMs: Date.now() + DEADLINE_RESERVE_MS + 500 }));
+  assert.deepEqual(r.calls(), [], 'neither gitleaks nor the reviewer was started');
+  assert.equal(v.fail_open, true);
+  assert.equal(v.reviewer?.attempts, 0);
+  assert.ok(v.warnings.some((w) => /no time left in the hook's budget for the review/.test(w)), v.warnings.join('|'));
+  assert.equal(v.secrets_scanned, false);
+});
+
+test('a file name with a newline is not scanned and makes secrets_scanned false', () => {
+  const r = rig();
+  r.write('src/odd\nname.ts', 'x\n');
+  r.write('src/a.ts', 'y\n');
+  const v = runHarnessReview(r.opts());
+  assert.equal(v.secrets_scanned, false);
+  assert.ok(v.warnings.some((w) => w.includes('"src/odd\\nname.ts"')), v.warnings.join('|'));
+  const blobs = readBlobs(r.dir, snapshotTree(r.dir)!, ['src/odd\nname.ts', 'src/a.ts'], []);
+  assert.equal(blobs.get('src/a.ts')?.toString(), 'y\n', 'the paths after it are still read correctly');
 });
 
 test('claude finish gate: off by default (no gitleaks, no reviewer), on with the option or the repo key', () => {

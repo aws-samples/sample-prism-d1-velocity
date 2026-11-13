@@ -132,7 +132,7 @@ Options (`/config`, or when you enable the plugin):
 | Option | Default | Meaning |
 |---|---|---|
 | `finish_gate` (**Review before Claude finishes**) | off | Turns the finish gate on for you. A repo turns it on for everyone with `harness.finish_gate: true` in `.prism/config.json`; either one is enough |
-| `push_gate` (**Review before Claude pushes**) | on | The review before a push. It is off only when this option and `harness.push_gate` are both off; gitleaks runs before a push either way |
+| `push_gate` (**Review before Claude pushes**) | on | The review before a push. When the repo sets `harness.push_gate` (true or false) that wins; otherwise this option decides. gitleaks runs before a push either way |
 
 The findings reach Claude as untrusted data: after a fixed sentence that says so, each message and
 rule is quoted as one JSON string, cut to 300 characters, at most 10 rows, and the whole reason is

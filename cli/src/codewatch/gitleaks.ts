@@ -279,6 +279,7 @@ export function scanCommits(repoRoot: string, range: string, gitleaksBin = 'gitl
       }));
     if (r.status === 0 && arr !== null) return { status: 'ok', findings: [], reason: null };
     if (r.status === 1 && arr !== null) return { status: findings.length ? 'findings' : 'ok', findings, reason: null };
+    if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') return { status: 'error', findings: [], reason: `gitleaks git timed out after ${Math.round((opts.timeoutMs ?? GITLEAKS_SCAN_TIMEOUT_MS) / 1000)} s` };
     const why = (r.error?.message || r.stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
     return { status: 'error', findings: [], reason: `gitleaks git exited ${r.status} without a readable report: ${why}` };
   } finally {
@@ -327,6 +328,7 @@ export function scanFiles(repoRoot: string, files: FileToScan[], gitleaksBin = '
     if (findings) findings = findings.map((f) => ({ ...f, file: f.file.replace(/^\.\//, '') }));
     if (r.status === 0 && findings !== null && findings.length === 0) return { status: 'ok', findings: [], version, reason: null, skipped };
     if (r.status === 1 && findings && findings.length > 0) return { status: 'findings', findings, version, reason: null, skipped };
+    if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') return { status: 'error', findings: [], version, reason: `gitleaks timed out after ${Math.round((opts.timeoutMs ?? GITLEAKS_SCAN_TIMEOUT_MS) / 1000)} s`, skipped };
     const why = (r.error?.message || r.stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
     return { status: 'error', findings: [], version, reason: `gitleaks exited ${r.status} without a readable report: ${why}`, skipped };
   } finally {
