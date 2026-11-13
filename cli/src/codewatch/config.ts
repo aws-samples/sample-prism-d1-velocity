@@ -13,7 +13,52 @@ export const GITLEAKS_BASELINE_PATH = '.prism/gitleaks-baseline.json';
 export const GITLEAKS_CONFIG_PATH = '.gitleaks.toml';
 /** Per-clone override of the team's reviewer choice: `git config prism.reviewer claude`. */
 export const REVIEWER_GIT_CONFIG_KEY = 'prism.reviewer';
+/** Fallback review model for repos that pin none: `git config --global prism.reviewModel <id>`. */
+export const REVIEW_MODEL_GIT_CONFIG_KEY = 'prism.reviewModel';
+/** Same rule the CI eval gate applies to its review model (prism-eval-gate-kiro.yml). */
+export const MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,100}$/;
 export const DEFAULT_REVIEW_TIMEOUT_SECONDS = 300;
+
+/** `auto` and `default` mean "the reviewer's own default" (kiro-cli: auto; Claude Code: its default). */
+export function isDefaultModel(v: string): boolean {
+  const s = v.trim().toLowerCase();
+  return s === 'auto' || s === 'default';
+}
+
+export interface ModelChoice {
+  /** Model to pass to the reviewer, or null for the reviewer's own default. */
+  model: string | null;
+  source: 'prism-config' | 'git-config' | 'default';
+  /** Set when a configured value was ignored. */
+  note: string | null;
+}
+
+/**
+ * Precedence: `.prism/config.json` eval.model (the team pin, which the CI gate
+ * also reads), then `git config prism.reviewModel` (usually --global: the
+ * developer's default for repos that pin none), then the reviewer's default.
+ * `auto`/`default` at either level stops the search with the reviewer's default.
+ * An invalid value is ignored with a note.
+ */
+export function resolveReviewModel(opts: { prismConfigValue: unknown; gitConfigValue: string | null }): ModelChoice {
+  let note: string | null = null;
+  const levels: [unknown, ModelChoice['source'], string][] = [
+    [opts.prismConfigValue, 'prism-config', 'eval.model in .prism/config.json'],
+    [opts.gitConfigValue, 'git-config', `git config ${REVIEW_MODEL_GIT_CONFIG_KEY}`],
+  ];
+  for (const [raw, source, label] of levels) {
+    if (raw === undefined || raw === null || raw === '') continue;
+    const v = String(raw).trim();
+    if (!MODEL_ID_RE.test(v)) { note = note || `ignored ${label}="${String(raw).slice(0, 100)}" (must match ${MODEL_ID_RE.source})`; continue; }
+    return { model: isDefaultModel(v) ? null : v, source, note };
+  }
+  return { model: null, source: 'default', note };
+}
+
+/** How a model reads in logs and the dashboard: the id, or the reviewer's default. */
+export function modelLabel(reviewer: string | null, model: string | null): string {
+  return model || (reviewer === 'kiro' ? 'auto' : 'default');
+}
 
 export interface EvalConfig {
   reviewer?: string;

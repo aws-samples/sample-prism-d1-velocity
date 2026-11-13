@@ -792,11 +792,50 @@ The pre-push hook picks a reviewer in this order:
 If the chosen tool is not installed, the other one is used and the substitution is printed and
 recorded. With neither installed, the push goes through and the result records "no reviewer".
 `enable codewatch` asks which to use when both are installed and no `--reviewer` was given (without a
-terminal it keeps the existing setting, or picks claude).
+terminal, or with `--yes`, it keeps the existing setting, or picks claude).
 
-`.prism/config.json` also accepts `eval.model` (passed to the reviewer) and `eval.timeout_seconds`
-(default 300). The CI eval gate reads `eval.model` too, from the base branch, unless the
-`PRISM_REVIEW_MODEL` variable is set; see [Kiro-CLI Eval Gate](#kiro-cli-eval-gate).
+`.prism/config.json` also accepts `eval.timeout_seconds` (default 300).
+
+### Choosing the Review Model
+
+```bash
+prism-cli enable codewatch --model claude-sonnet-4.5     # syntax example: pin a model for this repo (eval.model)
+prism-cli enable codewatch --model auto                  # clear it: the reviewer's own default
+prism-cli enable codewatch --global --model sonnet       # syntax example: your default for every repo
+```
+
+The model ids above are examples; list the ones your kiro-cli offers with
+`kiro-cli chat --list-models`. Claude Code takes aliases such as `sonnet`, `opus` and `haiku`, or a
+full model name.
+
+- `--model <id>` writes `eval.model` in `.prism/config.json`, next to `eval.reviewer`; other keys are
+  kept. The id must match `^[A-Za-z0-9._:/-]{1,100}$`, the rule the CI eval gate applies; anything
+  else is refused and nothing is written. `--model auto` or `--model default` removes the key, so
+  kiro-cli runs with `auto` and Claude Code with its own default.
+- In a terminal without `--model`, `enable codewatch` asks after the reviewer is chosen. For kiro-cli
+  it lists the first models `kiro-cli chat --list-models` reports; for Claude Code it offers
+  `sonnet`, `opus` and `haiku`. Both lists start with "default (recommended)" and end with "other
+  (type an id)". Enter keeps the current setting. Without a terminal, or with `--yes`, nothing is
+  asked and `eval.model` is left as it is.
+- `--global --model <id>` sets `git config --global prism.reviewModel`; `--global --model default`
+  unsets it.
+
+The pre-push review picks the model in this order:
+
+1. `eval.model` in `.prism/config.json`: the team's pin. `auto` or `default` here also stops the
+   search, with the reviewer's default.
+2. `git config prism.reviewModel`: your own default (usually `--global`) for repos that pin none.
+3. The reviewer's default: `auto` for kiro-cli, Claude Code's own default for claude.
+
+An invalid value at either level is ignored, with a note in the hook output. The model is the same
+whichever reviewer runs, so a pin written for one tool (`sonnet`) can fail when a developer's push
+falls back to the other; the review then records an error and the push continues. The hook prints the
+model (`reviewing work against origin/work with kiro-cli, model auto ...`), and the dashboard's Setup
+tab and the `prism_setup` MCP tool show it beside the reviewer.
+
+The CI eval gate uses its own order: the `PRISM_REVIEW_MODEL` repository variable, then `eval.model`
+from the **base branch's** `.prism/config.json` (so a PR cannot change the model that reviews it),
+then `auto`. It never reads `prism.reviewModel`. See [Kiro-CLI Eval Gate](#kiro-cli-eval-gate).
 
 ### What the Hooks Do
 

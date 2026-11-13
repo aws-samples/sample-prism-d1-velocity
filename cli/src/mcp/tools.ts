@@ -364,7 +364,7 @@ async function setup(ctx: ToolContext): Promise<Record<string, unknown>> {
   return {
     note: 'fix commands are for the user to copy and run; this tool never runs them',
     items: p.machine.setup.map((i) => ({ id: i.id, name: i.label, status: i.status, detail: i.detail, fix: i.fix || null, help: i.help ? i.help.text : null })),
-    repos: visible.slice(0, SETUP_REPOS_LISTED).map((r) => ({ repo: r.label, status: r.status, reviewer: r.reviewer, detail: r.detail, fix: r.fix || null })),
+    repos: visible.slice(0, SETUP_REPOS_LISTED).map((r) => ({ repo: r.label, status: r.status, reviewer: r.reviewer, model: r.reviewer ? r.model : null, detail: r.detail, fix: r.fix || null })),
     reposNotShown: p.overview.setup.length - Math.min(visible.length, SETUP_REPOS_LISTED),
   };
 }

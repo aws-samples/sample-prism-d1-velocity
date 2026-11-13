@@ -16,7 +16,8 @@ import { gitleaksInstallHint, parseGitleaksReport, runPreCommit } from '../src/c
 import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR, REASON_GITLEAKS_MISSING } from '../src/codewatch/results.js';
 import { runPrePush, parsePushInput } from '../src/codewatch/prepush.js';
 import { installHooks, uninstallHooks, retireLegacyCommitMsgHook, ensureResultsIgnored, PRE_PUSH_SCRIPT, PRE_COMMIT_SCRIPT } from '../src/codewatch/hooks.js';
-import { writeEvalConfig, readPrismConfig } from '../src/codewatch/config.js';
+import { writeEvalConfig, readPrismConfig, resolveReviewModel, modelLabel, REVIEW_MODEL_GIT_CONFIG_KEY } from '../src/codewatch/config.js';
+import { chooseModel, CLAUDE_MODEL_ALIASES, listKiroModels, type ModelPromptDeps } from '../src/commands/enable/codewatch.js';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'review');
 const fixture = (name: string) => readFileSync(join(FIX, name), 'utf8');
@@ -463,4 +464,135 @@ test('ensureResultsIgnored is idempotent and config merge keeps other keys', () 
   writeEvalConfig(dir, { reviewer: 'kiro' });
   assert.deepEqual(readPrismConfig(dir), { team_id: 't1', eval: { reviewer: 'kiro' } });
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------- review model
+
+/** Runs `prism-cli enable codewatch ...` in cwd with a scratch global git config. */
+function enableCli(cwd: string, args: string[], home: string, bin: string) {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'prism-cli.ts');
+  return spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), cli, 'enable', 'codewatch', ...args], {
+    cwd, encoding: 'utf8',
+    env: { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` },
+  });
+}
+
+test('resolveReviewModel: repo eval.model, then git config prism.reviewModel, then the reviewer default', () => {
+  assert.deepEqual(resolveReviewModel({ prismConfigValue: 'model-a', gitConfigValue: 'model-b' }), { model: 'model-a', source: 'prism-config', note: null });
+  assert.deepEqual(resolveReviewModel({ prismConfigValue: undefined, gitConfigValue: 'model-b' }), { model: 'model-b', source: 'git-config', note: null });
+  assert.deepEqual(resolveReviewModel({ prismConfigValue: undefined, gitConfigValue: null }), { model: null, source: 'default', note: null });
+  // auto/default in the repo is the team's explicit choice: it beats the global default
+  assert.deepEqual(resolveReviewModel({ prismConfigValue: 'auto', gitConfigValue: 'model-b' }), { model: null, source: 'prism-config', note: null });
+  const bad = resolveReviewModel({ prismConfigValue: 'bad id;', gitConfigValue: 'model-b' });
+  assert.equal(bad.model, 'model-b');
+  assert.match(bad.note || '', /ignored eval.model/);
+  assert.equal(modelLabel('kiro', null), 'auto');
+  assert.equal(modelLabel('claude', null), 'default');
+  assert.equal(modelLabel('claude', 'opus'), 'opus');
+});
+
+test('chooseModel: flag, interactive list per reviewer, and no prompt without a terminal', async () => {
+  const deps = (answers: string[], over: Partial<ModelPromptDeps> = {}) => {
+    const printed: string[] = [];
+    const d: ModelPromptDeps = { tty: true, ask: async () => answers.shift() ?? '', print: (l) => printed.push(l), listKiroModels: () => ['model-a', 'model-b'], ...over };
+    return { d, printed };
+  };
+  assert.deepEqual(await chooseModel('model-x', 'kiro', deps([]).d), { write: true, model: 'model-x', how: '--model flag' });
+  assert.deepEqual(await chooseModel('default', 'claude', deps([]).d), { write: true, model: null, how: '--model flag' });
+  await assert.rejects(chooseModel('no spaces allowed', 'kiro', deps([]).d), /must match/);
+  assert.deepEqual(await chooseModel(undefined, 'kiro', deps([], { tty: false }).d), { write: false, how: 'not asked' });
+
+  const k = deps(['3']);
+  assert.deepEqual(await chooseModel(undefined, 'kiro', k.d), { write: true, model: 'model-b', how: 'chosen at the prompt' });
+  assert.deepEqual(k.printed.slice(1), ['  1) default (recommended): auto', '  2) model-a', '  3) model-b', '  4) other (type an id)']);
+  // kiro-cli could not list its models: default and other only
+  const none = deps(['2', 'model-z'], { listKiroModels: () => null });
+  assert.deepEqual(await chooseModel(undefined, 'kiro', none.d), { write: true, model: 'model-z', how: 'chosen at the prompt' });
+  assert.equal(none.printed.length, 3);
+
+  const c = deps(['1']);
+  assert.deepEqual(await chooseModel(undefined, 'claude', c.d), { write: true, model: null, how: 'chosen at the prompt' });
+  assert.deepEqual(c.printed.slice(2, 5), CLAUDE_MODEL_ALIASES.map((m, i) => `  ${i + 2}) ${m}`));
+  assert.deepEqual(await chooseModel(undefined, 'claude', deps([''], { existing: 'opus' }).d), { write: false, how: 'kept at the prompt' });
+  await assert.rejects(chooseModel(undefined, 'claude', deps(['9']).d), /no choice 9/);
+});
+
+test('listKiroModels reads kiro-cli --list-models JSON and drops auto', () => {
+  const bin = tmp('lm-bin');
+  const k = exe(bin, 'kiro-cli', `echo '{"models":[{"model_id":"auto"},{"model_id":"model-a"},{"model_id":"bad id"}]}'`);
+  assert.deepEqual(listKiroModels(k), ['model-a']);
+  assert.equal(listKiroModels(exe(bin, 'broken', 'exit 1')), null);
+});
+
+test('enable codewatch --model writes eval.model and keeps other keys; invalid writes nothing; auto clears', () => {
+  const repo = makeRepo();
+  const home = tmp('model-home');
+  const bin = tmp('model-bin');
+  exe(bin, 'claude', 'exit 0');
+  mkdirSync(join(repo.dir, '.prism'));
+  writeFileSync(join(repo.dir, '.prism', 'config.json'), '{"team_id":"t1","eval":{"timeout_seconds":60}}');
+
+  const bad = enableCli(repo.dir, ['--reviewer', 'claude', '--model', 'opus;rm'], home, bin);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /--model must match/);
+  assert.deepEqual(readPrismConfig(repo.dir), { team_id: 't1', eval: { timeout_seconds: 60 } });
+  assert.ok(!existsSync(join(repo.dir, '.prism', 'review')), 'nothing installed');
+
+  const ok = enableCli(repo.dir, ['--reviewer', 'claude', '--model', 'opus'], home, bin);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(readPrismConfig(repo.dir), { team_id: 't1', eval: { timeout_seconds: 60, reviewer: 'claude', model: 'opus' } });
+  assert.match(ok.stdout, /Review model: opus \(\.prism\/config\.json eval\.model; --model flag\)/);
+
+  const clear = enableCli(repo.dir, ['--reviewer', 'claude', '--model', 'auto'], home, bin);
+  assert.equal(clear.status, 0, clear.stderr);
+  assert.deepEqual(readPrismConfig(repo.dir), { team_id: 't1', eval: { timeout_seconds: 60, reviewer: 'claude' } });
+  assert.match(clear.stdout, /Review model: default \(reviewer default; --model flag\)/);
+
+  // without --model and without a terminal, eval.model is left alone
+  writeEvalConfig(repo.dir, { model: 'haiku' });
+  const keep = enableCli(repo.dir, ['--reviewer', 'claude'], home, bin);
+  assert.equal(keep.status, 0, keep.stderr);
+  assert.equal(readPrismConfig(repo.dir).eval.model, 'haiku');
+});
+
+test('enable codewatch --global --model sets and clears git config --global prism.reviewModel', () => {
+  const home = tmp('gmodel-home');
+  const bin = tmp('gmodel-bin');
+  const gcfg = join(home, '.gitconfig');
+  const get = () => spawnSync('git', ['config', '--file', gcfg, '--get', REVIEW_MODEL_GIT_CONFIG_KEY], { encoding: 'utf8' }).stdout.trim();
+  const set = enableCli(home, ['--global', '--model', 'model-g'], home, bin);
+  assert.equal(set.status, 0, set.stderr);
+  assert.equal(get(), 'model-g');
+  const clear = enableCli(home, ['--global', '--model', 'default'], home, bin);
+  assert.equal(clear.status, 0, clear.stderr);
+  assert.equal(get(), '');
+});
+
+test('pre-push passes the resolved model to the reviewer and logs it', () => {
+  const repo = makeRepo();
+  const bin = tmp('pm-bin');
+  const argsLog = join(tmp('pm-log'), 'args');
+  const fx = join(FIX, 'kiro-output.txt');
+  exe(bin, 'kiro-cli', `if [ "$1" = "--version" ]; then echo "kiro-cli 9.9.9"; exit 0; fi\necho "$@" >> '${argsLog}'\ncat '${fx}'`);
+  writeEvalConfig(repo.dir, { reviewer: 'kiro' });
+  const home = tmp('pm-home');
+  const saved = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = join(home, '.gitconfig');
+  try {
+    const push = () => {
+      const logs: string[] = [];
+      inDir(repo.dir, () => runPrePush({ repoRoot: repo.dir, stdin: pushLine(repo), remote: 'origin', pathEnv: bin, log: (l) => logs.push(l) }));
+      return logs.join('\n');
+    };
+    assert.match(push(), /with kiro-cli, model auto \(report only/);
+    git(home, 'config', '--file', join(home, '.gitconfig'), REVIEW_MODEL_GIT_CONFIG_KEY, 'model-g');
+    assert.match(push(), /with kiro-cli, model model-g \(report only/);
+    writeEvalConfig(repo.dir, { model: 'model-r' });
+    assert.match(push(), /with kiro-cli, model model-r \(report only/);
+    const calls = readFileSync(argsLog, 'utf8').trim().split('\n');
+    assert.deepEqual(calls.map((l) => l.split(' ')[4]), ['auto', 'model-g', 'model-r']);
+    assert.equal(readResults(repo.dir).filter((r) => r.kind === 'review').map((r) => r.model).includes('model-r'), true);
+  } finally {
+    if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = saved;
+  }
 });

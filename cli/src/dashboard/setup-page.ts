@@ -248,7 +248,7 @@ function reposSection(data) {
   const ids = SETUP.repoIds || {}, cds = SETUP.repoCd || {}, cp = SETUP.copy || {};
   const rowOf = (r) => {
     const cw = el('div', {}, pill(CW_PILL[r.status] || 'missing', r.status === 'opted-out' ? 'opted out' : r.status + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
-      el('span', { class: 'fix' }, r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail)));
+      el('span', { class: 'fix' }, r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') + (r.reviewer && r.model ? ', model ' + txt(r.model) : '') : txt(r.detail)));
     if ((r.status === 'missing' || r.status === 'warn') && ids[r.path]) cw.append(el('div', { class: 'srow-ctl' }, runButton('codewatch-repo', { repo: ids[r.path], where: r.path, label: 'Enable codewatch' })));
     const sec = r.security || { status: 'missing' };
     const sc = el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', sec.status === 'in-use' ? 'in use' : sec.status));

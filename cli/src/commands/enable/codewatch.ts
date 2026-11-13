@@ -1,7 +1,11 @@
+import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { getAssetPath } from '../../utils/root.js';
 import { run } from '../../utils/exec.js';
-import { GITLEAKS_BASELINE_PATH, readEvalConfig, REVIEWER_GIT_CONFIG_KEY, RULES_PATH, writeEvalConfig } from '../../codewatch/config.js';
+import {
+  GITLEAKS_BASELINE_PATH, isDefaultModel, MODEL_ID_RE, modelLabel, readEvalConfig, resolveReviewModel, REVIEW_MODEL_GIT_CONFIG_KEY,
+  REVIEWER_GIT_CONFIG_KEY, RULES_PATH, writeEvalConfig,
+} from '../../codewatch/config.js';
 import { gitleaksInstallHint, installGitleaksConfig } from '../../codewatch/gitleaks.js';
 import { ensureResultsIgnored, installHooks, resolveHooksDir, retireLegacyCommitMsgHook, uninstallHooks } from '../../codewatch/hooks.js';
 import { ADAPTERS, detectReviewers, findOnPath, isReviewerId, REVIEWER_IDS, type ReviewerId } from '../../codewatch/reviewers/index.js';
@@ -20,7 +24,7 @@ function ask(question: string): Promise<string> {
  * tool on PATH it is used; with both, the developer is asked (non-TTY: claude,
  * the repo's primary tool); with neither, the existing setting is kept.
  */
-async function chooseReviewer(flag: string | undefined, existing: string | undefined): Promise<{ id: ReviewerId | null; how: string }> {
+async function chooseReviewer(flag: string | undefined, existing: string | undefined, tty: boolean): Promise<{ id: ReviewerId | null; how: string }> {
   if (flag) {
     if (!isReviewerId(flag)) throw new Error(`--reviewer must be one of: ${REVIEWER_IDS.join(', ')}`);
     return { id: flag, how: '--reviewer flag' };
@@ -30,7 +34,7 @@ async function chooseReviewer(flag: string | undefined, existing: string | undef
   if (found.length === 0) {
     return { id: isReviewerId(existing) ? existing : null, how: 'neither kiro-cli nor claude is on PATH' };
   }
-  if (!process.stdin.isTTY) {
+  if (!tty) {
     const id = isReviewerId(existing) ? existing : 'claude';
     return { id, how: `both found, no TTY to ask; using ${isReviewerId(existing) ? 'the existing setting' : 'claude'}` };
   }
@@ -41,15 +45,89 @@ async function chooseReviewer(flag: string | undefined, existing: string | undef
   return { id, how: 'chosen at the prompt' };
 }
 
+/** Claude Code's documented model aliases (`claude --help`: an alias for the latest model); it has no list command. */
+export const CLAUDE_MODEL_ALIASES = ['sonnet', 'opus', 'haiku'];
+/** Models from `kiro-cli chat --list-models` offered at the prompt; any other id can be typed. */
+export const KIRO_MODELS_LISTED = 8;
+
+export function modelFlagError(m: string): string | null {
+  return MODEL_ID_RE.test(m.trim()) ? null : `--model must match ${MODEL_ID_RE.source} (the rule the CI eval gate uses)`;
+}
+
+/** kiro-cli's own model ids (`kiro-cli chat --list-models --format json`), without auto; null when it cannot say. */
+export function listKiroModels(bin = 'kiro-cli'): string[] | null {
+  const r = spawnSync(bin, ['chat', '--list-models', '--format', 'json'], { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'] });
+  if (r.status !== 0 || !r.stdout) return null;
+  try {
+    const models = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'))).models;
+    if (!Array.isArray(models)) return null;
+    return models.map((m: any) => m?.model_id).filter((id: unknown): id is string => typeof id === 'string' && MODEL_ID_RE.test(id) && !isDefaultModel(id));
+  } catch {
+    return null;
+  }
+}
+
+export interface ModelPromptDeps {
+  tty: boolean;
+  ask: (q: string) => Promise<string>;
+  print: (line: string) => void;
+  listKiroModels: () => string[] | null;
+  /** eval.model already in .prism/config.json. */
+  existing?: string;
+}
+
+/** write:false leaves eval.model as it is; model:null removes it (the reviewer's default). */
+export type ModelDecision = { write: false; how: string } | { write: true; model: string | null; how: string };
+
+/**
+ * The review model. --model wins (auto/default clears it). Otherwise, in a
+ * terminal, the developer picks from a short list for the chosen reviewer;
+ * Enter keeps the current setting. Without a terminal (or with --yes) nothing
+ * is written.
+ */
+export async function chooseModel(flag: string | undefined, reviewer: ReviewerId | null, deps: ModelPromptDeps): Promise<ModelDecision> {
+  if (flag !== undefined) {
+    const err = modelFlagError(flag);
+    if (err) throw new Error(err);
+    return { write: true, model: isDefaultModel(flag) ? null : flag.trim(), how: '--model flag' };
+  }
+  if (!reviewer || !deps.tty) return { write: false, how: 'not asked' };
+  const listed = reviewer === 'kiro' ? (deps.listKiroModels() ?? []).slice(0, KIRO_MODELS_LISTED) : CLAUDE_MODEL_ALIASES;
+  const dflt = reviewer === 'kiro' ? 'auto' : "Claude Code's default";
+  const other = listed.length + 2;
+  deps.print(`Review model for ${ADAPTERS[reviewer].displayName}${deps.existing ? ` (now ${deps.existing})` : ''}:`);
+  deps.print(`  1) default (recommended): ${dflt}`);
+  listed.forEach((m, i) => deps.print(`  ${i + 2}) ${m}`));
+  deps.print(`  ${other}) other (type an id)`);
+  const a = (await deps.ask(`Choose [1-${other}] (Enter: ${deps.existing ? 'keep' : 'default'}) `)).trim();
+  if (a === '') return { write: false, how: 'kept at the prompt' };
+  const n = /^\d+$/.test(a) ? Number(a) : NaN;
+  let id: string;
+  if (n === 1) return { write: true, model: null, how: 'chosen at the prompt' };
+  if (n >= 2 && n < other) id = listed[n - 2];
+  else if (n === other) id = (await deps.ask('Model id: ')).trim();
+  else if (Number.isNaN(n)) id = a;
+  else throw new Error(`no choice ${a}; expected 1-${other}`);
+  if (modelFlagError(id)) throw new Error(`model "${id.slice(0, 100)}" must match ${MODEL_ID_RE.source}`);
+  return { write: true, model: isDefaultModel(id) ? null : id, how: 'chosen at the prompt' };
+}
+
 export default {
   description: `Install codewatch git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code). Turn them off in a repo with "git config ${OPT_OUT_KEY} false"`,
   options: [
     { flags: '--reviewer <tool>', description: `Team default reviewer: ${REVIEWER_IDS.join(' | ')} (skips detection)` },
+    { flags: '--model <id>', description: `Review model: eval.model in .prism/config.json (with --global: git config --global ${REVIEW_MODEL_GIT_CONFIG_KEY}). auto or default clears it` },
+    { flags: '--yes', description: 'Do not ask for the reviewer or model' },
     { flags: '--uninstall', description: 'Remove the hooks and restore any hooks they replaced' },
     { flags: '--global', description: 'Install for every repo: hooks in ~/.prism/hooks and git config --global core.hooksPath' },
     { flags: '--force', description: 'With --global: replace a global core.hooksPath set by another tool (its hooks are chained)' },
   ],
-  async action(opts: { reviewer?: string; uninstall?: boolean; global?: boolean; force?: boolean }) {
+  async action(opts: { reviewer?: string; model?: string; yes?: boolean; uninstall?: boolean; global?: boolean; force?: boolean }) {
+    const modelErr = opts.model !== undefined ? modelFlagError(opts.model) : null;
+    if (modelErr) {
+      console.error(`Error: ${modelErr}`);
+      process.exit(1);
+    }
     if (opts.global) return globalAction(opts);
 
     const top = run('git', ['rev-parse', '--show-toplevel']);
@@ -84,9 +162,10 @@ export default {
     else console.log('✓ Using existing .gitleaks.toml');
     if (existsSync(resolve(gitRoot, GITLEAKS_BASELINE_PATH))) console.log(`✓ Using baseline ${GITLEAKS_BASELINE_PATH}`);
 
+    const tty = !!process.stdin.isTTY && !opts.yes;
     let choice;
     try {
-      choice = await chooseReviewer(opts.reviewer, readEvalConfig(gitRoot).reviewer);
+      choice = await chooseReviewer(opts.reviewer, readEvalConfig(gitRoot).reviewer, tty);
     } catch (e: any) {
       console.error(`Error: ${e.message}`);
       process.exit(1);
@@ -98,6 +177,23 @@ export default {
     } else {
       console.log(`! No reviewer configured (${choice.how}). Pre-push will report "no reviewer" until kiro-cli or claude is installed.`);
     }
+
+    let decision: ModelDecision;
+    try {
+      decision = await chooseModel(opts.model, choice.id, {
+        tty, ask, print: (l) => console.log(l), existing: readEvalConfig(gitRoot).model,
+        listKiroModels: () => listKiroModels(findOnPath('kiro-cli') || 'kiro-cli'),
+      });
+    } catch (e: any) {
+      console.error(`Error: ${e.message}`);
+      process.exit(1);
+    }
+    if (decision.write) writeEvalConfig(gitRoot, { model: decision.model ?? undefined });
+    const gitModel = run('git', ['config', '--get', REVIEW_MODEL_GIT_CONFIG_KEY]);
+    const eff = resolveReviewModel({ prismConfigValue: readEvalConfig(gitRoot).model, gitConfigValue: gitModel.ok ? gitModel.stdout : null });
+    const from = { 'prism-config': '.prism/config.json eval.model', 'git-config': `git config ${REVIEW_MODEL_GIT_CONFIG_KEY}`, default: 'reviewer default' }[eff.source];
+    console.log(`✓ Review model: ${modelLabel(choice.id, eff.model)} (${from}${decision.write ? `; ${decision.how}` : ''})`);
+    if (eff.note) console.log(`  Note: ${eff.note}`);
 
     if (ensureResultsIgnored(gitRoot)) console.log('✓ Added .prism/results/ to .gitignore');
 
@@ -119,13 +215,14 @@ export default {
     console.log('  pre-push    reviews the branch diff against its upstream. Report only; never blocks.');
     console.log(`  Results     .prism/results/*.json (gitignored)`);
     console.log(`  Override    git config ${REVIEWER_GIT_CONFIG_KEY} <kiro|claude>   (this clone only)`);
+    console.log('  Model       prism-cli enable codewatch --model <id|auto>   (eval.model; the CI gate reads it from the base branch)');
     console.log(`  Opt out     git config ${OPT_OUT_KEY} false   (this repo; add --global for every repo)`);
     console.log('  Remove      prism-cli enable codewatch --uninstall');
   },
 };
 
 /** `enable codewatch --global [--force] [--uninstall]`: needs no repo. */
-function globalAction(opts: { reviewer?: string; uninstall?: boolean; force?: boolean }) {
+function globalAction(opts: { reviewer?: string; model?: string; uninstall?: boolean; force?: boolean }) {
   if (opts.uninstall) {
     const r = uninstallGlobal();
     const cfg = {
@@ -170,6 +267,15 @@ function globalAction(opts: { reviewer?: string; uninstall?: boolean; force?: bo
     const found = detectReviewers();
     console.log(found.length ? `✓ Reviewer: detected per push (${found.join(', ')} on PATH); a repo's .prism/config.json or git config ${REVIEWER_GIT_CONFIG_KEY} overrides`
       : '! No reviewer on PATH: pre-push will report "no reviewer" until kiro-cli or claude is installed.');
+  }
+  if (opts.model !== undefined) {
+    if (isDefaultModel(opts.model)) {
+      run('git', ['config', '--global', '--unset', REVIEW_MODEL_GIT_CONFIG_KEY]);
+      console.log(`✓ Review model: reviewer default (unset git config --global ${REVIEW_MODEL_GIT_CONFIG_KEY})`);
+    } else {
+      run('git', ['config', '--global', REVIEW_MODEL_GIT_CONFIG_KEY, opts.model.trim()]);
+      console.log(`✓ Review model: git config --global ${REVIEW_MODEL_GIT_CONFIG_KEY} ${opts.model.trim()} (a repo's eval.model overrides)`);
+    }
   }
   if (!findOnPath('gitleaks')) console.log(`\n! gitleaks is not on PATH; commits are allowed but not scanned. Install it: ${gitleaksInstallHint()}`);
   if (!findOnPath('prism-cli')) console.log('\n! prism-cli is not on PATH. The hooks call it; install with: npm i -g @prism-d1/cli');
