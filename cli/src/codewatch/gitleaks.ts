@@ -210,6 +210,83 @@ export interface ScanOptions {
 }
 
 /**
+ * `--config`, `--baseline-path` and `--gitleaks-ignore-path` for one scan: the
+ * override (written to `cfgDir`), else the repo's own file, else none. Only
+ * the repo's own .gitleaksignore (or its override) counts, never one in a
+ * scanned copy; `empty` is an empty dir that means "no ignore file".
+ */
+function configArgs(repoRoot: string, cfgDir: string, empty: string, override?: ScannerConfigOverride): string[] {
+  const pick = (key: keyof ScannerConfigOverride, repoPath: string, name: string): string | null => {
+    if (override && key in override) {
+      const c = override[key];
+      if (!c) return null;
+      const p = join(cfgDir, name);
+      writeFileSync(p, c, { mode: 0o600 });
+      return p;
+    }
+    const p = resolve(repoRoot, repoPath);
+    return existsSync(p) ? p : null;
+  };
+  const out: string[] = [];
+  const cfg = pick('config', GITLEAKS_CONFIG_PATH, 'gitleaks.toml');
+  if (cfg) out.push(`--config=${cfg}`);
+  const baseline = pick('baseline', GITLEAKS_BASELINE_PATH, 'baseline.json');
+  if (baseline) out.push(`--baseline-path=${baseline}`);
+  const ignore = pick('ignore', '.gitleaksignore', '.gitleaksignore');
+  out.push(`--gitleaks-ignore-path=${ignore ?? empty}`);
+  return out;
+}
+
+/** A secret gitleaks found in one commit of a range. */
+export interface CommitSecret { commit: string; file: string; line: number | null; rule: string }
+
+export interface CommitScan {
+  status: 'ok' | 'findings' | 'missing' | 'error';
+  findings: CommitSecret[];
+  reason: string | null;
+}
+
+/**
+ * `gitleaks git` over every commit in `range` (a `git log` revision range such
+ * as `base..tip`, or `tip` for the whole history), so a secret added and then
+ * removed inside the range is still found: the commit that added it leaves
+ * the machine with the push. Redacted; only commit, file, line and rule are
+ * read, never `Secret` or `Match`.
+ */
+export function scanCommits(repoRoot: string, range: string, gitleaksBin = 'gitleaks', opts: ScanOptions = {}): CommitScan {
+  const version = toolVersion(gitleaksBin, ['version']);
+  const parsed = parseGitleaksVersion(version);
+  if (!parsed) return { status: 'missing', findings: [], reason: 'gitleaks is not installed' };
+  if (range.startsWith('-')) return { status: 'error', findings: [], reason: 'invalid commit range' };
+  const dir = mkdtempSync(join(tmpdir(), 'prism-harness-glgit-'));
+  try {
+    const cfgDir = join(dir, 'cfg');
+    const empty = join(dir, 'empty');
+    for (const d of [cfgDir, empty]) mkdirSync(d, { mode: 0o700 });
+    const report = join(dir, 'report.json');
+    const args = ['git', repoRoot, `--log-opts=${range}`, '--redact', '--no-banner', '--exit-code=1', '--report-format=json', `--report-path=${report}`,
+      ...configArgs(repoRoot, cfgDir, empty, opts.override)];
+    const r = spawnSync(gitleaksBin, args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: opts.timeoutMs ?? GITLEAKS_SCAN_TIMEOUT_MS });
+    let arr: any[] | null = null; // any: gitleaks JSON; only location, rule and commit are read
+    try { const v = JSON.parse(readFileSync(report, 'utf8')); arr = Array.isArray(v) ? v : null; } catch { arr = null; }
+    const findings: CommitSecret[] = (arr ?? [])
+      .filter((l) => /^[0-9a-f]{40,64}$/.test(String(l?.Commit ?? '')))
+      .map((l) => ({
+        commit: String(l.Commit),
+        file: String(l?.File || '').replace(/^\.\//, ''),
+        line: Number.isFinite(l?.StartLine) && l.StartLine > 0 ? l.StartLine : null,
+        rule: String(l?.RuleID || 'gitleaks').slice(0, 200),
+      }));
+    if (r.status === 0 && arr !== null) return { status: 'ok', findings: [], reason: null };
+    if (r.status === 1 && arr !== null) return { status: findings.length ? 'findings' : 'ok', findings, reason: null };
+    const why = (r.error?.message || r.stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
+    return { status: 'error', findings: [], reason: `gitleaks git exited ${r.status} without a readable report: ${why}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * `gitleaks dir` over the given file contents, with the repo's own
  * `.gitleaks.toml`, `.gitleaksignore` and baseline (or `opts.override`). The
  * contents are copied to a private temp dir (mode 0700, removed afterwards)
@@ -241,27 +318,9 @@ export function scanFiles(repoRoot: string, files: FileToScan[], gitleaksBin = '
       mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
       writeFileSync(dest, f.content, { mode: 0o600 });
     }
-    /** The file gitleaks reads for one config: the override (written to cfgDir), the repo's own file, or none. */
-    const pick = (key: keyof ScannerConfigOverride, repoPath: string, name: string): string | null => {
-      if (opts.override && key in opts.override) {
-        const c = opts.override[key];
-        if (!c) return null;
-        const p = join(cfgDir, name);
-        writeFileSync(p, c, { mode: 0o600 });
-        return p;
-      }
-      const p = resolve(repoRoot, repoPath);
-      return existsSync(p) ? p : null;
-    };
     const report = join(dir, 'report.json');
-    const args = ['dir', '.', '--redact', '--no-banner', '--exit-code=1', '--report-format=json', `--report-path=${report}`];
-    const cfg = pick('config', GITLEAKS_CONFIG_PATH, 'gitleaks.toml');
-    if (cfg) args.push(`--config=${cfg}`);
-    const baseline = pick('baseline', GITLEAKS_BASELINE_PATH, 'baseline.json');
-    if (baseline) args.push(`--baseline-path=${baseline}`);
-    // Only the repo's own .gitleaksignore (or its override) counts, never one in the scanned copy.
-    const ignore = pick('ignore', '.gitleaksignore', '.gitleaksignore');
-    args.push(`--gitleaks-ignore-path=${ignore ?? empty}`);
+    const args = ['dir', '.', '--redact', '--no-banner', '--exit-code=1', '--report-format=json', `--report-path=${report}`,
+      ...configArgs(repoRoot, cfgDir, empty, opts.override)];
     const r = spawnSync(gitleaksBin, args, { cwd: src, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: opts.timeoutMs ?? GITLEAKS_SCAN_TIMEOUT_MS });
     let findings: Finding[] | null = null;
     try { findings = parseGitleaksReport(readFileSync(report, 'utf8')); } catch { findings = null; }

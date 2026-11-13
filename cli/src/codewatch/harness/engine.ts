@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { HARNESS_MAX_ROUNDS_CEILING, modelLabel, readEvalConfig, readHarnessConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY, type BlockOn, type HarnessConfig } from '../config.js';
-import { gitleaksInstallHint, safeWrite, scanFiles, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
+import { gitleaksInstallHint, safeWrite, scanCommits, scanFiles, type CommitScan, type CommitSecret, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
 import { ensureResultsExcluded, makeResult, type Finding, type Severity } from '../results.js';
 import { ADAPTERS, detectReviewers, findOnPath, normalizeReview, resolveReviewer, runReview, toolVersion, type ReviewerAdapter, type ReviewRequest, type ReviewRun } from '../reviewers/index.js';
 import { fallbackPushBase, type PushBase } from '../pushbase.js';
@@ -84,6 +84,12 @@ export interface HarnessVerdict {
   diff: { files: number; added_lines: number; hash: string | null; cached: boolean };
   secrets_scanned: boolean;
   secrets: VerdictSecret[];
+  /**
+   * Branch scope: secrets gitleaks found in a commit of the reviewed range,
+   * even if a later commit removed them. Any entry makes the verdict `stop`
+   * (`secret-committed`): the commit itself would leave with the push.
+   */
+  commit_secrets: CommitSecret[];
   block_on: BlockOn[];
   findings: VerdictFinding[];
   dropped: { out_of_scope: number; unknown_file: number };
@@ -128,7 +134,7 @@ function emptyVerdict(opts: { session: string | null; scope: Scope; maxRounds: n
   return {
     schema: VERDICT_SCHEMA, version: VERDICT_VERSION, verdict: 'pass', round: 1, max_rounds: opts.maxRounds,
     session: opts.session, scope: opts.scope, diff: { files: 0, added_lines: 0, hash: null, cached: false },
-    secrets_scanned: false, secrets: [], block_on: opts.blockOn, findings: [], dropped: { out_of_scope: 0, unknown_file: 0 },
+    secrets_scanned: false, secrets: [], commit_secrets: [], block_on: opts.blockOn, findings: [], dropped: { out_of_scope: 0, unknown_file: 0 },
     reasons: [], next_action: '', human_needed: false, human_why: null, warnings: opts.warnings, reviewer: null, result_path: null, fail_open: false,
   };
 }
@@ -186,8 +192,16 @@ function tamperAction(integ: Integrity, session: boolean): string {
   return `Stop. ${parts.join(' ')} Tell the person what you changed there and why; do not undo or repeat the change to get past the check.`;
 }
 
+/** The stop text for a secret in a commit of the range: which commit, why a new commit does not help, what the person does. */
+function committedAction(hits: CommitSecret[], base: string | undefined): string {
+  const commits = [...new Set(hits.map((h) => h.commit.slice(0, 12)))];
+  const where = listFive(hits.map((h) => quotePath(`${h.file}:${h.line ?? '?'}`)));
+  const onto = base && /^[0-9a-f]{40,64}$/.test(base) ? ` (for example git rebase -i ${base.slice(0, 12)}, or a reset onto ${base.slice(0, 12)} and a new commit without the secret)` : ' (for example an interactive rebase onto the base, or a reset onto it and a new commit without the secret)';
+  return `Stop. A secret is in commit ${listFive(commits)} at ${where}, which this push would send. Removing it in a new commit does not help: the earlier commit still carries the value. Do not push. Tell the person: they must rotate the key, then rewrite the unpushed history so no commit holds it${onto} before pushing. Offer to do the history rewrite only if the person asks.`;
+}
+
 /** Fixed-template text for the agent. Never contains reviewer prose. */
-function nextAction(v: HarnessVerdict, integ?: Integrity): string {
+function nextAction(v: HarnessVerdict, integ?: Integrity, base?: string): string {
   if (v.verdict === 'pass') return v.findings.length ? 'No blocking findings. The non-blocking findings are listed for information.' : 'No blocking findings.';
   if (v.verdict === 'stop') {
     switch (v.human_why) {
@@ -198,7 +212,9 @@ function nextAction(v: HarnessVerdict, integ?: Integrity): string {
       case 'push-unknown': return 'Stop. PRISM could not tell which commits this push would send, so it is held. Push one branch at a time with an explicit remote and branch (git push origin <branch>), or tell the person why it was held.';
       case 'max-rounds': return `Stop fixing: the ${plural(v.max_rounds, 'fix round')} for this session are used. Report the remaining blocking findings to the person${v.secrets.length ? ', and do not push while a secret remains' : ''}.`;
       case 'no-progress': return 'Stop: nothing changed since the last review. Report the remaining blocking findings to the person instead of trying again.';
-      case 'secret-committed': return 'Stop. A secret is already in a commit. Tell the person: it must be rotated and the history cleaned; removing the line does not un-expose it.';
+      case 'secret-committed': return v.commit_secrets.length
+        ? committedAction(v.commit_secrets, base)
+        : 'Stop. A secret is already in a commit. Tell the person: it must be rotated and the history cleaned; removing the line does not un-expose it.';
       default: return 'Stop and report the remaining findings to the person.';
     }
   }
@@ -217,6 +233,7 @@ function reasons(v: HarnessVerdict): string[] {
   const scope = v.scope === 'new-lines' ? 'in lines changed this session' : v.scope === 'files' ? 'in files changed this session' : 'in this branch\'s changes';
   const out: string[] = [];
   if (v.secrets.length) out.push(`${plural(v.secrets.length, 'secret')} ${scope}`);
+  if (v.commit_secrets.length) out.push(`${plural(v.commit_secrets.length, 'secret')} in commits this push would send (commit ${[...new Set(v.commit_secrets.map((c) => c.commit.slice(0, 12)))].slice(0, 5).join(', ')})`);
   const c = { high: 0, medium: 0, low: 0 };
   for (const f of v.findings) if (f.blocking) c[f.severity]++;
   for (const s of ['high', 'medium'] as const) if (c[s]) out.push(`${plural(c[s], `${s} finding`)} ${scope}`);
@@ -258,7 +275,7 @@ interface Diffs {
 
 interface Integrity { tamper: string[]; allowMarkers: ParsedDiff['allowMarkers'] }
 
-interface SecretScan { scan: FileScan; secrets: VerdictSecret[] }
+interface SecretScan { scan: FileScan; secrets: VerdictSecret[]; history: CommitScan | null }
 
 interface ReviewOutcome {
   findings: Finding[];
@@ -365,12 +382,13 @@ function scannerOverride(r: Run, d: Diffs): ScannerConfigOverride | undefined {
   };
 }
 
-/** gitleaks on the changed files, filtered to added lines (section 6.1). */
+/** gitleaks on the changed files, filtered to added lines (section 6.1), and in branch scope on every commit of the range. */
 function secretScan(r: Run, d: Diffs): SecretScan {
   const { repoRoot, warnings, opts } = r;
+  const override = scannerOverride(r, d);
   const scanPaths = d.diff.files.filter((f) => !f.deleted && f.added.size && !SCANNER_CONFIG.has(f.path)).map((f) => f.path);
   const blobs = readBlobs(repoRoot, d.current, scanPaths);
-  const scan = scanFiles(repoRoot, [...blobs].map(([path, content]) => ({ path, content })), opts.gitleaksBin, { override: scannerOverride(r, d) });
+  const scan = scanFiles(repoRoot, [...blobs].map(([path, content]) => ({ path, content })), opts.gitleaksBin, { override });
   if (scan.status === 'missing') warnings.push(`secrets not scanned: ${scan.reason}. Install it: ${gitleaksInstallHint()}`);
   if (scan.status === 'error') warnings.push(`secrets not scanned: ${scan.reason}`);
   if (scan.skipped.length) warnings.push(`secrets not scanned in ${scan.skipped.length} file(s) with an unsafe path: ${scan.skipped.slice(0, 5).map((p) => JSON.stringify(p.slice(0, 200))).join(', ')}`);
@@ -382,7 +400,23 @@ function secretScan(r: Run, d: Diffs): SecretScan {
     const headLines = headBlobs.get(f.file)?.toString('utf8').split('\n').map((l) => l.replace(/\r$/, ''));
     return { file: f.file, line: f.line, rule: f.rule, committed: !!(text && text.trim() && headLines?.includes(text)) };
   });
-  return { scan, secrets };
+  return { scan, secrets, history: commitScan(r, d, override) };
+}
+
+/**
+ * Branch scope: every commit the range carries, scanned one by one. The tree
+ * diff alone misses a secret one commit adds and a later one removes, yet that
+ * commit still leaves with the push (section 6.1, "push stays blocked").
+ */
+function commitScan(r: Run, d: Diffs, override: ScannerConfigOverride | undefined): CommitScan | null {
+  if (r.scope !== 'branch' || r.opts.mode === 'staged') return null;
+  // A commit base gives `base..tip`; the empty tree (a first push) means the tip's whole history.
+  const range = revParse(r.repoRoot, `${d.reviewBase}^{commit}`) ? `${d.reviewBase}..${d.tip}` : d.tip;
+  const count = gitIn(r.repoRoot, ['rev-list', '--count', range]);
+  if (!count.ok || count.stdout === '0') return null;
+  const h = scanCommits(r.repoRoot, range, r.opts.gitleaksBin, { override });
+  if (h.status === 'error') r.warnings.push(`commits not scanned for secrets: ${h.reason}`);
+  return h;
 }
 
 /** Runs the reviewer once, plus one retry when the reply cannot be parsed. */
@@ -471,8 +505,8 @@ function skipReason(r: Run, d: Diffs, integ: Integrity, sec: SecretScan): string
   if (r.opts.noReview) return 'review off (--no-review)';
   if (r.opts.aiReview === false) return 'review off (push gate disabled)';
   if (integ.tamper.length || integ.allowMarkers.length) return SKIP_TAMPER;
-  if (sec.secrets.length) return 'review skipped: a secret was found; the diff is not sent to a reviewer';
-  if (sec.scan.status === 'error' && r.event === 'pre-push') return 'review skipped (secret scan failed)';
+  if (sec.secrets.length || sec.history?.findings.length) return 'review skipped: a secret was found; the diff is not sent to a reviewer';
+  if ((sec.scan.status === 'error' || sec.history?.status === 'error') && r.event === 'pre-push') return 'review skipped (secret scan failed)';
   if (d.diff.files.every((f) => matchesAny(f.path, r.cfg.skip_paths))) return SKIP_DOCS;
   return null;
 }
@@ -493,14 +527,17 @@ function scopeFindings(r: Run, d: Diffs, findings: Finding[], v: HarnessVerdict)
 }
 
 /** Verdict and round rules (sections 3 and 5). Updates `state.last` and the round counter. */
-function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: Integrity, sec: SecretScan, rev: ReviewOutcome): void {
+function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: Integrity, sec: SecretScan, rev: ReviewOutcome, base?: string): void {
   let verdict: Verdict = 'pass';
   let why: HumanWhy | null = null;
   if (integ.tamper.length || integ.allowMarkers.length) {
     verdict = 'stop'; why = 'tamper';
     const hits = [...integ.tamper, ...integ.allowMarkers.map((m) => `${m.file}:${m.line} (gitleaks:allow)`)];
     r.warnings.push(`tamper: ${state ? 'this session changed' : 'this change adds'} ${hits.slice(0, 10).join(', ')}`);
-  } else if (sec.scan.status === 'error' && r.event === 'pre-push') {
+  } else if (v.commit_secrets.length) {
+    // Recomputed from the range every run, so no later pass clears it while the commit is in the range.
+    verdict = 'stop'; why = 'secret-committed';
+  } else if ((sec.scan.status === 'error' || sec.history?.status === 'error') && r.event === 'pre-push') {
     verdict = 'stop'; why = 'secrets-scan-failed';
   } else if (v.secrets.length || v.findings.some((f) => f.blocking)) {
     verdict = 'fix';
@@ -526,7 +563,7 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
   v.human_why = why;
   v.human_needed = why !== null;
   v.fail_open = rev.failOpen;
-  v.next_action = nextAction(v, integ);
+  v.next_action = nextAction(v, integ, base);
   v.reasons = reasons(v);
 }
 
@@ -534,7 +571,10 @@ function decide(r: Run, v: HarnessVerdict, state: SessionState | null, integ: In
 function persist(r: Run, v: HarnessVerdict, d: Diffs, sec: SecretScan, rev: ReviewOutcome): void {
   const { repoRoot, warnings } = r;
   if (d.state) { try { saveState(repoRoot, d.state); } catch (e: any) { warnings.push(`could not save the session state (${String(e?.message || e).slice(0, 200)})`); } } // any: fs error, message only
-  const secretAsFindings: Finding[] = v.secrets.map((s) => ({ severity: 'high', category: 'security', rule: s.rule, file: s.file, line: s.line, message: 'Secret detected (value redacted)' }));
+  const secretAsFindings: Finding[] = [
+    ...v.secrets.map((s) => ({ severity: 'high' as const, category: 'security' as const, rule: s.rule, file: s.file, line: s.line, message: 'Secret detected (value redacted)' })),
+    ...v.commit_secrets.map((s) => ({ severity: 'high' as const, category: 'security' as const, rule: s.rule, file: s.file, line: s.line, message: `Secret in commit ${s.commit.slice(0, 12)} of the pushed range (value redacted)` })),
+  ];
   const blockingN = v.findings.filter((f) => f.blocking).length;
   const result = makeResult({
     kind: 'agent-harness', hook: 'agent',
@@ -547,9 +587,9 @@ function persist(r: Run, v: HarnessVerdict, d: Diffs, sec: SecretScan, rev: Revi
     summary: rev.summary, score: rev.score, reason: warnings.length ? warnings.join('; ').slice(0, 2000) : null,
     harness: {
       client: r.opts.client ?? null, event: r.event, session: r.session, verdict: v.verdict, round: v.round, max_rounds: v.max_rounds, scope: r.scope,
-      secrets: v.secrets.length, dropped_out_of_scope: v.dropped.out_of_scope, cached: v.diff.cached,
+      secrets: v.secrets.length + v.commit_secrets.length, dropped_out_of_scope: v.dropped.out_of_scope, cached: v.diff.cached,
       human_needed: v.human_needed, human_why: v.human_why, fail_open: v.fail_open, secrets_scanned: v.secrets_scanned,
-      block_on: r.cfg.block_on, blocking_findings: blockingN + v.secrets.length, nonblocking_findings: v.findings.length - blockingN,
+      block_on: r.cfg.block_on, blocking_findings: blockingN + v.secrets.length + v.commit_secrets.length, nonblocking_findings: v.findings.length - blockingN,
       wall_s: Math.round((Date.now() - r.t0) / 100) / 10, cost_usd: v.reviewer?.cost_usd ?? null,
     },
   });
@@ -613,13 +653,14 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
   const integ = integrityChecks(d);
   const sec = secretScan(r, d);
   v.secrets = sec.secrets;
-  v.secrets_scanned = (sec.scan.status === 'ok' || sec.scan.status === 'findings') && !sec.scan.skipped.length;
+  v.commit_secrets = sec.history?.findings ?? [];
+  v.secrets_scanned = (sec.scan.status === 'ok' || sec.scan.status === 'findings') && !sec.scan.skipped.length && sec.history?.status !== 'error';
   const rev = aiReview(r, d, skipReason(r, d, integ, sec));
   v.diff.hash = rev.hash;
   v.diff.cached = rev.cached;
   v.reviewer = rev.reviewer;
   scopeFindings(r, d, rev.findings, v);
-  decide(r, v, d.state, integ, sec, rev);
+  decide(r, v, d.state, integ, sec, rev, d.reviewBase);
   persist(r, v, d, sec, rev);
   return v;
 }

@@ -816,6 +816,19 @@ Where 1.11.0 differs from or settles something in the text above:
   secret scan with no verdict. `codewatch review` and `prism_review` in branch scope use the same
   chain, and the git pre-push hook uses its fallback steps for a new branch instead of skipping
   the review.
+- **Secrets in the pushed commits.** In branch scope (the push gate, `codewatch review` without a
+  session, `prism_review` without `session`) gitleaks also runs `gitleaks git --log-opts=<base>..<tip>`
+  over every commit of the range (the whole history on a first push), because the tree diff misses
+  a secret one commit adds and a later one removes, and that commit still leaves with the push. A
+  hit gives `stop` with `human_why: secret-committed` and a `commit_secrets` list (commit, file,
+  line, rule; never the value), the push is denied, and the AI review is skipped. It is computed
+  from the range on every run, so a later "fix" commit or a `pass` elsewhere cannot clear it; only
+  rewriting the unpushed history so no commit holds the key does. `next_action` names the commit,
+  says a new commit does not help, and tells the agent to have the person rotate the key and
+  rewrite the history, offering to do the rewrite only if asked. The finish gate (session lines)
+  does not scan commits. The git pre-push hook for people runs no gitleaks of its own: it records
+  each pushed commit that has no pre-commit scan, and the pre-commit hook scanned each commit's
+  staged changes when it was made, so it has no combined-diff gap.
 - **A `gitleaks:allow` committed before the session starts is not a tamper hit in the hook path.**
   The SessionStart baseline snapshots the working tree, so a marker already there (committed or
   not) is the person's work, not the agent's, and the session diff never shows it. A stateless run

@@ -964,7 +964,9 @@ One engine command does the work: `prism-cli codewatch review --json`. On each r
 3. Runs gitleaks on the changed files, redacted. Only file, line and rule are kept; the secret
    value never reaches the reviewer, the agent or the result file. When gitleaks is missing the
    verdict says `secrets_scanned: false` with a warning: the secret check did not run, which is not
-   the same as passing it.
+   the same as passing it. At a push, gitleaks also scans every commit the push would send, so a
+   secret that one commit adds and a later commit removes still holds the push: the person rotates
+   the key and rewrites the unpushed history first.
 4. Runs the AI review with the same reviewer and model choice as the pre-push hook
    ([Choosing the Reviewer](#choosing-the-reviewer), [Choosing the Review Model](#choosing-the-review-model)),
    unless a secret was found (the diff is not sent to a model) or only docs changed. An unparseable

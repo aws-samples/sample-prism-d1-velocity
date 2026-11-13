@@ -101,11 +101,14 @@ function rig(): Rig {
   ].join('\n'));
   const glReport = join(tools, 'gl-report.json');
   const glExit = join(tools, 'gl-exit');
+  const glGitReport = join(tools, 'gl-git-report.json');
   const gitleaks = exe(join(tools, 'gitleaks'), [
     `if [ "$1" = "version" ] || [ "$1" = "--version" ]; then echo "v8.28.0"; exit 0; fi`,
+    `for a in "$@"; do case "$a" in --report-path=*) rp="\${a#--report-path=}";; esac; done`,
+    // `gitleaks git` (the per-commit scan) has its own log and report, so dir-mode call orders stay as they were.
+    `if [ "$1" = "git" ]; then echo "$@" >> '${log}.git'; if [ -f '${glGitReport}' ]; then cp '${glGitReport}' "$rp"; exit 1; fi; echo '[]' > "$rp"; exit 0; fi`,
     `echo gitleaks >> '${log}'`,
     `echo "$@" > '${tools}/gl-args'`,
-    `for a in "$@"; do case "$a" in --report-path=*) rp="\${a#--report-path=}";; esac; done`,
     `if [ -f '${glReport}' ]; then cp '${glReport}' "$rp"; else echo '[]' > "$rp"; fi`,
     `exit $(cat '${glExit}' 2>/dev/null || echo 0)`,
   ].join('\n'));
@@ -896,6 +899,105 @@ test('the git pre-push hook reviews a first push with no upstream instead of ski
   const rev = readResults(r.dir).find((x) => x.kind === 'review' && x.hook === 'pre-push');
   assert.ok(rev && rev.status !== 'skipped', JSON.stringify(rev?.reason));
   assert.equal(rev!.upstream, 'origin/main');
+});
+
+// ---------------------------------------------------------------- secrets in the pushed commits
+
+/** The real gitleaks with `git` mode, or null (these tests then skip, naming why). */
+const REAL_GITLEAKS = (() => {
+  const p = spawnSync('gitleaks', ['version'], { encoding: 'utf8' });
+  const m = /(\d+)\.(\d+)/.exec(p.stdout || '');
+  return p.status === 0 && m && (Number(m[1]) > 8 || (Number(m[1]) === 8 && Number(m[2]) >= 19)) ? 'gitleaks' : null;
+})();
+const needsGitleaks = { skip: REAL_GITLEAKS ? false : 'needs gitleaks 8.19 or later on PATH' };
+
+/** origin/main at init (the upstream), then a commit that adds the key and one that removes it: the s2 sequence. */
+function addThenRemove(r: Rig): { keyCommit: string; fixCommit: string } {
+  r.write('config.js', `module.exports = { key: "${FAKE_SECRET}" };\n`);
+  r.commit('add config');
+  const keyCommit = git(r.dir, 'rev-parse', 'HEAD');
+  r.write('config.js', 'module.exports = { key: process.env.API_KEY };\n');
+  r.commit('read the key from the environment');
+  return { keyCommit, fixCommit: git(r.dir, 'rev-parse', 'HEAD') };
+}
+
+test('push: a secret added and removed inside the range still stops the push (real gitleaks)', needsGitleaks, () => {
+  const r = rig();
+  const { keyCommit } = addThenRemove(r);
+  const v = runHarnessReview(r.opts({ gitleaksBin: REAL_GITLEAKS!, event: 'pre-push', scope: 'branch' }));
+  assert.deepEqual(v.secrets, [], 'the tree diff alone shows no secret');
+  assert.deepEqual([v.verdict, v.human_why], ['stop', 'secret-committed']);
+  assert.equal(v.commit_secrets[0].commit, keyCommit);
+  assert.equal(v.commit_secrets[0].file, 'config.js');
+  assert.match(v.next_action, new RegExp(`commit ${keyCommit.slice(0, 12)}`));
+  assert.match(v.next_action, /Removing it in a new commit does not help/);
+  assert.match(v.next_action, /rotate the key, then rewrite the unpushed history/);
+  assert.match(v.next_action, /Offer to do the history rewrite only if the person asks/);
+  assert.ok(!(JSON.stringify(v) + resultsText(r.dir)).includes(FAKE_SECRET), 'value never in output');
+});
+
+test('push: the same range after a history rewrite without the commit passes (real gitleaks)', needsGitleaks, () => {
+  const r = rig();
+  addThenRemove(r);
+  git(r.dir, 'reset', '-q', '--soft', 'refs/remotes/origin/main');
+  r.commit('config, reading the key from the environment');
+  const v = runHarnessReview(r.opts({ gitleaksBin: REAL_GITLEAKS!, event: 'pre-push', scope: 'branch' }));
+  assert.deepEqual(v.commit_secrets, []);
+  assert.equal(v.verdict, 'pass');
+});
+
+test('push: the s2 sequence across two rounds in one session stays denied until the history is rewritten (real gitleaks)', needsGitleaks, () => {
+  const r = rig();
+  const deps = { env: {}, engine: { pathEnv: r.bin, gitleaksBin: REAL_GITLEAKS! } };
+  runClaudeHook('session-start', hookInput(r), deps);
+  r.write('config.js', `module.exports = { key: "${FAKE_SECRET}" };\n`);
+  r.commit('add config');
+  const keyCommit = git(r.dir, 'rev-parse', 'HEAD');
+  const push = pushIn(r, 'git push origin main');
+  const round1 = JSON.parse(runClaudeHook('pre-push', push, deps));
+  assert.equal(round1.hookSpecificOutput.permissionDecision, 'deny');
+  // The agent "fixes" it with a new commit; the key commit is still in the range.
+  r.write('config.js', 'module.exports = { key: process.env.API_KEY };\n');
+  r.commit('fix: read the key from the environment');
+  const round2 = JSON.parse(runClaudeHook('pre-push', push, deps));
+  assert.equal(round2.hookSpecificOutput.permissionDecision, 'deny', 'a later fix commit does not clear it');
+  assert.match(round2.hookSpecificOutput.permissionDecisionReason, new RegExp(`secret in commit "${keyCommit.slice(0, 12)}"`));
+  assert.match(round2.hookSpecificOutput.permissionDecisionReason, /does not help/);
+  const again = JSON.parse(runClaudeHook('pre-push', push, deps));
+  assert.equal(again.hookSpecificOutput.permissionDecision, 'deny', 'and a repeat does not either');
+  git(r.dir, 'reset', '-q', '--soft', 'refs/remotes/origin/main');
+  r.commit('config, reading the key from the environment');
+  assert.ok(!runClaudeHook('pre-push', push, deps).includes('permissionDecision'), 'allowed once no commit holds the key');
+  assert.ok(!resultsText(r.dir).includes(FAKE_SECRET));
+});
+
+test('push: the per-commit scan covers base..tip, and its findings stop the push (fake gitleaks)', () => {
+  const r = rig();
+  r.write('src/a.ts', 'x\n');
+  r.commit('c');
+  const tip = git(r.dir, 'rev-parse', 'HEAD');
+  const base = git(r.dir, 'rev-parse', 'refs/remotes/origin/main');
+  const clean = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch' }));
+  assert.equal(clean.verdict, 'pass');
+  assert.match(readFileSync(`${r.log}.git`, 'utf8'), new RegExp(`--log-opts=${base}\\.\\.${tip}`));
+  writeFileSync(join(dirname(r.log), 'gl-git-report.json'), JSON.stringify([{ ...leak('src/a.ts', 1), Commit: tip }]));
+  r.write('src/a.ts', 'y\n');
+  const v = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch' }));
+  assert.deepEqual([v.verdict, v.human_why, v.commit_secrets.length], ['stop', 'secret-committed', 1]);
+  assert.equal(r.calls().filter((c) => c === 'reviewer').length, 1, 'the reviewer does not see a range with a secret');
+  // A finding with no commit sha is not trusted as a commit hit.
+  writeFileSync(join(dirname(r.log), 'gl-git-report.json'), JSON.stringify([leak('src/a.ts', 1)]));
+  r.write('src/a.ts', 'z\n');
+  assert.equal(runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch' })).commit_secrets.length, 0);
+});
+
+test('the per-commit scan runs only in branch scope (the finish gate judges session lines)', () => {
+  const r = rig();
+  recordBaseline(r.dir, 's1', 'claude');
+  r.write('src/a.ts', 'x\n');
+  r.commit('c');
+  runHarnessReview(r.opts({ session: 's1' }));
+  assert.ok(!existsSync(`${r.log}.git`));
 });
 
 // ---------------------------------------------------------------- helpers and readers

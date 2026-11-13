@@ -235,6 +235,7 @@ export function agentText(v: HarnessVerdict, opts: { includeNonBlocking?: boolea
   const head = `PRISM harness review: ${v.verdict} (round ${v.round} of ${v.max_rounds}). ${v.next_action}`;
   const rows: string[] = [];
   for (const s of v.secrets) rows.push(`- secret ${JSON.stringify(clip(`${oneLine(s.file)}:${s.line ?? '?'}`, 200))} ${JSON.stringify(clip(oneLine(s.rule), MAX_FINDING_CHARS))}${s.committed ? ' (already committed)' : ''}`);
+  for (const s of v.commit_secrets) rows.push(`- secret in commit ${JSON.stringify(s.commit.slice(0, 12))} ${JSON.stringify(clip(`${oneLine(s.file)}:${s.line ?? '?'}`, 200))} ${JSON.stringify(clip(oneLine(s.rule), MAX_FINDING_CHARS))}`);
   const list = v.findings.filter((f) => f.blocking || opts.includeNonBlocking);
   for (const f of list) {
     const loc = `${oneLine(f.file)}${Number.isInteger(f.line) && f.line! > 0 ? `:${f.line}` : ''}`;
@@ -328,7 +329,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
     const reason = () => agentText(v, { maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
     if (v.verdict === 'stop') {
-      if (v.secrets.length || v.human_why === 'tamper' || v.human_why === 'secrets-scan-failed' || v.human_why === 'push-unknown') return deny(reason(), personText(v));
+      if (v.secrets.length || v.commit_secrets.length || v.human_why === 'tamper' || v.human_why === 'secrets-scan-failed' || v.human_why === 'push-unknown') return deny(reason(), personText(v));
       return JSON.stringify({ systemMessage: personText(v) });
     }
     return v.warnings.length ? JSON.stringify({ systemMessage: personText(v) }) : '';
