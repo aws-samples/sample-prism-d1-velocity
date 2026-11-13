@@ -487,6 +487,11 @@ test('resolveReviewModel: repo eval.model, then git config prism.<tool>Model, th
   const bad = r({ prismConfigValue: 'bad id;', gitConfigValue: 'model-b' });
   assert.equal(bad.model, 'model-b');
   assert.match(bad.note || '', /ignored eval.model/);
+  const dash = r({ prismConfigValue: '--dangerous-flag', gitConfigValue: '-x' });
+  assert.equal(dash.model, null, 'a leading - is never passed on');
+  assert.match(dash.note || '', /ignored eval.model.*ignored git config prism.kiroModel/);
+  assert.equal(r({ prismConfigValue: 'a-' + 'b'.repeat(98) }).model?.length, 100);
+  assert.equal(r({ prismConfigValue: 'a'.repeat(101) }).model, null);
   // eval.model belongs to eval.reviewer: never passed to the other tool
   assert.deepEqual(r({ prismConfigValue: 'sonnet', prismConfigReviewer: 'claude' }),
     { model: null, source: 'default', note: 'model sonnet was set for claude; using kiro default' });
@@ -547,6 +552,11 @@ test('enable codewatch --model writes eval.model and keeps other keys; invalid w
   assert.match(bad.stderr, /--model must match/);
   assert.deepEqual(readPrismConfig(repo.dir), { team_id: 't1', eval: { timeout_seconds: 60 } });
   assert.ok(!existsSync(join(repo.dir, '.prism', 'review')), 'nothing installed');
+  // a leading '-' would reach the reviewer CLI as a flag
+  const dash = enableCli(repo.dir, ['--reviewer', 'claude', '--model=-x'], home, bin);
+  assert.equal(dash.status, 1, dash.stdout);
+  assert.match(dash.stderr, /--model must match/);
+  assert.deepEqual(readPrismConfig(repo.dir), { team_id: 't1', eval: { timeout_seconds: 60 } });
 
   const ok = enableCli(repo.dir, ['--reviewer', 'claude', '--model', 'opus'], home, bin);
   assert.equal(ok.status, 0, ok.stderr);

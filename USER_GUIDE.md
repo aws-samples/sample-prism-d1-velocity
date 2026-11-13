@@ -809,7 +809,8 @@ The model ids above are examples; list the ones your kiro-cli offers with
 full model name.
 
 - `--model <id>` writes `eval.model` in `.prism/config.json`, next to `eval.reviewer`; other keys are
-  kept. The id must match `^[A-Za-z0-9._:/-]{1,100}$`, the rule the CI eval gate applies; anything
+  kept. The id must match `^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$` (1 to 100 characters, never a
+  leading `-`, which the reviewer CLI could read as a flag), the rule the CI eval gate applies; anything
   else is refused and nothing is written. `--model auto` or `--model default` removes the key, so
   kiro-cli runs with `auto` and Claude Code with its own default.
 - In a terminal without `--model`, `enable codewatch` asks after the reviewer is chosen. For kiro-cli
@@ -1649,7 +1650,8 @@ attempt and the retry. It takes the first of:
 
 The gate never reads the PR's own copy of `.prism/config.json`, so a PR cannot pick a weaker model
 to pass its own review; a model change in that file takes effect after it merges. The value must
-match `^[A-Za-z0-9._:/-]{1,100}$`. Anything else (or a base-branch config that is not valid JSON)
+match `^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$`: 1 to 100 letters, digits and `._:/-`, not
+starting with `-` (the id is passed to kiro-cli as an argument). Anything else (or a base-branch config that is not valid JSON)
 fails the gate closed with `Invalid review model` instead of falling back to `auto`. The resolved
 model and where it came from are shown in the job summary and the PR comment, and sent as
 `ai_context.model` on the `prism.d1.eval` event. `eval.model` is shared with the local review, so

@@ -292,6 +292,8 @@ for (const path of ['.github/workflows/prism-eval-gate.yml', 'bootstrapper/githu
   for (const [label, opts] of [
     ['an invalid variable', { env: { PRISM_REVIEW_MODEL: INJECTION } }],
     ['an over-long variable', { env: { PRISM_REVIEW_MODEL: 'a'.repeat(101) } }],
+    ['a variable starting with -', { env: { PRISM_REVIEW_MODEL: '-x' } }],
+    ['a config value starting with -', { baseConfig: cfg('--trust-all-tools') }],
     ['an invalid config value', { baseConfig: cfg('auto --trust-all-tools') }],
     ['a non-string config value', { baseConfig: cfg({ name: 'x' }) }],
     ['an unparseable base config', { baseConfig: '{not json' }],
@@ -333,4 +335,21 @@ test(`${GITLAB}: an invalid model fails closed without calling kiro-cli`, () => 
   assert.match(r.log, /❌ Invalid review model/);
   assert.match(r.log, /GITLAB_RESULT=ERROR ATTEMPT= MODEL=$/m);
   assert.ok(!r.log.includes(INJECTION));
+});
+
+test(`${GITLAB}: a model starting with - fails closed without calling kiro-cli`, () => {
+  const r = runGate(section, [GOOD], 'gitlab', { baseConfig: cfg('-x') });
+  assert.equal(r.models.length, 0);
+  assert.match(r.log, /❌ Invalid review model/);
+  assert.match(r.log, /GITLAB_RESULT=ERROR ATTEMPT= MODEL=$/m);
+});
+
+test('the gate regex keeps 1-100 characters and allows - after the first', () => {
+  const block = modelBlock('bootstrapper/github-workflows/prism-eval-gate-kiro.yml');
+  assert.ok(block.includes('=~ ^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$ ]]'), block);
+  const step = githubReviewStep('bootstrapper/github-workflows/prism-eval-gate-kiro.yml');
+  const longest = 'a-' + 'b'.repeat(98);
+  const r = runGate(step, [GOOD], 'github', { env: { PRISM_REVIEW_MODEL: longest } });
+  assert.equal(r.outputs.model, longest);
+  assert.ok(r.models.length > 0 && r.models.every((m) => m === longest), String(r.models));
 });

@@ -21,8 +21,8 @@ export const REVIEWER_GIT_CONFIG_KEY = 'prism.reviewer';
 export function reviewModelGitKey(reviewer: ReviewerId): string {
   return `prism.${reviewer}Model`;
 }
-/** Same rule the CI eval gate applies to its review model (prism-eval-gate-kiro.yml). */
-export const MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,100}$/;
+/** Same rule the CI eval gate applies to its review model (prism-eval-gate-kiro.yml): 1-100 characters, no leading '-' so the id cannot be parsed as a flag. */
+export const MODEL_ID_RE = /^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$/;
 export const DEFAULT_REVIEW_TIMEOUT_SECONDS = 300;
 
 /** `auto` and `default` mean "the reviewer's own default" (kiro-cli: auto; Claude Code: its default). */
