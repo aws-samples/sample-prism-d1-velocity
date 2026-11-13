@@ -45,7 +45,9 @@ claude plugin install prism@prism-d1-velocity
 ```
 
 Start a new session (or run `/reload-plugins`), then check that `/mcp` lists
-`plugin:prism:prism` as connected.
+`plugin:prism:prism` as connected. Select it and choose **View tools** to see its 8 tools:
+
+![Claude Code /mcp tool list for plugin:prism:prism: prism_status, prism_findings, prism_spend and prism_setup marked read-only, plus prism_report, prism_snapshot, prism_dashboard and prism_dashboard_stop](../assets/images/prism-cli/claude-code-mcp-dark.png)
 
 If you added the MCP server by hand before (`claude mcp add prism -- prism-cli mcp`), remove it with
 `claude mcp remove prism`, so the agent doesn't see the same tools twice.
@@ -99,6 +101,10 @@ The URL is a per-run secret: anyone with it can use the page, including its Setu
 don't paste it into chats, tickets or logs. Claude prints it once. It is also in this session's
 transcript (Claude Code keeps it on disk), which is why the server listens only on 127.0.0.1 and
 the token stops working when the server stops.
+
+![The live PRISM dashboard on 127.0.0.1 with demo data: summary cards (1 high, 1 medium, 2 low findings, spend today and this month) and the Codewatch panel for four demo repos, checkout-service expanded](../assets/images/prism-cli/claude-code-dashboard-browser-light.png)
+
+*The dashboard that `/prism:dashboard` opens, served from a demo home directory. All data is made up.*
 
 The browser opens by itself only when there is a display and you are not in an SSH session. Over
 SSH, the command prints the URL and a note: in a VS Code, Kiro or Cursor Remote-SSH terminal the
@@ -156,6 +162,10 @@ is set) and keeps every other key. If you already have a status line, it shows i
 PRISM codewatch-demo · 2 high 1 med · today $34.08 · month $480
 session $1.20 · +156/−23 · ctx 42% · cache 91%
 ```
+
+![Claude Code's prompt box with the PRISM status line under it: PRISM checkout-service, 1 high 1 med 2 low, today $12.40, month $187, then session $0.00, +0/−0 and the model](../assets/images/prism-cli/claude-code-statusline-dark.png)
+
+*At the start of a session, with demo data. The second row's figures come from Claude Code and fill in as the session runs.*
 
 `prism-cli statusline` reads only cached files (the dashboard's usage cache and the newest pre-push
 review of the repo), so the spend figures are as fresh as the last `prism-cli dashboard` run. See

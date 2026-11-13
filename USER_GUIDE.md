@@ -627,6 +627,13 @@ on the PATH Claude Code sees (1.8.0 for everything except `/prism:dashboard`).
 The [plugin README](claude-plugin/README.md) covers the nvm `PRISM_CLI` override, how to remove the
 old manual SessionStart hook, why a plugin can't set the status line, and how to uninstall.
 
+![The prism_findings tool result for the demo repo checkout-service: the latest pre-push review on main and its four findings (one high command injection, one medium path traversal, two low quality findings)](assets/images/prism-cli/claude-code-findings-dark.png)
+
+![Claude Code's prompt box with the PRISM status line: PRISM checkout-service, 1 high 1 med 2 low, today $12.40, month $187, then the session row](assets/images/prism-cli/claude-code-statusline-dark.png)
+
+*Top: the `prism_findings` tool result that `/prism:findings` turns into a numbered table (rendered
+from the real tool output). Bottom: the status line in Claude Code. Both show made-up demo data.*
+
 ### Claude Code status line
 
 A plugin can't set Claude Code's status line, so prism-cli does it:
