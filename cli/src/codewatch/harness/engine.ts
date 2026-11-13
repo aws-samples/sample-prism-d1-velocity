@@ -41,10 +41,12 @@ export const SCOPES: Scope[] = ['new-lines', 'files', 'branch'];
 export type HumanWhy = 'secret-committed' | 'tamper' | 'max-rounds' | 'reviewer-failed' | 'no-progress' | 'secrets-scan-failed';
 export type HarnessEvent = 'stop' | 'pre-push' | 'manual' | 'mcp';
 
-/** Paths whose change during a session ends the loop (section 6.2). */
+/** Paths whose change during a session ends the loop (section 6.2). `.prism/results/**` and
+ * `.prism/harness/**` are on the design's list but never appear here: every diff and snapshot
+ * excludes PRISM's own output, so an edit to them is never seen (the section 6.2 non-goal). */
 export const TAMPER_GLOBS = [
   '.gitleaksignore', '.gitleaks.toml', '.prism/gitleaks-baseline.json',
-  '.prism/config.json', '.prism/review/rules.md', '.prism/results/**', '.prism/harness/**',
+  '.prism/config.json', '.prism/review/rules.md',
   '.kiro/steering/code-review.md', '.github/workflows/prism-*.yml', '.prism/gitlab-workflows/**',
   '.claude/settings*.json', 'claude-plugin/hooks/**', '.cursor/hooks.json', '.codex/hooks.json', '.codex/config.toml', '.kiro/hooks/**',
 ];

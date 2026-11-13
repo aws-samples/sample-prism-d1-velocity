@@ -372,6 +372,11 @@ test('max-rounds comes from --max-rounds and harness.max_rounds, with a ceiling 
   const w: string[] = [];
   assert.equal(readHarnessConfig(r.dir, w).max_rounds, 3);
   assert.ok(w.some((x) => /ceiling/.test(x)));
+  const tw: string[] = [];
+  writeFileSync(join(r.dir, '.prism', 'config.json'), JSON.stringify({ harness: { timeout_seconds: 900 } }));
+  assert.equal(readHarnessConfig(r.dir, tw).timeout_seconds, 135);
+  assert.ok(tw.some((x) => /timeout_seconds 900 is above the ceiling/.test(x)));
+  writeFileSync(join(r.dir, '.prism', 'config.json'), JSON.stringify({ harness: { max_rounds: 9 } }));
   recordBaseline(r.dir, 's1', 'claude');
   r.reply([finding('src/a.ts', 1)]);
   r.write('src/a.ts', 'v1\n');
@@ -405,9 +410,9 @@ test('tamper: every listed path, and an added gitleaks:allow, give stop without 
     '.kiro/steering/code-review.md', '.github/workflows/prism-eval-gate.yml', '.prism/gitlab-workflows/x.yml', '.claude/settings.local.json',
     'claude-plugin/hooks/hooks.json', '.cursor/hooks.json', '.codex/hooks.json', '.codex/config.toml', '.kiro/hooks/prism.json'];
   for (const p of samples) assert.ok(isTamperPath(p), p);
-  assert.ok(isTamperPath('.prism/results/x.json') && isTamperPath('.prism/harness/s.json'));
+  assert.ok(!isTamperPath('.prism/results/x.json'), 'PRISM output is excluded from every diff, so it is not on the list');
   assert.ok(!isTamperPath('src/.gitleaks.toml.md') && !isTamperPath('.github/workflows/ci.yml') && !isTamperPath('docs/.prism/config.json'));
-  assert.equal(TAMPER_GLOBS.length, 16);
+  assert.equal(TAMPER_GLOBS.length, 14);
 
   for (const p of ['.gitleaks.toml', '.prism/config.json', '.github/workflows/prism-eval-gate.yml', '.claude/settings.json']) {
     const r = rig();

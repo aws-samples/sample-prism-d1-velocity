@@ -804,6 +804,13 @@ Where 1.11.0 differs from or settles something in the text above:
   does not stop on those paths. Two parts still apply: an added `gitleaks:allow` line gives `stop`
   (`tamper`), and when the change edits `.gitleaks.toml`, `.gitleaksignore` or the gitleaks
   baseline, gitleaks runs with the base branch's copy of them, so a change cannot allowlist itself.
+- **`harness.timeout_seconds` has a ceiling of 135**, so two reviewer attempts plus gitleaks fit
+  inside the plugin hook script's 290 s cap and the hook's 300 s timeout (section 10.2). A larger
+  value is used as 135 with a warning. The `--timeout` flag of a direct `codewatch review` run is
+  not capped.
+- **`.prism/results/**` and `.prism/harness/**` are not on the code's tamper list**: every diff
+  and snapshot excludes PRISM's own output, so a change there is never seen (the section 6.2
+  non-goal).
 - **`human_why: secrets-scan-failed`** is added for "gitleaks ran but gave no verdict" at push
   (section 12), which holds the push.
 - **`fail_open`** is also a top-level verdict field, not only in the result file.

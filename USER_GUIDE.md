@@ -1008,7 +1008,7 @@ All in a `harness` block in `.prism/config.json`, next to `eval`:
 | `harness.finish_gate` | `false` | Review before the agent finishes |
 | `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix`: `secret`, `high`, `medium`. `secret` always applies |
 | `harness.max_rounds` | `2` | Fix rounds per session before `stop`; at most 3 |
-| `harness.timeout_seconds` | `120` | Reviewer timeout per attempt |
+| `harness.timeout_seconds` | `120` | Reviewer timeout per attempt; at most 135, so two attempts fit in the agent hook's time |
 | `harness.skip_paths` | `*.md`, `docs/**`, `*.txt`, images | Changes that get gitleaks only, no AI review |
 | `harness.state_ttl_days` | `7` | Age at which session state files are deleted |
 

@@ -125,6 +125,11 @@ export type BlockOn = typeof HARNESS_BLOCK_ON_VALUES[number];
 export const HARNESS_DEFAULT_MAX_ROUNDS = 2;
 export const HARNESS_MAX_ROUNDS_CEILING = 3;
 export const HARNESS_DEFAULT_TIMEOUT_SECONDS = 120;
+/**
+ * Ceiling for harness.timeout_seconds: two attempts (the retry) must fit inside the plugin
+ * hook script's 290 s cap with room for gitleaks, or Claude Code kills the engine mid-write.
+ */
+export const HARNESS_MAX_TIMEOUT_SECONDS = 135;
 export const HARNESS_DEFAULT_STATE_TTL_DAYS = 7;
 export const HARNESS_DEFAULT_SKIP_PATHS = ['*.md', 'docs/**', '*.txt', '*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.webp', '*.ico'];
 
@@ -190,12 +195,18 @@ export function readHarnessConfig(repoRoot: string, warnings: string[] = []): Ha
     else warnings.push(`ignored harness.skip_paths in ${CONFIG_PATH} (expected a list of glob strings)`);
   }
 
+  let timeout = posInt('timeout_seconds', HARNESS_DEFAULT_TIMEOUT_SECONDS);
+  if (timeout > HARNESS_MAX_TIMEOUT_SECONDS) {
+    warnings.push(`harness.timeout_seconds ${timeout} is above the ceiling of ${HARNESS_MAX_TIMEOUT_SECONDS} (two attempts must fit in the agent hook's time); using ${HARNESS_MAX_TIMEOUT_SECONDS}`);
+    timeout = HARNESS_MAX_TIMEOUT_SECONDS;
+  }
+
   return {
     push_gate: bool('push_gate', true),
     finish_gate: bool('finish_gate', false),
     block_on: blockOn,
     max_rounds: maxRounds,
-    timeout_seconds: posInt('timeout_seconds', HARNESS_DEFAULT_TIMEOUT_SECONDS),
+    timeout_seconds: timeout,
     skip_paths: skip,
     state_ttl_days: posInt('state_ttl_days', HARNESS_DEFAULT_STATE_TTL_DAYS),
   };
