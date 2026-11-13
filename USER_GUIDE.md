@@ -506,6 +506,7 @@ them read the same local data as `prism-cli dashboard` and make no AWS calls.
 Claude Code support is a work in progress. The [Claude Code plugin](#claude-code-plugin) (v0.1)
 bundles the [MCP server](#mcp-server-prism-cli-mcp), slash commands and a SessionStart hook. A
 status line and a review loop that runs before Claude finishes are planned.
+The proposed review loop for coding agents is described in [Design: the harness loop](docs/DESIGN-harness-loop.md).
 
 ### Commands by job
 
