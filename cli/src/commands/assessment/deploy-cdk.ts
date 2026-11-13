@@ -11,7 +11,7 @@ const SHELL = process.platform === 'win32' ? undefined : '/bin/bash';
 export default {
   description: 'Deploy the assessment web app to AWS via CDK (ECS + Cognito + ALB)',
   options: [
-    { flags: '--hosted-zone <domain>', description: 'Route53 hosted zone domain (e.g. prism.startups.aws.dev)' },
+    { flags: '--hosted-zone <domain>', description: 'Route53 hosted zone domain (e.g. prism.example.com)' },
     { flags: '--subdomain <name>', description: 'Subdomain for the app', default: 'assessment' },
     { flags: '--certificate-arn <arn>', description: 'ACM certificate ARN (auto-created if omitted)' },
     { flags: '--profile <name>', description: 'AWS CLI profile' },

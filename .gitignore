@@ -1,5 +1,7 @@
 infra/cdk.out
 infra/node_modules
 infra/cdk.context.json
+# CDK caches account lookups (account IDs, hosted zones) here; never commit it.
+**/cdk.context.json
 sample-app/node_modules
 .prism
