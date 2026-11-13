@@ -11,6 +11,7 @@ This guide is for engineering teams adopting AI-native software development prac
 - [Developer Setup](#developer-setup)
 - [Using PRISM locally](#using-prism-locally) (where PRISM shows up, commands by job, editor extension, MCP server, Kiro Crew app)
 - [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)
+- [Agent Harness Loop](#agent-harness-loop)
 - [Local Dashboard](#local-dashboard)
 - [Security Agent Setup (enable security)](#security-agent-setup-enable-security)
 - [Security Scans from Your Machine](#security-scans-from-your-machine)
@@ -574,6 +575,7 @@ or later.
 | `prism_dashboard` | `open` (default true) | Starts `prism-cli dashboard` (127.0.0.1, per-run token) as a child of the MCP server, or returns the one it already started, and returns its URL. Opens the browser only with a display and outside SSH; otherwise it says how to forward the port. The server stops when the MCP server exits. Needs prism-cli 1.10.0 |
 | `prism_dashboard_stop` | none | Stops the dashboard `prism_dashboard` started (recorded in `~/.prism/run/dashboard.json`, mode 0600), never another one |
 | `prism_setup` | none | The setup checklist: each item's status, detail and a fix command to copy |
+| `prism_review` | `repo`, `session`, `scope`, `since` | Runs the [harness review](#agent-harness-loop) now (gitleaks, then the reviewer) and returns its verdict JSON (`schema: "prism.harness.verdict"`). Writes only its result file and session state. Can take up to the reviewer timeout, twice on a retry. Needs prism-cli 1.11.0 |
 
 `repo` is a repo name as the dashboard shows it, or the path to a repo's top level; it must be a repo
 the dashboard found (3 levels under your home directory). Spend comes from the dashboard's usage
@@ -582,7 +584,7 @@ never runs codeburn, so when nothing is cached for today it asks you to open the
 Finding and report text is written by a reviewer model and quotes code: the tools return it as JSON
 fields, cap each message at 2,000 characters and each answer at about 50 KB, and their descriptions
 tell the agent to treat that text as data, not instructions. Every answer carries `schema: 1` and
-`prism_cli_version`.
+`prism_cli_version`, except `prism_review`, whose `schema` is the verdict's own.
 
 Kiro (`~/.kiro/settings/mcp.json`, or `.kiro/settings/mcp.json` in a workspace):
 
@@ -607,11 +609,14 @@ the absolute path that `command -v prism-cli` prints as the command, for example
 
 ### Claude Code plugin
 
-[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.2, work in progress), and
-this repository is its plugin marketplace. It registers `prism-cli mcp` as the `prism` MCP server
+[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.3, work in progress), and
+this repository is its plugin marketplace. It runs the [agent harness loop](#agent-harness-loop):
+gitleaks and a PRISM review before Claude runs `git push` (on by default), and optionally before
+Claude finishes (`finish_gate`, off by default). It registers `prism-cli mcp` as the `prism` MCP server
 and adds these slash commands: `/prism` (status), `/prism:findings` (the latest review of this
 branch), `/prism:report` (the scan report as an HTML file or Markdown), `/prism:fix [n]` (fix one
-finding, or all high and medium ones, in at most 2 rounds), `/prism:spend` and `/prism:dashboard`.
+finding, or all high and medium ones, in at most 2 rounds), `/prism:review` (run the harness review
+now), `/prism:spend` and `/prism:dashboard`.
 `/prism:dashboard` starts the live [dashboard](#local-dashboard) on 127.0.0.1 as a child of the
 MCP server (Claude Code asks you to approve it), reuses it on the next call, opens it when there is a
 display and outside SSH, and stops it when the session ends or with `/prism:dashboard --stop`. The
@@ -620,8 +625,9 @@ URL carries the per-run token, so treat it as a secret. `/prism:dashboard --snap
 hook adds a short summary of the branch's open findings to Claude's context, capped at 2 KB, with
 the finding text quoted. The hook also runs `prism-cli git claude-session-context`, unless your
 settings already register that command. Every command treats finding text as untrusted reviewer
-output. None of them pushes or bypasses the git hooks. The plugin needs prism-cli 1.10.0 or later
-on the PATH Claude Code sees (1.8.0 for everything except `/prism:dashboard`).
+output. None of them pushes or bypasses the git hooks. The plugin needs prism-cli 1.11.0 or later
+on the PATH Claude Code sees for the harness loop and `/prism:review` (1.10.0 for the rest; with an
+older prism-cli the harness hooks do nothing).
 
 ```text
 /plugin marketplace add aws-samples/sample-prism-d1-velocity
@@ -930,6 +936,111 @@ is not allowed with `--id`. Every flag:
 
 Reports never contain secret values: results store only the gitleaks rule and location. The same
 reports are linked from the dashboard (see [Local Dashboard](#local-dashboard)).
+
+---
+
+## Agent Harness Loop
+
+The harness loop runs the codewatch review inside an AI agent's own loop, so the agent sees and
+fixes its findings before a person pushes. It ships in prism-cli 1.11.0 for Claude Code (the
+[plugin](#claude-code-plugin), v0.3.0) and for any MCP client (`prism_review`). The design, and
+what later releases add for Kiro, Cursor and Codex, is in
+[DESIGN-harness-loop.md](docs/DESIGN-harness-loop.md).
+
+One engine command does the work: `prism-cli codewatch review --json`. On each run it:
+
+1. Takes the diff. In an agent session that is the lines the agent changed since the session
+   started (the plugin's SessionStart hook snapshots the working tree into
+   `.prism/harness/<session>.json`, so your own uncommitted work is not blamed on the agent). Without
+   a session it is the branch against its upstream plus uncommitted changes. An empty diff passes
+   at once, with no cost.
+2. Stops (`stop`, `human_why: tamper`) if the session changed PRISM's or gitleaks' own
+   configuration: `.gitleaksignore`, `.gitleaks.toml`, the gitleaks baseline, `.prism/config.json`,
+   the review rules, `.prism/results/`, the eval-gate workflows, client hook files, or an added
+   `gitleaks:allow`. A person decides those.
+3. Runs gitleaks on the changed files, redacted. Only file, line and rule are kept; the secret
+   value never reaches the reviewer, the agent or the result file. When gitleaks is missing the
+   verdict says `secrets_scanned: false` with a warning: the secret check did not run, which is not
+   the same as passing it.
+4. Runs the AI review with the same reviewer and model choice as the pre-push hook
+   ([Choosing the Reviewer](#choosing-the-reviewer), [Choosing the Review Model](#choosing-the-review-model)),
+   unless a secret was found (the diff is not sent to a model) or only docs changed. An unparseable
+   reply is retried once, as in the CI gate. An unchanged diff is not reviewed again: the review is
+   cached by diff hash for 24 hours.
+5. Answers `pass`, `fix` or `stop` and writes a result (`kind: agent-harness`) to `.prism/results/`.
+
+What blocks (`fix`): a secret in the changed lines, and high findings in the changed lines. Medium
+and low findings are reported but do not block, unless the team adds `"medium"` to
+`harness.block_on`. A finding on a line the agent did not change never keeps it working.
+
+The agent gets at most 2 fix rounds per session, counted by prism-cli, not by a prompt. After that,
+or when the agent tries again without changing anything, the answer is `stop` and the agent reports
+what remains to you.
+
+If the reviewer is missing, times out, crashes or replies with nothing usable twice, the loop fails
+open: the verdict is `pass` with a visible warning and `fail_open: true`, because the git pre-push
+review and the CI gate still run. A secret always blocks the agent's push, whether the reviewer
+works or not.
+
+The git hooks for people do not change: `pre-push` stays report-only and never blocks you.
+
+### Gates in Claude Code
+
+| Gate | Hook | Default | What it does |
+|---|---|---|---|
+| Push gate | `PreToolUse` on Bash `git push` | on | Runs gitleaks and the review before Claude's `git push`. `fix` denies the push and tells Claude why; a secret always denies it. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath` |
+| Finish gate | `Stop` and `SubagentStop` | off | Reviews when Claude says it is done and keeps it working on blocking findings, at most 2 rounds |
+
+Turn the finish gate on for yourself in Claude Code with `/config` (the plugin's
+**Review before Claude finishes** option, `finish_gate`), or for everyone working in a repo with
+`harness.finish_gate: true` in `.prism/config.json`. A gate runs when either one turns it on. With
+the finish gate off, the `Stop` hook exits before it reads any diff and costs nothing.
+
+`/prism:review` runs the same review on demand and shows the verdict; it changes nothing.
+
+### Config keys
+
+All in a `harness` block in `.prism/config.json`, next to `eval`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `harness.push_gate` | `true` | AI review before the agent's `git push`. `false` (with the plugin's `push_gate` option also off) skips the review; gitleaks still runs and secrets still block |
+| `harness.finish_gate` | `false` | Review before the agent finishes |
+| `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix`: `secret`, `high`, `medium`. `secret` always applies |
+| `harness.max_rounds` | `2` | Fix rounds per session before `stop`; at most 3 |
+| `harness.timeout_seconds` | `120` | Reviewer timeout per attempt |
+| `harness.skip_paths` | `*.md`, `docs/**`, `*.txt`, images | Changes that get gitleaks only, no AI review |
+| `harness.state_ttl_days` | `7` | Age at which session state files are deleted |
+
+```json
+{
+  "eval": { "reviewer": "kiro" },
+  "harness": { "finish_gate": true, "block_on": ["secret", "high", "medium"] }
+}
+```
+
+Because `.prism/config.json` is on the tamper list, an agent that edits it during a session gets
+`stop`.
+
+### Running the engine yourself
+
+```bash
+prism-cli codewatch review                 # the branch against its upstream, plus uncommitted work
+prism-cli codewatch review --json          # the verdict JSON only
+prism-cli codewatch review --staged --no-review   # gitleaks on the index, no AI review
+```
+
+Exit codes: 0 `pass`, 3 `fix`, 4 `stop`, 1 a usage or internal error. Every flag:
+[`prism-cli codewatch review`](docs/CLI-REFERENCE.md#prism-cli-codewatch-review).
+
+### Cost
+
+Each review is one call to your own reviewer (kiro-cli or Claude Code) with your own credentials,
+like the pre-push review. With the defaults that is one review per agent push and none at the
+finish. With the finish gate on, a session can add up to 3 reviews at the finish line (the first
+check and one after each fix round). Cached, empty and docs-only runs cost nothing. When Claude Code
+is the reviewer the result records its reported cost (`cost_usd`); kiro-cli reports none. For why
+the review runs locally at all, see [Why local code review](docs/WHY-LOCAL-CODE-REVIEW.md).
 
 ---
 

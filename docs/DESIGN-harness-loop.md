@@ -1,9 +1,10 @@
 # Design: the harness loop (agents review and fix their own changes)
 
-> **Status: Proposed.** Nothing in this document has shipped. Three decisions are settled (see
-> [Decisions](#decisions)). Command names, flags and file
-> layouts are proposals and may change in review. For shipped behavior see the
-> [User Guide](../USER_GUIDE.md#using-prism-locally) and the [command reference](CLI-REFERENCE.md).
+> **Status: Phase 1 implemented in 1.11.0** (engine, Claude Code adapter, `prism_review`; see
+> [Rollout](#13-rollout)). Phases for Kiro, Cursor, Codex and AgentCore are still proposals. Three
+> decisions are settled (see [Decisions](#decisions)). Where phase 1 differs from this text, see
+> [Phase 1 implementation notes](#phase-1-implementation-notes). For shipped behavior see the
+> [User Guide](../USER_GUIDE.md#agent-harness-loop) and the [command reference](CLI-REFERENCE.md).
 >
 > Research date: November 2026, against `main` at prism-cli 1.10.0. Hook behavior of each coding
 > tool was read from its official documentation on that date (see [Sources](#sources)). Anything
@@ -784,6 +785,40 @@ other hooks; installing twice changes nothing.
 
 Tests: golden pairs per client, including the D2 defaults; for AgentCore, a harness eval fixture where the first patch has a
 finding and the second round fixes it.
+
+## Phase 1 implementation notes
+
+Where 1.11.0 differs from or settles something in the text above:
+
+- **Stop hook output on `pass` and repeated `stop`.** Claude Code's `hookSpecificOutput.additionalContext`
+  on `Stop` continues the turn, so using it for a `pass` with warnings or non-blocking findings would
+  cost one more model turn at every finish. 1.11.0 sends those to the person as `systemMessage`
+  only. A `stop` sends `additionalContext` once so Claude reports what remains; the same `stop` again
+  (same diff hash) prints nothing, so the turn ends.
+- **A `stop` sticks.** Once a session's verdict is `stop` for a diff hash, a later run on the same
+  diff returns the same `stop` instead of starting a new fix round (section 5 only named the
+  `fix`-then-unchanged case).
+- **Tamper needs a session.** The tamper check reads the session diff (baseline to now). A stateless
+  run (no session: `prism_review` without `session`, `codewatch review` without `--session`) has no
+  fix rounds to guard and skips it; otherwise any branch that legitimately touched
+  `.prism/config.json` would always stop.
+- **`human_why: secrets-scan-failed`** is added for "gitleaks ran but gave no verdict" at push
+  (section 12), which holds the push.
+- **`fail_open`** is also a top-level verdict field, not only in the result file.
+- **Secrets are filtered to added lines in every scope**, not only `new-lines`, so a pre-existing
+  secret in a touched file does not block.
+- **No result file for an empty diff**: it passes at once and costs nothing, and writing one per
+  idle `Stop` would only add noise.
+- **`prism_review`** answers carry the verdict's own `schema` (`prism.harness.verdict`) in place of
+  the MCP server's `schema: 1` stamp.
+- **Hooks** call `node scripts/harness-hook.mjs <event>`, which passes stdin to
+  `prism-cli codewatch hook --client claude` (the `$PRISM_CLI` and Windows `.cmd` handling of
+  `session-start.mjs`). Two more `PreToolUse` entries (`Bash(git -c *)`, `Bash(git config *)`) let
+  the adapter deny `-c core.hooksPath=` and `git config prism.*` / `core.hooksPath`.
+- **Not in 1.11.0**: `harness.context_scan` (section 6.3, measured in 1.12.0), the per-edit
+  `--no-review` hook, the status-line marker and per-commit dashboard view (section 11.2; harness
+  results show in the dashboard's run trend and are skipped by the pre-push review views), and
+  `allow-config` (open question 3).
 
 ## Open questions
 
