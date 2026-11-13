@@ -241,8 +241,9 @@ const isRemoteRef = (r: string) => /^(refs\/)?remotes\//.test(r.replace(/^\+/, '
  * `@{upstream}`, which a branch or tag cannot shadow, so this does not list every remote name.
  */
 const SHADOW_NAME = /^(refs\/|remotes\/|origin\/|upstream\/)/;
-/** Options of `git tag` and `git branch` that take the next word as their value. */
-const NAME_VALUE_OPTS = new Set(['-m', '-F', '-u', '--message', '--file', '--local-user', '--cleanup', '--format', '--sort', '--color']);
+/** Options of `git tag` that take the next word as their value (`git branch -m` renames and takes none). */
+const TAG_VALUE_OPTS = new Set(['-m', '-F', '-u', '--message', '--file', '--local-user', '--cleanup', '--format', '--sort', '--color']);
+const BRANCH_VALUE_OPTS = new Set(['--format', '--sort', '--color']);
 /** Words after a git subcommand that are not options, nor the value of one in `valueOpts`. */
 const positionals = (args: string[], valueOpts?: Set<string>) => args.filter((a, i) => !a.startsWith('-') && !(valueOpts?.has(args[i - 1] ?? '')));
 /** The destination of a `src:dst` refspec, or null for a refspec without one. */
@@ -251,6 +252,11 @@ const refspecDst = (spec: string) => { const i = spec.indexOf(':'); return i < 0
 const MOVES_REF = 'moves a remote-tracking ref (refs/remotes/...), which the PRISM push check compares the push against';
 const MOVES_UPSTREAM = 'changes the branch\'s upstream, which the PRISM push check compares the push against';
 const SHADOWS = 'shadows a remote-tracking ref the PRISM push check reads';
+/** Config keys that decide where an ordinary `git fetch` writes remote-tracking refs. */
+const REMOTE_FETCH_KEY = /^remote\..+\.(fetch|url)$/i;
+const MOVES_FETCH = 'changes where git fetch writes remote-tracking refs, which the PRISM push check compares the push against';
+/** Config sections that hold a branch's upstream or a remote's fetch setup. */
+const TRACKING_SECTION = /^(branch|remote)\../i;
 
 /** Longest command word quoted back in a deny reason. */
 const MAX_REASON_ARG = 80;
@@ -263,7 +269,7 @@ const hasOpt = (g: GitCall, ...o: string[]) => g.args.some((a) => o.includes(a))
 /** The name a `git branch` or `git tag` call creates, or null when it only lists, deletes or reads. */
 function createdName(g: GitCall, readOnly: string[]): string | null {
   if (hasOpt(g, ...readOnly)) return null;
-  const pos = positionals(g.args, NAME_VALUE_OPTS);
+  const pos = positionals(g.args, g.sub === 'tag' ? TAG_VALUE_OPTS : BRANCH_VALUE_OPTS);
   // `git branch <new> [<start>]` names the new branch first; -m/-M/-c/-C (rename, copy) name it last.
   return (g.sub === 'branch' && hasOpt(g, '-m', '-M', '-c', '-C', '--move', '--copy') ? pos[pos.length - 1] : pos[0]) ?? null;
 }
@@ -299,26 +305,29 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
   },
   checkout: (g) => createFlagBypass(g),
   switch: (g) => createFlagBypass(g),
-  // rename and remove move or delete refs/remotes/<name>/*; set-branches rewrites remote.<name>.fetch.
-  remote: (g) => (['rename', 'remove', 'rm', 'set-branches'].includes(g.args[0] ?? '') ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
+  // rename and remove move or delete refs/remotes/<name>/*; set-branches and set-url change what a later fetch writes there.
+  remote: (g) => (['rename', 'remove', 'rm', 'set-branches', 'set-url'].includes(g.args[0] ?? '') ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
   config: (g) => {
     const up = configWrite(g, /^branch\..+\.(merge|remote)$/i);
     if (up) return `git config ${up.slice(0, MAX_REASON_ARG)} ${MOVES_UPSTREAM}`;
     const fetch = configWrite(g, REMOTE_FETCH_KEY);
-    return fetch ? `git config ${fetch.slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}` : null;
+    if (fetch) return `git config ${fetch.slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}`;
+    const i = g.args.findIndex((a) => a === '--remove-section' || a === '--rename-section' || a === 'remove-section' || a === 'rename-section');
+    const section = i >= 0 ? g.args[i + 1] : undefined;
+    return section && TRACKING_SECTION.test(section) ? `git config ${g.args[i]} ${section.slice(0, MAX_REASON_ARG)} ${MOVES_UPSTREAM}` : null;
   },
 };
 
-const REMOTE_FETCH_KEY = /^remote\..+\.fetch$/i;
-const MOVES_FETCH = 'changes where git fetch writes remote-tracking refs, which the PRISM push check compares the push against';
-
-/** A fetch or push refspec whose destination is a remote-tracking ref, or a branch or tag named like one. */
+/** A fetch or push refspec (or `--refmap=`) whose destination is a remote-tracking ref, or a branch or tag named like one. */
 function refspecBypass(g: GitCall): string | null {
-  // `git -c remote.<name>.fetch=...` remaps an ordinary fetch for this one run.
+  // `git -c remote.<name>.fetch=...` or `.url=` remaps an ordinary fetch for this one run.
   const oneShot = g.configs.find((c) => REMOTE_FETCH_KEY.test(c.split('=')[0]));
   if (oneShot) return `git -c ${oneShot.split('=')[0].slice(0, MAX_REASON_ARG)} ${MOVES_FETCH}`;
   const shadowsOrMoves = (d: string) => { const s = d.replace(/^\+/, ''); return s.startsWith('refs/') ? movesTracking(s) : SHADOW_NAME.test(s); };
-  const dst = positionals(g.args).map(refspecDst).find((d) => d !== null && shadowsOrMoves(d));
+  const specs = [...positionals(g.args), ...g.args.filter((a) => a.startsWith('--refmap=')).map((a) => a.slice('--refmap='.length))];
+  const refmap = g.args.indexOf('--refmap');
+  if (refmap >= 0 && g.args[refmap + 1]) specs.push(g.args[refmap + 1]);
+  const dst = specs.map(refspecDst).find((d) => d !== null && shadowsOrMoves(d));
   return dst ? `a git ${g.sub} refspec that writes ${dst.slice(0, MAX_REASON_ARG)} ${MOVES_REF}` : null;
 }
 

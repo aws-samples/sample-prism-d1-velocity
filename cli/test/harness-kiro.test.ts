@@ -260,9 +260,11 @@ const REF_MOVES = [
   'git push . HEAD:origin/main', 'git push . HEAD:refs/heads/origin/main', 'git remote rename origin old', 'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*',
   'git pull . HEAD:refs/remotes/origin/main', 'git remote remove origin', 'git remote set-branches origin main', 'git checkout --orphan=origin/main', 'git checkout -borigin/main',
   'git -c remote.origin.fetch=+refs/heads/x:refs/remotes/origin/main fetch origin',
+  'git remote set-url origin .', 'git config remote.origin.url .', 'git -c remote.origin.url=. fetch origin', 'git fetch --refmap=+refs/heads/*:refs/remotes/origin/* . feat',
+  'git branch -m origin/main', 'git config --remove-section branch.feat', 'git config --rename-section branch.feat branch.other',
 ];
 const ORDINARY = [
-  'git branch -t feat origin/main', 'git pull', 'git pull origin main', 'git remote show origin',
+  'git branch -t feat origin/main', 'git pull', 'git pull origin main', 'git remote show origin', 'git remote get-url origin', 'git config --get remote.origin.url', 'git config --list',
   'git tag -a -m "release" v1.3', 'git remote -v', 'git remote add fork https://example.com/r.git', 'git config --get remote.origin.fetch', 'git update-ref refs/heads/feat/x HEAD',
   'git fetch origin', 'git fetch origin main', 'git fetch --all --prune', 'git branch', 'git branch -a', 'git branch -r', 'git branch feat/x', 'git branch feat/x origin/main',
   'git branch -d origin/old', 'git symbolic-ref refs/remotes/origin/HEAD', 'git symbolic-ref --short HEAD', 'git tag v1.2', 'git tag -l', 'git checkout main',
