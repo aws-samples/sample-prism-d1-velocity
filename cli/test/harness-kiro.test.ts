@@ -164,6 +164,21 @@ test('kiro: with the finish gate on, a fix verdict and the push findings arrive 
   assert.ok(!existsSync(join(r.dir, '.prism', 'harness', `${SESSION}.push-notice.json`)), 'handed over in full, so cleared');
 });
 
+test('kiro: an oversized push notice is capped, handed over once and cleared (no block on every later Stop)', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  const lines = Array.from({ length: 12 }, (_, i) => `const q${i} = "SELECT " + id;`).join('\n') + '\n';
+  r.write('src/db.ts', lines);
+  r.commit('db');
+  r.reply(Array.from({ length: 12 }, (_, i) => finding('src/db.ts', i + 1, 'high', `${'y'.repeat(290)} ${i}`)));
+  runKiroHook('pre-push', payload('PreToolUse', r), deps(r));
+  for (const env of [{}, { PRISM_HARNESS_FINISH_GATE: '1' }]) {
+    const first = runKiroHook('stop', payload('Stop', r), deps(r, env));
+    if (first.stdout) assert.ok(Buffer.byteLength(JSON.parse(first.stdout).reason) <= 4096);
+  }
+  assert.ok(!existsSync(join(r.dir, '.prism', 'harness', `${SESSION}.push-notice.json`)), 'cleared after the first hand-over');
+});
+
 test('kiro fail closed: an internal error on a push is exit 2; on other events and commands it is exit 0', () => {
   const r = rig();
   const boom = { env: {}, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks, now: () => { throw new Error('boom'); } } };

@@ -66,6 +66,12 @@ const short = (v: unknown) => clip(oneLine(v), MAX_FINDING_CHARS);
 
 /** Room for the reason before the deny tail, within the 4 KB cap. */
 const DENY_TEXT_BYTES = MAX_REASON_BYTES - Buffer.byteLength(KIRO_DENY_TAIL) - 1;
+/** A finish-gate verdict keeps at least this much when push findings ride along in the same reason. */
+const MIN_VERDICT_BYTES = 1024;
+/** The "Also, from your earlier push:" separator. */
+const NOTICE_JOIN_BYTES = 64;
+/** The stored push notice is capped so it always fits next to a verdict, and is then cleared after one hand-over. */
+const NOTICE_BYTES = MAX_REASON_BYTES - MIN_VERDICT_BYTES - NOTICE_JOIN_BYTES;
 
 function deny(text: string): KiroHookResult {
   return { exit: KIRO_DENY_EXIT, stdout: '', stderr: `${capBytes(text, DENY_TEXT_BYTES)}\n${KIRO_DENY_TAIL}\n` };
@@ -93,7 +99,7 @@ function savePushNotice(repoRoot: string, session: string, text: string): void {
   const p = noticePath(repoRoot, session);
   const prev = readPushNotice(repoRoot, session);
   const joined = prev ? `${prev}\n\nA later push:\n${text}` : text;
-  const all = Buffer.byteLength(joined, 'utf8') <= MAX_REASON_BYTES ? joined : `[Findings of earlier pushes omitted here; they are in .prism/results/.]\n${text}`;
+  const all = capBytes(Buffer.byteLength(joined, 'utf8') <= NOTICE_BYTES ? joined : `[Findings of earlier pushes omitted here; they are in .prism/results/.]\n${text}`, NOTICE_BYTES);
   const tmp = `${p}.${process.pid}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify({ version: 1, text: all }) + '\n', { mode: 0o600 });
@@ -105,7 +111,7 @@ function savePushNotice(repoRoot: string, session: string, text: string): void {
 function readPushNotice(repoRoot: string, session: string): string | null {
   try {
     const v = JSON.parse(readFileSync(noticePath(repoRoot, session), 'utf8'));
-    return v && typeof v.text === 'string' && v.text ? v.text : null;
+    return v && typeof v.text === 'string' && v.text ? capBytes(v.text, NOTICE_BYTES) : null;
   } catch { return null; }
 }
 
@@ -165,7 +171,7 @@ function finishCheck(repoRoot: string, session: string | null, pushNotice: strin
   const v: HarnessVerdict = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, ...deps.engine, repoRoot, session, client: 'kiro', event: 'stop', mode: 'working' });
   // The verdict text gets what the notice leaves of the cap (at least 1 KB), so the notice is not cut off the end.
   const withNotice = (s: string) => (pushNotice
-    ? `${capBytes(s, Math.max(1024, MAX_REASON_BYTES - Buffer.byteLength(pushNotice, 'utf8') - 64))}\n\nAlso, from your earlier push:\n${pushNotice}`
+    ? `${capBytes(s, MAX_REASON_BYTES - Buffer.byteLength(pushNotice, 'utf8') - NOTICE_JOIN_BYTES)}\n\nAlso, from your earlier push:\n${pushNotice}`
     : s);
   if (v.verdict === 'fix') return block(withNotice(`${agentText(v)}\n${KIRO_ROUND_NOTE}`));
   if (v.verdict === 'stop') {
