@@ -96,7 +96,9 @@ as its own child process, so it stops when the Claude Code session ends (or with
 server. Its pid, port and URL are kept in `~/.prism/run/dashboard.json` (mode 0600).
 
 The URL is a per-run secret: anyone with it can use the page, including its Setup Run buttons, so
-don't paste it into chats, tickets or logs. Claude prints it once.
+don't paste it into chats, tickets or logs. Claude prints it once. It is also in this session's
+transcript (Claude Code keeps it on disk), which is why the server listens only on 127.0.0.1 and
+the token stops working when the server stops.
 
 The browser opens by itself only when there is a display and you are not in an SSH session. Over
 SSH, the command prints the URL and a note: in a VS Code, Kiro or Cursor Remote-SSH terminal the

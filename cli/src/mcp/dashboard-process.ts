@@ -14,8 +14,10 @@
  * the MCP server being killed outright.
  *
  * One instance per user: ~/.prism/run/dashboard.json (dir 0700, file 0600)
- * holds the pid, port and URL. The URL holds the token, so it is written only
- * there and returned to the client; it is never logged. A state file whose
+ * holds the pid, port and URL. The URL holds the token, so prism-cli writes it
+ * only there and returns it to the client; it never logs it. The client's own
+ * transcript does hold it (the user asked to see it); the token is useless once
+ * the server stops, and the server is reachable only from this machine. A state file whose
  * pid is dead, or whose port does not answer as a PRISM dashboard, is ignored.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
