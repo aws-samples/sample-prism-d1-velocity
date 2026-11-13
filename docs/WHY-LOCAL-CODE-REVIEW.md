@@ -12,7 +12,7 @@ that wrote the code, and maps each technique to what PRISM ships.
 **How to read the evidence.** Every factual claim links to its source, with the year and the
 setting (company, benchmark, survey) so you can judge how far it carries to your team. Sources
 are paraphrased. Where the evidence is weak, contested or from a vendor selling a fix, the text
-says so. Statements marked **PRISM design reasoning** are our judgement, not findings. Section 5
+says so. Statements marked **PRISM design reasoning** are our judgement, not findings. Section 6
 lists the metrics that let you check the claims in your own data instead of trusting them.
 
 ## Summary for engineering leaders
@@ -39,8 +39,11 @@ lists the metrics that let you check the claims in your own data instead of trus
 - **Local review is a filter, never the gate.** AI reviewers are noisy and non-deterministic, so
   keep CI gates and human approval. PRISM's local review never blocks a push; its CI gate and
   branch protection do the enforcing. See [section 3](#3-limits-and-risks).
+- **It is cheap.** For one developer on this repository over 13 days, local review cost about $3
+  of about $602 in AI spend (well under 1%) and added a median 11 seconds to a push. See
+  [section 5](#5-what-it-costs-one-developers-numbers).
 - **Measure it.** PRISM already records lead time, change failure rate, review verdicts,
-  reverted AI commits, eval-gate findings per PR and secrets caught in CI. See [section 5](#5-what-to-measure).
+  reverted AI commits, eval-gate findings per PR and secrets caught in CI. See [section 6](#6-what-to-measure).
 
 ## 1. Why local review helps PR quality
 
@@ -83,7 +86,7 @@ Local review helps here in a narrow but concrete way. A pre-push review returns 
 minutes, on the author's machine, while the change is still small and fresh. A finding that
 arrives in CI or from a human reviewer a day later costs a context switch and often another
 review round. **PRISM design reasoning:** we expect the main gain to show up as fewer review
-rounds and less rework per PR, not as fewer production incidents, and section 5 says how to
+rounds and less rework per PR, not as fewer production incidents, and section 6 says how to
 check that.
 
 ### 1.3 What code review catches, and what wastes reviewer attention
@@ -244,10 +247,10 @@ gate covers that case.
 | Non-determinism | The same prompt on the same code gave 3, 6 and 11 findings on three runs (Semgrep, 2025) | Treat one run as a sample, not a guarantee; keep deterministic checks (gitleaks, tests) as the parts that must pass. **PRISM design reasoning:** the planned harness caches verdicts by diff hash so an unchanged diff is not re-rolled |
 | Hallucinated bugs and bad fixes | CriticGPT critics hallucinate bugs ([OpenAI, 2024](https://arxiv.org/abs/2407.00215)); Semgrep saw agent "fixes" that broke working code (2025) | Findings are pointers the agent must confirm in the code; at most 2 fix rounds; the human reviewer still sees the final diff |
 | Over-reliance on AI review | Assistant users overrated the security of their code ([Perry et al.](https://arxiv.org/abs/2211.03622)); human plus critic beat critic alone (CriticGPT) | Local review is a pre-filter. The CI gate, branch protection and human approval stay in place, and the CI gate uses a model chosen on the base branch |
-| Model cost and latency | Agent scans cost real money per run (Semgrep's 2025 study: $114 across 11 apps); a stop hook adds wait time to every finish | Review only the pushed diff, drop lock files, cap size and time, pick a smaller model with `eval.model`. The finish gate is opt-in until cost is measured |
+| Model cost and latency | Agent scans cost real money per run (Semgrep's 2025 study: $114 across 11 apps); a stop hook adds wait time to every finish | Review only the pushed diff, drop lock files, cap size and time, pick a smaller model with `eval.model`. The finish gate is opt-in until cost is measured. One developer's measured numbers are in [section 5](#5-what-it-costs-one-developers-numbers) |
 | Prompt injection through the code under review | [Greshake et al.](https://arxiv.org/abs/2302.12173), [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) | Reviewer is read-only with no shell or web; MCP tools return finding text as JSON fields with size caps and tell the agent it is data; the fix skills forbid following instructions found in findings |
 | Bypass | `git commit --no-verify` skips the pre-commit hook | The pre-push hook records commits with no matching secret scan; CI gitleaks scans the whole PR range and cannot be skipped |
-| Benchmarks overstate or understate real code | Semgrep found over half of a 2026 model's secure solutions were memorised public fixes | Judge by your own repos' data (section 5), not by vendor benchmarks, this document's included |
+| Benchmarks overstate or understate real code | Semgrep found over half of a 2026 model's secure solutions were memorised public fixes | Judge by your own repos' data (section 6), not by vendor benchmarks, this document's included |
 
 ## 4. What local review does not replace
 
@@ -256,7 +259,109 @@ section 1.3 say is most of its value. CI remains the place for enforcement, beca
 can be skipped and local reviewers vary by machine. The aim is that a human reviewer opens a
 smaller PR with the mechanical problems already gone.
 
-## 5. What to measure
+## 5. What it costs: one developer's numbers
+
+The worked example is one developer working on this repository with Kiro and Claude Code,
+1-13 November 2026. These are one person's numbers, not a benchmark. They show the order of
+magnitude, and section 5.4 shows how to get your own.
+
+### 5.1 Measured
+
+Spend comes from the codeburn usage cache on that machine for 2026-11-01 to 2026-11-13. Latency
+and outcomes come from the codewatch pre-push review result files.
+
+| What | Calls | Spend | Per call |
+|---|---|---|---|
+| All AI coding, every model | 1,663 | $602.07 | n/a |
+| Authoring, almost all one large model | 1,538 | $599.09 | n/a |
+| Local review via kiro-cli `--model auto` | 78 | $2.66 | about $0.03 |
+| Test of a Claude Code reviewer with a small model (Claude Haiku 4.5 on Bedrock) | 33 | $0.31 | about $0.01 |
+
+| Pre-push reviews (33 result files) | Value |
+|---|---|
+| Median duration | 11 s |
+| Longest | 66 s |
+| Reported findings | 11 |
+| Clean | 7 |
+| Skipped (no reviewable diff, docs-only, or hook disabled) | 15 |
+
+**Result.** Local review was well under 1% of total AI spend (about $3 of about $602) and added
+about 11 seconds to a typical push.
+
+Two caveats. codeburn attributes spend by model, not by purpose, so the kiro-cli `auto` bucket
+may include a few kiro-cli calls that were not reviews; treat $2.66 as an upper bound for review
+spend. And the review result files do not record tokens, so the exact cost per review cannot be
+computed; cost per call is the closest measure.
+
+**Not included: the CI eval gate.** The gate runs kiro-cli in CI with the repository's
+`KIRO_API_KEY`, so its spend lands on the account that owns that key, not in this developer's
+codeburn numbers. To measure it, count the `prism.d1.eval` events (one per gate run that
+produced a score, with `pr_number`, `eval.findings` and the model in `ai_context.model`) and read
+the usage of the account behind `KIRO_API_KEY`. If you run a reviewer on Amazon Bedrock in CI
+instead, tag it (for example with an application inference profile carrying a cost allocation
+tag) and filter AWS Cost Explorer by that tag.
+
+### 5.2 Estimating your own cost
+
+Per review:
+
+```text
+cost per review ≈ (diff tokens + rules/steering tokens + prompt overhead) × input price
+                + output tokens × output price
+```
+
+Per change: multiply by the reviews per PR (one per push that has a reviewable diff). With the
+planned harness loop, multiply by at most 3: the first review plus at most 2 fix rounds.
+
+**Worked example.** The token counts below are **assumptions** for illustration, not
+measurements: a 400-line diff at about 6,000 tokens, 1,500 tokens of rules, 2,500 tokens of
+prompt overhead and surrounding code the reviewer reads, so 10,000 input tokens, plus 1,000
+output tokens. Prices are Anthropic's published per-million-token API rates as read on
+2026-11-13 ([pricing page](https://platform.claude.com/docs/en/about-claude/pricing)): Claude
+Haiku 4.5 at $1 input and $5 output, Claude Sonnet 5.5 at $2 input and $10 output. Prices on
+[Amazon Bedrock](https://aws.amazon.com/bedrock/pricing/) can differ by region and endpoint
+type, so use your own rates.
+
+| Reviewer model | One review | Worst case with 2 fix rounds (3 reviews) |
+|---|---|---|
+| Claude Haiku 4.5 | 10,000 × $1/M + 1,000 × $5/M ≈ $0.015 | ≈ $0.045 |
+| Claude Sonnet 5.5 | 10,000 × $2/M + 1,000 × $10/M ≈ $0.03 | ≈ $0.09 |
+
+The same pricing page notes that Claude 4.7 and later models use a newer tokenizer that
+produces roughly 30% more tokens for the same text, so count tokens with the model you plan to
+use. The example lands near the measured per-call costs in section 5.1 ($0.01 and $0.03), but
+that is a sanity check, not a validation of the assumed token counts.
+
+### 5.3 Cost levers
+
+| Lever | Effect | In PRISM |
+|---|---|---|
+| Small, fast reviewer model | Lower price per token and lower latency | `eval.model` in `.prism/config.json`; `PRISM_REVIEW_MODEL` for CI |
+| Cache by diff hash | An unchanged diff is not reviewed twice | Planned in the harness loop ([PR #92](https://github.com/aws-samples/sample-prism-d1-velocity/pull/92)) |
+| Skip docs-only and empty diffs | No model call when nothing reviewable changed | Codewatch on `main` skips a push with no diff against upstream; the docs-only skip (`harness.skip_paths`, default `*.md` and similar) is planned in the harness loop. 15 of the 33 measured pushes were skipped |
+| Finish gate opt-in | No review on every agent turn unless the team turns it on | `harness.finish_gate`, off by default in the harness-loop design |
+| Block only on secrets and high findings | Fewer fix rounds spent on low-severity advice | Planned `harness.block_on`, default `["secret", "high"]`. Local review on `main` never blocks; the CI gate fails on a secret, a high finding or a score under 0.82 |
+
+### 5.4 Reproduce the numbers on your machine
+
+- **Spend by model:** `prism-cli dashboard`, Usage panel, top models ([Panels](../USER_GUIDE.md#panels)).
+  The same numbers come from codeburn directly: `codeburn report` for the interactive view,
+  `codeburn export` for CSV or JSON ([Developer Setup](../USER_GUIDE.md#developer-setup)). Filter
+  by the reviewer's model name.
+- **Review latency and outcomes:** each pre-push review writes
+  `.prism/results/*-pre-push-review.json` ([Results](../USER_GUIDE.md#results)). Its `status` is
+  `ok`, `findings`, `error` or `skipped`, and `finished_at` minus `started_at` is the duration:
+
+```bash
+for f in .prism/results/*-pre-push-review.json; do
+  jq -r 'def t: sub("\\.[0-9]+Z$"; "Z") | fromdate;
+         [.status, ((.finished_at|t) - (.started_at|t))] | @tsv' "$f"
+done | sort -k2 -n
+```
+
+  Count the rows per status for outcomes; the middle row of the sorted durations is the median.
+
+## 6. What to measure
 
 Do not take this document's word for the benefit. Measure before and after enabling codewatch
 (a few weeks each), on the same repos. PRISM already collects most of what you need; the
@@ -344,3 +449,8 @@ Accessed 2026-11-13. Vendor reports are marked.
 43. Semgrep. Guardian. [Product page](https://semgrep.dev/guardian/); [GitHub](https://github.com/semgrep/guardian); [docs](https://www.semgrep.dev/docs/guardian)
 44. Sonar. "Now available: SonarQube plugin for Claude Code." 2026. [Blog](https://www.sonarsource.com/blog/now-available-sonarqube-plugin-for-claude-code/); [setup](https://www.sonarsource.com/developers/blueprints/set-up-the-sonarqube-plugin-for-claude-code/)
 45. CodeRabbit. CLI and agent mode. [Product page](https://www.coderabbit.ai/cli); [agent mode docs](https://docs.coderabbit.ai/cli/agent-mode)
+
+**Pricing**
+
+46. Anthropic. "Pricing" (Claude API), read 2026-11-13. [platform.claude.com](https://platform.claude.com/docs/en/about-claude/pricing)
+47. Amazon Web Services. "Amazon Bedrock pricing." [aws.amazon.com](https://aws.amazon.com/bedrock/pricing/)
