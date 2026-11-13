@@ -19,7 +19,7 @@
 import { createInterface } from 'node:readline';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageDir, installsOnPath } from '../_top/version.js';
 import { findOnPath } from '../../utils/tool-check.js';
@@ -88,11 +88,27 @@ export function shQuote(p: string): string {
  * non-interactive process has; else the absolute node and entry script, so an
  * nvm or Volta install still works when Claude Code starts without the shell's PATH.
  */
-export function statuslineCommand(o: { ownPackageDir: string; execPath: string; entry: string; systemPath?: string }): string {
+export function statuslineCommand(o: CliLocation): string {
+  return `${prismCliCommand(o)} statusline`;
+}
+
+export interface CliLocation { ownPackageDir: string; execPath: string; entry: string; systemPath?: string }
+
+/** How a hook or the status line runs this prism-cli: `prism-cli`, or the absolute node and entry script (see statuslineCommand). */
+export function prismCliCommand(o: CliLocation): string {
   const sys = o.systemPath ?? NON_INTERACTIVE_PATH;
   const first = installsOnPath(sys, o.ownPackageDir)[0];
-  if (first?.isThis && findOnPath('node', sys)) return 'prism-cli statusline';
-  return `${shQuote(o.execPath)} ${shQuote(o.entry)} statusline`;
+  if (first?.isThis && findOnPath('node', sys)) return 'prism-cli';
+  return `${shQuote(o.execPath)} ${shQuote(o.entry)}`;
+}
+
+/** This process's prism-cli: its package dir, node and the real entry script. */
+export function ownCliLocation(): CliLocation {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ownPackageDir = findPackageDir(here) ?? process.cwd();
+  let entry = process.argv[1] ? resolve(process.argv[1]) : join(ownPackageDir, 'dist', 'bin', 'prism-cli.js');
+  try { entry = realpathSync(entry); } catch { /* keep as is */ }
+  return { ownPackageDir, execPath: process.execPath, entry };
 }
 
 // ------------------------------------------------------------ settings file
@@ -145,10 +161,11 @@ export function lineDiff(a: string, b: string, label: string): string[] {
 
 const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 
-/** Copies settings.json to settings.json.bak-<timestamp> (mode 0600); returns its path. */
-function backup(path: string, now: Date): string {
-  let b = join(dirname(path), `${BACKUP_PREFIX}${stamp(now)}`);
-  for (let n = 1; existsSync(b); n++) b = join(dirname(path), `${BACKUP_PREFIX}${stamp(now)}-${n}`);
+/** Copies a file to <name>.bak-<timestamp> (settings.json.bak-..., mode 0600); returns its path. */
+export function backup(path: string, now: Date): string {
+  const prefix = `${basename(path)}.bak-`;
+  let b = join(dirname(path), `${prefix}${stamp(now)}`);
+  for (let n = 1; existsSync(b); n++) b = join(dirname(path), `${prefix}${stamp(now)}-${n}`);
   copyFileSync(path, b);
   chmodSync(b, 0o600);
   return b;
@@ -159,7 +176,7 @@ function backup(path: string, now: Date): string {
  * (0600 for a new file). A symlinked settings.json (a dotfiles repo) is
  * written at its target, so the link stays a link.
  */
-function writeAtomic(link: string, text: string): void {
+export function writeAtomic(link: string, text: string): void {
   let path = link;
   try { path = realpathSync(link); } catch { /* new file */ }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -187,7 +204,7 @@ export function previousStatusLine(dir: string): { file: string; statusLine: Sta
 
 // ------------------------------------------------------------ plugin and MCP detection (read-only)
 
-function readJson(path: string): any {
+export function readJson(path: string): any {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
 }
 
@@ -329,15 +346,11 @@ export async function enableClaudeCode(opts: ClaudeCodeOptions, d: ClaudeCodeDep
 }
 
 export function defaultDeps(): ClaudeCodeDeps {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const ownPackageDir = findPackageDir(here) ?? process.cwd();
-  let entry = process.argv[1] ? resolve(process.argv[1]) : join(ownPackageDir, 'dist', 'bin', 'prism-cli.js');
-  try { entry = realpathSync(entry); } catch { /* keep as is */ }
   return {
     home: homedir(),
     env: process.env,
     cwd: process.cwd(),
-    command: statuslineCommand({ ownPackageDir, execPath: process.execPath, entry }),
+    command: statuslineCommand(ownCliLocation()),
     isTTY: !!(process.stdin.isTTY && process.stdout.isTTY),
     ask: (q) => new Promise((done) => {
       const rl = createInterface({ input: process.stdin, output: process.stdout });

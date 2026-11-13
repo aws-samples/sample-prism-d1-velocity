@@ -502,7 +502,7 @@ them read the same local data as `prism-cli dashboard` and make no AWS calls.
 | AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes: `/prism:spend`, and the [status line](#claude-code-status-line) |
 | Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes: `/prism` lists failing items with fix commands |
 | MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: the plugin's `prism` MCP server |
-| Agent harness loop | No | No (Kiro CLI/IDE adapters planned) | Yes: push gate on by default (blocks secrets and hook tampering, reports other findings); finish gate opt-in ([Agent Harness Loop](#agent-harness-loop)) |
+| Agent harness loop | Kiro CLI V3 / Kiro IDE: hooks from `prism-cli enable agent-hooks --client kiro` (push gate on, finish gate opt-in, one fix round per prompt; [Kiro CLI and Kiro IDE](#kiro-cli-and-kiro-ide)). Not in the extension | No hooks (Kiro Crew does not load project hooks): the `prism-fix-findings` skill runs `prism_review` | Yes: push gate on by default (blocks secrets and hook tampering, reports other findings); finish gate opt-in ([Agent Harness Loop](#agent-harness-loop)) |
 | Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
 | Plugin, slash commands | No | No | Yes: `/prism`, `/prism:findings`, `/prism:report`, `/prism:fix`, `/prism:review`, `/prism:spend`, `/prism:dashboard` |
 | Where it runs | With a repo open or without one (machine mode), and on the remote host over Remote-SSH | The Kiro Crew gateway's machine | Wherever `claude` runs |
@@ -525,7 +525,7 @@ Most features run on a developer machine with no AWS deployment: the
 |-----|----------|--------|
 | Send AI usage to PRISM | `enable codeburn`, `export otel` | [Developer Setup](#developer-setup) |
 | Check changes before they leave your machine | `enable codewatch`, `codewatch report` | [Codewatch](#codewatch-local-git-hooks) |
-| Review agent work before it pushes or finishes | `codewatch review`, the Claude Code plugin | [Agent Harness Loop](#agent-harness-loop) |
+| Review agent work before it pushes or finishes | `codewatch review`, the Claude Code plugin, `enable agent-hooks` (Kiro CLI/IDE, Claude Code without the plugin) | [Agent Harness Loop](#agent-harness-loop) |
 | See results locally | `dashboard`, `mcp`, `enable kirocrew`, the editor extension | [Local Dashboard](#local-dashboard), [Where PRISM shows up](#where-prism-shows-up) |
 | Security scans | `enable security`, `security code-review`, `security findings`, `security threat-model`, `security threats`, `security pentest` | [Security Agent Setup](#security-agent-setup-enable-security), [Security Scans from Your Machine](#security-scans-from-your-machine) |
 | Check an AWS account | `aws connect`, `aws check`, `aws recommend`, `bedrock-protection scan-account`, `scan-org`, `scan-repo` | [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend), [Bedrock Protection Audit](#bedrock-protection-audit) |
@@ -945,8 +945,10 @@ reports are linked from the dashboard (see [Local Dashboard](#local-dashboard)).
 
 The harness loop runs the codewatch review inside an AI agent's own loop, so the agent sees and
 fixes its findings before a person pushes. It ships in prism-cli 1.11.0 for Claude Code (the
-[plugin](#claude-code-plugin), v0.3.0) and for any MCP client (`prism_review`). The design, and
-what later releases add for Kiro, Cursor and Codex, is in
+[plugin](#claude-code-plugin), v0.3.0) and for any MCP client (`prism_review`), and in 1.12.0 for
+Kiro CLI V3 and the Kiro IDE ([Kiro CLI and Kiro IDE](#kiro-cli-and-kiro-ide)), with an installer
+for clients without a plugin ([Installing the hooks](#installing-the-hooks-enable-agent-hooks)).
+The design, and what later releases add for Cursor and Codex, is in
 [DESIGN-harness-loop.md](docs/DESIGN-harness-loop.md).
 
 One engine command does the work: `prism-cli codewatch review --json`. On each run it:
@@ -980,8 +982,8 @@ What blocks a push: only secrets. The agent's `git push` is denied for a secret 
 lines or in any commit the push would send, a secret scan that failed or did not finish, a change
 to the checks themselves (gitleaks config, a `gitleaks:allow` marker, hook or PRISM config), or a
 push that does not say what it sends (`--all`, `--mirror`, a glob). Review findings, high ones
-included, never deny a push: it goes ahead, you see the findings, and Claude gets them as context
-to fix in a follow-up.
+included, never deny a push: it goes ahead, you see the findings, and the agent gets them as
+context to fix in a follow-up.
 
 What blocks finishing (the finish gate, when you turn it on): a secret, and high findings, in the
 lines the agent changed. Medium and low findings are reported but do not block, unless the team
@@ -1014,6 +1016,86 @@ the plugin's `push_gate` option only decides when the repo leaves it unset. With
 the finish gate off, the `Stop` hook exits before it reads any diff and costs nothing.
 
 `/prism:review` runs the same review on demand and shows the verdict; it changes nothing.
+
+### Kiro CLI and Kiro IDE
+
+Install the hooks in the repo (or for every repo with `--global`), then commit the file yourself:
+
+```bash
+prism-cli enable agent-hooks --client kiro          # writes .kiro/hooks/prism-harness.json
+git add .kiro/hooks/prism-harness.json && git commit -m "PRISM Kiro hooks"
+```
+
+The hooks run only on Kiro CLI's V3 engine. `kiro-cli chat --no-interactive` starts the v2 engine
+by default, where no hook fires, so pass `--agent-engine v3` for headless runs:
+
+```bash
+kiro-cli chat --no-interactive --agent-engine v3 "..."
+```
+
+| Gate | Hook | Default | What it does |
+|---|---|---|---|
+| Push gate | `PreToolUse`, matcher `shell` (every shell command) | on | Before the agent's `git push`: gitleaks and the review. A secret, a failed secret scan, a change to the checks, a push that does not say what it sends, or a hook bypass (`--no-verify`, `core.hooksPath`, `git config prism.*`) denies the push. Other shell commands pass after a parse of about 80 ms |
+| Finish gate | `Stop` | off | Reviews the session's changes when the agent finishes and keeps it working on blocking findings |
+
+How it differs from Claude Code, because of how Kiro hooks work:
+
+- **Kiro denies a command only when the hook exits 2.** If the PRISM check itself fails during a
+  push (an internal error, input it cannot read), it denies the push with
+  `PRISM push check failed closed` rather than letting it through. A prism-cli that is not on the
+  hook's PATH cannot run at all, and then Kiro lets the push run: check with
+  `prism-cli enable agent-hooks --status`.
+- **Push findings arrive when the agent finishes.** Kiro drops a PreToolUse hook's output, so the
+  findings of a push that went ahead are kept and handed to the agent by the Stop hook at the end
+  of the same prompt (this costs one more model turn, only after a push with findings). The agent
+  is told to tell you and offer a follow-up, not to change code or push again unless you ask.
+- **One fix round per prompt.** Kiro runs Stop hooks once per prompt. With the finish gate on, the
+  agent gets one fix round; the next review runs when your next prompt finishes. prism-cli still
+  counts at most 2 fix rounds per session.
+- **No message to you from the hook.** Kiro has no channel from a hook to the person, so when the
+  verdict is `stop` the agent is told to relay it, and the full verdict is in `.prism/results/`.
+  Warnings on a `pass` are only in the result file.
+
+Turn the finish gate on with `harness.finish_gate: true` in `.prism/config.json`, or for yourself
+with `PRISM_HARNESS_FINISH_GATE=1` in the environment Kiro starts from.
+
+The Kiro IDE reads the same `.kiro/hooks` files; the gates were tested in Kiro CLI V3 only.
+[Kiro Crew](#kiro-crew-app) sessions do not load project hooks, so there the `prism-fix-findings`
+skill is the check. When the hooks are active for its session it reads their verdict instead of
+running its own rounds.
+
+### Installing the hooks (enable agent-hooks)
+
+`prism-cli enable agent-hooks` writes the harness hooks for a client that has no PRISM plugin doing
+it:
+
+| Client | File (project) | File (`--global`) |
+|---|---|---|
+| `kiro` | `.kiro/hooks/prism-harness.json` | `~/.kiro/hooks/prism-harness.json` |
+| `claude` | `.claude/settings.json` | Claude Code user settings (`CLAUDE_CONFIG_DIR` respected) |
+
+```bash
+prism-cli enable agent-hooks --client kiro --dry-run   # the diff, nothing written
+prism-cli enable agent-hooks --client kiro
+prism-cli enable agent-hooks --status                  # installed / outdated / missing per client and scope
+prism-cli enable agent-hooks --client kiro --uninstall
+```
+
+- Every write shows a diff and backs the file up first as `<file>.bak-<timestamp>`. Running it
+  again with nothing to change writes nothing.
+- The hooks call this prism-cli: `prism-cli`, or its absolute node and script path when prism-cli
+  is not on the PATH a desktop app or IDE starts with (an nvm or Volta install).
+- For Claude Code it merges the hooks the plugin ships into the settings file and keeps your other
+  hooks and keys. When the PRISM plugin is installed it skips the install, so the hooks do not run
+  twice; update an older plugin (before 0.3.0) instead.
+- `prism-harness.json` is PRISM's own file. One that holds other hooks is left alone unless you pass
+  `--force` (the old file is kept in the backup).
+- Kiro runs global and project hooks side by side, so it warns when both scopes have the file.
+- `--uninstall` removes only PRISM's entries.
+- `--client cursor` and `--client codex` are planned.
+
+Hook files are on the tamper list: an agent's push that carries a change to them is held. Commit
+the hook file yourself before the agent's session.
 
 ### Config keys
 

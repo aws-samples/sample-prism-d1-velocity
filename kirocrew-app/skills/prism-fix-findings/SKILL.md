@@ -22,6 +22,15 @@ For a person asking "what did codewatch find?", only report: call
 
 ## Steps
 
+0. Check whether the PRISM Kiro hooks already run the review for this session. In the shell, read
+   `$KIRO_SESSION_ID` (Kiro sets it to the session id its hooks receive) and keep only the
+   characters `A-Z a-z 0-9 _ -`. If the repo has `.prism/harness/<that id>.json` and its `client`
+   is `kiro`, the hooks are active: do **not** run your own review rounds (steps 1 and 4), so the
+   session is not reviewed twice with two round budgets. Only read the verdict: the newest
+   `.prism/results/*-agent-harness.json` whose `harness.session` is that id, and follow the hook's
+   own block text when Kiro shows it to you. Then go to step 5 and report. Kiro Crew does not load
+   project `.kiro/hooks` today, so in a Kiro Crew session this file normally does not exist and you
+   continue with step 1.
 1. Call `prism_review` (prism-cli 1.11.0 or newer) with `repo` set to the repo
    name or its top-level path. It reviews the current branch's changes plus
    uncommitted work now (gitleaks first, then the reviewer) and answers

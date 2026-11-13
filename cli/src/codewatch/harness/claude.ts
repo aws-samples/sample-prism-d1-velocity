@@ -286,7 +286,7 @@ export function agentText(v: HarnessVerdict, opts: { includeNonBlocking?: boolea
 }
 
 /** One line for the person (systemMessage). */
-function personText(v: HarnessVerdict): string {
+export function personText(v: HarnessVerdict): string {
   const bits = [`PRISM harness: ${v.verdict}`];
   if (v.reasons.length) bits.push(v.reasons.join('; '));
   if (v.warnings.length) bits.push(`warnings: ${v.warnings.map((w) => clip(oneLine(w), 300)).join('; ')}`);
