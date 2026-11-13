@@ -407,7 +407,7 @@ function setupPanel(data) {
   const rowOf = (r) => [
     repoName(r),
     el('div', {}, pill(pillClass[r.status] || 'missing', (label[r.status] || r.status) + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
-      r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') : txt(r.detail),
+      r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') + (r.reviewer && r.model ? ', model ' + txt(r.model) : '') : txt(r.detail),
       r.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, r.fix)) : null),
     securityCell(r.security),
   ];

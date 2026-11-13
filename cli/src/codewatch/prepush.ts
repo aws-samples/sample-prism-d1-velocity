@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { run } from '../utils/exec.js';
 import { getAssetPath } from '../utils/root.js';
-import { DEFAULT_REVIEW_TIMEOUT_SECONDS, readEvalConfig, REVIEWER_GIT_CONFIG_KEY, RULES_PATH } from './config.js';
+import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY, RULES_PATH } from './config.js';
 import { safeWrite } from './gitleaks.js';
 import { countBySeverity, makeResult, readResults, type PrismResult } from './results.js';
 import { ADAPTERS, detectReviewers, findOnPath, resolveReviewer, runReview, toolVersion, type ReviewerAdapter } from './reviewers/index.js';
@@ -152,7 +152,12 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
   }
   const adapter: ReviewerAdapter = ADAPTERS[choice.id];
   const bin = findOnPath(adapter.binary, opts.pathEnv) || adapter.binary;
-  const model = evalCfg.model || null;
+  const modelChoice = resolveReviewModel({
+    reviewer: adapter.id, prismConfigValue: evalCfg.model, prismConfigReviewer: evalCfg.reviewer,
+    gitConfigValue: git(['config', '--get', reviewModelGitKey(adapter.id)]),
+  });
+  if (modelChoice.note) log(`prism: ${modelChoice.note}`);
+  const model = modelChoice.model;
 
   if (!base) {
     return makeResult({ ...common, tool: adapter.id, status: 'skipped', finished_at: new Date().toISOString(), reason: 'no upstream or remote default branch to diff against' });
@@ -191,7 +196,7 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
     const diffPath = join(tmp, 'branch.diff');
     writeFileSync(diffPath, diff, { mode: 0o600 });
     const timeoutS = Number(evalCfg.timeout_seconds) > 0 ? Number(evalCfg.timeout_seconds) : DEFAULT_REVIEW_TIMEOUT_SECONDS;
-    log(`prism: reviewing ${branch} against ${upstream} with ${adapter.displayName} (report only, up to ${timeoutS}s)...`);
+    log(`prism: reviewing ${branch} against ${upstream} with ${adapter.displayName}, model ${modelLabel(adapter.id, model)} (report only, up to ${timeoutS}s)...`);
     const res = runReview(adapter, { repoRoot, rulesPath, rulesText, diffPath, diff, model: model || undefined }, timeoutS * 1000, bin);
     const finished = new Date().toISOString();
     const version = toolVersion(bin);

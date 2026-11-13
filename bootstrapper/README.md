@@ -35,7 +35,7 @@ Install commands and OIDC setup for the bundled assets are in the [User Guide](.
 2. `eval.model` in `.prism/config.json` on the base branch (GitLab: the target branch), the key the local pre-push review also reads. The PR's own copy is never read, so a PR cannot choose the model that reviews it.
 3. `auto`.
 
-The value must match `^[A-Za-z0-9._:/-]{1,100}$`; anything else fails the gate closed. The job summary, the PR comment and the `prism.d1.eval` event report the model used. Details: [Kiro-CLI Eval Gate](../USER_GUIDE.md#kiro-cli-eval-gate).
+The value must match `^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$`; anything else fails the gate closed. The job summary, the PR comment and the `prism.d1.eval` event report the model used. Details: [Kiro-CLI Eval Gate](../USER_GUIDE.md#kiro-cli-eval-gate).
 
 ---
 

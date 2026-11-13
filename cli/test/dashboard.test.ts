@@ -214,7 +214,7 @@ test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable f
   const before = await codewatchSetup(dir, { pathEnv: tmp('p0') });
   assert.equal(before.status, 'missing');
   assert.equal(before.fix, `cd ${dir} && prism-cli enable codewatch`);
-  assert.deepEqual(Object.keys(before).sort(), ['detail', 'fix', 'global', 'reviewer', 'reviewerSource', 'status']);
+  assert.deepEqual(Object.keys(before).sort(), ['detail', 'fix', 'global', 'model', 'reviewer', 'reviewerSource', 'status']);
 
   installHooks(join(dir, '.git', 'hooks'));
   const bin = tmp('p1');
@@ -222,7 +222,13 @@ test('setup (repo): codewatch only -- hooks and reviewer, with a cd-and-enable f
   const after = await codewatchSetup(dir, { pathEnv: bin });
   assert.equal(after.status, 'ok');
   assert.equal(after.reviewer, 'claude');
+  assert.equal(after.model, 'default');
   assert.equal(after.fix, '');
+  git(dir, 'config', 'prism.claudeModel', 'opus');
+  assert.equal((await codewatchSetup(dir, { pathEnv: bin })).model, 'opus');
+  git(dir, 'config', '--unset', 'prism.claudeModel');
+  git(dir, 'config', 'prism.kiroModel', 'model-k');
+  assert.equal((await codewatchSetup(dir, { pathEnv: bin })).model, 'default', "kiro's model is not shown for claude");
 });
 
 test('setup (repo): hooks from before the rename count as missing; paths with spaces are quoted', async () => {

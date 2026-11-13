@@ -13,8 +13,8 @@ import { HOOK_MARKER, MANAGED_HOOKS } from '../codewatch/hooks.js';
 import { gitleaksInstallHint } from '../codewatch/gitleaks.js';
 import { globalHooksDir, globalStatus, OPT_OUT_KEY, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { realpathSync } from 'node:fs';
-import { readEvalConfig, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
-import { detectReviewers, resolveReviewer } from '../codewatch/reviewers/index.js';
+import { modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
+import { detectReviewers, resolveReviewer, REVIEWER_IDS, type ReviewerId } from '../codewatch/reviewers/index.js';
 import { readSecurityMarker } from '../security/marker.js';
 import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
 import { ENABLE_KIROCREW_CMD, kirocrewAppState, type KirocrewAppState } from '../utils/kirocrew.js';
@@ -170,6 +170,8 @@ export interface GitFacts {
   hooksDir: string;
   /** `git config --get prism.reviewer` (the last value wins), or null. */
   reviewer: string | null;
+  /** `git config --get prism.<tool>Model` per reviewer (the last value wins), or null. */
+  reviewModels: Record<ReviewerId, string | null>;
   /** `git config --bool --get prism.codewatch` is false. */
   optedOut: boolean;
   /** `git config --local --get core.hooksPath` (this repo's own file, no includes), or null when unset or empty. */
@@ -241,8 +243,14 @@ const lastValue = (entries: ConfigEntry[], key: string) => {
 export function gitFactsFromConfig(repo: string, out: string | null, home: string = homedir()): Omit<GitFacts, 'hooksDir'> & { hooksDir: string | undefined } {
   const fallback = resolve(repo, '.git/hooks');
   const entries = out === null ? null : parseConfigList(out);
-  if (!entries) return { hooksDir: fallback, reviewer: null, optedOut: false, localHooksPath: null };
+  const noModels = { kiro: null, claude: null };
+  if (!entries) return { hooksDir: fallback, reviewer: null, reviewModels: noModels, optedOut: false, localHooksPath: null };
   const reviewer = lastValue(entries, REVIEWER_GIT_CONFIG_KEY.toLowerCase());
+  const reviewModels: Record<ReviewerId, string | null> = { ...noModels };
+  for (const id of REVIEWER_IDS) {
+    const e = lastValue(entries, reviewModelGitKey(id).toLowerCase());
+    reviewModels[id] = e ? (e.value ?? '').trim() || null : null;
+  }
   const optOut = lastValue(entries, OPT_OUT_KEY.toLowerCase());
   const local = entries.filter((e) => e.scope === 'local');
   const common = gitCommonDir(repo);
@@ -267,6 +275,7 @@ export function gitFactsFromConfig(repo: string, out: string | null, home: strin
   return {
     hooksDir,
     reviewer: reviewer ? (reviewer.value ?? '').trim() : null,
+    reviewModels,
     optedOut: optOut ? gitBool(optOut.value) === false : false,
     localHooksPath,
   };
@@ -298,6 +307,8 @@ export interface CodewatchSetup {
   reviewer: string | null;
   /** Where that choice came from: git-config, prism-config, detected, fallback or none. */
   reviewerSource: string;
+  /** Review model label the pre-push review would use: an id, `auto` (kiro) or `default` (Claude Code). */
+  model: string;
   detail: string;
   /** Empty when ok. */
   fix: string;
@@ -338,7 +349,11 @@ export function codewatchSetupFrom(repo: string, facts: GitFacts, g: GlobalStatu
     available: detectReviewers(pathEnv),
   });
   const reviewer = choice.id;
-  const base = { reviewer, reviewerSource: choice.source, global: viaGlobal };
+  const evalCfg = readEvalConfig(repo);
+  const model = modelLabel(reviewer, resolveReviewModel({
+    reviewer, prismConfigValue: evalCfg.model, prismConfigReviewer: evalCfg.reviewer, gitConfigValue: reviewer ? facts.reviewModels[reviewer] : null,
+  }).model);
+  const base = { reviewer, reviewerSource: choice.source, model, global: viaGlobal };
   if (facts.optedOut) {
     return { ...base, status: 'opted-out', fix: '', detail: `opted out (git config ${OPT_OUT_KEY} false)` };
   }

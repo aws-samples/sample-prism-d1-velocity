@@ -255,8 +255,8 @@ jobs:
             fi
             REVIEW_MODEL="${REVIEW_MODEL:-auto}"
           fi
-          if [ -z "${MODEL_ERROR}" ] && ! [[ "${REVIEW_MODEL}" =~ ^[A-Za-z0-9._:/-]{1,100}$ ]]; then
-            MODEL_ERROR="the model from ${REVIEW_MODEL_SOURCE} must match ^[A-Za-z0-9._:/-]{1,100}\$"
+          if [ -z "${MODEL_ERROR}" ] && ! [[ "${REVIEW_MODEL}" =~ ^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}$ ]]; then
+            MODEL_ERROR="the model from ${REVIEW_MODEL_SOURCE} must match ^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,99}\$"
           fi
           # --- review model: end ---
 

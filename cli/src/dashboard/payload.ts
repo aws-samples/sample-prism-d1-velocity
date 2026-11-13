@@ -52,6 +52,8 @@ export interface SetupRow {
   current: boolean;
   status: CodewatchSetup['status'];
   reviewer: string | null;
+  /** Review model the pre-push review would use (an id, `auto` or `default`). */
+  model?: string;
   detail: string;
   fix: string;
   /** Global hooks cover this repo. */
@@ -232,7 +234,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     };
   });
   const setupRows = sortSetupRows(repos.map((r) => ({
-    name: r.name, label: r.label, path: r.path, active: r.active, current: r.current, status: r.setup.status, reviewer: r.setup.reviewer, detail: r.setup.detail, fix: r.setup.fix,
+    name: r.name, label: r.label, path: r.path, active: r.active, current: r.current, status: r.setup.status, reviewer: r.setup.reviewer, model: r.setup.model, detail: r.setup.detail, fix: r.setup.fix,
     global: r.setup.global,
     security: r.security,
     // Bypassed repos (warn), set-up repos and repos with activity stay visible.
