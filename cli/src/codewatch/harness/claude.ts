@@ -345,6 +345,13 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
       if (v.secrets.length || v.commit_secrets.length || v.human_why === 'tamper' || v.human_why === 'secrets-scan-failed' || v.human_why === 'push-unknown') return deny(reason(), personText(v));
       return JSON.stringify({ systemMessage: personText(v) });
     }
+    // D4: review findings never deny a push. The person sees them; Claude gets them as context for a follow-up.
+    if (v.findings.length) {
+      return JSON.stringify({
+        systemMessage: personText(v),
+        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: agentText(v, { includeNonBlocking: true }) },
+      });
+    }
     return v.warnings.length ? JSON.stringify({ systemMessage: personText(v) }) : '';
   } catch (e: any) { // any: an internal error; only its message is shown
     return JSON.stringify({ systemMessage: `PRISM harness: internal error (${clip(oneLine(e?.message || e), 300)}); no decision was made. The git pre-push review and the CI gate still run.` });

@@ -18,7 +18,8 @@ Decided on 2026-11-13. The rest of this document follows them.
 |---|---|---|
 | D1 | **Fail open in the agent loop.** When the reviewer is missing, times out, crashes or replies with unparseable output twice (after the single retry), the verdict is `pass` with a visible warning, because the git pre-push hook and the CI gate still run. Secrets are the exception: a gitleaks finding always blocks the agent's push. A missing gitleaks binary is a warning and `secrets_scanned: false`, never a pass of the secrets check | [Section 12](#12-failure-modes) |
 | D2 | **Push gate on, finish gate opt-in.** With the Claude Code plugin installed, the `PreToolUse` hook on `git push` is on by default. The `Stop` hook (finish gate) is off in 1.11.0 and turned on with `harness.finish_gate: true` in `.prism/config.json` or the plugin's `finish_gate` option. Revisit the default once reviewer cost is measured. Other clients get the same defaults when their adapters land | [Section 8.3](#83-per-client-wiring), [config keys](#config-keys) |
-| D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"` | [Section 3](#3-verdict-schema) |
+| D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"`. Since D4 this applies to the finish gate only | [Section 3](#3-verdict-schema) |
+| D4 | **The push gate blocks only on secrets** (decided by the user on 2026-11-13, superseding D3 at push). The agent's `git push` is denied for a secret in the changed lines or in a commit of the pushed range, a secret scan that failed or did not finish, tamper (scanner config, `gitleaks:allow`, hook or PRISM config edits, since tamper is how a secret gets past the scan), and a push whose target the command does not name. AI review findings of any severity never deny a push: the push goes ahead, the person gets a `systemMessage` and Claude gets the findings as `additionalContext` (quoted as untrusted) for a follow-up. They never start a fix round or a `stop` at push. `harness.block_on` is the finish gate's; a non-default value at push only adds a warning | [Section 8.3](#83-per-client-wiring) |
 
 ## 1. Problem and goals
 
@@ -151,7 +152,7 @@ All keys live in a `harness` block in `.prism/config.json`, next to the existing
 |---|---|---|
 | `harness.push_gate` | `true` | AI review before the agent's `git push` (D2). `false` turns the review off for the repo; the gitleaks check before a push still runs, so secrets still block |
 | `harness.finish_gate` | `false` | Review before the agent finishes (`Stop` hook) (D2). Opt-in in 1.11.0 |
-| `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix` (D3). Allowed values: `secret`, `high`, `medium`. `secret` is always applied, even when left out; the engine adds a warning when it is missing |
+| `harness.block_on` | `["secret", "high"]` | What makes the finish gate's verdict `fix` (D3; the push gate blocks only on secrets and tamper, D4). Allowed values: `secret`, `high`, `medium`. `secret` is always applied, even when left out; the engine adds a warning when it is missing |
 | `harness.max_rounds` | `2` | Fix rounds before `stop`; hard ceiling 3 |
 | `harness.timeout_seconds` | `120` | Per-attempt reviewer timeout in the agent loop |
 | `harness.skip_paths` | docs, text and image globs | Paths whose changes get gitleaks only |
@@ -536,9 +537,10 @@ Verdict to output:
 | Verdict | Stop | PreToolUse `git push` |
 |---|---|---|
 | `pass` | exit 0, no output | exit 0, no decision (normal permission flow) |
-| `pass` with warnings | `hookSpecificOutput.additionalContext` with the warning | `systemMessage` with the warning |
-| `fix` | `decision: "block"`, `reason`: `next_action` plus quoted findings | `permissionDecision: "deny"` with the same text |
-| `stop` | exit 0 with `systemMessage` for the person and `additionalContext` telling Claude to report what remains | deny if secrets or tamper; otherwise allow with `systemMessage` |
+| `pass` with warnings | `systemMessage` with the warning (phase 1: not `additionalContext`, which would continue the turn) | `systemMessage` with the warning |
+| `pass` with review findings (at push always, since D4) | `systemMessage` | no decision (the push goes ahead); `systemMessage` for the person and `hookSpecificOutput.additionalContext` with the quoted findings for a follow-up |
+| `fix` (at push: a secret only) | `decision: "block"`, `reason`: `next_action` plus quoted findings | `permissionDecision: "deny"` with the same text |
+| `stop` | exit 0 with `systemMessage` for the person and `additionalContext` telling Claude to report what remains | deny for a secret (also committed), tamper, a failed or incomplete secret scan, or an unknown push target; review findings never reach `stop` at push |
 
 **Kiro CLI V3 and Kiro IDE.** Files in `.kiro/hooks/prism-harness.json`:
 

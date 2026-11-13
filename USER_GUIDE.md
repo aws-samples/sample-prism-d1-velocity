@@ -974,9 +974,17 @@ One engine command does the work: `prism-cli codewatch review --json`. On each r
    cached by diff hash for 24 hours.
 5. Answers `pass`, `fix` or `stop` and writes a result (`kind: agent-harness`) to `.prism/results/`.
 
-What blocks (`fix`): a secret in the changed lines, and high findings in the changed lines. Medium
-and low findings are reported but do not block, unless the team adds `"medium"` to
-`harness.block_on`. A finding on a line the agent did not change never keeps it working.
+What blocks a push: only secrets. The agent's `git push` is denied for a secret in the changed
+lines or in any commit the push would send, a secret scan that failed or did not finish, a change
+to the checks themselves (gitleaks config, a `gitleaks:allow` marker, hook or PRISM config), or a
+push that does not say what it sends (`--all`, `--mirror`, a glob). Review findings, high ones
+included, never deny a push: it goes ahead, you see the findings, and Claude gets them as context
+to fix in a follow-up.
+
+What blocks finishing (the finish gate, when you turn it on): a secret, and high findings, in the
+lines the agent changed. Medium and low findings are reported but do not block, unless the team
+adds `"medium"` to `harness.block_on`, which applies to the finish gate only. A finding on a line
+the agent did not change never keeps it working.
 
 The agent gets at most 2 fix rounds per session, counted by prism-cli, not by a prompt. After that,
 or when the agent tries again without changing anything, the answer is `stop` and the agent reports
@@ -993,7 +1001,7 @@ The git hooks for people do not change: `pre-push` stays report-only and never b
 
 | Gate | Hook | Default | What it does |
 |---|---|---|---|
-| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. `fix` denies the push and tells Claude why, and to tell you which hook blocked it; a secret always denies it. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath` |
+| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. Only a secret, a failed secret scan or a change to the checks denies the push, and the reason tells Claude to tell you which hook blocked it. Review findings let the push go ahead and come back to Claude as context. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath` |
 | Finish gate | `Stop` and `SubagentStop` | off | Reviews when Claude says it is done and keeps it working on blocking findings, at most 2 rounds |
 
 Turn the finish gate on for yourself in Claude Code with `/config` (the plugin's
@@ -1013,7 +1021,7 @@ All in a `harness` block in `.prism/config.json`, next to `eval`:
 |---|---|---|
 | `harness.push_gate` | `true` | AI review before the agent's `git push`. Set here (true or false) it wins over the plugin's `push_gate` option; left unset, the option decides. `false` skips the review; gitleaks still runs and secrets still block |
 | `harness.finish_gate` | `false` | Review before the agent finishes |
-| `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix`: `secret`, `high`, `medium`. `secret` always applies |
+| `harness.block_on` | `["secret", "high"]` | What makes the finish gate's verdict `fix`: `secret`, `high`, `medium`. `secret` always applies. The push gate ignores it and blocks only on secrets and changes to the checks |
 | `harness.max_rounds` | `2` | Fix rounds per session before `stop`; at most 3 |
 | `harness.timeout_seconds` | `120` | Reviewer timeout per attempt; at most 135, so two attempts fit in the agent hook's time |
 | `harness.skip_paths` | `*.md`, `docs/**`, `*.txt`, images | Changes that get gitleaks only, no AI review |
