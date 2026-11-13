@@ -1,12 +1,23 @@
 # Design: the harness loop (agents review and fix their own changes)
 
-> **Status: Proposed.** Nothing in this document has shipped. Command names, flags and file
+> **Status: Proposed.** Nothing in this document has shipped. Three decisions are settled (see
+> [Decisions](#decisions)). Command names, flags and file
 > layouts are proposals and may change in review. For shipped behavior see the
 > [User Guide](../USER_GUIDE.md#using-prism-locally) and the [command reference](CLI-REFERENCE.md).
 >
 > Research date: November 2026, against `main` at prism-cli 1.10.0. Hook behavior of each coding
 > tool was read from its official documentation on that date (see [Sources](#sources)). Anything
 > the documentation did not settle is marked **unconfirmed**.
+
+## Decisions
+
+Decided on 2026-11-13. The rest of this document follows them.
+
+| # | Decision | Where it applies |
+|---|---|---|
+| D1 | **Fail open in the agent loop.** When the reviewer is missing, times out, crashes or replies with unparseable output twice (after the single retry), the verdict is `pass` with a visible warning, because the git pre-push hook and the CI gate still run. Secrets are the exception: a gitleaks finding always blocks the agent's push. A missing gitleaks binary is a warning and `secrets_scanned: false`, never a pass of the secrets check | [Section 12](#12-failure-modes) |
+| D2 | **Push gate on, finish gate opt-in.** With the Claude Code plugin installed, the `PreToolUse` hook on `git push` is on by default. The `Stop` hook (finish gate) is off in 1.11.0 and turned on with `harness.finish_gate: true` in `.prism/config.json` or the plugin's `finish_gate` option. Revisit the default once reviewer cost is measured. Other clients get the same defaults when their adapters land | [Section 8.3](#83-per-client-wiring), [config keys](#config-keys) |
+| D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"` | [Section 3](#3-verdict-schema) |
 
 ## 1. Problem and goals
 
@@ -129,6 +140,33 @@ lets an adapter be fixed with a CLI release.
    second model provider, and the agent has one clear job: remove the secret.
 6. **Verdict** from secrets, findings in scope, the round counter, and failures.
 
+### Config keys
+
+All keys live in a `harness` block in `.prism/config.json`, next to the existing `eval` block.
+`.prism/config.json` is on the tamper list (section 6.2), so a fix round that edits it ends in
+`stop`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `harness.push_gate` | `true` | AI review before the agent's `git push` (D2). `false` turns the review off for the repo; the gitleaks check before a push still runs, so secrets still block |
+| `harness.finish_gate` | `false` | Review before the agent finishes (`Stop` hook) (D2). Opt-in in 1.11.0 |
+| `harness.block_on` | `["secret", "high"]` | What makes the verdict `fix` (D3). Allowed values: `secret`, `high`, `medium`. `secret` is always applied, even when left out; the engine adds a warning when it is missing |
+| `harness.max_rounds` | `2` | Fix rounds before `stop`; hard ceiling 3 |
+| `harness.timeout_seconds` | `120` | Per-attempt reviewer timeout in the agent loop |
+| `harness.skip_paths` | docs, text and image globs | Paths whose changes get gitleaks only |
+| `harness.context_scan` | `false` | Optional prompt and file-read secret scan (section 6.3) |
+| `harness.state_ttl_days` | `7` | Age at which session state files are deleted |
+
+The Claude Code plugin can also turn the finish gate on for one person, without a repo change,
+through a `userConfig` option in its `plugin.json`. Claude Code prompts for `userConfig` values when
+the plugin is enabled, shows them in `/config`, and exports each to hook processes as
+`CLAUDE_PLUGIN_OPTION_<KEY>`. The plugin declares `finish_gate` (boolean, default `false`) and
+`push_gate` (boolean, default `true`), and the adapter reads `CLAUDE_PLUGIN_OPTION_FINISH_GATE` and
+`CLAUDE_PLUGIN_OPTION_PUSH_GATE`. Precedence: a gate runs when either the repo key or the plugin
+option turns it on, and is off only when both leave it off. So a person can opt in on a team repo
+that has not, and a team can turn the finish gate on for everyone. Neither setting turns off the
+gitleaks check before a push.
+
 ## 3. Verdict schema
 
 Versioned separately from the result file so clients can check it.
@@ -143,9 +181,11 @@ Versioned separately from the result file so clients can check it.
   "session": "abc123",
   "scope": "new-lines",
   "diff": { "files": 3, "added_lines": 84, "hash": "sha256:...", "cached": false },
+  "secrets_scanned": true,
   "secrets": [
     { "file": "src/config.ts", "line": 12, "rule": "aws-access-token", "committed": false }
   ],
+  "block_on": ["secret", "high"],
   "findings": [
     {
       "severity": "high",
@@ -154,7 +194,18 @@ Versioned separately from the result file so clients can check it.
       "file": "src/db.ts",
       "line": 40,
       "message": "Query built from req.query.id with a template literal.",
-      "introduced_in_session": true
+      "introduced_in_session": true,
+      "blocking": true
+    },
+    {
+      "severity": "medium",
+      "category": "quality",
+      "rule": "Missing error handling on async operations",
+      "file": "src/db.ts",
+      "line": 52,
+      "message": "Promise from pool.query is not awaited or caught.",
+      "introduced_in_session": true,
+      "blocking": false
     }
   ],
   "dropped": { "out_of_scope": 4, "unknown_file": 1 },
@@ -170,16 +221,22 @@ Versioned separately from the result file so clients can check it.
 
 Field rules:
 
-- `verdict`: `pass` (nothing in scope blocks, or the run failed open with a warning), `fix` (the
-  agent should change something and try again), `stop` (end the loop; a person must decide).
+- `verdict`: `pass` (nothing in scope blocks, or the reviewer failed and the run failed open with a
+  warning, D1), `fix` (the agent should change something and try again), `stop` (end the loop; a
+  person must decide).
+- `secrets_scanned` is `false` when gitleaks is missing or gave no verdict. That is reported as a
+  warning and is never the same as "no secrets found" (D1); `secrets` is then empty.
 - `secrets[]` never carries the secret value, the match, or the gitleaks fingerprint. `committed`
   is true when the line already exists in a commit (section 6).
-- `findings[]` uses the existing `Finding` shape plus `introduced_in_session`. With
+- `findings[]` uses the existing `Finding` shape plus `introduced_in_session` and `blocking`. With
   `--scope new-lines` every returned finding has `introduced_in_session: true`; the rest are
   counted in `dropped`.
-- Which findings make the verdict `fix`: any secret, and findings of severity `high` and `medium`
-  (configurable as `harness.block_on`, default `["high", "medium"]`). Low findings are reported,
-  never blocking.
+- What makes the verdict `fix` (D3): any secret, and in-scope findings whose severity is listed in
+  `harness.block_on`, default `["secret", "high"]`. Medium and low findings are returned with
+  `blocking: false` and do not change the verdict; a team that adds `"medium"` makes medium
+  findings blocking. `block_on` in the verdict echoes the list that was applied.
+- On `pass` with non-blocking findings, the adapter shows them as information (the client's
+  non-blocking context channel) and does not keep the agent working.
 - `next_action` is text the CLI writes for the agent from fixed templates plus file:line values. It
   never contains reviewer prose.
 - `human_needed` with `human_why` (`secret-committed`, `tamper`, `max-rounds`, `reviewer-failed`,
@@ -420,10 +477,10 @@ asked to follow it.
 
 | Client | Finish gate | Push gate | Notes |
 |---|---|---|---|
-| Claude Code (plugin) | **Enforced**: `Stop` hook | **Enforced** for the Bash tool; pushes through other tools (an MCP git server) are not seen | Ships first. `SubagentStop` gets the same hook so a subagent that edits code is reviewed before it reports back |
-| Codex CLI | **Enforced**: `Stop` hook | **Enforced** for Bash | Hooks need the user's trust approval; the installer says so |
-| Cursor | **Enforced**: `stop` `followup_message` | **Enforced**: `beforeShellExecution` | The follow-up arrives as a user message, so the quoting rules in section 7 matter more here |
-| Kiro CLI V3 / IDE | **Advisory until confirmed**: `Stop` output reaches the agent, but automatic continuation is unconfirmed | **Enforced**: `PreToolUse` on `shell` | If a test shows the Stop hook re-wakes the agent, move to Enforced |
+| Claude Code (plugin) | **Enforced**: `Stop` hook, opt-in (D2) | **Enforced**, on by default, for the Bash tool; pushes through other tools (an MCP git server) are not seen | Ships first. `SubagentStop` gets the same hook so a subagent that edits code is reviewed before it reports back |
+| Codex CLI | **Enforced**: `Stop` hook, opt-in | **Enforced** for Bash, on by default | Hooks need the user's trust approval; the installer says so |
+| Cursor | **Enforced**: `stop` `followup_message`, opt-in | **Enforced**: `beforeShellExecution`, on by default | The follow-up arrives as a user message, so the quoting rules in section 7 matter more here |
+| Kiro CLI V3 / IDE | **Advisory until confirmed**, opt-in: `Stop` output reaches the agent, but automatic continuation is unconfirmed | **Enforced**: `PreToolUse` on `shell`, on by default | If a test shows the Stop hook re-wakes the agent, move to Enforced |
 | Kiro Crew | **Advisory**: the `prism-fix-findings` skill tells the agent to call `prism_review` before it reports done | **Advisory** | Kiro Crew sessions run on Kiro; whether `.kiro/hooks` apply inside them is **unconfirmed** |
 | AgentCore coding agent | **Enforced**: a step in PRISM's own loop | **Enforced**: PRISM's loop does the push | See 8.4 |
 | Any MCP client | **Advisory**: `prism_review` (section 9) | **Advisory** | |
@@ -452,6 +509,26 @@ next to the existing `SessionStart` entry:
 The real file uses the plugin's `$PRISM_CLI` resolution and the Windows `.cmd` handling that
 `session-start.mjs` already has. The hook `timeout` is the engine timeout plus margin for gitleaks
 and one retry.
+
+Defaults (D2): every hook is registered, and the adapter decides at run time whether the gate is
+on. The `Stop` and `SubagentStop` adapters exit 0 with no output, before any diff or reviewer call,
+unless `harness.finish_gate` or the plugin option `finish_gate` is true, so an opted-out session
+pays nothing at the finish. The `PreToolUse` adapter always runs gitleaks and runs the AI review
+unless both `harness.push_gate` and the plugin option `push_gate` are false. The options go in
+[`claude-plugin/.claude-plugin/plugin.json`](../claude-plugin/.claude-plugin/plugin.json):
+
+```json
+"userConfig": {
+  "finish_gate": { "type": "boolean", "title": "Review before Claude finishes",
+    "description": "Run the PRISM review when Claude stops and keep it working on blocking findings (at most 2 rounds). Costs one reviewer call per finish.", "default": false },
+  "push_gate": { "type": "boolean", "title": "Review before Claude pushes",
+    "description": "Run gitleaks and the PRISM review before Claude runs git push. Secrets block the push either way.", "default": true }
+}
+```
+
+The same defaults apply to every other client when its adapter lands: push gate on, finish gate
+off until `harness.finish_gate` is set. Those clients have no plugin option, so the repo key is
+the only switch, plus an environment variable `PRISM_HARNESS_FINISH_GATE=1` for one person.
 
 Verdict to output:
 
@@ -547,8 +624,8 @@ measure rather than quoting a number.
   (capped at `MAX_DIFF_CHARS` = 200,000 characters today; the harness proposes 60,000) plus
   any files the reviewer reads for context. Claude's reviewer can call `Read`, so input varies
   with the change.
-- **Runs per session.** At most `max_rounds + 1` = 3 reviews at the finish line, plus push-time
-  reviews. Cached and docs-only runs cost nothing.
+- **Runs per session.** With the finish gate on, at most `max_rounds + 1` = 3 reviews at the
+  finish line; with it off (the 1.11.0 default), none. Plus one review per agent push. Cached and docs-only runs cost nothing.
 - **How to measure.** The Claude envelope reports per-model usage in `modelUsage`, which the
   adapter already parses for the model name; store its token counts and cost in the result. kiro-cli
   prints no usage, so for kiro the cost comes from codeburn, which parses Kiro and Claude Code
@@ -591,7 +668,8 @@ included (redacted, as for `kind: "secrets"`). A new optional block:
   "client": "claude", "event": "stop", "session": "abc123",
   "verdict": "fix", "round": 1, "max_rounds": 2, "scope": "new-lines",
   "secrets": 1, "dropped_out_of_scope": 4, "cached": false,
-  "human_needed": false, "human_why": null, "fail_open": false,
+  "human_needed": false, "human_why": null, "fail_open": false, "secrets_scanned": true,
+  "block_on": ["secret", "high"], "blocking_findings": 1, "nonblocking_findings": 1,
   "wall_s": 41.2, "cost_usd": null
 }
 ```
@@ -620,27 +698,31 @@ question.
 
 ## 12. Failure modes
 
+This section applies decision D1.
+
 | Failure | At finish (Stop) | At push | Why |
 |---|---|---|---|
-| Reviewer not installed | `pass` with warning | `pass` with warning | Same as pre-push today |
-| Reviewer timeout, crash, auth error | one retry for unparseable replies only, then `pass` with warning, `fail_open: true` | same | See below |
-| Reply unparseable twice | `pass` with warning | same | Same retry rule as the CI gate |
-| gitleaks not installed | `pass` with warning naming the install hint (`gitleaksInstallHint`) | `pass` with warning | Same as pre-commit: allowed, recorded as skipped |
-| gitleaks runs but gives no verdict | `pass` with warning | `stop`, push denied | Pre-commit blocks on this today; the push is where a secret leaves the machine |
+| Reviewer not installed | `pass` with warning | `pass` with warning; gitleaks still runs | Same as pre-push today |
+| Reviewer timeout, crash, auth error | `pass` with warning, `fail_open: true` | same | D1 |
+| Reply unparseable | one retry with the same diff, as in the CI gate; a second unparseable reply is `pass` with warning, `fail_open: true` | same | D1 |
+| gitleaks not installed | warning naming the install hint (`gitleaksInstallHint`), `secrets_scanned: false`; the AI review still runs and decides the verdict | same, push allowed | The secrets check is reported as not run, never as passed; same as pre-commit today |
+| gitleaks runs but gives no verdict | warning, `secrets_scanned: false` | `stop`, push denied | Pre-commit blocks on this today; the push is where a secret leaves the machine |
+| gitleaks finds a secret | `fix` | push denied, whatever the round count or `push_gate` | D1: secrets always block the push |
 | Offline | reviewer fails, so as above; gitleaks still runs | same | gitleaks is local |
 | Not a git repo, or no `HEAD` | `pass`, no result | `pass` | Nothing to diff |
 | State file corrupt | renamed, round 1, warning | same | Never block on own state |
 | Engine internal error (exit 1) | adapter returns "no decision" plus a warning | same | A PRISM bug must not trap an agent |
 | Diff over the cap | review the first part, warning, findings from the rest are not seen | same | As `MAX_DIFF_CHARS` today |
 
-**Decision: fail open in the agent loop, with a visible warning.** The CI gate fails closed on an
-unparseable review, and that is right for a merge gate. The agent loop is a fourth check in front
-of three that remain: the person reads the agent's report, the pre-push review records a result,
-and CI fails closed. Failing closed here would turn a reviewer outage into agents that cannot
-finish, which people would fix by uninstalling the hooks, losing the gitleaks part too. The
-warning goes to the person (`systemMessage` or the client equivalent) and into the result
-(`fail_open: true`), so a stretch of fail-open runs is visible on the dashboard. Secrets are the
-exception: a secret finding, or a gitleaks error at push, always blocks the agent's push.
+Why fail open (D1): the CI gate fails closed on an unparseable review, and that is right for a
+merge gate. The agent loop is one more check in front of the ones that remain: the person reads
+the agent's report, the git pre-push hook records a review, and the CI gate fails closed. Failing
+closed here would turn a reviewer outage into agents that cannot finish, which people would fix by
+uninstalling the hooks, losing the gitleaks part too. The warning goes to the person
+(`systemMessage` or the client equivalent) and into the result (`fail_open: true`,
+`secrets_scanned`), so a stretch of fail-open or unscanned runs is visible on the dashboard.
+Secrets are the exception: a secret finding, or a gitleaks error at push, always blocks the
+agent's push.
 
 ## 13. Rollout
 
@@ -651,7 +733,10 @@ exception: a secret finding, or a gitleaks error at push, always blocks the agen
 - Claude plugin `hooks.json`: `SessionStart` baseline, `Stop`, `SubagentStop`, `PreToolUse` on
   `git push`, `SessionEnd`.
 - `prism_review` MCP tool; `prism-fix-findings` and `/prism:fix` updated to use it.
-- `harness` block in `.prism/config.json`, off unless the plugin's hooks are installed.
+- `harness` block in `.prism/config.json` ([config keys](#config-keys)) and the plugin's
+  `finish_gate` and `push_gate` options: push gate on, finish gate opt-in (D2).
+- After release, measure reviewer cost per finish-gate run (section 10.1) and revisit the
+  finish-gate default.
 
 Tests to add:
 
@@ -667,8 +752,17 @@ Tests to add:
 - Adapter: golden stdin/stdout pairs for each Claude event and verdict, including
   `stop_hook_active: true`.
 - Recursion: with `PRISM_HARNESS_CHILD=1` the hook exits 0 without running the engine.
-- Failure modes: missing reviewer, timeout, unparseable twice, missing gitleaks, corrupt state,
-  each giving the table's verdict.
+- Failure modes: missing reviewer, timeout, unparseable once (retried) and twice, missing
+  gitleaks, corrupt state, each giving the table's verdict. Reviewer failures give `pass` with a
+  warning and `fail_open: true`; missing gitleaks gives `secrets_scanned: false` and a warning,
+  never a clean secrets result; a secret blocks the push even with the reviewer down.
+- Gate defaults: with no config, `Stop` exits 0 without running gitleaks or the reviewer, and
+  `PreToolUse` on `git push` runs both; `harness.finish_gate: true` or
+  `CLAUDE_PLUGIN_OPTION_FINISH_GATE=true` turns the finish gate on; `push_gate: false` in both
+  places skips the AI review at push but not gitleaks.
+- Severity: with the default `block_on`, a high finding gives `fix` and a medium or low finding
+  gives `pass` with `blocking: false`; with `"medium"` added, a medium finding gives `fix`; a
+  `block_on` without `"secret"` still blocks on a secret and warns.
 - Readers: dashboard, statusline and extension ignore an unknown `kind` without errors.
 
 ### 1.12.0: Kiro adapters and installer
@@ -679,7 +773,7 @@ Tests to add:
   IDE; update the capability table either way.
 - Measure the optional prompt and file-read secret scan (section 6.3).
 
-Tests: Kiro golden pairs; installer merge, backup and uninstall on hook files that already hold
+Tests: Kiro golden pairs, including the D2 defaults (push gate on, finish gate off); installer merge, backup and uninstall on hook files that already hold
 other hooks; installing twice changes nothing.
 
 ### Later: Cursor, Codex, AgentCore
@@ -688,30 +782,26 @@ other hooks; installing twice changes nothing.
   (`Stop`, `PreToolUse`, trust note).
 - AgentCore coding agent review step after verify.
 
-Tests: golden pairs per client; for AgentCore, a harness eval fixture where the first patch has a
+Tests: golden pairs per client, including the D2 defaults; for AgentCore, a harness eval fixture where the first patch has a
 finding and the second round fixes it.
 
 ## Open questions
 
+Decisions D1 to D3 (fail-open, gate defaults, blocking severity) are settled and no longer listed.
+
 1. Command names: `codewatch review` and `codewatch hook`, or a new top-level `harness` group?
-2. Should the finish gate be on by default when the Claude plugin is installed, or opt-in through
-   `enable agent-hooks` for every client, including Claude?
-3. Fail-open in the agent loop (proposed) vs fail-closed; and should a team be able to choose
-   fail-closed in `.prism/config.json` (which an agent could then edit, caught only by the tamper
-   rule)?
-4. Which severities block: `high` and `medium` (proposed), or `high` only to keep rounds rare?
-5. `max_rounds`: 2 by default with a ceiling of 3, or a fixed 2?
-6. Should a person be able to allow a config change for one session (`allow-config`), or is `stop`
+2. `max_rounds`: 2 by default with a ceiling of 3, or a fixed 2?
+3. Should a person be able to allow a config change for one session (`allow-config`), or is `stop`
    always the answer?
-7. Does a Kiro `Stop` hook re-wake the agent in CLI V3 and in the IDE?
-8. Do `.kiro/hooks` apply inside Kiro Crew sessions?
-9. Is `session_id` present in every Codex hook event, and does Codex have a session-end event?
-10. Does a Claude plugin's hook set run under Cursor's third-party hooks support, and would the
-    Cursor adapter then run twice?
-11. Do the reviewer's own headless sessions show up in codeburn, and under which project name?
-12. Should a `prism.d1.harness` event be sent at all, and by what path from a developer machine?
-13. AgentCore: is prism-cli plus a reviewer acceptable in the harness image, and which reviewer?
-14. Should `SubagentStop` be reviewed in 1.11.0, or only the main agent's `Stop`?
+4. Does a Kiro `Stop` hook re-wake the agent in CLI V3 and in the IDE?
+5. Do `.kiro/hooks` apply inside Kiro Crew sessions?
+6. Is `session_id` present in every Codex hook event, and does Codex have a session-end event?
+7. Does a Claude plugin's hook set run under Cursor's third-party hooks support, and would the
+   Cursor adapter then run twice?
+8. Do the reviewer's own headless sessions show up in codeburn, and under which project name?
+9. Should a `prism.d1.harness` event be sent at all, and by what path from a developer machine?
+10. AgentCore: is prism-cli plus a reviewer acceptable in the harness image, and which reviewer?
+11. Should `SubagentStop` be reviewed in 1.11.0, or only the main agent's `Stop`?
 
 ## Comparable products
 
