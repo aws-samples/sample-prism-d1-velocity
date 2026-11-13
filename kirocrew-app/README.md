@@ -128,6 +128,10 @@ is kept across app updates unless a later version of the app changes the schedul
 
 ## The page
 
+![PRISM page in Kiro Crew with demo data: spend cards, top models and projects, four repos with codewatch, one expanded with its findings](../assets/images/prism-cli/kirocrew-app-page-light.png)
+
+*The PRISM page, rendered with made-up demo data.*
+
 The **PRISM** sidebar page shows the same data as the editor extension's machine mode:
 
 - spend today and this month (calls, sessions), sync mode, prism-cli version, and when the data

@@ -546,6 +546,12 @@ then install it with `code --install-extension prism-d1-<version>.vsix` (or `kir
 Checking the download, Remote-SSH, features, settings and security:
 [editor extension README](editor-extension/README.md#install).
 
+![PRISM editor extension panel in repo mode for a demo repo named checkout-service: summary cards, four codewatch findings with file links, and the setup checklist](assets/images/prism-cli/editor-extension-panel-dark.png)
+
+![PRISM editor extension panel in machine mode with demo data: spend cards, top models and projects, and four repos sorted by last commit, one expanded with its findings](assets/images/prism-cli/editor-extension-machine-mode-light.png)
+
+*The PRISM panel with a repo open (top) and with no repo open (bottom). Both show made-up demo data.*
+
 ### MCP server (prism-cli mcp)
 
 `prism-cli mcp` is an [MCP](https://modelcontextprotocol.io) server that gives an AI agent (Kiro,
@@ -604,6 +610,12 @@ fix the real issues in at most 2 rounds and report the rest. The third part is a
 that runs as a script, with no model call. The digest notifies only on a new high finding, on
 today's spend above a threshold you set (off by default), or on a setup item that went from ok to
 warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.8.0 or later.
+
+![PRISM page in Kiro Crew with demo data: spend cards, top models and projects, four repos with codewatch, one expanded with its findings](assets/images/prism-cli/kirocrew-app-page-dark.png)
+
+![The PRISM page's report view with demo data: the checkout-service repo row and its codewatch scan report in a sandboxed frame](assets/images/prism-cli/kirocrew-app-report-light.png)
+
+*The PRISM page (top) and a repo's scan report opened from it (bottom). Both show made-up demo data.*
 
 Install it with prism-cli 1.9.0 or later, which bundles the app:
 

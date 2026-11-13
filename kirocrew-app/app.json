@@ -1,12 +1,14 @@
 {
   "name": "prism",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "displayName": "PRISM",
   "description": "Codewatch findings, AI spend and setup status from your local prism-cli for Kiro Crew agents, and a daily digest that speaks only when something changed.",
   "author": "aws-samples",
   "license": "MIT",
   "minKiroCrewVersion": "0.12.1",
   "iconPath": "assets/icon.png",
+  "screenshots": ["assets/screenshots/page-light.png", "assets/screenshots/report-light.png"],
+  "screenshotsDark": ["assets/screenshots/page-dark.png", "assets/screenshots/report-dark.png"],
   "tags": ["code-review", "developer-tools", "code-quality"],
   "highlights": [
     "PRISM page: spend, setup checklist, repos with codewatch newest commit first, their findings and a sandboxed scan report, all read-only",
