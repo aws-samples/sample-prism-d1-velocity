@@ -22,6 +22,8 @@ const version = JSON.parse(readFileSync(resolve(cliDir, 'package.json'), 'utf8')
 const GUIDE = {
   'dashboard': ['Local Dashboard', 'USER_GUIDE.md#local-dashboard'],
   'mcp': ['MCP server', 'USER_GUIDE.md#mcp-server-prism-cli-mcp'],
+  'statusline': ['Claude Code status line', 'USER_GUIDE.md#claude-code-status-line'],
+  'enable claude-code': ['Claude Code status line', 'USER_GUIDE.md#claude-code-status-line'],
   'version': ['Using PRISM locally', 'USER_GUIDE.md#using-prism-locally'],
   'assessment': ['Assessment Guide', 'assessment/ASSESSMENT_GUIDE.md#cli-commands'],
   'aws': ['AWS Account Advice', 'USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend'],

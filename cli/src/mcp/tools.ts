@@ -4,8 +4,8 @@
  * Every tool calls the dashboard's own functions (repo discovery, payload,
  * codewatch results, report builder, usage cache) in this process. No AWS
  * call, no network, no codeburn export (usage comes from the 5-minute cache
- * the dashboard writes), and no write except the HTML report file
- * prism_report creates under the OS temp dir.
+ * the dashboard writes), and no write except the HTML files prism_report
+ * and prism_snapshot create under the OS temp dir.
  *
  * Finding and report text is written by a reviewer model and quotes code, so
  * it is returned as JSON fields, each message capped, and the whole answer
@@ -24,6 +24,7 @@ import type { MachineDeps } from '../dashboard/setup.js';
 import { readResultEntries, type PrismResult } from '../codewatch/results.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { run } from '../utils/exec.js';
+import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../dashboard/snapshot.js';
 
 export const MCP_SCHEMA = 1;
 export const MAX_MESSAGE_CHARS = 2000;
@@ -55,6 +56,9 @@ export interface ToolContext {
   now?: () => Date;
   /** Injected in tests (crontab, env). */
   machineDeps?: MachineDeps;
+  /** prism_snapshot's open: environment and opener; injected in tests. */
+  env?: NodeJS.ProcessEnv;
+  open?: (file: string) => void;
 }
 
 type Args = Record<string, unknown>;
@@ -63,7 +67,7 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[]; additionalProperties: false };
-  /** Only prism_report writes (an HTML file in the temp dir). */
+  /** Only prism_report and prism_snapshot write (an HTML file in the temp dir). */
   readOnly: boolean;
   run: (ctx: ToolContext, args: Args) => Promise<Record<string, unknown>>;
 }
@@ -361,6 +365,30 @@ async function setup(ctx: ToolContext): Promise<Record<string, unknown>> {
   };
 }
 
+async function snapshot(ctx: ToolContext, a: Args): Promise<Record<string, unknown>> {
+  const open = a.open ?? false;
+  if (typeof open !== 'boolean') throw new ToolError('open must be true or false');
+  const html = await buildSnapshotHtml({
+    cwd: ctx.cwd, home: ctx.home, root: ctx.root, version: ctx.version, pathEnv: ctx.pathEnv,
+    machineDeps: { home: ctx.home, ...ctx.machineDeps }, env: ctx.env, now: ctx.now,
+    // The cached usage only, as every tool here: never a codeburn export.
+    usage: async () => {
+      const u = cachedUsage(ctx);
+      return { usage: u ?? emptyUsage('no-data', NO_CACHE), cacheHit: !!u };
+    },
+  });
+  const dir = mkdtempSync(join(ctx.tmpDir ?? tmpdir(), 'prism-mcp-snapshot-'));
+  const file = join(dir, 'prism-dashboard.html');
+  const bytes = writeSnapshot(file, html);
+  const env = ctx.env ?? process.env;
+  let opened = false;
+  let note: string;
+  if (!open) note = 'not opened (open was false); open the file in a browser';
+  else if (!canOpen(env, process.platform)) note = 'not opened: no display here (an SSH session?); copy the file to a machine with a browser';
+  else { (ctx.open ?? openBrowser)(file); opened = true; note = 'asked the system opener to show it in the default browser'; }
+  return { path: file, bytes, opened, note, usageCached: !!cachedUsage(ctx) };
+}
+
 const REPO_PROP = { type: 'string', description: 'Repo name (as the dashboard shows it) or path to its top level. Must be a repo prism-cli found under your home directory.' };
 
 export const TOOLS: ToolDef[] = [
@@ -412,6 +440,17 @@ export const TOOLS: ToolDef[] = [
     },
     readOnly: false,
     run: (ctx, a) => report(ctx, checkArgs(a, ['repo', 'commit', 'format'])),
+  },
+  {
+    name: 'prism_snapshot',
+    description: 'Writes the PRISM dashboard as one static, self-contained HTML file (codewatch, usage from the cache, setup and security panels; no server, no token, commands copy only) under a new folder in the OS temp directory, mode 0600, and returns its path. With open true it asks the system opener to show it when a display is available. It writes nothing else and starts no server.',
+    inputSchema: {
+      type: 'object',
+      properties: { open: { type: 'boolean', description: 'Open the file in the default browser when a display is available (default false)' } },
+      additionalProperties: false,
+    },
+    readOnly: false,
+    run: (ctx, a) => snapshot(ctx, checkArgs(a, ['open'])),
   },
   {
     name: 'prism_setup',

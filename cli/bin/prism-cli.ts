@@ -1,22 +1,12 @@
 #!/usr/bin/env node
-import { program } from 'commander';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { registerCommands } from '../src/index.js';
+// The status line runs on every Claude Code update: skip commander and the
+// command registry (about 20 ms) when it is called with only its own flags.
+const STATUSLINE_FLAGS = new Set(['--no-session', '--json']);
+const argv = process.argv.slice(2);
+if (argv[0] === 'statusline' && argv.slice(1).every((a) => STATUSLINE_FLAGS.has(a))) {
+  const { main } = await import('../src/statusline/statusline.js');
+  await main({ session: !argv.includes('--no-session'), json: argv.includes('--json') });
+} else {
+  await import('./cli.js');
+}
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// Works from both cli/bin/ (source via tsx) and dist/bin/ (published)
-const pkgPath = existsSync(resolve(__dirname, '..', 'package.json'))
-  ? resolve(__dirname, '..', 'package.json')
-  : resolve(__dirname, '..', '..', 'package.json');
-const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-
-program
-  .name('prism-cli')
-  .description('PRISM D1 Velocity CLI tool')
-  .version(pkg.version);
-
-await registerCommands(program);
-
-program.parse();

@@ -71,6 +71,11 @@ export function findPackageDir(start: string): string | null {
   return null;
 }
 
+/** This prism-cli's own version, from its package.json; 'unknown' when it cannot be read. */
+export function ownVersion(): string {
+  return packageVersion(findPackageDir(dirname(fileURLToPath(import.meta.url)))) ?? 'unknown';
+}
+
 function packageVersion(dir: string | null): string | null {
   if (!dir) return null;
   try {

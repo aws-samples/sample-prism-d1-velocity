@@ -30,6 +30,7 @@ Install [`prism-cli`](https://www.npmjs.com/package/@prism-d1/cli) (Node.js 22 o
 | Findings in VS Code, Kiro or Cursor | `code --install-extension prism-d1-<version>.vsix` | [Editor extension](USER_GUIDE.md#editor-extension) |
 | A PRISM page, PRISM tools, a fix-findings skill and a quiet daily digest in Kiro Crew | `prism-cli enable kirocrew` | [Kiro Crew app](USER_GUIDE.md#kiro-crew-app) |
 | PRISM tools, slash commands and a findings summary at session start in Claude Code (work in progress) | `/plugin install prism@prism-d1-velocity` | [Claude Code plugin](USER_GUIDE.md#claude-code-plugin) |
+| Findings and spend in the Claude Code status line | `prism-cli enable claude-code` | [Claude Code status line](USER_GUIDE.md#claude-code-status-line) |
 | Read-only AWS account checks and fixes | `prism-cli aws check` | [AWS Account Advice](USER_GUIDE.md#aws-account-advice-aws-connect-check-recommend) |
 | Security Agent review of your branch (after `enable security`, which deploys to AWS) | `prism-cli security code-review` | [Running a Review](USER_GUIDE.md#running-a-review-from-the-cli) |
 
@@ -41,7 +42,7 @@ PRISM brings codewatch findings, review reports, AI spend and the setup checklis
 |---|---|---|---|
 | **PRISM editor extension** | VS Code, Kiro IDE, Cursor | Findings in the Problems panel, spend and findings in the status bar, a PRISM panel with reports and setup. Works with or without a repo open, and over Remote-SSH. | [Install the editor extension](USER_GUIDE.md#editor-extension) |
 | **PRISM Kiro Crew app** | Kiro Crew | A PRISM sidebar page, PRISM tools for every agent, a skill that fixes findings before a push, and a daily digest that notifies you only when something changed. | [Install the Kiro Crew app](USER_GUIDE.md#kiro-crew-app) (`prism-cli enable kirocrew`) |
-| **PRISM Claude Code plugin** (work in progress, v0.1) | Claude Code | The PRISM MCP tools, slash commands (`/prism`, `/prism:findings`, `/prism:report`, `/prism:fix`, `/prism:spend`) and a SessionStart summary of the branch's open findings. Planned: a status line. | [Install the Claude Code plugin](claude-plugin/README.md#install) (`/plugin marketplace add aws-samples/sample-prism-d1-velocity`, then `/plugin install prism@prism-d1-velocity`) |
+| **PRISM Claude Code plugin** (work in progress, v0.2) | Claude Code | The PRISM MCP tools, slash commands (`/prism`, `/prism:findings`, `/prism:report`, `/prism:fix`, `/prism:spend`, `/prism:dashboard` for a static dashboard snapshot), a SessionStart summary of the branch's open findings, and a status line with findings and spend (`prism-cli enable claude-code`). Still work in progress: the review harness loop. | [Install the Claude Code plugin](claude-plugin/README.md#install) (`/plugin marketplace add aws-samples/sample-prism-d1-velocity`, then `/plugin install prism@prism-d1-velocity`) |
 
 Any other MCP client, including Kiro, can use the same tools through [`prism-cli mcp`](USER_GUIDE.md#mcp-server-prism-cli-mcp). Feature-by-feature comparison and details: [Using PRISM locally](USER_GUIDE.md#using-prism-locally). Every command and flag: [command reference](docs/CLI-REFERENCE.md). What each command touches in AWS: [prism-cli Overview](docs/PRISM-CLI-OVERVIEW.md).
 

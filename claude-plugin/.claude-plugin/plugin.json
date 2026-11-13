@@ -1,8 +1,8 @@
 {
   "name": "prism",
   "displayName": "PRISM",
-  "version": "0.1.0",
-  "description": "PRISM codewatch findings, review reports, AI spend and setup status in Claude Code: the prism-cli MCP tools, /prism slash commands and a SessionStart summary of this branch's open findings. Needs prism-cli 1.8.0 or later on PATH.",
+  "version": "0.2.0",
+  "description": "PRISM codewatch findings, review reports, AI spend, setup status and a static dashboard snapshot in Claude Code: the prism-cli MCP tools, /prism slash commands and a SessionStart summary of this branch's open findings. Needs prism-cli 1.10.0 or later on PATH (1.8.0 for everything but /prism:dashboard).",
   "author": {
     "name": "PRISM D1 Velocity maintainers",
     "url": "https://github.com/aws-samples/sample-prism-d1-velocity"

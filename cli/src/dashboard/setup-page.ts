@@ -82,6 +82,12 @@ showView();
 
 /** GET, or POST JSON with the CSRF header. referrerPolicy same-origin so the browser sends this page's Origin. */
 async function api(path, body) {
+  // A static snapshot answers the two reads it embeds and refuses everything else; it never fetches.
+  if (SNAPSHOT) {
+    if (body === undefined && path === '/api/setup') return { ok: true, status: 200, json: SNAPSHOT.setup };
+    if (body === undefined && path === '/api/action/status') return { ok: true, status: 200, json: { state: 'idle' } };
+    return { ok: false, status: 0, json: { error: 'this is a static snapshot: nothing runs from it' } };
+  }
   const init = body === undefined ? { credentials: 'same-origin', cache: 'no-store' } : {
     method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'X-Prism-CSRF': CSRF }, body: JSON.stringify(body),
@@ -131,6 +137,10 @@ function runButton(id, o) {
   const a = actionDef(id);
   if (!a || !a.available) return null;
   o = o || {};
+  if (SNAPSHOT) {
+    const cd = o.where && SETUP.repoCd && SETUP.repoCd[o.where];
+    return copyOnly((cd ? cd + ' && ' : '') + a.command + (a.url ? ' <collector-url>' : ''), 'snapshot: copy only');
+  }
   const b = el('button', { type: 'button', class: 'run' + (a.confirm ? ' danger' : '') }, o.label || 'Run');
   b.addEventListener('click', () => {
     let url;
@@ -232,7 +242,7 @@ function machineSection(data) {
 const CW_PILL = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'skipped' };
 function reposSection(data) {
   const s = el('section', { class: 'card wide' }, el('h2', {}, 'Repos'));
-  const recheck = el('button', { type: 'button' }, 'Re-check status');
+  const recheck = el('button', { type: 'button', disabled: SNAPSHOT ? '' : null, title: SNAPSHOT ? 'Not in a static snapshot' : null }, 'Re-check status');
   recheck.addEventListener('click', async () => { recheck.disabled = true; try { await api('/api/recheck'); } catch (e) { /* load() reports */ } await load(); });
   s.append(el('div', { class: 'srow-ctl' }, recheck, el('span', { class: 'fix' }, 'Codewatch hooks and Security Agent setup per repo, from local files.')));
   const ids = SETUP.repoIds || {}, cds = SETUP.repoCd || {}, cp = SETUP.copy || {};
@@ -323,7 +333,10 @@ function awsSection(a) {
     btn.disabled = false;
     if (CHECK.ok && CHECK.json.updated) load();
   });
-  s.append(el('h3', {}, 'Check now'), el('div', { class: 'srow-ctl' }, btn, el('span', { class: 'fix' }, 'One read-only call: aws sts get-caller-identity, as aws connect does it.')), out);
+  if (SNAPSHOT) btn.disabled = true;
+  s.append(el('h3', {}, 'Check now'), el('div', { class: 'srow-ctl' }, btn, el('span', { class: 'fix' }, SNAPSHOT
+    ? 'Disabled in a static snapshot, which makes no calls. Run prism-cli dashboard for a live check, or run aws sts get-caller-identity yourself.'
+    : 'One read-only call: aws sts get-caller-identity, as aws connect does it.')), out);
   s.append(el('h3', {}, 'Read-only AWS commands'),
     srow(null, 'Account check', 'Every call is a describe, get or list; the result is saved to .prism/results/.', runButton('aws-check', { label: 'Run aws check' })),
     srow(null, 'Team stack info', 'Reads the PRISM stack outputs (collector URL, user pool).', runButton('team-info', { label: 'Run team info' })));

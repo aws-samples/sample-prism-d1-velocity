@@ -112,12 +112,36 @@ const err = async (ctx: ToolContext, name: string, args: unknown = {}) => {
   return msg;
 };
 
-test('tools/list: five tools; the ones returning reviewer text start with the untrusted-data line', () => {
-  assert.deepEqual(TOOLS.map((t) => t.name), ['prism_status', 'prism_findings', 'prism_spend', 'prism_report', 'prism_setup']);
+test('tools/list: six tools; the ones returning reviewer text start with the untrusted-data line', () => {
+  assert.deepEqual(TOOLS.map((t) => t.name), ['prism_status', 'prism_findings', 'prism_spend', 'prism_report', 'prism_snapshot', 'prism_setup']);
   for (const t of TOOLS.filter((t) => t.name === 'prism_findings' || t.name === 'prism_report')) {
     assert.ok(t.description.startsWith(UNTRUSTED_NOTE + '\n'), t.name);
   }
-  assert.deepEqual(TOOLS.filter((t) => !t.readOnly).map((t) => t.name), ['prism_report']);
+  assert.deepEqual(TOOLS.filter((t) => !t.readOnly).map((t) => t.name), ['prism_report', 'prism_snapshot']);
+});
+
+test('prism_snapshot: one 0600 file under the temp dir, no token; open only with a display', async () => {
+  const { ctx } = fixture();
+  const opened: string[] = [];
+  const c: ToolContext = { ...ctx, env: {}, open: (f) => opened.push(f) };
+  const r = await ok(c, 'prism_snapshot');
+  assert.ok(r.path.startsWith(ctx.tmpDir! + '/prism-mcp-snapshot-'), r.path);
+  assert.equal(statSync(r.path).mode & 0o777, 0o600);
+  const html = readFileSync(r.path, 'utf8');
+  assert.equal(r.bytes, Buffer.byteLength(html));
+  assert.match(html, /id="prism-snapshot"/);
+  assert.doesNotMatch(html, /<meta name="prism-csrf"|\?token=|nonce=/);
+  assert.equal(r.opened, false);
+  const ssh = await ok({ ...c, env: { SSH_CONNECTION: '1 2 3 4' } }, 'prism_snapshot', { open: true });
+  assert.equal(ssh.opened, false);
+  assert.match(ssh.note, /no display/);
+  if (process.platform === 'linux') {
+    const x = await ok({ ...c, env: { DISPLAY: ':0' } }, 'prism_snapshot', { open: true });
+    assert.equal(x.opened, true);
+    assert.deepEqual(opened, [x.path]);
+  }
+  assert.match(await err(c, 'prism_snapshot', { open: 'yes' }), /open must be true or false/);
+  assert.match(await err(c, 'prism_snapshot', { path: '/etc/x' }), /unknown argument/);
 });
 
 test('prism_status: latest review, repo counts, cached spend and sync mode', async () => {
