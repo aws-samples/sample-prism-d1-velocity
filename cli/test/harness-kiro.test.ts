@@ -256,12 +256,15 @@ const REF_MOVES = [
   'git tag origin/main', 'git checkout -b origin/main', 'git switch -c remotes/origin/main',
   'git branch -u main', 'git branch --set-upstream-to=origin/x', 'git config branch.feat.merge refs/heads/x', 'git config set branch.feat.remote .',
   'sh -c "git update-ref refs/remotes/origin/main HEAD"', 'cd x && git -C y update-ref refs/remotes/o/m HEAD',
+  'git update-ref refs/heads/origin/main HEAD', 'git update-ref refs/tags/origin/main HEAD', 'git tag -m msg origin/main', 'git tag -a -m x origin/main',
+  'git push . HEAD:origin/main', 'git push . HEAD:refs/heads/origin/main', 'git remote rename origin old', 'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*',
 ];
 const ORDINARY = [
+  'git tag -a -m "release" v1.3', 'git remote -v', 'git remote add fork https://example.com/r.git', 'git config --get remote.origin.fetch', 'git update-ref refs/heads/feat/x HEAD',
   'git fetch origin', 'git fetch origin main', 'git fetch --all --prune', 'git branch', 'git branch -a', 'git branch -r', 'git branch feat/x', 'git branch feat/x origin/main',
   'git branch -d origin/old', 'git symbolic-ref refs/remotes/origin/HEAD', 'git symbolic-ref --short HEAD', 'git tag v1.2', 'git tag -l', 'git checkout main',
   'git checkout -b feat/y', 'git switch -c fix/z', 'git config branch.feat.merge', 'git config --get branch.feat.remote', 'git update-ref refs/heads/x HEAD',
-  'git push origin feat', 'git push -u origin feat', 'git rev-parse origin/main', 'git log origin/main..HEAD',
+  'git push origin feat', 'git push -u origin feat', 'git push origin HEAD:refs/heads/rel', 'git fetch origin refs/heads/main:refs/heads/main', 'git rev-parse origin/main', 'git log origin/main..HEAD',
 ];
 
 test('bypassReason: moving a remote-tracking ref, a shadowing branch or tag, or the upstream is a bypass; ordinary ref commands are not', () => {

@@ -77,6 +77,13 @@
           },
           {
             "type": "command",
+            "if": "Bash(*git*remote*)",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "bash-guard"],
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "if": "Bash(*git*fetch*)",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/harness-hook.mjs", "bash-guard"],
