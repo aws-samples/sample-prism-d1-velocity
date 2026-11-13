@@ -734,6 +734,15 @@ export function embedJson(v: unknown): string {
   return JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
+/** The exact element markers renderSnapshotPage writes, so a test can read the file back without parsing HTML. */
+export const SNAPSHOT_MARKERS = {
+  script: '<script>',
+  data: '<script type="application/json" id="prism-snapshot">',
+  scriptEnd: '</script>',
+  style: '<style>',
+  styleEnd: '</style>',
+} as const;
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /**
@@ -743,14 +752,15 @@ const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt
  * buttons become Copy buttons. No token, no server.
  */
 export function renderSnapshotPage(s: SnapshotData): string {
+  const M = SNAPSHOT_MARKERS;
   const at = escapeHtml(s.generatedAt);
   const csp = `default-src 'none'; script-src ${sha256(THEME_BOOT)} ${sha256(SCRIPT)}; style-src ${sha256(STYLE)}; img-src data:; base-uri 'none'; form-action 'none'`;
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="referrer" content="no-referrer">
-<script>${THEME_BOOT}</script>
-<title>PRISM dashboard snapshot ${at}</title><style>${STYLE}</style></head>
+${M.script}${THEME_BOOT}${M.scriptEnd}
+<title>PRISM dashboard snapshot ${at}</title>${M.style}${STYLE}${M.styleEnd}</head>
 <body><header><h1>PRISM dashboard</h1>
 <nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#setup" data-view="setup">Setup</a></nav>
 <div class="theme" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div>
@@ -759,6 +769,6 @@ export function renderSnapshotPage(s: SnapshotData): string {
 <div class="fix">A static copy written by prism-cli ${escapeHtml(s.version)} dashboard --snapshot. It does not refresh and nothing on it runs: commands are copy only. For the live page run <code>prism-cli dashboard</code>.</div></div>
 <main id="main"></main>
 <main id="setup" hidden></main>
-<script type="application/json" id="prism-snapshot">${embedJson(s)}</script>
-<script>${SCRIPT}</script></body></html>`;
+${M.data}${embedJson(s)}${M.scriptEnd}
+${M.script}${SCRIPT}${M.scriptEnd}</body></html>`;
 }

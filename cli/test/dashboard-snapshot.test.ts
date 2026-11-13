@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshotHtml, canOpen, writeSnapshot } from '../src/dashboard/snapshot.js';
-import { embedJson, renderPage, renderSnapshotPage } from '../src/dashboard/page.js';
+import { embedJson, renderPage, renderSnapshotPage, SNAPSHOT_MARKERS as M } from '../src/dashboard/page.js';
 import { emptyUsage } from '../src/dashboard/usage.js';
 import { makeResult, writeResult } from '../src/codewatch/results.js';
 
@@ -43,7 +43,40 @@ async function snapshot() {
   return { html, home: h, repo };
 }
 
-const scripts = (html: string) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+/**
+ * Every element in `html` that opens with exactly `open`, up to the next `close`:
+ * plain string search over the markers the writer exports, no regex tag filter.
+ */
+function elements(html: string, open: string, close: string): string[] {
+  const out: string[] = [];
+  for (let i = html.indexOf(open); i !== -1; i = html.indexOf(open, i)) {
+    const start = i + open.length;
+    const end = html.indexOf(close, start);
+    assert.notEqual(end, -1, `unclosed ${open}`);
+    out.push(html.slice(start, end));
+    i = end + close.length;
+  }
+  return out;
+}
+const scripts = (html: string) => elements(html, M.script, M.scriptEnd);
+/** The opening tag of every script element, as written: `<script ...>`. */
+function scriptOpeners(html: string): string[] {
+  const out: string[] = [];
+  for (let i = html.indexOf('<script'); i !== -1; i = html.indexOf('<script', i + 1)) out.push(html.slice(i, html.indexOf('>', i) + 1));
+  return out;
+}
+/** `html` with the body of every script element removed (the markup outside scripts). */
+function outsideScripts(html: string): string {
+  let out = '';
+  let i = 0;
+  for (let j = html.indexOf('<script', i); j !== -1; j = html.indexOf('<script', i)) {
+    out += html.slice(i, j);
+    const end = html.indexOf(M.scriptEnd, j);
+    assert.notEqual(end, -1, 'unclosed script');
+    i = end + M.scriptEnd.length;
+  }
+  return out + html.slice(i);
+}
 const hash = (s: string) => `'sha256-${createHash('sha256').update(s).digest('base64')}'`;
 
 test('one self-contained file: no external resource, strict CSP whose hashes match the inline code', async () => {
@@ -53,16 +86,21 @@ test('one self-contained file: no external resource, strict CSP whose hashes mat
   assert.match(csp!, /^default-src 'none'; /);
   assert.doesNotMatch(csp!, /unsafe-inline|unsafe-eval|https?:|connect-src/);
   for (const s of scripts(html)) assert.ok(csp!.includes(hash(s)), 'script hash in CSP');
-  const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
-  assert.ok(csp!.includes(hash(style)), 'style hash in CSP');
+  const styles = elements(html, M.style, M.styleEnd);
+  assert.equal(styles.length, 1);
+  assert.ok(csp!.includes(hash(styles[0])), 'style hash in CSP');
   assert.equal(scripts(html).length, 2, 'theme boot + page script');
+  // Every script element is one of the two exact forms: inline code, or the JSON data block.
+  assert.deepEqual(scriptOpeners(html), [M.script, M.data, M.script]);
   assert.doesNotMatch(html, /<link|<iframe|<img|\ssrc=|@import|url\(\s*['"]?https?:/i);
-  assert.doesNotMatch(html.replace(/<script[\s\S]*?<\/script>/g, ''), /https?:\/\//, 'no URL in the static markup');
+  assert.doesNotMatch(outsideScripts(html), /https?:\/\//, 'no URL in the static markup');
 });
 
 test('embedded data cannot close its element; no dashboard token or CSRF token', async () => {
   const { html } = await snapshot();
-  const block = /<script type="application\/json" id="prism-snapshot">([\s\S]*?)<\/script>/.exec(html)![1];
+  const blocks = elements(html, M.data, M.scriptEnd);
+  assert.equal(blocks.length, 1);
+  const block = blocks[0];
   assert.doesNotMatch(block, /</);
   const data = JSON.parse(block);
   assert.equal(data.version, '9.9.9');
