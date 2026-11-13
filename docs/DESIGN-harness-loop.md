@@ -400,9 +400,9 @@ Changes that do not show in a diff are caught, where the client allows, by the `
 inspecting the shell command: `--no-verify`, `git config prism.*`, `git config core.hooksPath`,
 and `-c core.hooksPath=` are denied with a message to the agent. So, since 1.12.0, is any git
 command that moves what the push check measures against (D4): a remote-tracking ref
-(`git update-ref refs/remotes/...` or `--stdin`, a `git fetch` or `git push` refspec whose
+(`git update-ref refs/remotes/...` or `--stdin`, a `git fetch`, `git pull` or `git push` refspec whose
 destination is `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, `git remote rename`,
-a write to `remote.<name>.fetch`), a branch or tag named like one (`origin/...`, `upstream/...`,
+`remove` or `set-branches`, a write to `remote.<name>.fetch` (also one-shot through `git -c`), a branch or tag named like one (`origin/...`, `upstream/...`,
 `remotes/...`, `refs/...`, by `git branch`, `git tag`, `git checkout -b`, `git switch -c`,
 `git update-ref refs/heads/origin/...`, or a fetch or push refspec destination; defense in depth,
 since the engine reads full `refs/remotes/...` names, so other remote names are not listed), and the

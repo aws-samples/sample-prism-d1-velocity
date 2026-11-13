@@ -96,7 +96,8 @@ const REF_MOVES = ['git update-ref refs/remotes/origin/main HEAD', 'git update-r
   'sh -c "git update-ref refs/remotes/origin/main HEAD"', 'cd x && git -C y update-ref refs/remotes/o/m HEAD', 'env git update-ref refs/remotes/o/m HEAD',
   '/usr/bin/git fetch . HEAD:refs/remotes/origin/main', 'FOO=1 git branch -f origin/main',
   'git update-ref refs/heads/origin/main HEAD', 'git tag -m msg origin/main', 'git push . HEAD:origin/main', 'git remote rename origin old',
-  'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*'];
+  'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*', 'git pull . HEAD:refs/remotes/origin/main', 'git remote remove origin',
+  'git -c remote.origin.fetch=+refs/heads/x:refs/remotes/origin/main fetch origin', 'git checkout -borigin/main'];
 
 test('every push form the tokenizer handles reaches the pre-push handler', () => {
   const rules = rulesFor('pre-push');
