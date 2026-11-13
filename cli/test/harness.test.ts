@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { exitCodeFor, isTamperPath, runHarnessReview, TAMPER_GLOBS, VERDICT_SCHEMA, type HarnessOptions, type HarnessVerdict } from '../src/codewatch/harness/engine.js';
-import { agentText, bypassReason, DENY_TAIL, gitCalls, isGitPush, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { agentText, bypassReason, DENY_TAIL, gitCalls, isGitPush, parsePushTarget, MAX_REASON_BYTES, runClaudeHook, shellCommands, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
 import { globToRegExp, matchesAny, parseDiff } from '../src/codewatch/harness/diff.js';
 import { loadState, recordBaseline, sanitizeSession, statePath } from '../src/codewatch/harness/state.js';
 import { readHarnessConfig } from '../src/codewatch/config.js';
@@ -788,6 +788,114 @@ test('claude: findings reach the model quoted, cut and capped; an engine error i
   // A broken repo state turns into a systemMessage, never a block.
   const out = runClaudeHook('pre-push', JSON.stringify({ cwd: tmp('notrepo'), tool_input: { command: 'git push' } }), { env: {} });
   assert.equal(out, '');
+});
+
+// ---------------------------------------------------------------- what a push carries
+
+/** The live repro: `git push origin main` without -u, so no upstream and no origin/HEAD, but origin/main exists. */
+function noUpstreamRig(): Rig {
+  const r = rig();
+  git(r.dir, 'branch', '--unset-upstream');
+  assert.equal(spawnSync('git', ['-C', r.dir, 'rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD']).status, 1);
+  return r;
+}
+
+const pushDeps = (r: Rig) => ({ env: {}, engine: { pathEnv: r.bin, gitleaksBin: join(dirname(r.log), 'gitleaks') } });
+const pushIn = (r: Rig, command: string) => hookInput(r, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+
+test('push gate: no upstream and no origin/HEAD still reviews the commits, against origin/main', () => {
+  const r = noUpstreamRig();
+  r.write('src/k.ts', `export const key = "${FAKE_SECRET}";\n`);
+  r.commit('add key');
+  r.leaks([leak('src/k.ts', 1)]);
+  for (const c of ['git push', 'git push --set-upstream origin main', 'git push -u origin main']) {
+    const out = JSON.parse(runClaudeHook('pre-push', pushIn(r, c), pushDeps(r)));
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny', c);
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /"src\/k\.ts:1"/, c);
+  }
+  const v = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch', push: { remote: 'origin', src: 'main', dst: 'main', unknown: null } }));
+  assert.ok(!v.warnings.some((w) => /uncommitted changes only/.test(w)), v.warnings.join('|'));
+  assert.equal(readResults(r.dir).at(-1)?.upstream, 'origin/main');
+});
+
+test('push gate: a first push to an empty remote reviews the whole tree', () => {
+  const r = noUpstreamRig();
+  git(r.dir, 'update-ref', '-d', 'refs/remotes/origin/main');
+  r.write('src/k.ts', `export const key = "${FAKE_SECRET}";\n`);
+  r.commit('add key');
+  r.leaks([leak('src/k.ts', 1)]);
+  const out = JSON.parse(runClaudeHook('pre-push', pushIn(r, 'git push -u origin main'), pushDeps(r)));
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  const v = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch' }));
+  assert.ok(v.warnings.some((w) => /first push\); reviewing the whole tree/.test(w)), v.warnings.join('|'));
+  assert.ok(v.diff.files >= 3, 'README, src/old.ts and src/k.ts are all in the diff');
+});
+
+test('push gate: `git push -u origin feat` on a new branch reviews the branch against origin/main', () => {
+  const r = noUpstreamRig();
+  git(r.dir, 'switch', '-q', '-c', 'feat');
+  r.write('src/k.ts', `export const key = "${FAKE_SECRET}";\n`);
+  r.commit('feat: key');
+  r.leaks([leak('src/k.ts', 1)]);
+  const out = JSON.parse(runClaudeHook('pre-push', pushIn(r, 'git push -u origin feat'), pushDeps(r)));
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(readResults(r.dir).at(-1)?.upstream, 'origin/main');
+});
+
+test('push gate: commits on no remote are reviewed when no remote branch matches', () => {
+  const r = noUpstreamRig();
+  git(r.dir, 'update-ref', 'refs/remotes/other/dev', 'refs/remotes/origin/main');
+  git(r.dir, 'update-ref', '-d', 'refs/remotes/origin/main');
+  r.write('src/k.ts', 'x\n');
+  r.commit('unpushed');
+  const v = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch' }));
+  assert.ok(v.warnings.some((w) => /1 commit\(s\) that are on no remote/.test(w)), v.warnings.join('|'));
+  assert.equal(v.diff.files, 1, 'only the unpushed commit, not what other/dev already has');
+});
+
+test('push gate: an explicit refspec reviews its source; an unknown target holds the push', () => {
+  const r = noUpstreamRig();
+  git(r.dir, 'switch', '-q', '-c', 'other');
+  r.write('src/k.ts', `export const key = "${FAKE_SECRET}";\n`);
+  r.commit('other: key');
+  git(r.dir, 'switch', '-q', 'main');
+  r.leaks([leak('src/k.ts', 1)]);
+  const out = JSON.parse(runClaudeHook('pre-push', pushIn(r, 'git push origin other:main'), pushDeps(r)));
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny', 'the pushed branch is reviewed, not the clean checkout');
+  for (const c of ['git push --all origin', 'git push origin a b', 'git push origin "refs/heads/*:refs/heads/*"', 'git push && git push other']) {
+    const o = JSON.parse(runClaudeHook('pre-push', pushIn(r, c), pushDeps(r)));
+    assert.equal(o.hookSpecificOutput.permissionDecision, 'deny', c);
+    assert.match(o.hookSpecificOutput.permissionDecisionReason, /could not tell which commits this push would send/, c);
+  }
+});
+
+test('parsePushTarget reads remote, source and destination', () => {
+  assert.deepEqual(parsePushTarget('git push'), { remote: null, src: null, dst: null, unknown: null });
+  assert.deepEqual(parsePushTarget('git push -u origin feat'), { remote: 'origin', src: 'feat', dst: 'feat', unknown: null });
+  assert.deepEqual(parsePushTarget('git push --set-upstream origin main'), { remote: 'origin', src: 'main', dst: 'main', unknown: null });
+  assert.deepEqual(parsePushTarget('git push origin +HEAD:refs/heads/rel'), { remote: 'origin', src: 'HEAD', dst: 'rel', unknown: null });
+  assert.deepEqual(parsePushTarget('git push --force-with-lease -o ci.skip origin x:y'), { remote: 'origin', src: 'x', dst: 'y', unknown: null });
+  assert.deepEqual(parsePushTarget('git push --repo=origin'), { remote: 'origin', src: null, dst: null, unknown: null });
+  assert.equal(parsePushTarget('git push origin :old'), null, 'a delete carries no commits');
+  assert.equal(parsePushTarget('git push --delete origin old'), null);
+  assert.equal(parsePushTarget('git status'), null);
+  assert.match(String(parsePushTarget('git push --mirror')?.unknown), /--mirror/);
+});
+
+test('the git pre-push hook reviews a first push with no upstream instead of skipping it (report only)', () => {
+  const r = noUpstreamRig();
+  r.write('src/k.ts', 'x\n');
+  r.commit('c');
+  const head = git(r.dir, 'rev-parse', 'HEAD');
+  const zero = '0'.repeat(40);
+  const prev = process.cwd();
+  process.chdir(r.dir);
+  try {
+    assert.equal(runPrePush({ repoRoot: r.dir, stdin: `refs/heads/main ${head} refs/heads/main ${zero}\n`, remote: 'origin', pathEnv: r.bin, log: () => {} }), 0);
+  } finally { process.chdir(prev); }
+  const rev = readResults(r.dir).find((x) => x.kind === 'review' && x.hook === 'pre-push');
+  assert.ok(rev && rev.status !== 'skipped', JSON.stringify(rev?.reason));
+  assert.equal(rev!.upstream, 'origin/main');
 });
 
 // ---------------------------------------------------------------- helpers and readers

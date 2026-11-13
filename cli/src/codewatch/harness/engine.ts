@@ -24,6 +24,7 @@ import { HARNESS_MAX_ROUNDS_CEILING, modelLabel, readEvalConfig, readHarnessConf
 import { gitleaksInstallHint, safeWrite, scanFiles, type FileScan, type ScannerConfigOverride } from '../gitleaks.js';
 import { ensureResultsExcluded, makeResult, type Finding, type Severity } from '../results.js';
 import { ADAPTERS, detectReviewers, findOnPath, normalizeReview, resolveReviewer, runReview, toolVersion, type ReviewerAdapter, type ReviewRequest, type ReviewRun } from '../reviewers/index.js';
+import { fallbackPushBase, type PushBase } from '../pushbase.js';
 import { loadReviewRules } from '../rules.js';
 import { diffTrees, gitIn, matchesAny, parseDiff, readBlobs, revParse, objectExists, snapshotTree, touchedPaths, type ParsedDiff } from './diff.js';
 import { cleanupState, ensureHarnessDir, loadState, readCache, saveState, STATE_VERSION, writeCache, type SessionState, type Verdict } from './state.js';
@@ -38,8 +39,20 @@ export const RETRY_NOTE = 'Your previous reply was not valid JSON. Return exactl
 
 export type Scope = 'new-lines' | 'files' | 'branch';
 export const SCOPES: Scope[] = ['new-lines', 'files', 'branch'];
-export type HumanWhy = 'secret-committed' | 'tamper' | 'max-rounds' | 'reviewer-failed' | 'no-progress' | 'secrets-scan-failed';
+export type HumanWhy = 'secret-committed' | 'tamper' | 'max-rounds' | 'reviewer-failed' | 'no-progress' | 'secrets-scan-failed' | 'push-unknown';
 export type HarnessEvent = 'stop' | 'pre-push' | 'manual' | 'mcp';
+
+/** One `git push` as the adapter read it from the command line. */
+export interface PushTarget {
+  /** The remote named on the command line, or null for the default. */
+  remote: string | null;
+  /** The source of the refspec (`HEAD`, a branch, a sha), or null for the current branch. */
+  src: string | null;
+  /** The branch it writes to on the remote, or null when not given. */
+  dst: string | null;
+  /** Set when the command's push target cannot be determined (`--all`, several refspecs, a glob): the push is held. */
+  unknown: string | null;
+}
 
 /** Paths whose change during a session ends the loop (section 6.2). `.prism/results/**` and
  * `.prism/harness/**` are on the design's list but never appear here: every diff and snapshot
@@ -99,6 +112,8 @@ export interface HarnessOptions {
   /** false when the push gate is off: the AI review is skipped, gitleaks still runs. */
   aiReview?: boolean;
   event?: HarnessEvent;
+  /** pre-push: what the agent's `git push` command writes (parsed by the adapter). */
+  push?: PushTarget;
   /** PATH for reviewer detection (tests). */
   pathEnv?: string;
   gitleaksBin?: string;
@@ -118,23 +133,31 @@ function emptyVerdict(opts: { session: string | null; scope: Scope; maxRounds: n
   };
 }
 
-/** The base to diff against for a branch-scope review: merge-base of HEAD with `since`, the upstream, or the remote default branch. */
-function branchBase(repoRoot: string, since: string | undefined, warnings: string[]): string | null {
-  const candidates: string[] = [];
-  if (since) candidates.push(since);
-  else {
-    candidates.push('@{upstream}');
-    const remote = gitIn(repoRoot, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
-    if (remote.ok && remote.stdout) candidates.push(remote.stdout);
+/**
+ * The base a branch-scope review compares the tip with: `since` when given, the
+ * upstream, then what the push writes to and the shared fallback chain
+ * (pushbase.ts), down to the commits on no remote and, on a first push, the
+ * empty tree. Never "HEAD": that would review only uncommitted work while
+ * commits leave the machine. Null only when git itself fails.
+ */
+function branchBase(repoRoot: string, tip: string, since: string | undefined, push: PushTarget | undefined, warnings: string[]): PushBase | null {
+  const merge = (ref: string, label: string): PushBase | null => {
+    const sha = revParse(repoRoot, `${ref}^{commit}`);
+    if (!sha) return null;
+    const mb = gitIn(repoRoot, ['merge-base', sha, tip]);
+    return mb.ok && mb.stdout ? { base: mb.stdout, label, emptyTree: false, note: null } : null;
+  };
+  if (since && !since.startsWith('-')) {
+    const b = merge(since, since);
+    if (b) return b;
+    warnings.push(`--since ${since.slice(0, 100)} is not a commit git knows; using the upstream or remote branch instead`);
   }
-  for (const c of candidates) {
-    if (c.startsWith('-')) continue;
-    const sha = revParse(repoRoot, `${c}^{commit}`);
-    if (!sha) { if (since) warnings.push(`--since ${since.slice(0, 100)} is not a commit git knows`); continue; }
-    const mb = gitIn(repoRoot, ['merge-base', sha, 'HEAD']);
-    if (mb.ok && mb.stdout) return mb.stdout;
-  }
-  return null;
+  const up = merge('@{upstream}', '@{upstream}');
+  if (up) return up;
+  const branch = gitIn(repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD']).stdout || null;
+  const b = fallbackPushBase(repoRoot, { remote: push?.remote, dst: push?.dst, branch, tip });
+  if (b?.note) warnings.push(b.note);
+  return b;
 }
 
 function hashOf(parts: string[]): string {
@@ -172,6 +195,7 @@ function nextAction(v: HarnessVerdict, integ?: Integrity): string {
         ? tamperAction(integ, v.session !== null)
         : 'Stop. This change touched PRISM, secret-scan or hook configuration. Tell the person what you changed there and why; do not undo or repeat the change to get past the check.';
       case 'secrets-scan-failed': return 'Stop. The secret scan ran but gave no verdict, so the push is held. Tell the person to check gitleaks and its config.';
+      case 'push-unknown': return 'Stop. PRISM could not tell which commits this push would send, so it is held. Push one branch at a time with an explicit remote and branch (git push origin <branch>), or tell the person why it was held.';
       case 'max-rounds': return `Stop fixing: the ${plural(v.max_rounds, 'fix round')} for this session are used. Report the remaining blocking findings to the person${v.secrets.length ? ', and do not push while a secret remains' : ''}.`;
       case 'no-progress': return 'Stop: nothing changed since the last review. Report the remaining blocking findings to the person instead of trying again.';
       case 'secret-committed': return 'Stop. A secret is already in a commit. Tell the person: it must be rotated and the history cleaned; removing the line does not un-expose it.';
@@ -221,6 +245,8 @@ interface Run {
 
 interface Diffs {
   state: SessionState | null;
+  /** The commit being reviewed: HEAD, or the source of a push of another ref. */
+  tip: string;
   current: string;
   reviewBase: string;
   upstreamLabel: string | null;
@@ -267,23 +293,37 @@ function loadSession(r: Run): { state: SessionState | null; sessionBase: string 
   return { state, sessionBase };
 }
 
-/** The current tree, the base it is compared with, and the review and session diffs. */
-function resolveDiffs(r: Run): Diffs {
+/** The current tree, the base it is compared with, and the review and session diffs; or why the push target is unknown. */
+function resolveDiffs(r: Run): Diffs | { unknown: string } {
   const { repoRoot, opts, warnings, head } = r;
+  const push = opts.push;
+  if (push?.unknown) return { unknown: push.unknown };
   const { state, sessionBase } = loadSession(r);
-  const current = opts.mode === 'staged' ? (gitIn(repoRoot, ['write-tree']).stdout || null) : snapshotTree(repoRoot, warnings);
+  // A push of something other than HEAD (`git push origin other:main`) reviews that commit's tree.
+  let tip = head;
+  let current: string | null = null;
+  if (push?.src && push.src !== 'HEAD') {
+    // A source git cannot resolve makes git refuse the push; HEAD is reviewed instead.
+    const src = revParse(repoRoot, `${push.src}^{commit}`);
+    if (src && src !== head) {
+      tip = src;
+      current = revParse(repoRoot, `${src}^{tree}`);
+    }
+  }
+  if (!current) current = opts.mode === 'staged' ? (gitIn(repoRoot, ['write-tree']).stdout || null) : snapshotTree(repoRoot, warnings);
   if (!current) throw new Error('could not snapshot the working tree');
   let reviewBase: string;
   let upstreamLabel: string | null = null;
   if (opts.mode === 'staged') reviewBase = head;
-  else if (r.scope === 'branch' || opts.mode === 'since' || !state) {
-    const b = branchBase(repoRoot, opts.since, warnings);
-    upstreamLabel = opts.since ?? '@{upstream}';
-    if (b) reviewBase = b;
-    else {
-      warnings.push('no upstream or remote default branch to compare with; reviewing uncommitted changes only');
+  else if (r.scope === 'branch' || opts.mode === 'since' || !state || tip !== head) {
+    const b = branchBase(repoRoot, tip, opts.since, push, warnings);
+    if (!b) {
+      if (r.event === 'pre-push') return { unknown: 'git could not tell which commits this push carries' };
+      warnings.push('git could not tell which commits are on a remote; reviewing uncommitted changes only');
       reviewBase = head;
-      upstreamLabel = null;
+    } else {
+      reviewBase = b.base;
+      upstreamLabel = b.label;
     }
   } else reviewBase = sessionBase;
 
@@ -293,7 +333,7 @@ function resolveDiffs(r: Run): Diffs {
   const sessionDiff = state && reviewBase !== sessionBase && opts.mode !== 'staged'
     ? parseDiff(diffTrees(repoRoot, sessionBase, current) ?? '')
     : diff;
-  return { state, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
+  return { state, tip, current, reviewBase, upstreamLabel, diffText, diff, sessionDiff };
 }
 
 /**
@@ -336,7 +376,7 @@ function secretScan(r: Run, d: Diffs): SecretScan {
   if (scan.skipped.length) warnings.push(`secrets not scanned in ${scan.skipped.length} file(s) with an unsafe path: ${scan.skipped.slice(0, 5).map((p) => JSON.stringify(p.slice(0, 200))).join(', ')}`);
   const addedIn = new Map(d.diff.files.map((f) => [f.path, f.added]));
   const hits = scan.findings.filter((f) => f.line !== null && addedIn.get(f.file)?.has(f.line));
-  const headBlobs = hits.length ? readBlobs(repoRoot, r.head, [...new Set(hits.map((f) => f.file))]) : new Map<string, Buffer>();
+  const headBlobs = hits.length ? readBlobs(repoRoot, d.tip, [...new Set(hits.map((f) => f.file))]) : new Map<string, Buffer>();
   const secrets = hits.map((f) => {
     const text = lineOf(blobs.get(f.file), f.line!);
     const headLines = headBlobs.get(f.file)?.toString('utf8').split('\n').map((l) => l.replace(/\r$/, ''));
@@ -500,7 +540,7 @@ function persist(r: Run, v: HarnessVerdict, d: Diffs, sec: SecretScan, rev: Revi
     kind: 'agent-harness', hook: 'agent',
     status: v.secrets.length || v.findings.length ? 'findings' : rev.failOpen ? 'error' : 'ok',
     tool: v.reviewer?.tool ?? (sec.scan.version ? 'gitleaks' : 'none'), tool_version: rev.toolVersion ?? sec.scan.version,
-    model: v.reviewer?.model ?? null, commit: r.head, tree: d.current,
+    model: v.reviewer?.model ?? null, commit: d.tip, tree: d.current,
     branch: gitIn(repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD']).stdout || null, upstream: d.upstreamLabel, base: d.reviewBase,
     started_at: r.started, finished_at: r.now().toISOString(),
     findings: [...secretAsFindings, ...v.findings.map(({ introduced_in_session: _i, blocking: _b, ...f }) => f)],
@@ -549,8 +589,19 @@ export function runHarnessReview(opts: HarnessOptions): HarnessVerdict {
   ensureHarnessDir(r.repoRoot);
   cleanupState(r.repoRoot, cfg.state_ttl_days);
 
-  const d = resolveDiffs(r);
+  const resolved = resolveDiffs(r);
   const v = emptyVerdict({ session, scope: r.scope, maxRounds: session ? maxRounds : 1, blockOn: cfg.block_on, warnings });
+  if ('unknown' in resolved) {
+    // Fail closed at push, as for a secret scan with no verdict: what leaves the machine is not known.
+    warnings.push(`push held: ${resolved.unknown}`);
+    v.verdict = 'stop';
+    v.human_why = 'push-unknown';
+    v.human_needed = true;
+    v.next_action = nextAction(v);
+    v.reasons = reasons(v);
+    return v;
+  }
+  const d = resolved;
   v.diff = { files: d.diff.files.length, added_lines: d.diff.addedLines, hash: null, cached: false };
   if (!d.diff.files.length) {
     v.secrets_scanned = true; // nothing to scan

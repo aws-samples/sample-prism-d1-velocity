@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../utils/exec.js';
+import { fallbackPushBase } from './pushbase.js';
 import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY } from './config.js';
 import { loadReviewRules } from './rules.js';
 import { safeWrite } from './gitleaks.js';
@@ -55,7 +56,7 @@ function git(args: string[]): string | null {
  * the remote already has for this ref, else the remote's default branch (a
  * first push of a new branch). The diff is merge-base based (`base...sha`).
  */
-export function resolveBase(ref: PushRef, remote: string | null): { base: string | null; upstream: string | null } {
+export function resolveBase(ref: PushRef, remote: string | null, repoRoot = '.'): { base: string | null; upstream: string | null; emptyTree?: boolean } {
   const branch = ref.localRef.startsWith('refs/heads/') ? ref.localRef.slice('refs/heads/'.length) : null;
   if (branch) {
     const up = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`]);
@@ -74,6 +75,11 @@ export function resolveBase(ref: PushRef, remote: string | null): { base: string
       if (sha) return { base: sha, upstream: head.replace(/^refs\/remotes\//, '') };
     }
   }
+  // No upstream and no remote HEAD (a first push with no -u): the remote's branch, its
+  // main/master, the commits on no remote, or on a first push the whole tree.
+  const dst = ref.remoteRef.startsWith('refs/heads/') ? ref.remoteRef.slice('refs/heads/'.length) : null;
+  const fb = fallbackPushBase(repoRoot, { remote, dst, branch, tip: ref.localSha });
+  if (fb && fb.base !== ref.localSha) return { base: fb.base, upstream: fb.emptyTree ? null : fb.label, emptyTree: fb.emptyTree };
   return { base: null, upstream: null };
 }
 
@@ -132,9 +138,9 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
   const { repoRoot } = opts;
   const started = new Date().toISOString();
   const branch = ref.localRef.startsWith('refs/heads/') ? ref.localRef.slice(11) : ref.localRef;
-  const { base, upstream } = resolveBase(ref, opts.remote);
+  const { base, upstream, emptyTree } = resolveBase(ref, opts.remote, repoRoot);
 
-  const unscanned = recordUnscannedCommits(repoRoot, base, ref.localSha, branch, upstream);
+  const unscanned = recordUnscannedCommits(repoRoot, emptyTree ? null : base, ref.localSha, branch, upstream);
   if (unscanned > 0) log(`prism: ${unscanned} pushed commit(s) have no pre-commit secret scan (recorded in .prism/results/)`);
 
   const common = { kind: 'review' as const, hook: 'pre-push' as const, commit: ref.localSha, branch, upstream, base, started_at: started };
@@ -165,7 +171,7 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
 
   // spawnSync rather than run(): run() inherits execFileSync's 1 MB buffer,
   // which a large branch diff exceeds.
-  const d = spawnSync('git', ['diff', '--no-color', '--no-ext-diff', `${base}...${ref.localSha}`, '--', '.', ...DIFF_EXCLUDES],
+  const d = spawnSync('git', ['diff', '--no-color', '--no-ext-diff', ...(emptyTree ? [base, ref.localSha] : [`${base}...${ref.localSha}`]), '--', '.', ...DIFF_EXCLUDES],
     { cwd: repoRoot, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
   let diff = d.status === 0 ? d.stdout : null;
   if (diff === null) {

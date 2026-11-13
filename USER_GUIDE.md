@@ -952,7 +952,10 @@ One engine command does the work: `prism-cli codewatch review --json`. On each r
 1. Takes the diff. In an agent session that is the lines the agent changed since the session
    started (the plugin's SessionStart hook snapshots the working tree into
    `.prism/harness/<session>.json`, so your own uncommitted work is not blamed on the agent). Without
-   a session it is the branch against its upstream plus uncommitted changes. An empty diff passes
+   a session it is the branch against its upstream plus uncommitted changes. At a push it is every
+   commit the push would send: against the upstream, else the remote branch the push names or
+   `origin/main`, else the commits on no remote, and on a first push the whole tree. A push whose
+   target the command does not name (`--all`, several refspecs) is held. An empty diff passes
    at once, with no cost.
 2. Stops (`stop`, `human_why: tamper`) if the session changed PRISM's or gitleaks' own
    configuration: `.gitleaksignore`, `.gitleaks.toml`, the gitleaks baseline, `.prism/config.json`,

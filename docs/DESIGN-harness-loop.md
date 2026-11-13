@@ -804,6 +804,18 @@ Where 1.11.0 differs from or settles something in the text above:
   does not stop on those paths. Two parts still apply: an added `gitleaks:allow` line gives `stop`
   (`tamper`), and when the change edits `.gitleaks.toml`, `.gitleaksignore` or the gitleaks
   baseline, gitleaks runs with the base branch's copy of them, so a change cannot allowlist itself.
+- **What a push carries.** The push gate reviews the commits that would leave the machine and never
+  falls back to uncommitted changes only. The base is the upstream; else what the push command
+  writes to (`refs/remotes/<remote>/<dst>` from `git push [-u] <remote> [<src>:]<dst>`); else
+  `<remote>/<current branch>`, `<remote>/HEAD`, `<remote>/main` or `master` (and the same for
+  `origin`); else the commits on no remote (`HEAD --not --remotes`); and on a first push to an
+  empty remote, the whole tree against the empty tree, with a warning. A refspec whose source is
+  not HEAD (`git push origin other:main`) reviews that commit's tree. When the command does not say
+  what it pushes (`--all`, `--mirror`, `--tags`, several refspecs, a glob, or several pushes in one
+  command), the verdict is `stop` with `human_why: push-unknown` and the push is denied, as for a
+  secret scan with no verdict. `codewatch review` and `prism_review` in branch scope use the same
+  chain, and the git pre-push hook uses its fallback steps for a new branch instead of skipping
+  the review.
 - **A `gitleaks:allow` committed before the session starts is not a tamper hit in the hook path.**
   The SessionStart baseline snapshots the working tree, so a marker already there (committed or
   not) is the person's work, not the agent's, and the session diff never shows it. A stateless run

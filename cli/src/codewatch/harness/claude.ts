@@ -9,7 +9,7 @@
  */
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
-import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict } from './engine.js';
+import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict, type PushTarget } from './engine.js';
 import { deleteState, loadState, recordBaseline, sanitizeSession } from './state.js';
 
 export const CLAUDE_EVENTS = ['session-start', 'stop', 'pre-push', 'bash-guard', 'session-end'] as const;
@@ -152,6 +152,48 @@ export function isGitPush(cmd: string): boolean {
   return gitCalls(cmd).some((g) => g.sub === 'push');
 }
 
+/** `git push` options that take the next word as their value. */
+const PUSH_VALUE_OPTS = new Set(['--repo', '--receive-pack', '--exec', '-o', '--push-option']);
+/** Options that push refs the command line does not name. */
+const PUSH_MANY = new Set(['--all', '--branches', '--mirror', '--tags']);
+
+/**
+ * What the command's `git push` writes: remote, refspec source and destination.
+ * `unknown` is set when that cannot be read from the command line: several
+ * pushes or refspecs, `--all`/`--mirror`/`--tags`, or a glob refspec. Null when
+ * the command holds no push, or only deletes.
+ */
+export function parsePushTarget(cmd: string): PushTarget | null {
+  const pushes = gitCalls(cmd).filter((g) => g.sub === 'push');
+  if (!pushes.length) return null;
+  const unknown = (why: string): PushTarget => ({ remote: null, src: null, dst: null, unknown: why });
+  if (pushes.length > 1) return unknown('the command runs more than one git push');
+  const pos: string[] = [];
+  let del = false;
+  const a = pushes[0].args;
+  for (let i = 0; i < a.length; i++) {
+    const w = a[i];
+    if (w === '--') { pos.push(...a.slice(i + 1)); break; }
+    if (!w.startsWith('-') || w === '-') { pos.push(w); continue; }
+    if (PUSH_MANY.has(w)) return unknown(`git push ${w} pushes refs the command does not name`);
+    if (w === '-d' || w === '--delete') del = true;
+    if (w.startsWith('--repo=')) pos.unshift(w.slice('--repo='.length));
+    if (PUSH_VALUE_OPTS.has(w)) { if (w === '--repo' && i + 1 < a.length) pos.unshift(a[i + 1]); i++; }
+  }
+  const [remote = null, ...refspecs] = pos;
+  if (del) return null; // deletes only: no commit leaves the machine
+  if (refspecs.length > 1) return unknown('the push names more than one refspec');
+  if (!refspecs.length) return { remote, src: null, dst: null, unknown: null };
+  const spec = refspecs[0].replace(/^\+/, '');
+  if (spec.includes('*')) return unknown('the push uses a glob refspec');
+  const colon = spec.indexOf(':');
+  const src = colon < 0 ? spec : spec.slice(0, colon);
+  const dstRaw = colon < 0 ? spec : spec.slice(colon + 1);
+  if (!src) return null; // ":dst" deletes dst
+  const dst = dstRaw.startsWith('refs/heads/') ? dstRaw.slice('refs/heads/'.length) : dstRaw.startsWith('refs/') || dstRaw === 'HEAD' ? null : dstRaw;
+  return { remote, src, dst, unknown: null };
+}
+
 /** git accepts any unambiguous prefix of a long option; `--no-v` is the shortest that means `--no-verify` for push. */
 const isNoVerify = (a: string) => a.length >= '--no-v'.length && '--no-verify'.startsWith(a);
 
@@ -282,11 +324,11 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
     }
 
     // pre-push: a git push (checked above)
-    const v = runHarnessReview({ ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', aiReview: pushGateOn(cfg.push_gate, env) });
+    const v = runHarnessReview({ ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg.push_gate, env) });
     const reason = () => agentText(v, { maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
     if (v.verdict === 'stop') {
-      if (v.secrets.length || v.human_why === 'tamper' || v.human_why === 'secrets-scan-failed') return deny(reason(), personText(v));
+      if (v.secrets.length || v.human_why === 'tamper' || v.human_why === 'secrets-scan-failed' || v.human_why === 'push-unknown') return deny(reason(), personText(v));
       return JSON.stringify({ systemMessage: personText(v) });
     }
     return v.warnings.length ? JSON.stringify({ systemMessage: personText(v) }) : '';
