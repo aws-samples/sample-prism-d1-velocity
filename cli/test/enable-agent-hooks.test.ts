@@ -165,6 +165,11 @@ test('merge helpers: PRISM entries found by command, an outdated PRISM entry is 
   assert.deepEqual(next, mergeClaude({}, claudeHooks('prism-cli')));
   assert.deepEqual(withoutPrism(next), {});
   assert.deepEqual(withoutPrism({ Stop: [{ hooks: [] }] }), { Stop: [{ hooks: [] }] }, 'a group that was already empty is kept');
+  assert.deepEqual(withoutPrism({ Stop: [] }), { Stop: [] }, 'an event that was already empty is kept');
+  const chained = { Stop: [{ hooks: [{ type: 'command', command: './pre.sh && prism-cli codewatch hook --client claude --event stop' }] }] };
+  assert.deepEqual(withoutPrism(chained), chained, 'a user hook that chains the PRISM command is the user\'s');
+  const quoted = { Stop: [{ hooks: [{ type: 'command', command: "'/opt/n/node' '/opt/p/prism-cli.js' codewatch hook --client claude --event stop" }] }] };
+  assert.deepEqual(withoutPrism(quoted), {}, 'the absolute node form is PRISM\'s');
 });
 
 test('cursor and codex are planned; an unknown client and a missing --client are errors', () => {

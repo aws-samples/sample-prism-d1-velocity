@@ -50,7 +50,13 @@ export interface AgentHooksDeps {
   now: () => Date;
 }
 
-const isPrismCommand = (c: unknown, client: Client) => typeof c === 'string' && new RegExp(`prism-cli(\\.[cm]?[jt]s)?['"]?\\s+codewatch\\s+hook\\s+--client\\s+${client}\\b`).test(c);
+/**
+ * A command PRISM wrote: `prism-cli codewatch hook --client <c> ...`, or the same behind one
+ * interpreter word (`'<node>' '<dir>/prism-cli.js' codewatch hook ...`). Anchored at the start, so a
+ * user's own hook that only chains the PRISM command is not taken for PRISM's.
+ */
+const isPrismCommand = (c: unknown, client: Client) => typeof c === 'string'
+  && new RegExp(`^(?:(?:'[^']*'|"[^"]*"|\\S+)\\s+)?(?:'[^']*|"[^"]*|\\S*?)prism-cli(\\.[cm]?[jt]s)?['"]?\\s+codewatch\\s+hook\\s+--client\\s+${client}\\b`).test(c);
 const hookCmd = (cli: string, client: Client, event: string) => `${cli} codewatch hook --client ${client} --event ${event}`;
 const tilde = (p: string, home: string) => (p === home || p.startsWith(home + '/') ? '~' + p.slice(home.length) : p);
 
@@ -203,7 +209,7 @@ export function withoutPrism(hooks: Record<string, Json>): Record<string, Json> 
     const kept = groups
       .map((g) => (g && Array.isArray(g.hooks) ? { ...g, hooks: g.hooks.filter((h: Json) => !isPrismCommand(h?.command, 'claude')) } : g))
       .filter((g, i) => !(g && Array.isArray(g.hooks) && g.hooks.length === 0 && groups[i].hooks.length > 0));
-    if (kept.length) out[ev] = kept;
+    if (kept.length || !groups.length) out[ev] = kept;
   }
   return out;
 }
