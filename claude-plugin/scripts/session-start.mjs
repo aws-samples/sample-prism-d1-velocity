@@ -26,7 +26,8 @@ import { pathToFileURL } from 'node:url';
 export const MAX_CONTEXT_BYTES = 2048;
 export const MAX_ROWS = 5;
 export const MAX_MESSAGE_CHARS = 200;
-const MCP_TIMEOUT_MS = 15000;
+// Worst case 5 + 5 + 10 = 20 s, under the 30 s timeout in hooks/hooks.json.
+const MCP_TIMEOUT_MS = 10000;
 /** prism_findings answers are capped at 50 KB; a reply far past that is dropped. */
 const MAX_MCP_BUFFER_CHARS = 256 * 1024;
 const SEVERITIES = new Set(['high', 'medium', 'low']);
@@ -60,14 +61,25 @@ export function manualHookRegistered(projectDir, env = process.env, home = homed
     join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), 'settings.json'),
     ...(projectDir ? [join(projectDir, '.claude', 'settings.json'), join(projectDir, '.claude', 'settings.local.json')] : []),
   ];
-  return files.some((f) => JSON.stringify(readJson(f)?.hooks?.SessionStart ?? '').includes(SESSION_HOOK));
+  return files.some((f) => {
+    const groups = readJson(f)?.hooks?.SessionStart;
+    if (!Array.isArray(groups)) return false;
+    return groups.some((g) => Array.isArray(g?.hooks) && g.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(SESSION_HOOK)));
+  });
 }
 
 /** The additionalContext `prism-cli git claude-session-context` returns for this event, or ''. */
 function sessionContext(raw, cwd) {
   const r = spawnSync(cliCommand(prismCli()), ['git', SESSION_HOOK], { ...spawnOpts, input: raw, cwd, encoding: 'utf8', timeout: CLI_TIMEOUT_MS });
-  if (r.status !== 0 || !r.stdout) return '';
-  try { return oneLine(JSON.parse(r.stdout)?.hookSpecificOutput?.additionalContext); } catch { return ''; }
+  const why = r.error ? oneLine(r.error.message) : r.status !== 0 ? `exit ${r.status}` : !r.stdout ? 'no output' : '';
+  if (why) {
+    process.stderr.write(`prism plugin SessionStart: prism-cli git ${SESSION_HOOK} failed (${why.slice(0, 200)})\n`);
+    return '';
+  }
+  try { return oneLine(JSON.parse(r.stdout)?.hookSpecificOutput?.additionalContext); } catch {
+    process.stderr.write(`prism plugin SessionStart: prism-cli git ${SESSION_HOOK} printed no JSON\n`);
+    return '';
+  }
 }
 
 function currentBranch(cwd) {

@@ -57,8 +57,12 @@ test('a manual claude-session-context hook in user or project settings is detect
   const project = mkdtempSync(join(tmpdir(), 'prism-plugin-proj-'));
   assert.equal(manualHookRegistered(project, {}, home), false);
 
-  const hook = { hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: 'prism-cli git claude-session-context' }] }] } };
+  // Only a hook's command counts, not the text of another field.
   mkdirSync(join(project, '.claude'));
+  writeFileSync(join(project, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ matcher: 'claude-session-context', hooks: [{ type: 'command', command: 'echo hi' }] }] } }));
+  assert.equal(manualHookRegistered(project, {}, home), false);
+
+  const hook = { hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: 'prism-cli git claude-session-context' }] }] } };
   writeFileSync(join(project, '.claude', 'settings.local.json'), JSON.stringify(hook));
   assert.equal(manualHookRegistered(project, {}, home), true);
 
