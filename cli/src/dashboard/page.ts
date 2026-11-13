@@ -7,6 +7,7 @@
  * innerHTML is never used for data.
  */
 
+import { createHash } from 'node:crypto';
 import { SETUP_SCRIPT, SETUP_STYLE, THEME_BOOT, THEME_SCRIPT } from './setup-page.js';
 
 /** Colour tokens; the dark set applies by system preference unless the toggle picks Light, and always with Dark. */
@@ -51,6 +52,7 @@ a.rlink { color:var(--accent); } a.rlink:hover { text-decoration:underline; }
 .help { font-size:12px; margin-top:4px; overflow-wrap:anywhere; } .help-links { margin-top:2px; } .help-steps { margin:4px 0; padding-left:18px; } .help code { white-space:normal; overflow-wrap:anywhere; }
 .banner { border:1px solid var(--warn); border-left-width:4px; border-radius:6px; padding:10px 12px; margin:4px 0 12px; background:color-mix(in srgb, var(--warn) 10%, var(--card)); }
 .banner strong { color:var(--text); display:block; margin-bottom:4px; } .banner .fix code { white-space:normal; overflow-wrap:anywhere; } .note { color:var(--muted); font-size:12px; margin-top:10px; }
+.banner.snapshot { margin:12px 20px 0; border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, var(--card)); } .banner.snapshot strong { font-size:15px; }
 svg.trend rect.high { fill:var(--high); } svg.trend rect.medium { fill:var(--medium); } svg.trend rect.low { fill:var(--low); } svg.trend rect.zero { fill:var(--ok); }
 svg.trend line { stroke:var(--line); }
 .repo-title { font-size:12px; color:var(--muted); margin-bottom:6px; word-break:break-all; }
@@ -73,6 +75,8 @@ ${SETUP_STYLE}
 
 const SCRIPT = `
 'use strict';
+/** Set in a static snapshot (dashboard --snapshot): the embedded data. Nothing is fetched and nothing runs. */
+const SNAPSHOT = (() => { const n = document.getElementById('prism-snapshot'); try { return n ? JSON.parse(n.textContent) : null; } catch (e) { return null; } })();
 const SVG = 'http://www.w3.org/2000/svg';
 function el(tag, attrs, ...kids) {
   const n = document.createElement(tag);
@@ -191,8 +195,10 @@ function summaryPanel(sum) {
 
 const SCAN_LABEL = { ok: ['ok', 'ok'], 'not-scanned': ['warn', 'not scanned'], 'no-verify': ['warn', 'no-verify'], flagged: ['missing', 'secrets found'], none: ['skipped', '-'] };
 
-/** Link to a scan report. Ids come from the server's own listing; encodeURIComponent keeps them literal. */
-const reportLink = (id, label) => el('a', { href: '/report/' + encodeURIComponent(id), class: 'rlink' }, label);
+/** Link to a scan report. Ids come from the server's own listing; encodeURIComponent keeps them literal. A snapshot has no report pages. */
+const reportLink = (id, label) => SNAPSHOT
+  ? el('span', { title: 'Report pages open from the live dashboard (prism-cli dashboard) or prism-cli codewatch report' }, label)
+  : el('a', { href: '/report/' + encodeURIComponent(id), class: 'rlink' }, label);
 
 function reviewCell(rv) {
   if (rv.state === 'not-reviewed') return el('span', { class: 'fix' }, 'not reviewed');
@@ -632,6 +638,11 @@ async function load(fresh) {
 }
 
 async function getJson(path) {
+  if (SNAPSHOT) {
+    if (path === '/api/data') return SNAPSHOT.data;
+    if (path.startsWith('/api/usage')) return { usage: SNAPSHOT.data.usage, cacheHit: true };
+    throw new Error('not in this snapshot');
+  }
   const res = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
@@ -670,16 +681,23 @@ async function render() {
   PREV = CUR;
   const c = data.overview.counts;
   meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '')
-    + ' · updated ' + when(data.generated_at) + (changed.size ? ' · ' + changed.size + ' value' + (changed.size === 1 ? '' : 's') + ' changed (outlined)' : '') + ' · refreshes every minute while visible';
+    + (SNAPSHOT ? ' · data from ' + when(data.generated_at) + ' · static snapshot, does not refresh'
+      : ' · updated ' + when(data.generated_at) + (changed.size ? ' · ' + changed.size + ' value' + (changed.size === 1 ? '' : 's') + ' changed (outlined)' : '') + ' · refreshes every minute while visible');
   await renderSetup(data);
   return data;
 }
 ${SETUP_SCRIPT}
 ${THEME_SCRIPT}
-document.getElementById('refresh').addEventListener('click', () => load(true));
-setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS - 1000) load(false); }, AUTO_REFRESH_MS / 4);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS) load(false); });
-load(false);
+if (SNAPSHOT) {
+  const at = document.getElementById('snapshot-at');
+  if (at) at.textContent = when(SNAPSHOT.generatedAt);
+  load(false);
+} else {
+  document.getElementById('refresh').addEventListener('click', () => load(true));
+  setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS - 1000) load(false); }, AUTO_REFRESH_MS / 4);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - lastLoad >= AUTO_REFRESH_MS) load(false); });
+  load(false);
+}
 `;
 
 export function renderPage(nonce: string, csrf = ''): string {
@@ -698,4 +716,59 @@ export function renderPage(nonce: string, csrf = ''): string {
 <main id="main"></main>
 <main id="setup" hidden></main>
 <script nonce="${nonce}">${SCRIPT}</script></body></html>`;
+}
+
+/** What a static snapshot embeds: the /api/data payload and the /api/setup answer, as the live page would fetch them. */
+export interface SnapshotData {
+  data: unknown;
+  setup: unknown;
+  /** ISO time the snapshot was written. */
+  generatedAt: string;
+  version: string;
+}
+
+const sha256 = (s: string) => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`;
+
+/** JSON for a <script type="application/json"> block: `<` escaped, so the text can never close the element. */
+export function embedJson(v: unknown): string {
+  return JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+/** The exact element markers renderSnapshotPage writes, so a test can read the file back without parsing HTML. */
+export const SNAPSHOT_MARKERS = {
+  script: '<script>',
+  data: '<script type="application/json" id="prism-snapshot">',
+  scriptEnd: '</script>',
+  style: '<style>',
+  styleEnd: '</style>',
+} as const;
+
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/**
+ * The same page as renderPage, as one static file: the data is embedded, the
+ * scripts and the style are allowed by hash in a CSP meta tag with
+ * default-src 'none' (no fetch, no remote resource), and the Setup page's Run
+ * buttons become Copy buttons. No token, no server.
+ */
+export function renderSnapshotPage(s: SnapshotData): string {
+  const M = SNAPSHOT_MARKERS;
+  const at = escapeHtml(s.generatedAt);
+  const csp = `default-src 'none'; script-src ${sha256(THEME_BOOT)} ${sha256(SCRIPT)}; style-src ${sha256(STYLE)}; img-src data:; base-uri 'none'; form-action 'none'`;
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<meta name="referrer" content="no-referrer">
+${M.script}${THEME_BOOT}${M.scriptEnd}
+<title>PRISM dashboard snapshot ${at}</title>${M.style}${STYLE}${M.styleEnd}</head>
+<body><header><h1>PRISM dashboard</h1>
+<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#setup" data-view="setup">Setup</a></nav>
+<div class="theme" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div>
+<span class="meta" id="meta"></span></header>
+<div class="banner snapshot" role="note"><strong>Snapshot generated <time id="snapshot-at" datetime="${at}">${at}</time></strong>
+<div class="fix">A static copy written by prism-cli ${escapeHtml(s.version)} dashboard --snapshot. It does not refresh and nothing on it runs: commands are copy only. For the live page run <code>prism-cli dashboard</code>.</div></div>
+<main id="main"></main>
+<main id="setup" hidden></main>
+${M.data}${embedJson(s)}${M.scriptEnd}
+${M.script}${SCRIPT}${M.scriptEnd}</body></html>`;
 }

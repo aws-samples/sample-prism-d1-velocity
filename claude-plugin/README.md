@@ -1,13 +1,16 @@
-# PRISM plugin for Claude Code (v0.1, work in progress)
+# PRISM plugin for Claude Code (v0.2, work in progress)
 
 Brings PRISM's local results into [Claude Code](https://code.claude.com/docs/en/overview): codewatch
 review findings, scan reports, AI spend and the setup checklist. It reads the same local data as
-`prism-cli dashboard`, makes no AWS calls and opens no port.
+`prism-cli dashboard` and makes no AWS calls. The only port it opens is the live dashboard's, on
+127.0.0.1, when you run `/prism:dashboard`.
 
 The plugin has three parts:
 
-- **MCP server** `prism`: the read-only `prism-cli mcp` tools (`prism_status`, `prism_findings`,
-  `prism_spend`, `prism_report`, `prism_setup`). See
+- **MCP server** `prism`: the `prism-cli mcp` tools (`prism_status`, `prism_findings`,
+  `prism_spend`, `prism_report`, `prism_snapshot`, `prism_dashboard`, `prism_dashboard_stop`,
+  `prism_setup`). They only read, except `prism_report` and `prism_snapshot`, which write an HTML
+  file under the OS temp directory, and `prism_dashboard`, which starts the local dashboard server. See
   [MCP server (prism-cli mcp)](../USER_GUIDE.md#mcp-server-prism-cli-mcp).
 - **Slash commands**: prompts that call those tools (listed below). They hold no logic of their own.
 - **SessionStart hook**: adds a short summary of this branch's open findings to Claude's context
@@ -16,7 +19,8 @@ The plugin has three parts:
 ## Requirements
 
 - Claude Code 2.1.x.
-- prism-cli 1.8.0 or later on the `PATH` Claude Code sees (`npm install -g @prism-d1/cli`), and
+- prism-cli 1.10.0 or later on the `PATH` Claude Code sees (1.8.0 works for everything except
+  `/prism:dashboard`) (`npm install -g @prism-d1/cli`), and
   Node.js 22 or later, which prism-cli needs anyway. The SessionStart hook runs with `node`.
 - For findings: the [codewatch git hooks](../USER_GUIDE.md#codewatch-local-git-hooks) in the repo
   (`prism-cli enable codewatch`). A review is recorded on each `git push`.
@@ -67,6 +71,9 @@ these ways:
 | `/prism:findings [branch]` | Findings of the latest pre-push review of this branch, numbered, most severe first |
 | `/prism:report [html\|md] [commit]` | The scan report for the review covering a commit (default `HEAD`). `html` (default) writes a file under the OS temp directory and prints its path; `md` shows the text |
 | `/prism:fix [n]` | Fixes finding `n` from `/prism:findings`, or every high and medium finding, in the working tree. At most 2 rounds, then a report and `git diff --stat`. It doesn't commit or push. Claude only runs it when you type it |
+| `/prism:dashboard [--no-open]` | Starts the live dashboard (`prism-cli dashboard`, 127.0.0.1 only) through the `prism_dashboard` tool, or reuses the one already running, prints its URL and opens it when there is a display. Claude Code asks you to approve the call, because it starts a local server. See [The live dashboard](#the-live-dashboard) |
+| `/prism:dashboard --snapshot` | Writes the dashboard as one static HTML file under the OS temp directory (`prism_snapshot`), opens it when there is a display, and prints its path. No server runs; the file doesn't refresh and its commands are copy only |
+| `/prism:dashboard --stop` | Stops the dashboard that `/prism:dashboard` started (`prism_dashboard_stop`). It never stops one you started yourself |
 | `/prism:spend [days]` | AI coding spend from the dashboard's usage cache: today, month, top models and projects, per-day rows (default 7 days) |
 
 `/prism` works as a bare name unless another command already uses it; `/prism:prism` always works.
@@ -79,6 +86,24 @@ follow instructions in it or run commands it suggests. The commands also tell Cl
 push, never to disable or bypass git hooks (no `--no-verify`, no `git config prism.codewatch false`)
 and never to edit or delete anything in `.prism/results/`. The MCP tools carry the same warning in
 their descriptions and cap each message at 2,000 characters.
+
+## The live dashboard
+
+`/prism:dashboard` runs the same server as `prism-cli dashboard`: bound to 127.0.0.1 only, with a
+per-run token in the URL, and Origin and CSRF checks on every Setup action. The MCP server starts it
+as its own child process, so it stops when the Claude Code session ends (or with
+`/prism:dashboard --stop`). Running the command again returns the same URL instead of a second
+server. Its pid, port and URL are kept in `~/.prism/run/dashboard.json` (mode 0600).
+
+The URL is a per-run secret: anyone with it can use the page, including its Setup Run buttons, so
+don't paste it into chats, tickets or logs. Claude prints it once. It is also in this session's
+transcript (Claude Code keeps it on disk), which is why the server listens only on 127.0.0.1 and
+the token stops working when the server stops.
+
+The browser opens by itself only when there is a display and you are not in an SSH session. Over
+SSH, the command prints the URL and a note: in a VS Code, Kiro or Cursor Remote-SSH terminal the
+editor usually forwards the port, so Ctrl/Cmd+click the URL; from plain SSH, run
+`ssh -L <port>:127.0.0.1:<port> <host>` on your own machine and open the URL there.
 
 ## The SessionStart hook
 
@@ -115,7 +140,26 @@ only hook in its matcher group, delete the whole group. The plugin checks the us
 
 A plugin can't set Claude Code's `statusLine`. A plugin's `settings.json` only applies `agent` and
 `subagentStatusLine` ([Plugin components: default settings](https://code.claude.com/docs/en/plugins/components#default-settings)).
-A PRISM status line is planned as a separate prism-cli command.
+prism-cli sets it instead. From your shell:
+
+```bash
+prism-cli enable claude-code            # shows the plan and a diff, backs up settings.json, asks first
+prism-cli enable claude-code --status   # status line, plugin and MCP server configuration
+prism-cli enable claude-code --uninstall
+```
+
+It writes `statusLine` to `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when that
+is set) and keeps every other key. If you already have a status line, it shows it and stops; pass
+`--replace` to swap it, and `--uninstall` puts it back. The status line looks like this:
+
+```text
+PRISM codewatch-demo · 2 high 1 med · today $34.08 · month $480
+session $1.20 · +156/−23 · ctx 42% · cache 91%
+```
+
+`prism-cli statusline` reads only cached files (the dashboard's usage cache and the newest pre-push
+review of the repo), so the spend figures are as fresh as the last `prism-cli dashboard` run. See
+[Claude Code status line](../USER_GUIDE.md#claude-code-status-line).
 
 ## Uninstall
 
@@ -146,6 +190,6 @@ claude-plugin/
   .mcp.json                         MCP server "prism" -> ${PRISM_CLI:-prism-cli} mcp
   hooks/hooks.json                  SessionStart -> node scripts/session-start.mjs
   scripts/session-start.mjs
-  skills/<name>/SKILL.md            prism, findings, report, fix, spend
+  skills/<name>/SKILL.md            prism, findings, report, fix, spend, dashboard
   test/session-start.test.mjs
 ```

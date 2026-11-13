@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { buildPayload } from '../../dashboard/payload.js';
 import { cachedPayload, startServer, BIND_HOST } from '../../dashboard/server.js';
@@ -10,20 +9,9 @@ import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
 import type { DashboardPayload, PayloadTiming } from '../../dashboard/payload.js';
 import { collectUsage, emptyUsage } from '../../dashboard/usage.js';
 import { UsageCache, usageCachePath } from '../../dashboard/usage-cache.js';
-
-/** Opens the URL in the default browser. argv only, detached; failure is non-fatal. */
-function openBrowser(url: string): void {
-  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
-    : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
-      : ['xdg-open', [url]];
-  try {
-    const child = spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
-    child.on('error', () => console.log('  (could not open a browser; open the URL above)'));
-    child.unref();
-  } catch {
-    console.log('  (could not open a browser; open the URL above)');
-  }
-}
+import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../../dashboard/snapshot.js';
+import { ownVersion } from './version.js';
+import { resolve } from 'node:path';
 
 export function parsePort(v: string | undefined): number {
   if (v === undefined) return 0;
@@ -45,14 +33,42 @@ export default {
     { flags: '--all', description: '[deprecated, no effect] every repo under --root is now shown by default' },
     { flags: '--port <n>', description: 'Port on 127.0.0.1 (default: a random free port)' },
     { flags: '--no-open', description: 'Do not open a browser' },
+    { flags: '--snapshot <file>', description: 'Write the dashboard as one static HTML file (data embedded, no server, no token, mode 0600) and exit' },
+    { flags: '--exit-on-stdin-close', description: 'Stop the server when stdin closes (prism-cli mcp uses this so the dashboard ends with the session)' },
+    { flags: '--open', description: 'With --snapshot: open the file in a browser when a display is available' },
     { flags: '--fresh', description: 'With --json: run the codeburn exports now instead of using the usage cache (~/.prism/cache, 5 minutes)' },
     { flags: '--timing', description: 'With --json: print how long each stage took to stderr' },
   ],
-  async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean }) {
+  async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean }) {
     // stderr, so --json output stays parseable.
     if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
     const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: () => collectUsage() });
 
+    if (opts.snapshot !== undefined) {
+      if (opts.json) { console.error('Error: --snapshot and --json are separate outputs; pick one.'); process.exit(1); }
+      let refresh: Promise<unknown> | null = null;
+      const file = resolve(opts.snapshot);
+      let bytes: number;
+      try {
+        const html = await buildSnapshotHtml({
+          cwd: process.cwd(), home: homedir(), root: opts.root, version: ownVersion(),
+          usage: async () => { const r = await usageCache.get({ fresh: opts.fresh }); refresh = r.refresh; return r; },
+        });
+        bytes = writeSnapshot(file, html);
+      } catch (e: any) {
+        console.error(`Error: could not write the snapshot to ${file}: ${e?.message || e}`);
+        process.exit(1);
+      }
+      process.stdout.write(file + '\n');
+      console.error(`prism dashboard: snapshot written (${Math.round(bytes / 1024)} KB, mode 0600). It shows local paths; share it with care.`);
+      // --open shares opts.open with --no-open, whose default is true, so ask argv whether it was given.
+      if (process.argv.includes('--open')) {
+        if (canOpen(process.env, process.platform)) openBrowser(file);
+        else console.error('prism dashboard: no display here (SSH session?), so it was not opened. Copy the file to your machine and open it there.');
+      }
+      if (refresh) await refresh;
+      return;
+    }
     if (opts.json) {
       let refresh: Promise<unknown> | null = null;
       const payload = await buildPayload({
@@ -116,5 +132,10 @@ export default {
     const stop = () => { srv!.close().finally(() => process.exit(0)); setTimeout(() => process.exit(0), 2000).unref(); };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
+    if (opts.exitOnStdinClose) {
+      process.stdin.on('end', stop);
+      process.stdin.on('close', stop);
+      process.stdin.resume();
+    }
   },
 };

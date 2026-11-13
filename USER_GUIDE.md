@@ -555,8 +555,9 @@ Checking the download, Remote-SSH, features, settings and security:
 
 `prism-cli mcp` is an [MCP](https://modelcontextprotocol.io) server that gives an AI agent (Kiro,
 Claude Code or any MCP client) the same local data as the dashboard. The client starts it and talks
-to it over stdin and stdout; it opens no port, starts no background process and exits when the
-client closes stdin. It makes no AWS or network calls and never runs a fix. It needs prism-cli 1.8.0
+to it over stdin and stdout and opens no port itself. The one process it can start is the live
+dashboard (`prism_dashboard`), on 127.0.0.1 as its child, which it stops when the client closes
+stdin and it exits. It makes no AWS or network calls and never runs a fix. It needs prism-cli 1.8.0
 or later.
 
 | Tool | Arguments | Returns |
@@ -565,6 +566,9 @@ or later.
 | `prism_findings` | `repo`, `branch`, `limit` (at most 50) | Findings of the latest pre-push review: severity, category, file, line, message, branch, commit, reviewer, time. Default repo: the one containing the client's working directory |
 | `prism_spend` | `days` (at most 31) | Today, this month, calls, sessions, top models, top projects (folder names), per-day rows, `updatedAt` and `stale` |
 | `prism_report` | `repo`, `commit` (default `HEAD`), `format` (`md` or `html`) | The scan report for the review covering the commit, or the latest review, and which branch and range it covers. `md` returns the text; `html` writes a file under the OS temp directory and returns its path |
+| `prism_snapshot` | `open` (default false) | Writes the dashboard as one static HTML file (see [Static snapshot](#static-snapshot)) under a new folder in the OS temp directory and returns its path, and with `open` true opens it when a display is available. Needs prism-cli 1.10.0 |
+| `prism_dashboard` | `open` (default true) | Starts `prism-cli dashboard` (127.0.0.1, per-run token) as a child of the MCP server, or returns the one it already started, and returns its URL. Opens the browser only with a display and outside SSH; otherwise it says how to forward the port. The server stops when the MCP server exits. Needs prism-cli 1.10.0 |
+| `prism_dashboard_stop` | none | Stops the dashboard `prism_dashboard` started (recorded in `~/.prism/run/dashboard.json`, mode 0600), never another one |
 | `prism_setup` | none | The setup checklist: each item's status, detail and a fix command to copy |
 
 `repo` is a repo name as the dashboard shows it, or the path to a repo's top level; it must be a repo
@@ -599,16 +603,21 @@ the absolute path that `command -v prism-cli` prints as the command, for example
 
 ### Claude Code plugin
 
-[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.1, work in progress), and
+[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.2, work in progress), and
 this repository is its plugin marketplace. It registers `prism-cli mcp` as the `prism` MCP server
 and adds these slash commands: `/prism` (status), `/prism:findings` (the latest review of this
 branch), `/prism:report` (the scan report as an HTML file or Markdown), `/prism:fix [n]` (fix one
-finding, or all high and medium ones, in at most 2 rounds) and `/prism:spend`. Its SessionStart
+finding, or all high and medium ones, in at most 2 rounds), `/prism:spend` and `/prism:dashboard`.
+`/prism:dashboard` starts the live [dashboard](#local-dashboard) on 127.0.0.1 as a child of the
+MCP server (Claude Code asks you to approve it), reuses it on the next call, opens it when there is a
+display and outside SSH, and stops it when the session ends or with `/prism:dashboard --stop`. The
+URL carries the per-run token, so treat it as a secret. `/prism:dashboard --snapshot` writes a
+[static snapshot](#static-snapshot) instead, with no server. Its SessionStart
 hook adds a short summary of the branch's open findings to Claude's context, capped at 2 KB, with
 the finding text quoted. The hook also runs `prism-cli git claude-session-context`, unless your
 settings already register that command. Every command treats finding text as untrusted reviewer
-output. None of them pushes or bypasses the git hooks. The plugin needs prism-cli 1.8.0 or later
-on the PATH Claude Code sees.
+output. None of them pushes or bypasses the git hooks. The plugin needs prism-cli 1.10.0 or later
+on the PATH Claude Code sees (1.8.0 for everything except `/prism:dashboard`).
 
 ```text
 /plugin marketplace add aws-samples/sample-prism-d1-velocity
@@ -617,6 +626,47 @@ on the PATH Claude Code sees.
 
 The [plugin README](claude-plugin/README.md) covers the nvm `PRISM_CLI` override, how to remove the
 old manual SessionStart hook, why a plugin can't set the status line, and how to uninstall.
+
+### Claude Code status line
+
+A plugin can't set Claude Code's status line, so prism-cli does it:
+
+```bash
+prism-cli enable claude-code
+```
+
+It adds `{"type": "command", "command": "prism-cli statusline", "refreshInterval": 60}` as
+`statusLine` in `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` when that is set.
+When `prism-cli` (and `node`) are not on the PATH a process started outside your shell gets, as
+with nvm or Volta, the command uses absolute paths instead. Before it writes, it prints the plan and
+a diff, saves a copy as `settings.json.bak-<timestamp>` and asks; `--yes` skips the question, and
+without a terminal it stops unless you pass `--yes`. Every other key is kept. If a status line that
+isn't PRISM's is already set, it shows it and stops; `--replace` swaps it, and `--uninstall` removes
+PRISM's and puts the old one back from the backup. `--dry-run` prints the plan and writes nothing,
+and `--status` shows the status line, whether the plugin is installed and where `prism-cli mcp` is
+configured. It never installs the plugin; it prints the `/plugin` commands when the plugin is
+missing.
+
+`prism-cli statusline` is what Claude Code runs. It reads Claude Code's status JSON on stdin and
+prints two lines:
+
+```text
+PRISM codewatch-demo · 2 high 1 med · today $34.08 · month $480
+session $1.20 · +156/−23 · ctx 42% · cache 91% · Opus
+```
+
+The first row is the repo containing the session's working directory, the newest codewatch pre-push
+review for the checked-out branch (else the newest of any branch, with its name in brackets) and
+spend from the dashboard's usage cache. The second row comes from Claude Code itself: session cost,
+lines added and removed, context used, prompt cache hit ratio and model. It reads only those two
+cached files and never runs codeburn, git or a network call, so it stays around the cost of starting
+Node (about 50 ms). When the usage cache is missing, or more than 5 minutes old, it shows
+`usage: run prism-cli dashboard` (dimmed, with the older figures when there are any). It drops
+segments to fit `COLUMNS`, colours high findings red and medium amber unless `NO_COLOR` is set,
+links the findings to the review's result file (OSC 8, for terminals that support it), and strips
+control characters from anything it takes from result files. Bad or empty input prints `PRISM` and
+exits 0. `--no-session` prints only the first row and `--json` shows what it would print and which
+files it read.
 
 ### Kiro Crew app
 
@@ -962,6 +1012,21 @@ runs the codeburn exports now instead of using the 5-minute usage cache, and `--
 long each stage took (scan, setup, usage, total) to stderr, with the same numbers in the JSON's
 `timing`. `--port` takes 1024-65535. Every flag, with its default:
 [`prism-cli dashboard`](docs/CLI-REFERENCE.md#prism-cli-dashboard).
+
+### Static snapshot
+
+`prism-cli dashboard --snapshot <file.html>` writes the dashboard as one self-contained HTML file and
+exits: no server, no port and no token. It has the same Dashboard and Setup tabs as the live page,
+with the data embedded in the file, and works with or without `--root`. The page shows when it was
+generated, doesn't refresh, and makes no network request: its Content Security Policy is
+`default-src 'none'`, with the inline script and style allowed by hash. On the Setup tab the Run
+buttons become Copy buttons that show the command, AWS **Check now** is turned off, and report links
+are plain text (use `prism-cli codewatch report`). The file is written with mode 0600 because it
+shows local paths and your saved AWS account, like the live page. The path is printed on stdout.
+
+`--open` opens it in your browser (`xdg-open`, `open` or `start`) when a display is available. In an
+SSH session with no display it prints the path and a note instead; copy the file to your laptop and
+open it there. Usage comes from the 5-minute cache, as with `--json` (`--fresh` runs codeburn first).
 
 ### Remote Machines
 
