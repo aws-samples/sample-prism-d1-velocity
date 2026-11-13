@@ -254,8 +254,9 @@ const MOVES_UPSTREAM = 'changes the branch\'s upstream, which the PRISM push che
 const SHADOWS = 'shadows a remote-tracking ref the PRISM push check reads';
 /** Config keys that decide where an ordinary `git fetch` writes remote-tracking refs (a URL rewrite included). */
 const REMOTE_FETCH_KEY = /^(remote\..+\.(fetch|url)|url\..+\.insteadof)$/i;
-/** `alias.*`: the check reads the subcommand literally, so an alias defined now would hide a ref move from it. */
-const ALIAS_KEY = /^alias\../i;
+/** `alias.*` and config includes: the check reads the subcommand and keys literally, so an alias or an included file would hide a ref move from it. */
+const ALIAS_KEY = /^(alias\..|include\.path$|includeif\..+\.path$)/i;
+const HIDES_FROM_CHECK = 'defines a git alias or config include, which the PRISM push check cannot see through';
 const MOVES_FETCH = 'changes where git fetch writes remote-tracking refs, which the PRISM push check compares the push against';
 /** Config sections that hold a branch's upstream or a remote's fetch setup. */
 const TRACKING_SECTION = /^(branch|remote)\../i;
@@ -321,7 +322,7 @@ const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
     const fetch = configWrite(g, REMOTE_FETCH_KEY);
     if (fetch) return `git config ${quoted(fetch)} ${MOVES_FETCH}`;
     const alias = configWrite(g, ALIAS_KEY);
-    if (alias) return `git config ${quoted(alias)} defines a git alias, which the PRISM push check cannot see through`;
+    if (alias) return `git config ${quoted(alias)} ${HIDES_FROM_CHECK}`;
     const i = g.args.findIndex((a) => a === '--remove-section' || a === '--rename-section' || a === 'remove-section' || a === 'rename-section');
     const section = i >= 0 ? g.args[i + 1] : undefined;
     return section && TRACKING_SECTION.test(section) ? `git config ${g.args[i]} ${quoted(section)} ${MOVES_UPSTREAM}` : null;
@@ -374,8 +375,8 @@ const refBypass = (g: GitCall) => {
   // `git -c remote.<name>.fetch=...`, `.url=` or `url.<x>.insteadOf=` remaps any fetch this run does; `-c alias.x=...` hides the subcommand.
   const oneShot = g.configs.find((c) => REMOTE_FETCH_KEY.test(c.split('=')[0]));
   if (oneShot) return `git -c ${quoted(oneShot.split('=')[0])} ${MOVES_FETCH}`;
-  const alias = g.configs.find((c) => ALIAS_KEY.test(c));
-  if (alias) return `git -c ${quoted(alias.split('=')[0])} defines a git alias, which the PRISM push check cannot see through`;
+  const alias = g.configs.find((c) => ALIAS_KEY.test(c.split('=')[0]));
+  if (alias) return `git -c ${quoted(alias.split('=')[0])} ${HIDES_FROM_CHECK}`;
   return g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null;
 };
 
@@ -385,8 +386,8 @@ const refBypass = (g: GitCall) => {
  * fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`),
  * a branch or tag named like one (`origin/main`), or the branch's upstream.
  *
- * shortcut: a direct write to `.git/refs/remotes/` or `.git/packed-refs` by a non-git command is
- * not seen; the git pre-push review and the CI gate are the backstop.
+ * shortcut: a write to `.git/refs/`, `.git/packed-refs` or `.git/config` by a command other than
+ * git is not seen; the git pre-push review and the CI gate are the backstop.
  */
 export function bypassReason(cmd: string): string | null {
   for (const g of gitCalls(cmd)) {

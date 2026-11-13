@@ -268,6 +268,7 @@ const REF_MOVES = [
   'git push . --delete refs/remotes/origin/main', 'git push . -d refs/remotes/origin/main',
   'git config url.".".insteadOf https://example.com/r.git', 'git -c url.".".insteadOf=https://example.com/r.git fetch origin',
   'git config alias.ur update-ref', "git -c alias.x='update-ref refs/remotes/origin/main HEAD' x", 'git checkout -fb origin/main', 'git switch -fc origin/main',
+  'git config include.path ../x.cfg', 'git -c include.path=../x.cfg fetch origin', 'git config includeIf.onbranch:feat.path ../x.cfg',
 ];
 const ORDINARY = [
   'git branch -t feat origin/main', 'git push origin HEAD:upstream/sync', 'git remote add fork ../other', 'git remote prune origin', 'git fetch --prune', 'git branch -D feat/old',
