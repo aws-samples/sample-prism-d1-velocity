@@ -75,6 +75,16 @@ async function registerTop(program: any, name: string): Promise<boolean> {
 }
 
 /**
+ * Commands whose module file is named otherwise, as `<category> <command>` -> file base name.
+ * `enable agent-hooks` lives in harness-hooks.ts so CI path filters on `**\/agent*.ts`
+ * (the agent eval workflow) do not select it.
+ */
+export const COMMAND_FILES: Record<string, string> = { 'enable agent-hooks': 'harness-hooks' };
+const FILE_COMMANDS = new Map(Object.entries(COMMAND_FILES).map(([cmd, file]) => [`${cmd.split(' ')[0]} ${file}`, cmd.split(' ')[1]]));
+/** The command a `<category>/<file>` module registers as. */
+const commandFor = (category: string, file: string) => FILE_COMMANDS.get(`${category} ${file}`) ?? file;
+
+/**
  * Fast path: import and register ONLY the `<category> <command>` module being
  * invoked. Returns false if the module can't be found (so we can fall back).
  * Supports both compiled `.js` (published) and `.ts` (tsx dev) layouts.
@@ -82,28 +92,20 @@ async function registerTop(program: any, name: string): Promise<boolean> {
 async function registerOne(program: any, category: string, command: string): Promise<boolean> {
   const categoryDir = resolve(commandsDir, category);
   if (!existsSync(categoryDir) || !statSync(categoryDir).isDirectory()) return false;
+  const name = COMMAND_FILES[`${category} ${command}`] ?? command;
+  // A file that belongs to a differently named command is not this one.
+  if (commandFor(category, name) !== command) return false;
 
   let file = '';
-  for (const candidate of [`${command}.js`, `${command}.ts`]) {
+  for (const candidate of [`${name}.js`, `${name}.ts`]) {
     const p = resolve(categoryDir, candidate);
     if (existsSync(p)) { file = p; break; }
   }
-  if (file) {
-    const mod = await import(pathToFileURL(file).href);
-    const def = mod.default || mod;
-    // The file is not the command when the module names another one (it is found below under that name).
-    if (!(typeof def.name === 'string' && def.name && def.name !== command)) {
-      attach(program, category, command, def);
-      return true;
-    }
-  }
-  // A module whose file is named otherwise (`name` in its default export): look in this category only.
-  for (const f of readdirSync(categoryDir).filter((n) => /\.(js|ts)$/.test(n) && !n.endsWith('.d.ts'))) {
-    const mod = await import(pathToFileURL(resolve(categoryDir, f)).href);
-    const def = mod.default || mod;
-    if (def?.name === command) { attach(program, category, command, def); return true; }
-  }
-  return false;
+  if (!file) return false;
+
+  const mod = await import(pathToFileURL(file).href);
+  attach(program, category, command, mod.default || mod);
+  return true;
 }
 
 /** Full registration — imports every command module. Used for --help and unmatched invocations. */
@@ -127,9 +129,7 @@ async function registerAll(program: any) {
     for (const file of files) {
       const modulePath = pathToFileURL(resolve(categoryDir, file)).href;
       const mod = await import(modulePath);
-      const def = mod.default || mod;
-      // A module may name its command (`name`) when the file name must differ from it.
-      attach(program, category, typeof def.name === 'string' && def.name ? def.name : basename(file, '.js'), def);
+      attach(program, category, commandFor(category, basename(file, '.js')), mod.default || mod);
     }
   }
 }
@@ -141,7 +141,7 @@ async function registerAll(program: any) {
  *   commands/
  *     _top/<name>.js       → becomes `prism-cli <name>` (top-level command)
  *     <category>/          → becomes `prism-cli <category>`
- *       <command>.js       → becomes `prism-cli <category> <command>` (or the module's `name`)
+ *       <command>.js       → becomes `prism-cli <category> <command>` (or its COMMAND_FILES name)
  *
  * Each command file must export a default object:
  *   { description: string, options?: [{flags, description, default?}], action: (options) => void }

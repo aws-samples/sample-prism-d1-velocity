@@ -353,8 +353,6 @@ export function defaultDeps(): AgentHooksDeps {
 }
 
 export default {
-  /** The command is `enable agent-hooks`; the file is named harness-hooks so CI path filters on `**\/agent*.ts` (agent eval) do not select it. */
-  name: 'agent-hooks',
   description: 'Install the agent harness loop hooks (push check, opt-in finish check) for a coding client without a PRISM plugin: Kiro CLI V3 / IDE (.kiro/hooks/prism-harness.json) or Claude Code (.claude/settings.json hooks; skipped when the PRISM plugin is installed). Backs up, merges, and prints what it changed',
   options: [
     { flags: '--client <client>', description: `Coding client: ${CLIENTS.join(' | ')} (${PLANNED.join(', ')}: planned)` },
