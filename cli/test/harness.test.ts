@@ -737,6 +737,53 @@ test('after a reset past the session start, the finish gate still stops on a hoo
   r.write('.claude/settings.json', '{}\n');
   const v = runHarnessReview(r.opts({ session: 's1' }));
   assert.deepEqual([v.verdict, v.human_why], ['stop', 'tamper']);
+  assert.ok(clean.warnings.some((w) => /no longer a descendant of the commit the session started on/.test(w)), 'not an ancestor: the fork-point path');
+});
+
+const setStartHead = (dir: string, session: string, head: string) =>
+  writeFileSync(statePath(dir, session), JSON.stringify({ ...loadState(dir, session), head }));
+
+test('a session whose start commit is gone is reviewed against the branch base', () => {
+  const r = rig();
+  recordBaseline(r.dir, 's1', 'claude');
+  setStartHead(r.dir, 's1', 'f'.repeat(40));
+  r.write('src/a.ts', 'x\n');
+  r.commit('branch work');
+  const v = runHarnessReview(r.opts({ session: 's1' }));
+  assert.ok(v.warnings.some((w) => /the commit the session started on is gone, so this run is judged against the branch's base/.test(w)), v.warnings.join(' | '));
+  assert.equal(v.diff.files, 1, 'the committed branch work, not only uncommitted changes');
+});
+
+test('a session whose start shares no history with HEAD is reviewed against the branch base, not the unrelated start', () => {
+  const r = rig();
+  git(r.dir, 'checkout', '-q', '--orphan', 'other');
+  r.write('unrelated.txt', 'u\n');
+  r.commit('unrelated root');
+  recordBaseline(r.dir, 's1', 'claude');
+  git(r.dir, 'checkout', '-q', '-f', 'main');
+  r.write('src/a.ts', 'x\n');
+  r.commit('branch work');
+  const v = runHarnessReview(r.opts({ session: 's1' }));
+  assert.ok(v.warnings.some((w) => /HEAD shares no history with the commit the session started on/.test(w)), v.warnings.join(' | '));
+  assert.equal(v.diff.files, 1, 'unrelated.txt from the other history is not in the diff');
+});
+
+test('after a rebase onto a newer upstream, upstream edits to checked config are not session tamper', () => {
+  const r = rig();
+  r.write('src/a.ts', 'x\n');
+  r.commit('local work before the session');
+  recordBaseline(r.dir, 's1', 'claude');
+  git(r.dir, 'checkout', '-q', '-b', 'up', 'refs/remotes/origin/main');
+  r.write('.claude/settings.json', '{"upstream":true}\n');
+  r.commit('upstream changes the settings');
+  git(r.dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+  git(r.dir, 'checkout', '-q', 'main');
+  git(r.dir, 'rebase', '-q', 'refs/remotes/origin/main');
+  const v = runHarnessReview(r.opts({ session: 's1' }));
+  assert.notEqual(v.human_why, 'tamper', v.next_action);
+  assert.ok(v.warnings.some((w) => /leaving out the upstream commits since then/.test(w)), v.warnings.join(' | '));
+  r.write('.prism/review/rules.md', 'agent\n');
+  assert.equal(runHarnessReview(r.opts({ session: 's1' })).human_why, 'tamper', 'an edit made since still is');
 });
 
 test('the block_on notice at push: silent for the default, once per session through the adapter', () => {
