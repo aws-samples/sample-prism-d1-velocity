@@ -89,7 +89,7 @@ function savePushNotice(repoRoot: string, session: string, text: string): void {
   const p = noticePath(repoRoot, session);
   const prev = readPushNotice(repoRoot, session);
   const joined = prev ? `${prev}\n\nA later push:\n${text}` : text;
-  const all = Buffer.byteLength(joined, 'utf8') <= MAX_REASON_BYTES ? joined : text;
+  const all = Buffer.byteLength(joined, 'utf8') <= MAX_REASON_BYTES ? joined : `[Findings of earlier pushes omitted here; they are in .prism/results/.]\n${text}`;
   writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify({ version: 1, text: all }) + '\n', { mode: 0o600 });
   renameSync(`${p}.${process.pid}.tmp`, p);
 }
@@ -187,8 +187,12 @@ export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHo
     return event === 'pre-push' ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
   if (event === 'pre-push') {
-    if (typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell') return ok();
-    if (typeof input.tool_input?.command !== 'string') return failClosed('the shell call in the hook input has no command');
+    // Any call with a command is checked, whatever its tool id says (a renamed shell tool must not
+    // skip the check). A call without one is skipped only when it is plainly another tool.
+    if (typeof input.tool_input?.command !== 'string') {
+      const otherTool = typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell';
+      return otherTool ? ok() : failClosed('the shell call in the hook input has no command');
+    }
     const cmd = input.tool_input.command;
     let push: boolean;
     try {

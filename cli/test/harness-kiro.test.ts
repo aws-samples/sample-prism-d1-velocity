@@ -49,7 +49,8 @@ test('kiro push gate: non-push shell commands and other tools exit 0 at once, wi
   for (const command of ['git status', 'git log --grep push', 'npm test', 'echo "git push"']) {
     assert.deepEqual(runKiroHook('pre-push', payload('PreToolUse', r, { command }), deps(r)), { exit: 0, stdout: '', stderr: '' }, command);
   }
-  assert.equal(runKiroHook('pre-push', payload('PreToolUse', r, { tool_name: 'fs_write' }), deps(r)).exit, 0, 'not the shell tool');
+  assert.equal(runKiroHook('pre-push', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: 'a.ts' } }), deps(r)).exit, 0, 'another tool, no command');
+  assert.equal(runKiroHook('pre-push', payload('PreToolUse', r, { tool_name: 'shell_v2', command: 'git push --no-verify' }), deps(r)).exit, 2, 'a renamed shell tool is still checked');
   assert.deepEqual(r.calls(), [], 'no gitleaks, no reviewer');
 });
 
