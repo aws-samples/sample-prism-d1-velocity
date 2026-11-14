@@ -42,6 +42,7 @@ export type RegistryFetch = () => Promise<{ latest: string; publishedAt: string 
 export const realRegistryFetch: RegistryFetch = async () => {
   const res = await fetch(REGISTRY_URL, { signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS), headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (Number(res.headers.get('content-length') || 0) > MAX_REGISTRY_BYTES) throw new Error('registry answer too large');
   const text = await res.text();
   if (text.length > MAX_REGISTRY_BYTES) throw new Error('registry answer too large');
   const doc = JSON.parse(text);

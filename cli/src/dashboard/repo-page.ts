@@ -9,6 +9,8 @@ export const REPO_SCRIPT = `
 const REPO_CHART_RUNS = 24;
 /** Newest reviews listed in the repo view. */
 const REPO_REVIEW_ROWS = 10;
+/** Reviews per repo in the payload (codewatch.ts MAX_SCANS). */
+const SCANS_LOADED = 24;
 /** Open findings listed before "N more". */
 const REPO_FINDING_ROWS = 20;
 
@@ -72,7 +74,9 @@ function repoChart(cw) {
 
 function repoReviews(cw) {
   const rows = cw.scans.slice(0, REPO_REVIEW_ROWS);
-  const s = el('section', { class: 'card' }, el('h2', {}, 'Reviews', el('span', { class: 'sub' }, 'newest ' + rows.length + ' of ' + cw.scans.length + (cw.scans.length >= 24 ? '+' : ''))));
+  // The payload carries at most SCANS_LOADED reviews; past that the total is not known here.
+  const of = cw.scans.length < SCANS_LOADED ? ' of ' + cw.scans.length : '';
+  const s = el('section', { class: 'card' }, el('h2', {}, 'Reviews', el('span', { class: 'sub' }, 'newest ' + rows.length + of)));
   if (!rows.length) { s.append(el('p', { class: 'empty' }, 'No reviews yet.')); return s; }
   s.append(table(['When', 'Branch', 'Result', { label: 'Reviewer', cls: 'hide-sm' }, ''], rows.map((r) => [
     el('span', { title: when(r.started_at) }, ago(r.started_at)),
@@ -123,8 +127,8 @@ function repoFindings(cw) {
       el('div', { class: 'fix' }, txt(f.message)), el('div', { class: 'fix' }, txt(f.category) + ' · ' + txt(f.rule) + (f.branch ? ' · ' + f.branch : ''))));
   }
   s.append(list);
-  const more = cw.findings.length - REPO_FINDING_ROWS + (cw.findingsTruncated ? 1 : 0);
-  if (more > 0) s.append(el('p', { class: 'note' }, (cw.findingsTruncated ? 'more than ' : '') + (cw.findings.length - REPO_FINDING_ROWS) + ' more; run prism-cli codewatch report for all'));
+  const more = cw.findings.length - REPO_FINDING_ROWS;
+  if (more > 0 || cw.findingsTruncated) s.append(el('p', { class: 'note' }, (cw.findingsTruncated ? 'more than ' : '') + Math.max(more, 0) + ' more; run prism-cli codewatch report for all'));
   return s;
 }
 
