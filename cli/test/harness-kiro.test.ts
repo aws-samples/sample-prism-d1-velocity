@@ -476,18 +476,27 @@ test('D6: a file tool writing PRISM\'s harness state is denied in both adapters;
   assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
 });
 
-test('D6: the state of a linked worktree is in the shared git directory; the old .prism/harness is moved once', () => {
+test('D6: the state of a linked worktree is in the shared git directory; the old .prism/harness is moved once, without guard records', () => {
   const r = rig();
   mkdirSync(join(r.dir, '.prism', 'harness'), { recursive: true });
   writeFileSync(join(r.dir, '.prism', 'harness', 'old.json'), '{}\n');
+  writeFileSync(join(r.dir, '.prism', 'harness', 'old.guard.json'), '{}\n');
   const dir = harnessDir(r.dir);
   assert.equal(dir, join(r.dir, '.git', 'prism', 'harness'));
   ensureHarnessDir(r.dir);
   assert.ok(existsSync(join(dir, 'old.json')), 'migrated');
+  assert.ok(!existsSync(join(dir, 'old.guard.json')), 'no person claims cross over');
   assert.ok(!existsSync(join(r.dir, '.prism', 'harness')), 'the old directory is gone');
   const wt = join(tmp('wt'), 'wt');
   git(r.dir, 'worktree', 'add', '-q', wt);
   assert.equal(harnessDir(wt), dir, 'a linked worktree shares the common git directory');
+
+  const c = rig(); // a repository that commits its own .prism/harness
+  mkdirSync(join(c.dir, '.prism', 'harness'), { recursive: true });
+  writeFileSync(join(c.dir, '.prism', 'harness', 'planted.json'), '{}\n');
+  git(c.dir, 'add', '-f', '.prism/harness/planted.json');
+  ensureHarnessDir(c.dir);
+  assert.ok(!existsSync(join(harnessDir(c.dir), 'planted.json')), 'tracked state is never adopted');
 });
 
 test('D6: attribute() gives a gap to the person, a window to the agent, and nothing on a cut-off snapshot', () => {

@@ -27,7 +27,7 @@
  * non-goal (section 1); the push-time secret scan and the CI gate still apply.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { linkSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { type Dirent, linkSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureHarnessDir, harnessDir } from './state.js';
 
@@ -80,12 +80,14 @@ export function tamperHashes(repoRoot: string, prev?: Pick<Snapshot, 'hashes' | 
   const hashes: Record<string, string> = {};
   const stats: Record<string, string> = {};
   let complete = true;
+  let count = 0;
   const add = (p: string): boolean => {
     let st;
     try { st = lstatSync(join(repoRoot, p)); } catch { return true; } // absent
     if (st.isDirectory()) return true;
     if (!(st.isFile() || st.isSymbolicLink()) || !isTamperPath(p) || p in hashes) return true;
-    if (Object.keys(hashes).length >= MAX_FILES) { complete = false; return false; }
+    if (count >= MAX_FILES) { complete = false; return false; }
+    count++;
     const key = statKey(st);
     stats[p] = key;
     if (prev?.stats[p] === key && prev.hashes[p]) { hashes[p] = prev.hashes[p]; return true; }
@@ -103,11 +105,11 @@ export function tamperHashes(repoRoot: string, prev?: Pick<Snapshot, 'hashes' | 
     return true;
   };
   const walk = (rel: string, deep: boolean): boolean => {
-    let names: string[];
-    try { names = readdirSync(join(repoRoot, rel)); } catch { return true; } // no such directory: nothing guarded there
-    for (const name of names) {
-      const p = rel ? `${rel}/${name}` : name;
-      if (deep) { try { if (lstatSync(join(repoRoot, p)).isDirectory()) { if (!walk(p, true)) return false; continue; } } catch { continue; } }
+    let entries: Dirent[];
+    try { entries = readdirSync(join(repoRoot, rel), { withFileTypes: true }); } catch { return true; } // no such directory: nothing guarded there
+    for (const e of entries) {
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (deep && !walk(p, true)) return false; continue; }
       if (!add(p)) return false;
     }
     return true;
@@ -295,7 +297,9 @@ export function guardEvent(repoRoot: string, session: string, event: GuardEvent,
     const next = nextGuard(repoRoot, session, event, toolId, nowMs);
     // A lock taken from this process (held past LOCK_STALE_MS) saves nothing and counts as missed.
     // shortcut: a breaker between this read and the save can still lose one write to it.
-    if (next && readFileSync(lock, 'utf8') === token) saveGuard(repoRoot, session, next);
+    let mine = false;
+    try { mine = readFileSync(lock, 'utf8') === token; } catch { /* lost */ }
+    if (next && mine) saveGuard(repoRoot, session, next);
     else if (next && event !== 'start') taint(repoRoot, session);
   } finally {
     try { if (readFileSync(lock, 'utf8') === token) rmSync(lock, { force: true }); } catch { /* gone */ }

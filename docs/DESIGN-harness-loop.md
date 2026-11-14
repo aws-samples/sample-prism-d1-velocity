@@ -981,7 +981,9 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   in a plain clone; linked worktrees share it). It is outside the worktree, so no diff, snapshot or
   `git add` sees it. The CLI finds the directory by reading `.git` (and a worktree's `gitdir:` and
   `commondir` files) without starting git. State in the pre-1.12.1 place, `.prism/harness/`, is
-  moved there once, only while the new directory does not exist; after that the old place is not
+  moved there once, only while the new directory does not exist, only a real directory with no
+  files tracked by git, and without its guard records (no "changed by the person" claim crosses
+  over); after that the old place is not
   read.
 - **Races and limits.** Claude Code runs parallel tool calls and subagents, so windows with a
   `tool_use_id` are tracked per id and stay open until each closes; one that never closes stops

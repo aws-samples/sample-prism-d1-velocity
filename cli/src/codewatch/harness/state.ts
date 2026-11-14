@@ -81,8 +81,10 @@ export function harnessDir(repoRoot: string): string {
 
 /**
  * Moves state from the pre-1.12.1 `.prism/harness/` in the worktree, once: only while the new
- * directory does not exist yet. After that the old place is never read, so a file written there
- * later changes nothing.
+ * directory does not exist yet, only a real directory, and never one with files tracked by git (a
+ * cloned repo must not bring its own state). Guard records and missed markers are dropped rather
+ * than moved, so no "changed by the person" claim crosses over: a resumed session starts a new
+ * guard, and until then nothing is the person's. After that the old place is never read.
  */
 function migrateOldState(repoRoot: string, to: string): void {
   const from = resolve(repoRoot, HARNESS_DIR);
@@ -91,10 +93,13 @@ function migrateOldState(repoRoot: string, to: string): void {
     // Only a real directory: a symlink placed there is not followed into the git directory.
     if (!lstatSync(from).isDirectory()) return;
   } catch { return; } // nothing to move
+  const tracked = gitIn(repoRoot, ['ls-files', '--', HARNESS_DIR]);
+  if (!tracked.ok || tracked.stdout) return;
   try {
     mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
     renameSync(from, to);
-  } catch { /* the new directory starts empty; nothing blocks on old state */ }
+    for (const n of readdirSync(to)) if (n.includes('.guard.')) rmSync(join(to, n), { force: true });
+  } catch { /* the new directory starts empty or partial; missing state only means fewer person claims */ }
 }
 
 export const statePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.json`);
