@@ -15,7 +15,7 @@ import { makeResult, writeResult, type PrismResult } from '../src/codewatch/resu
 import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
 import { collectUsage, codeburnStats, heatmapStart, priorRange, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
 import { UsageCache, USAGE_CACHE_SCHEMA } from '../src/dashboard/usage-cache.js';
-import { UpdateCheck, UPDATE_CACHE_SCHEMA, UPDATE_CHECK_INTERVAL_MS, type RegistryFetch } from '../src/dashboard/update-check.js';
+import { readCapped, UpdateCheck, UPDATE_CACHE_SCHEMA, UPDATE_CHECK_INTERVAL_MS, type RegistryFetch } from '../src/dashboard/update-check.js';
 import { renderPage } from '../src/dashboard/page.js';
 import { FakeElement, runPage } from './page-dom.js';
 
@@ -68,6 +68,22 @@ test('update check: offline is silent, keeps the last known version and waits a 
   const none = await first.check.get();
   assert.deepEqual([none.latest, none.update], [null, false], 'offline on the first check: no version, no error');
   assert.equal(first.check.due(), false);
+});
+
+test('update check: the registry body is read with a running byte count and cut off past the cap, content-length or not', async () => {
+  const MB = 1024 * 1024;
+  let pulled = 0, cancelled = false;
+  /** A chunked body (no content-length): 1 MB chunks, forever. */
+  const endless = new ReadableStream<Uint8Array>({
+    pull(c) { pulled++; c.enqueue(new Uint8Array(MB)); },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(readCapped(new Response(endless), 5 * MB), /too large/);
+  assert.ok(cancelled, 'the read is cancelled');
+  assert.ok(pulled <= 7, `stops right after the cap (${pulled} chunks read)`);
+  const declared = new Response('{}', { headers: { 'content-length': String(6 * MB) } });
+  await assert.rejects(readCapped(declared, 5 * MB), /too large/, 'a declared size over the cap is refused before reading');
+  assert.equal(await readCapped(new Response('{"dist-tags":{"latest":"1.0.0"}}'), 5 * MB), '{"dist-tags":{"latest":"1.0.0"}}');
 });
 
 test('update check: PRISM_NO_UPDATE_CHECK=1 turns it off; same or older latest is no update; a clock moved back is due', async () => {

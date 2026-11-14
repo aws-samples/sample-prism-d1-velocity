@@ -1256,7 +1256,7 @@ to scan somewhere else. The repo you started it in is listed first.
 
 ### Dashboard View
 
-![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, and the Get more from PRISM strip](docs/images/dashboard-1.13-dark.png)
+![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, and the Get more from PRISM strip](assets/images/prism-cli/dashboard-main-dark.png)
 
 **Summary cards.** The latest codewatch review in any repo (severity pills, or skipped / failed),
 spend today and this month, and **Settings warnings**: the checklist items that are missing or warn,
@@ -1313,7 +1313,7 @@ cache). The **Refresh** button also runs new codeburn exports.
 
 ### Repo View
 
-![The repo view for the demo repo checkout-service: four cards, findings over time, the newest reviews with report links and skip reasons, commits, setup, Security Agent and the open findings](docs/images/dashboard-1.13-repo.png)
+![The repo view for the demo repo checkout-service: four cards, findings over time, the newest reviews with report links and skip reasons, commits, setup, Security Agent and the open findings](assets/images/prism-cli/dashboard-repo-dark.png)
 
 `#repo/<id>` (open it from a Codewatch row; the browser's Back returns to the dashboard) shows one
 repo: cards for open findings, pre-push reviews in the last 30 days (and how many were skipped),
