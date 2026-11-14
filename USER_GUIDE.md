@@ -956,7 +956,7 @@ One engine command does the work: `prism-cli codewatch review --json`. On each r
 
 1. Takes the diff. In an agent session that is the lines the agent changed since the session
    started (the plugin's SessionStart hook snapshots the working tree into
-   `.prism/harness/<session>.json`, so your own uncommitted work is not blamed on the agent). Without
+   `.git/prism/harness/<session>.json`, so your own uncommitted work is not blamed on the agent). Without
    a session it is the branch against its upstream plus uncommitted changes. At a push it is every
    commit the push would send: against the upstream, else the remote branch the push names, else
    the remote's default branch (`HEAD`, `main` or `master`), else the commits on no remote, and when
@@ -1074,8 +1074,11 @@ tool call that never finished, and after its last tool call before it finishes o
 are judged the same for everyone: a key
 you wrote still blocks the agent's push. (An agent that edited a guarded file from a background
 process between tool calls would be taken for you; the push-time secret scan and the CI gate
-still apply.) The hooks also stop the agent from writing PRISM's own record of this
-(`.prism/harness/`); reading it is fine. Claude Code gets the same rule, through hooks on `Write`, `Edit`, `MultiEdit`,
+still apply.) PRISM keeps its record of this in the git directory
+(`$(git rev-parse --git-common-dir)/prism/harness/`), outside your working tree. The hooks deny a
+file-tool write there (an exact path check; reading it is fine), but the record is not signed: an
+agent set on evading the check could still write it from a shell, and the push-time secret scan
+and the CI gate are the backstop. Claude Code gets the same rule, through hooks on `Write`, `Edit`, `MultiEdit`,
 `NotebookEdit`, `Bash`, `Task` (a subagent's whole run) and MCP tools.
 [Kiro Crew](#kiro-crew-app) sessions do not load project hooks, so there the `prism-fix-findings`
 skill is the check. When the hooks are active for its session it reads their verdict instead of

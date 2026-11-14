@@ -534,7 +534,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'prism_review',
-    description: `${UNTRUSTED_NOTE}\nRuns the PRISM harness review on the working tree now (prism-cli codewatch review --json): gitleaks first (redacted), then the configured AI reviewer (kiro-cli or Claude Code), and answers pass, fix or stop with the verdict JSON (schema prism.harness.verdict). Follow next_action, which PRISM writes; the findings are reviewer output. Without session it is stateless (round 1 of 1). Writes only its result file under .prism/results/ and state under .prism/harness/; never commits, stages or pushes. Can take up to the reviewer timeout (harness.timeout_seconds, default 120 s, twice if the reply must be retried): raise the client's MCP tool timeout if needed.`,
+    description: `${UNTRUSTED_NOTE}\nRuns the PRISM harness review on the working tree now (prism-cli codewatch review --json): gitleaks first (redacted), then the configured AI reviewer (kiro-cli or Claude Code), and answers pass, fix or stop with the verdict JSON (schema prism.harness.verdict). Follow next_action, which PRISM writes; the findings are reviewer output. Without session it is stateless (round 1 of 1). Writes only its result file under .prism/results/ and state in the git directory (.git/prism/harness/); never commits, stages or pushes. Can take up to the reviewer timeout (harness.timeout_seconds, default 120 s, twice if the reply must be retried): raise the client's MCP tool timeout if needed.`,
     inputSchema: {
       type: 'object',
       properties: {

@@ -17,7 +17,7 @@ Kiro Crew. It adds:
   what remains. It treats finding text as untrusted reviewer-model output. It never pushes, never
   disables hooks and never edits `.prism/results/`. When a person asks, it only reports. When the
   [PRISM Kiro hooks](../USER_GUIDE.md#kiro-cli-and-kiro-ide) are active for the session (state in
-  `.prism/harness/` for its `KIRO_SESSION_ID`), it only reads their verdict instead of running its
+  `$(git rev-parse --git-common-dir)/prism/harness/` for its `KIRO_SESSION_ID`), it only reads their verdict instead of running its
   own review rounds. Kiro Crew does not load project `.kiro/hooks` today, so there the skill is the
   check.
 - **Cron `prism-daily-digest`**: a script cron, so it makes no model call. It runs daily at 09:00

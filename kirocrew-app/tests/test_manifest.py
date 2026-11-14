@@ -66,7 +66,7 @@ class ManifestTest(unittest.TestCase):
         # 0.2.4: with the PRISM Kiro hooks active for the session, the skill reads their verdict
         # instead of running its own rounds, so a session is not reviewed with two budgets.
         text = (ROOT / "skills" / "prism-fix-findings" / "SKILL.md").read_text(encoding="utf-8")
-        for needle in ("$KIRO_SESSION_ID", ".prism/harness/<that id>.json", "`client`", "do **not** run your own review rounds", "harness.session"):
+        for needle in ("$KIRO_SESSION_ID", "$(git rev-parse --git-common-dir)/prism/harness/<that id>.json", "`client`", "do **not** run your own review rounds", "harness.session"):
             self.assertIn(needle, text)
         self.assertLess(text.index("KIRO_SESSION_ID"), text.index("1. Call `prism_review`"), "the hook check comes first")
         self.assertGreaterEqual(tuple(int(p) for p in MANIFEST["version"].split(".")[:3]), (0, 2, 4))
