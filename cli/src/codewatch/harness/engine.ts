@@ -14,7 +14,7 @@
  *  6. result file under .prism/results/ (kind agent-harness)
  *
  * It never commits, pushes, stages or edits tracked files. It writes only
- * under .prism/results/ and .prism/harness/.
+ * under .prism/results/ and the harness state directory (.git/prism/harness/).
  */
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

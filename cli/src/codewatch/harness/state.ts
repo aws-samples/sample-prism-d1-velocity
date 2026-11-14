@@ -1,17 +1,20 @@
 /**
- * Session state of the harness loop: `.prism/harness/<session>.json` holds the
- * baseline snapshot and the round counter, `.prism/harness/cache/` the review
- * cache by diff hash. The directory is excluded from git through
- * `.git/info/exclude` (docs/DESIGN-harness-loop.md section 5).
+ * Session state of the harness loop: `<git common dir>/prism/harness/<session>.json`
+ * holds the baseline snapshot and the round counter, `.../cache/` the review
+ * cache by diff hash, `<session>.guard.json` the tool-window record (D6). It
+ * lives in the git directory, outside the worktree, so no file tool an agent
+ * uses on the project reaches it by accident, and worktrees of one clone
+ * share it (session ids are unique). Before 1.12.1 it was `.prism/harness/`
+ * in the worktree; that is moved over once (docs/DESIGN-harness-loop.md
+ * section 5).
  *
  * The file is not signed: an agent that edits it directly is outside the
  * loop's threat model (section 6.2). Values in an unexpected shape are ignored,
  * and a file that does not parse is renamed to `.bad` and never blocks.
  */
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { ensureDirExcluded } from '../results.js';
-import { HARNESS_DIR, revParse, snapshotTree } from './diff.js';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { gitIn, HARNESS_DIR, revParse, snapshotTree } from './diff.js';
 
 export const STATE_VERSION = 1;
 export const MAX_STATE_FILES = 200;
@@ -41,11 +44,58 @@ export function sanitizeSession(id: unknown): string | null {
   return s || null;
 }
 
-export const harnessDir = (repoRoot: string) => resolve(repoRoot, HARNESS_DIR);
+/**
+ * The git common directory of the repository at `repoRoot`, read from its `.git` entry without
+ * starting git: a directory (`.git`), or a worktree's `gitdir:` file whose git dir names its
+ * `commondir`. Falls back to `git rev-parse --git-common-dir` for anything else.
+ */
+export function gitCommonDir(repoRoot: string): string {
+  const dotGit = join(repoRoot, '.git');
+  try {
+    if (statSync(dotGit).isDirectory()) return dotGit;
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
+    if (m) {
+      const gitDir = isAbsolute(m[1]) ? m[1] : resolve(repoRoot, m[1]);
+      let common = gitDir;
+      try { const c = readFileSync(join(gitDir, 'commondir'), 'utf8').trim(); if (c) common = isAbsolute(c) ? c : resolve(gitDir, c); } catch { /* a submodule: its git dir is its own */ }
+      return common;
+    }
+  } catch { /* no .git entry: ask git */ }
+  const r = gitIn(repoRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (r.ok && r.stdout) return r.stdout;
+  return dotGit;
+}
+
+const dirs = new Map<string, string>();
+
+/** Where this repository's harness state lives (memoized per process). */
+export function harnessDir(repoRoot: string): string {
+  let d = dirs.get(repoRoot);
+  if (!d) {
+    d = join(gitCommonDir(repoRoot), 'prism', 'harness');
+    dirs.set(repoRoot, d);
+    migrateOldState(repoRoot, d);
+  }
+  return d;
+}
+
+/**
+ * Moves state from the pre-1.12.1 `.prism/harness/` in the worktree, once: only while the new
+ * directory does not exist yet. After that the old place is never read, so a file written there
+ * later changes nothing.
+ */
+function migrateOldState(repoRoot: string, to: string): void {
+  const from = resolve(repoRoot, HARNESS_DIR);
+  if (existsSync(to) || !existsSync(from)) return;
+  try {
+    mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+    renameSync(from, to);
+  } catch { /* the new directory starts empty; nothing blocks on old state */ }
+}
+
 export const statePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.json`);
 
 export function ensureHarnessDir(repoRoot: string): void {
-  try { ensureDirExcluded(repoRoot, HARNESS_DIR, 'prism-cli harness loop state (local)'); } catch { /* never fail over this */ }
   mkdirSync(harnessDir(repoRoot), { recursive: true, mode: 0o700 });
 }
 

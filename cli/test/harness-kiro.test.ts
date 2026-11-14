@@ -8,16 +8,16 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { FAIL_CLOSED, KIRO_DENY_TAIL, KIRO_PERSON_NOTE, KIRO_ROUND_NOTE, runKiroHook, type KiroHookResult } from '../src/codewatch/harness/kiro.js';
+import { FAIL_CLOSED, KIRO_DENY_TAIL, KIRO_PERSON_NOTE, KIRO_ROUND_NOTE, runKiroHook, UNREADABLE_INPUT, type KiroHookResult } from '../src/codewatch/harness/kiro.js';
 import { bypassReason, harnessWriteReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
-import { guardEvent, personsChanges, WINDOW_TTL_MS } from '../src/codewatch/harness/guard.js';
-import { loadState } from '../src/codewatch/harness/state.js';
-import { FAKE_SECRET, finding, leak, rig, type Rig } from './harness-rig.js';
+import { attribute, guardEvent, guardPath, personsChanges, tamperHashes, WINDOW_TTL_MS } from '../src/codewatch/harness/guard.js';
+import { ensureHarnessDir, harnessDir, loadState } from '../src/codewatch/harness/state.js';
+import { FAKE_SECRET, finding, git, leak, rig, tmp, type Rig } from './harness-rig.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI_DIR = join(HERE, '..');
@@ -166,7 +166,7 @@ test('kiro: with the finish gate on, a fix verdict and the push findings arrive 
   assert.match(reason, /PRISM harness review: fix/);
   assert.ok(reason.includes('"push finding"'), 'a long verdict does not cut the push findings off');
   assert.ok(Buffer.byteLength(reason) <= 4096);
-  assert.ok(!existsSync(join(r.dir, '.prism', 'harness', `${SESSION}.push-notice.json`)), 'handed over in full, so cleared');
+  assert.ok(!existsSync(join(harnessDir(r.dir), `${SESSION}.push-notice.json`)), 'handed over in full, so cleared');
 });
 
 test('kiro: an oversized push notice is capped, handed over once and cleared (no block on every later Stop)', () => {
@@ -181,7 +181,7 @@ test('kiro: an oversized push notice is capped, handed over once and cleared (no
     const first = runKiroHook('stop', payload('Stop', r), deps(r, env));
     if (first.stdout) assert.ok(Buffer.byteLength(JSON.parse(first.stdout).reason) <= 4096);
   }
-  assert.ok(!existsSync(join(r.dir, '.prism', 'harness', `${SESSION}.push-notice.json`)), 'cleared after the first hand-over');
+  assert.ok(!existsSync(join(harnessDir(r.dir), `${SESSION}.push-notice.json`)), 'cleared after the first hand-over');
 });
 
 test('kiro fail closed: an internal error on a push is exit 2; on other events and commands it is exit 0', () => {
@@ -379,8 +379,11 @@ test('D6: a person\'s config change carried by a push is not tamper; the pre-too
   for (let i = 0; i < 20; i++) assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: 'a' } }), deps(r)).exit, 0);
   assert.ok((Date.now() - t0) / 20 < 50, 'in-process pre-tool for a non-shell tool: hash only, no diff or gitleaks');
   assert.equal(runKiroHook('post-tool', '{not json', deps(r)).exit, 0, 'post-tool never blocks');
-  assert.equal(runKiroHook('pre-tool', '{"tool_name":"fs_wri', deps(r)).exit, 0, 'a broken non-shell payload does not block every tool');
-  assert.equal(runKiroHook('pre-tool', '{"tool_name":"execute_bash","tool_input":{"command":"git pu', deps(r)).exit, 2, 'a broken shell payload still fails closed');
+  for (const raw of ['{"tool_name":"fs_wri', '{"tool_name":"execute_bash","tool_input":{"command":"git pu', '', '[]']) {
+    const k = runKiroHook('pre-tool', raw, deps(r));
+    assert.equal(k.exit, 2, `unreadable pre-tool input fails closed: ${raw}`);
+    assert.match(k.stderr, new RegExp(`^${UNREADABLE_INPUT}`));
+  }
 });
 
 test('D6 (Claude Code): the same windows through pre-tool and post-tool', () => {
@@ -445,33 +448,69 @@ test('D6 (Kiro, no tool ids): overlapping calls keep the window open until both 
   assert.ok(isTamper(finish(r)));
 });
 
-test('D6: writing PRISM\'s harness state is denied in both adapters; reading it is not', () => {
-  for (const [tool, input] of [
-    ['execute_bash', { command: `echo '{}' > .prism/harness/${SESSION}.guard.json` }],
-    ['execute_bash', { command: 'cat > .prism/harness/x.json' }],
-    ['execute_bash', { command: 'rm -f .prism/harness/*.guard.json' }],
-    ['execute_bash', { command: 'cd .prism && cp /tmp/g.json harness/x.json && sed -i s/a/b/ .prism/harness/x.json' }],
-    ['fs_write', { path: `.prism/harness/${SESSION}.guard.json`, content: '{}' }],
-    ['Write', { file_path: 'repo/.prism/harness/s.json', content: '{}' }],
-    ['spreadsheet_read_write', { file: '.prism/harness/s.json' }],
-  ] as const) assert.ok(harnessWriteReason(tool, input), `${tool} ${JSON.stringify(input)}`);
-  for (const [tool, input] of [
-    ['execute_bash', { command: `cat .prism/harness/${SESSION}.json` }],
-    ['execute_bash', { command: 'ls -la .prism/harness/' }],
-    ['execute_bash', { command: 'git status' }],
-    ['execute_bash', { command: 'cat .prism/harness/x.json 2>/dev/null' }],
-    ['execute_bash', { command: `jq '.rounds > 1' .prism/harness/${SESSION}.json` }],
-    ['fs_read', { path: '.prism/harness/s.json' }],
-    ['fs_write', { path: 'src/a.ts', content: 'x' }],
-  ] as const) assert.equal(harnessWriteReason(tool, input), null, `${tool} ${JSON.stringify(input)}`);
-
+test('D6: a file tool writing PRISM\'s harness state is denied in both adapters; reads and shell commands are not judged', () => {
   const r = rig();
+  const dir = harnessDir(r.dir);
+  assert.ok(!dir.startsWith(join(r.dir, '.prism')), 'the state lives in the git directory, outside the worktree');
+  for (const [tool, input] of [
+    ['fs_write', { path: join(dir, `${SESSION}.guard.json`), content: '{}' }],
+    ['fs_write', { path: '.git/prism/harness/x.json', content: '{}' }],
+    ['Write', { file_path: 'src/../.git/prism/harness/s.json', content: '{}' }],
+    ['Edit', { file_path: dir }],
+    ['spreadsheet_read_write', { args: { file: '.git/prism/harness/s.json' } }],
+  ] as const) assert.ok(harnessWriteReason(tool, input, dir, r.dir), `${tool} ${JSON.stringify(input)}`);
+  for (const [tool, input] of [
+    ['execute_bash', { command: `echo '{}' > ${dir}/x.json` }],
+    ['fs_read', { path: join(dir, 's.json') }],
+    ['Grep', { path: dir, pattern: 'x' }],
+    ['fs_write', { path: 'src/a.ts', content: 'x' }],
+    ['fs_write', { path: '.prism/harness/s.json', content: 'x' }],
+    ['Write', { file_path: `${dir}-other/x.json`, content: 'x' }],
+  ] as const) assert.equal(harnessWriteReason(tool, input, dir, r.dir), null, `${tool} ${JSON.stringify(input)}`);
+
   runKiroHook('session-start', payload('SessionStart', r), deps(r));
-  const k = runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: `.prism/harness/${SESSION}.guard.json` } }), deps(r));
+  const k = runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: `.git/prism/harness/${SESSION}.guard.json` } }), deps(r));
   assert.equal(k.exit, 2);
   assert.match(k.stderr, /Do not edit PRISM's harness state/);
-  const c = JSON.parse(runClaudeHook('pre-tool', JSON.stringify({ session_id: 'cc-w', cwd: r.dir, tool_name: 'Edit', tool_input: { file_path: `${r.dir}/.prism/harness/cc-w.guard.json` } }), { env: {} }));
+  const c = JSON.parse(runClaudeHook('pre-tool', JSON.stringify({ session_id: 'cc-w', cwd: r.dir, tool_name: 'Edit', tool_input: { file_path: `${dir}/cc-w.guard.json` } }), { env: {} }));
   assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('D6: the state of a linked worktree is in the shared git directory; the old .prism/harness is moved once', () => {
+  const r = rig();
+  mkdirSync(join(r.dir, '.prism', 'harness'), { recursive: true });
+  writeFileSync(join(r.dir, '.prism', 'harness', 'old.json'), '{}\n');
+  const dir = harnessDir(r.dir);
+  assert.equal(dir, join(r.dir, '.git', 'prism', 'harness'));
+  ensureHarnessDir(r.dir);
+  assert.ok(existsSync(join(dir, 'old.json')), 'migrated');
+  assert.ok(!existsSync(join(r.dir, '.prism', 'harness')), 'the old directory is gone');
+  const wt = join(tmp('wt'), 'wt');
+  git(r.dir, 'worktree', 'add', '-q', wt);
+  assert.equal(harnessDir(wt), dir, 'a linked worktree shares the common git directory');
+});
+
+test('D6: attribute() gives a gap to the person, a window to the agent, and nothing on a cut-off snapshot', () => {
+  const A = 'a'.repeat(64), B = 'b'.repeat(64);
+  const prev = { hashes: { x: A }, person: {}, agent: {} };
+  assert.deepEqual(attribute(prev, { x: B }, 'pre', false, true), { person: { x: B }, agent: {} }, 'a gap with no window open');
+  assert.deepEqual(attribute(prev, {}, 'pre', false, true), { person: { x: null }, agent: {} }, 'a deletion');
+  assert.deepEqual(attribute(prev, { x: B }, 'pre', true, true), { person: {}, agent: { x: true } }, 'a window still open (or a missed event)');
+  assert.deepEqual(attribute(prev, { x: B }, 'post', false, true), { person: {}, agent: { x: true } }, 'inside a window');
+  assert.deepEqual(attribute(prev, { x: B }, 'pre', false, false), { person: {}, agent: {} }, 'a cut-off snapshot');
+  assert.deepEqual(attribute({ ...prev, agent: { x: true } }, { x: B }, 'pre', false, true), { person: {}, agent: { x: true } }, 'once the agent\'s, never the person\'s');
+  assert.deepEqual(attribute(null, { x: B }, 'start', false, true), { person: {}, agent: {} });
+});
+
+test('D6: a file whose stat key is unchanged is not read again', () => {
+  const r = rig();
+  r.write(CONFIG, '{}\n');
+  const first = tamperHashes(r.dir);
+  assert.ok(first.stats[CONFIG] && first.hashes[CONFIG]);
+  const fake = 'f'.repeat(64);
+  assert.equal(tamperHashes(r.dir, { hashes: { [CONFIG]: fake }, stats: first.stats }).hashes[CONFIG], fake, 'same stat key: the stored hash is kept');
+  r.write(CONFIG, '{"x":1}\n');
+  assert.notEqual(tamperHashes(r.dir, { hashes: { [CONFIG]: fake }, stats: first.stats }).hashes[CONFIG], fake, 'changed: hashed again');
 });
 
 test('D6 (Kiro): a denied call closes its window, so it does not hold later gaps open', () => {
@@ -483,14 +522,46 @@ test('D6 (Kiro): a denied call closes its window, so it does not hold later gaps
   assert.ok(!isTamper(finish(r)), 'the edit after the denied push is the person\'s');
 });
 
-test('D6: a lock left by a dead hook process is broken; a live one is waited for', () => {
+test('D6: a lock left by a dead hook is broken; a live one is never waited for or removed, and the event counts as missed', () => {
   const r = rig();
   guardEvent(r.dir, 'lk', 'start');
-  const lock = `${join(r.dir, '.prism', 'harness', 'lk.guard.json')}.lock`;
-  writeFileSync(lock, '999999999:0'); // no such pid
+  const lock = `${guardPath(r.dir, 'lk')}.lock`;
+  writeFileSync(lock, '999999999:0:x'); // no such pid
   guardEvent(r.dir, 'lk', 'pre', 'toolu_1');
   assert.ok(!existsSync(lock), 'taken and released');
-  writeFileSync(lock, `${process.pid}:${Date.now()}`); // held by a live process (this one)
-  assert.throws(() => guardEvent(r.dir, 'lk', 'post', 'toolu_1'), /locked by another hook/);
-  assert.ok(existsSync(lock), 'a live lock is never removed');
+  guardEvent(r.dir, 'lk', 'post', 'toolu_1');
+
+  const live = `${process.pid}:${Date.now()}:live`;
+  writeFileSync(lock, live); // held by a live process (this one)
+  r.write(CONFIG, '{}\n'); // in a gap, but the event that would fold it is missed
+  guardEvent(r.dir, 'lk', 'pre', 'toolu_2');
+  assert.equal(readFileSync(lock, 'utf8'), live, 'a live lock is kept');
+  rmSync(lock);
+  guardEvent(r.dir, 'lk', 'post', 'toolu_2');
+  assert.equal(personsChanges(r.dir, 'lk', [CONFIG]).size, 0, 'after a missed event the change is the agent\'s');
+  assert.equal(readdirSync(harnessDir(r.dir)).filter((n) => n.includes('.missed.')).length, 0, 'the marker is used up');
+});
+
+test('D6: hooks breaking the same stale lock at once: exactly one wins', async () => {
+  const r = rig();
+  guardEvent(r.dir, 'lk2', 'start');
+  const lock = `${guardPath(r.dir, 'lk2')}.lock`;
+  const guardTs = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'codewatch', 'harness', 'guard.ts');
+  const script = `const { takeLock } = await import(${JSON.stringify(guardTs)});
+const at = Number(process.argv[1]); while (Date.now() < at) {}
+process.stdout.write(takeLock(${JSON.stringify(lock)}, process.pid + ':' + Date.now() + ':t') ? '1' : '0');`;
+  for (let round = 0; round < 5; round++) {
+    writeFileSync(lock, '999999999:0:x'); // stale: no such pid
+    const at = String(Date.now() + 1500);
+    const runs = Array.from({ length: 4 }, () => new Promise<string>((ok) => {
+      const k = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, at], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let out = '';
+      k.stdout.on('data', (d) => { out += d; });
+      k.on('exit', () => ok(out));
+    }));
+    const outs = await Promise.all(runs); // eslint-disable-line no-await-in-loop
+    assert.equal(outs.filter((o) => o === '1').length, 1, `round ${round}: ${outs.join(',')}`);
+    assert.match(readFileSync(lock, 'utf8'), /^\d+:\d+:t$/, 'the winner\'s lock is in place');
+    assert.ok(!existsSync(`${lock}.break`));
+  }
 });

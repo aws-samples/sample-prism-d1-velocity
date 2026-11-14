@@ -392,7 +392,7 @@ test('max-rounds comes from --max-rounds and harness.max_rounds, with a ceiling 
 
 test('a corrupt state file is renamed, the run is round 1, and it never blocks', () => {
   const r = rig();
-  mkdirSync(join(r.dir, '.prism', 'harness'), { recursive: true });
+  mkdirSync(dirname(statePath(r.dir, 's1')), { recursive: true });
   writeFileSync(statePath(r.dir, 's1'), '{not json');
   r.write('src/a.ts', 'x\n');
   const v = runHarnessReview(r.opts({ session: 's1' }));
