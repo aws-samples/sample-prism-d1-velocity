@@ -86,6 +86,22 @@ const PUSHES = ['git push', 'git -C repo push origin x', 'cd a && git push', 'GI
 const BYPASSES = ['git config core.hooksPath x', 'git config --global prism.codewatch false', 'git -cCore.hooksPath=/x push',
   'bash -c "git config --local prism.reviewer none"', 'git -c core.hooksPath=/dev/null commit -m x', 'cd x && git push --no-verify origin main',
   'git push --no-verif', 'git --config-env core.hooksPath=HP push', 'git --config-env=core.hooksPath=HP commit'];
+// Commands that move what the push range or the upstream base is read from (D4); the CLI tokenizer's list is in cli/test/harness-kiro.test.ts (REF_MOVES).
+const REF_MOVES = ['git update-ref refs/remotes/origin/main HEAD', 'git update-ref -d refs/remotes/origin/main', 'git update-ref --stdin',
+  'git branch -f origin/main HEAD', 'git branch origin/main', 'git branch -m old origin/main',
+  'git fetch . HEAD:refs/remotes/origin/main', 'git fetch origin +HEAD:refs/remotes/origin/main', 'git fetch . HEAD:origin/main',
+  'git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/feat', 'git push . HEAD:refs/remotes/origin/main',
+  'git tag origin/main', 'git checkout -b origin/main', 'git switch -c remotes/origin/main',
+  'git branch -u main', 'git branch --set-upstream-to=origin/x', 'git config branch.feat.merge refs/heads/x', 'git config set branch.feat.remote .',
+  'sh -c "git update-ref refs/remotes/origin/main HEAD"', 'cd x && git -C y update-ref refs/remotes/o/m HEAD', 'env git update-ref refs/remotes/o/m HEAD',
+  '/usr/bin/git fetch . HEAD:refs/remotes/origin/main', 'FOO=1 git branch -f origin/main',
+  'git update-ref refs/heads/origin/main HEAD', 'git tag -m msg origin/main', 'git push . HEAD:origin/main', 'git remote rename origin old',
+  'git config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*', 'git pull . HEAD:refs/remotes/origin/main', 'git remote remove origin',
+  'git -c remote.origin.fetch=+refs/heads/x:refs/remotes/origin/main fetch origin', 'git checkout -borigin/main',
+  'git remote set-url origin .', 'git -c remote.origin.url=. fetch origin', 'git fetch --refmap=+refs/heads/*:refs/remotes/origin/* . feat',
+  'git branch -m origin/main', 'git config --remove-section branch.feat', 'git pull . HEAD:origin/main', 'git remote add --mirror=fetch m ../other', 'git branch -dr origin/main',
+  "git fetch ../crafted '+refs/*:refs/*'", 'git push . --delete refs/remotes/origin/main',
+  'git config url.".".insteadOf https://example.com/r.git', 'git config alias.ur update-ref', 'git checkout -fb origin/main'];
 
 test('every push form the tokenizer handles reaches the pre-push handler', () => {
   const rules = rulesFor('pre-push');
@@ -96,6 +112,11 @@ test('every push form the tokenizer handles reaches the pre-push handler', () =>
 test('every bypass form reaches a handler that denies it', () => {
   const rules = [...rulesFor('pre-push'), ...rulesFor('bash-guard')];
   for (const c of BYPASSES) assert.ok(rules.some((r) => ifMatches(r, c)), `no rule matches: ${c}`);
+});
+
+test('every remote-tracking ref or upstream move reaches a handler that denies it', () => {
+  const rules = [...rulesFor('pre-push'), ...rulesFor('bash-guard')];
+  for (const c of REF_MOVES) assert.ok(rules.some((r) => ifMatches(r, c)), `no rule matches: ${c}`);
 });
 
 test('ordinary commands start no PRISM handler; a git push starts exactly one review', () => {

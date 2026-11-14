@@ -1,14 +1,16 @@
 # Design: the harness loop (agents review and fix their own changes)
 
 > **Status: Phase 1 implemented in 1.11.0** (engine, Claude Code adapter, `prism_review`; see
-> [Rollout](#13-rollout)). Phases for Kiro, Cursor, Codex and AgentCore are still proposals. Three
-> decisions are settled (see [Decisions](#decisions)). Where phase 1 differs from this text, see
+> [Rollout](#13-rollout)). **Phase 2 implemented in 1.12.0**: the Kiro CLI V3 adapter and
+> `prism-cli enable agent-hooks` (see [Phase 2 implementation notes](#phase-2-implementation-notes)).
+> Phases for Cursor, Codex and AgentCore are still proposals. Five decisions are settled (see [Decisions](#decisions)). Where phase 1 differs from this text, see
 > [Phase 1 implementation notes](#phase-1-implementation-notes). For shipped behavior see the
 > [User Guide](../USER_GUIDE.md#agent-harness-loop) and the [command reference](CLI-REFERENCE.md).
 >
 > Research date: November 2026, against `main` at prism-cli 1.10.0. Hook behavior of each coding
 > tool was read from its official documentation on that date (see [Sources](#sources)). Anything
-> the documentation did not settle is marked **unconfirmed**.
+> the documentation did not settle is marked **unconfirmed**. The Kiro rows were then verified
+> against kiro-cli 3.3.0 in a spike and in the 1.12.0 live check (marked **verified**).
 
 ## Decisions
 
@@ -19,7 +21,8 @@ Decided on 2026-11-13. The rest of this document follows them.
 | D1 | **Fail open in the agent loop.** When the reviewer is missing, times out, crashes or replies with unparseable output twice (after the single retry), the verdict is `pass` with a visible warning, because the git pre-push hook and the CI gate still run. Secrets are the exception: a gitleaks finding always blocks the agent's push. A missing gitleaks binary is a warning and `secrets_scanned: false`, never a pass of the secrets check | [Section 12](#12-failure-modes) |
 | D2 | **Push gate on, finish gate opt-in.** With the Claude Code plugin installed, the `PreToolUse` hook on `git push` is on by default. The `Stop` hook (finish gate) is off in 1.11.0 and turned on with `harness.finish_gate: true` in `.prism/config.json` or the plugin's `finish_gate` option. Revisit the default once reviewer cost is measured. Other clients get the same defaults when their adapters land | [Section 8.3](#83-per-client-wiring), [config keys](#config-keys) |
 | D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"`. Since D4 this applies to the finish gate only | [Section 3](#3-verdict-schema) |
-| D4 | **The push gate blocks only on secrets** (decided by the user on 2026-11-13, superseding D3 at push). The agent's `git push` is denied for a secret in the changed lines or in a commit of the pushed range, a secret scan that failed or did not finish, tamper (scanner config, `gitleaks:allow`, hook or PRISM config edits, since tamper is how a secret gets past the scan), and a push whose target the command does not name. AI review findings of any severity never deny a push: the push goes ahead, the person gets a `systemMessage` and Claude gets the findings as `additionalContext` (quoted as untrusted) for a follow-up. They never start a fix round or a `stop` at push. `harness.block_on` is the finish gate's (and direct reviews'); a value other than the default `["secret", "high"]` adds a warning at push, once per session. A push neither spends nor reads the finish gate's rounds or last verdict, and its messages carry no round count. Session state cannot deny a push on its own: a committed secret is recomputed from the pushed range, and tamper counts only paths and `gitleaks:allow` lines the push itself carries. When history was reset or rebased past the session's start commit, session changes (at push and at the finish gate) are counted from the fork point with that commit instead of the session baseline, or from the branch's upstream base when that is newer (a rebase onto a newer upstream), so upstream commits are not session work (this trusts the local remote-tracking ref, see the hostile-agent non-goal). When the start commit is gone or shares no history with HEAD, the run is reviewed against the branch's base and tamper is judged on that diff | [Section 8.3](#83-per-client-wiring) |
+| D4 | **The push gate blocks only on secrets** (decided by the user on 2026-11-13, superseding D3 at push). The agent's `git push` is denied for a secret in the changed lines or in a commit of the pushed range, a secret scan that failed or did not finish, tamper (scanner config, `gitleaks:allow`, hook or PRISM config edits, since tamper is how a secret gets past the scan), and a push whose target the command does not name. AI review findings of any severity never deny a push: the push goes ahead, the person gets a `systemMessage` and Claude gets the findings as `additionalContext` (quoted as untrusted) for a follow-up. They never start a fix round or a `stop` at push. `harness.block_on` is the finish gate's (and direct reviews'); a value other than the default `["secret", "high"]` adds a warning at push, once per session. A push neither spends nor reads the finish gate's rounds or last verdict, and its messages carry no round count. Session state cannot deny a push on its own: a committed secret is recomputed from the pushed range, and tamper counts only paths and `gitleaks:allow` lines the push itself carries. When history was reset or rebased past the session's start commit, session changes (at push and at the finish gate) are counted from the fork point with that commit instead of the session baseline, or from the branch's upstream base when that is newer (a rebase onto a newer upstream), so upstream commits are not session work (this trusts the local remote-tracking ref, see the hostile-agent non-goal). When the start commit is gone or shares no history with HEAD, the run is reviewed against the branch's base and tamper is judged on that diff. The push range and the upstream base come from local refs (remote-tracking refs, the branch's upstream), so since 1.12.0 a command that moves them is denied like `--no-verify`: `git update-ref` on `refs/remotes/*` (or `--stdin`), a fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, `git remote rename` or a `remote.<name>.fetch` write, a branch or tag named like a remote-tracking ref (`git branch -f origin/main`), and `git branch -u` or a `branch.<name>.merge`/`.remote` write ([section 6.2](#62-tamper-rules)) | [Section 8.3](#83-per-client-wiring) |
+| D5 | **The Kiro push check fails closed, by exit 2** (decided 2026-11-13 for 1.12.0). Kiro denies a tool call only when the hook exits 2 (stderr goes to the model); a JSON `permissionDecision: "deny"` is ignored, and any other non-zero exit, a crash or a kill on timeout, lets the command run (**verified**, kiro-cli 3.3.0). So the Kiro adapter catches every error itself: an internal error on a command the tokenizer classifies as a `git push`, and hook input that is missing, not a JSON object or a shell call without a command (which cannot be told apart from a push), exit 2 with a `PRISM push check failed closed` reason. Every other shell command exits 0 after a tokenize, except the bypass commands, which exit 2 on both adapters with the same check: `--no-verify`, `core.hooksPath`, `git config prism.*`, and the ref and upstream moves in D4 (Kiro's `shell` matcher sends every command, so no extra hook entry is needed; Claude Code reaches them through `bash-guard` `if` rules). This narrows D1 for one case only: at the Kiro push gate, an error in the check is treated like a secret scan that did not finish. A reviewer failure still fails open (the AI review is not the secret check), and the finish gate never fails closed | [Phase 2 implementation notes](#phase-2-implementation-notes) |
 
 ## 1. Problem and goals
 
@@ -255,8 +258,9 @@ Exit codes of `codewatch review`, for scripts that do not parse JSON:
 
 Exit code 2 is avoided on purpose: Claude Code, Codex and Kiro read exit 2 (or any non-zero, for
 Kiro) as "block". If someone wires the engine straight into a hook, a crash must not look like a
-block decision. Hooks call `codewatch hook`, which always exits 0 and expresses the decision in
-the client's JSON.
+block decision. Hooks call `codewatch hook`, which expresses the decision in the client's own
+format: JSON with exit 0 for Claude Code, and for Kiro exit 2 to deny a push (the only deny Kiro
+reads, D5) and JSON with exit 0 on Stop.
 
 ## 4. Scope: judge only this session's lines
 
@@ -337,7 +341,7 @@ and one after each fix round.
 | Claude Code | `stop_hook_active` is true when the turn is already continuing because of a Stop hook. Claude Code also overrides the 9th consecutive block (cap of 8, `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`; the count resets when Claude calls a tool) | The CLI does not stop at `stop_hook_active: true`, since that is exactly the state of round 2. It applies rule 3 (no progress), which covers the case the flag exists for. The 8-block cap stays as a backstop above `max_rounds` |
 | Codex | `stop_hook_active` on Stop and SubagentStop | Same as Claude Code |
 | Cursor | `loop_count` input on `stop`; per-script `loop_limit`, default 5 | Installer sets `loop_limit` to `max_rounds + 1`; the CLI still decides |
-| Kiro | No loop guard documented (**unconfirmed**) | The CLI counter is the only guard |
+| Kiro | **One Stop continuation per user prompt (verified)**: after a Stop hook continues the agent, Kiro skips Stop hooks for the rest of that prompt. No `stop_hook_active` field, no counter in the payload. Subagents run with hooks skipped | The CLI counter stays the session limit. In effect the Kiro finish gate gets one fix round per prompt; the next review runs when the next prompt finishes. The block text says so |
 
 ### 5.2 Stale state
 
@@ -394,8 +398,20 @@ When the task itself is to change one of these (for example, a person asks the a
 
 Changes that do not show in a diff are caught, where the client allows, by the `pre-push` adapter
 inspecting the shell command: `--no-verify`, `git config prism.*`, `git config core.hooksPath`,
-and `-c core.hooksPath=` are denied with a message to the agent. In clients without a shell-command
-hook this is advisory only.
+and `-c core.hooksPath=` are denied with a message to the agent. So, since 1.12.0, is any git
+command that moves what the push check measures against (D4): a remote-tracking ref
+(`git update-ref refs/remotes/...` or `--stdin`, `git branch -d -r`, `git push . --delete refs/remotes/...`, a `git fetch`, `git pull` or `git push` refspec whose
+destination is `refs/remotes/*` or a glob that can expand into it (`refs/*`), `git symbolic-ref refs/remotes/... <target>`, `git remote rename`,
+`remove`, `set-branches` or `set-url`, `git remote add --mirror`, a write to `remote.<name>.fetch`, `.url` or `url.<base>.insteadOf` (also one-shot through `git -c`, on any subcommand), a `--refmap`, a git alias or config include definition (the check reads the subcommand and keys literally), a branch or tag named like one (`origin/...`, `upstream/...`,
+`remotes/...`, `refs/...`, by `git branch`, `git tag`, `git checkout -b`, `git switch -c`,
+`git update-ref refs/heads/origin/...`, or a fetch or push refspec destination; defense in depth,
+since the engine reads full `refs/remotes/...` names, so other remote names are not listed), and the
+branch's upstream (`git branch -u`, `--set-upstream-to`, `--unset-upstream`, a write to
+`branch.<name>.merge` or `.remote`, or removing or renaming a `branch.*` or `remote.*` config
+section). Reading these refs and an ordinary `git fetch origin` are
+allowed. In clients without a shell-command hook this is advisory only. shortcut: a write to
+`.git/refs/`, `.git/packed-refs` or `.git/config` by a command other than git is not seen; the git pre-push hook
+and the CI gate are the backstop.
 
 What this does not cover: `.prism/harness/` is excluded from git, so an agent that edits its own
 state file directly is not seen by the diff. The engine re-reads the file each run and ignores
@@ -456,15 +472,15 @@ From each client's official hook documentation, November 2026.
 
 | Capability | Claude Code | Kiro CLI V3 / Kiro IDE | Cursor | Codex CLI |
 |---|---|---|---|---|
-| Block finishing and feed text back | Yes: `Stop` with `decision: "block"` and `reason`, or exit 2 with stderr; `reason` becomes Claude's next instruction | Partly: `Stop` ("Agent Stop") command hook; exit 0 adds stdout to context, non-zero sends stderr to the agent. Whether this starts another agent turn automatically is **unconfirmed** | Yes: `stop` returns `followup_message`, submitted as the next user message | Yes: `Stop` with `decision: "block"` or exit 2; Codex creates a continuation prompt from `reason` |
-| Block a shell command (`git push`) | Yes: `PreToolUse`, matcher `Bash`, `if: "Bash(git push*)"`, `permissionDecision: "deny"` with a reason Claude sees | Yes: `PreToolUse` with matcher `shell`; a non-zero exit blocks the call and sends stderr to the agent | Yes: `beforeShellExecution` returns `permission: "deny"` and `agent_message` | Yes: `PreToolUse` matcher `^Bash$`, `decision: "block"` or exit 2 |
+| Block finishing and feed text back | Yes: `Stop` with `decision: "block"` and `reason`, or exit 2 with stderr; `reason` becomes Claude's next instruction | Yes (**verified**): `Stop` exit 0 with `{"decision":"block","reason"}` (or exit 1 with the reason on stderr) adds the reason as a new message and starts another agent turn. Exit 2 does not continue on Stop; other stdout on Stop is ignored | Yes: `stop` returns `followup_message`, submitted as the next user message | Yes: `Stop` with `decision: "block"` or exit 2; Codex creates a continuation prompt from `reason` |
+| Block a shell command (`git push`) | Yes: `PreToolUse`, matcher `Bash`, `if: "Bash(git push*)"`, `permissionDecision: "deny"` with a reason Claude sees | Yes: `PreToolUse` with matcher `shell` (selects `execute_bash`, **verified**); only exit 2 blocks the call and sends stderr to the agent. A JSON `permissionDecision: "deny"` is ignored; exit-0 stdout is dropped (only `"ask"` is read) | Yes: `beforeShellExecution` returns `permission: "deny"` and `agent_message` | Yes: `PreToolUse` matcher `^Bash$`, `decision: "block"` or exit 2 |
 | Run after each edit | `PostToolUse` (exit 2 shows stderr to Claude) | `PostToolUse` (write category), `File Save` (IDE, CLI V3) | `afterFileEdit` | `PostToolUse` (`apply_patch`, `Edit`, `Write`) |
 | Scan prompts | `UserPromptSubmit` can reject a prompt | `Prompt Submit` can block in the IDE only, not the CLI | `beforeSubmitPrompt` | `UserPromptSubmit` |
 | Scan file reads | `PreToolUse` on `Read` | `PreToolUse` with matcher `read` | `beforeReadFile` | `PreToolUse` (tool coverage for reads **unconfirmed**) |
 | Session start / end | `SessionStart`, `SessionEnd` | `SessionStart` (CLI V3; `agentSpawn` alias), `SessionEnd` (CLI V3) | `sessionStart` (fire-and-forget), `sessionEnd` | `SessionStart`; session end **unconfirmed** |
 | Session id in hook input | `session_id` | `session_id` | `session_id` / `conversation_id` | `session_id` (**unconfirmed** for every event) |
-| Loop guard | `stop_hook_active`, 8-block cap | none documented (**unconfirmed**) | `loop_count`, `loop_limit` (default 5) | `stop_hook_active` |
-| Fail closed on hook crash | `onFailure: "block"` | **unconfirmed** | `failClosed: true` | **unconfirmed**; MCP-handler hooks fail open on errors |
+| Loop guard | `stop_hook_active`, 8-block cap | one Stop continuation per prompt (**verified**) | `loop_count`, `loop_limit` (default 5) | `stop_hook_active` |
+| Fail closed on hook crash | `onFailure: "block"` | No (**verified**): an exit other than 2, including a crash or a timeout kill, lets the call run. prism-cli exits 2 itself on an error during a push check (D5) | `failClosed: true` | **unconfirmed**; MCP-handler hooks fail open on errors |
 | Where hooks live | plugin `hooks/hooks.json`, `.claude/settings.json` | `.kiro/hooks/*.json`, global `~/.kiro/hooks/` (CLI V3) | `.cursor/hooks.json`, `~/.cursor/hooks.json` | `.codex/hooks.json` or `[hooks]` in `config.toml`; needs trust |
 
 Local check: `kiro-cli agent --help` (kiro-cli 3.3.0) lists no hook subcommands; hooks are
@@ -482,8 +498,8 @@ asked to follow it.
 | Claude Code (plugin) | **Enforced**: `Stop` hook, opt-in (D2) | **Enforced**, on by default, for the Bash tool; pushes through other tools (an MCP git server) are not seen | Ships first. `SubagentStop` gets the same hook so a subagent that edits code is reviewed before it reports back |
 | Codex CLI | **Enforced**: `Stop` hook, opt-in | **Enforced** for Bash, on by default | Hooks need the user's trust approval; the installer says so |
 | Cursor | **Enforced**: `stop` `followup_message`, opt-in | **Enforced**: `beforeShellExecution`, on by default | The follow-up arrives as a user message, so the quoting rules in section 7 matter more here |
-| Kiro CLI V3 / IDE | **Advisory until confirmed**, opt-in: `Stop` output reaches the agent, but automatic continuation is unconfirmed | **Enforced**: `PreToolUse` on `shell`, on by default | If a test shows the Stop hook re-wakes the agent, move to Enforced |
-| Kiro Crew | **Advisory**: the `prism-fix-findings` skill tells the agent to call `prism_review` before it reports done | **Advisory** | Kiro Crew sessions run on Kiro; whether `.kiro/hooks` apply inside them is **unconfirmed** |
+| Kiro CLI V3 / IDE | **Enforced, one fix round per prompt** (**verified** in CLI V3), opt-in: `Stop` with `decision: "block"` re-wakes the agent once per prompt | **Enforced** (**verified** in CLI V3): `PreToolUse` on `shell`, exit 2, on by default; fails closed on errors (D5) | Hooks fire only on the V3 engine: `kiro-cli chat --no-interactive` defaults to v2, so pass `--agent-engine v3`. The IDE uses the same hook files but was not tested |
+| Kiro Crew | **Advisory**: the `prism-fix-findings` skill tells the agent to call `prism_review` before it reports done | **Advisory** | Kiro Crew does not load project `.kiro/hooks` (**verified**: it does not send the `hooks` client capability). The skill reads the hook's verdict instead of running its own rounds when hook state exists for its session |
 | AgentCore coding agent | **Enforced**: a step in PRISM's own loop | **Enforced**: PRISM's loop does the push | See 8.4 |
 | Any MCP client | **Advisory**: `prism_review` (section 9) | **Advisory** | |
 
@@ -542,21 +558,35 @@ Verdict to output:
 | `fix` (at push: a secret only) | `decision: "block"`, `reason`: `next_action` plus quoted findings | `permissionDecision: "deny"` with the same text |
 | `stop` | exit 0 with `systemMessage` for the person and `additionalContext` telling Claude to report what remains | deny for a secret (also committed), tamper, a failed or incomplete secret scan, or an unknown push target; review findings never reach `stop` at push |
 
-**Kiro CLI V3 and Kiro IDE.** Files in `.kiro/hooks/prism-harness.json`:
+**Kiro CLI V3 and Kiro IDE.** `prism-cli enable agent-hooks --client kiro` writes
+`.kiro/hooks/prism-harness.json` (or `~/.kiro/hooks/prism-harness.json` with `--global`). A project
+file calls `prism-cli`, since it is committed and shared; `--global` writes the resolved path
+(`prism-cli`, or the absolute node and entry script when prism-cli is not on the system PATH, as for
+the Claude Code status line). Descriptions left out:
 
 ```json
 { "version": "v1", "hooks": [
   { "name": "PRISM harness: session start", "trigger": "SessionStart",
-    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event session-start" }, "timeout": 10 },
-  { "name": "PRISM harness: review before finishing", "trigger": "Stop",
+    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event session-start" }, "timeout": 15 },
+  { "name": "PRISM harness: push check", "trigger": "PreToolUse", "matcher": "shell",
+    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event pre-push" }, "timeout": 300 },
+  { "name": "PRISM harness: finish check", "trigger": "Stop",
     "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event stop" }, "timeout": 300 },
-  { "name": "PRISM harness: review before push", "trigger": "PreToolUse", "matcher": "shell",
-    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event pre-push" }, "timeout": 300 } ] }
+  { "name": "PRISM harness: session end", "trigger": "SessionEnd",
+    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event session-end" }, "timeout": 15 } ] }
 ```
 
-The `pre-push` adapter reads the shell command from the hook input and exits 0 at once unless it
-is a `git push` (the Kiro matcher selects the tool category, not the command). On `fix` it exits
-non-zero with the findings on stderr, which blocks the call.
+The `pre-push` adapter reads `tool_input.command` and exits 0 at once unless it is a `git push` or
+a hook bypass (the Kiro matcher selects the tool category, not the command). Kiro's default hook
+timeout is 60 s, so the file sets 300 s, above prism-cli's own 270 s budget for the whole run.
+
+| Verdict | Stop | PreToolUse `git push` |
+|---|---|---|
+| `pass` | exit 0, no output | exit 0 (the person text goes to stderr, which Kiro drops on exit 0) |
+| `pass` with review findings (at push always, since D4) | exit 0, no output; findings stay in the result file | exit 0; the quoted findings are kept for the session (`.prism/harness/<session>.push-notice.json`), because Kiro drops PreToolUse stdout. The next Stop hook hands them to the agent with `decision: "block"`, once, telling it to tell the person and offer a follow-up, not to fix or push again unless asked |
+| `fix` (at push: a secret only) | exit 0, `{"decision":"block","reason"}`: `next_action`, quoted findings and "Kiro runs this check once per prompt" | exit 2, the same text on stderr, ending with who blocked it ("the PRISM Kiro hook") |
+| `stop` | `decision: "block"` once with the findings and "tell the person what remains"; Kiro has no channel to the person, so the reason says so and carries the person text and the result path. The same stop again prints nothing | exit 2 for a secret (also committed), tamper, a failed or incomplete secret scan, an unknown push target, or a push outside any repository |
+| error | exit 0 with a note on stderr | exit 2, `PRISM push check failed closed: ...` (D5) |
 
 **Cursor.** `.cursor/hooks.json` with `sessionStart`, `stop` (`loop_limit: 3`),
 `beforeShellExecution` (matcher `git push`) and `sessionEnd`. `stop` answers `followup_message`;
@@ -565,9 +595,15 @@ non-zero with the findings on stderr, which blocks the call.
 **Codex CLI.** `.codex/hooks.json` with `SessionStart`, `Stop`, and `PreToolUse` (matcher
 `^Bash$`). Stop answers `decision: "block"` with `reason` on `fix`.
 
-**Kiro Crew.** No hooks. Update [`prism-fix-findings`](../kirocrew-app/skills/prism-fix-findings/SKILL.md)
-to call `prism_review` with the session's repo and the current branch before reporting done, and
-follow its verdict. The Kiro Crew PRISM page shows harness results from `.prism/results/`.
+**Kiro Crew.** No hooks: Kiro Crew does not load project `.kiro/hooks` (it starts `kiro-cli acp`
+without the `hooks` client capability, **verified** in kiro-cli 3.3.0 and Kiro Crew 0.12.2.4), so a
+PRISM hook file is inert there. [`prism-fix-findings`](../kirocrew-app/skills/prism-fix-findings/SKILL.md)
+calls `prism_review` with the session's repo and the current branch before reporting done, and
+follows its verdict. Since app 0.2.4 it first reads `$KIRO_SESSION_ID` (the same id the hooks get
+as `session_id`) and, when `.prism/harness/<id>.json` exists with `client: "kiro"`, only reads the
+hook's verdict instead of running its own rounds, so a future Kiro Crew that loads the hooks does
+not review a session twice with two round budgets. The Kiro Crew PRISM page shows harness results
+from `.prism/results/`.
 
 ### 8.4 AgentCore coding agent
 
@@ -598,6 +634,17 @@ Rules: merge into existing hook files and never replace them; back up each file 
 write; mark PRISM entries so uninstall finds them; for Claude Code, prefer the plugin and only
 write `.claude/settings.json` hooks when the plugin is not installed, so the hook never runs twice
 (the same check `session-start.mjs` does for `claude-session-context`).
+
+As shipped in 1.12.0 (`--client kiro|claude`; cursor and codex answer "planned"): `--global`
+instead of `--scope user`, no prompt and so no `--yes` (`--dry-run` shows the diff first, as
+`enable codewatch` writes without asking), one client per run, and `--force` to replace a
+`prism-harness.json` that holds hooks that are not PRISM's (the Kiro file is PRISM's own, so it is
+not merged). PRISM entries are found by their command (`prism-cli ... codewatch hook --client <c>`).
+Backups are `<file>.bak-<timestamp>`, which Kiro does not load as a hook file. `--status` reports
+installed, outdated (PRISM entries that differ from what this prism-cli writes) or missing per
+client and scope, and the plugin state. The plugin check skips the install when the PRISM plugin is
+installed and not disabled; a plugin older than 0.3.0 (no harness hooks) is skipped too, with a
+hint to update it, since settings hooks added now would run twice after that update.
 
 ## 9. MCP: `prism_review`
 
@@ -714,7 +761,7 @@ This section applies decision D1.
 | Offline | reviewer fails, so as above; gitleaks still runs | same | gitleaks is local |
 | Not a git repo, or no `HEAD` | `pass`, no result | `pass` | Nothing to diff |
 | State file corrupt | renamed, round 1, warning | same | Never block on own state |
-| Engine internal error (exit 1) | adapter returns "no decision" plus a warning | same | A PRISM bug must not trap an agent |
+| Engine internal error (exit 1) | adapter returns "no decision" plus a warning | same; on Kiro the push is denied (D5) | A PRISM bug must not trap an agent; Kiro would let a crashed push check through |
 | Diff over the cap | review the first part, warning, findings from the rest are not seen | same | As `MAX_DIFF_CHARS` today |
 
 Why fail open (D1): the CI gate fails closed on an unparseable review, and that is right for a
@@ -770,6 +817,13 @@ Tests to add:
 
 ### 1.12.0: Kiro adapters and installer
 
+Shipped: `codewatch hook --client kiro`, `.kiro/hooks/prism-harness.json`, `prism-cli enable
+agent-hooks --client kiro|claude` with `--global`, `--dry-run`, `--status`, `--uninstall`,
+`--force` and backups, and the Kiro Crew skill's hook check (app 0.2.4). The Stop re-wake and the
+exit-code contract were tested in CLI V3 (spike and live check); the IDE was not. The optional
+prompt and file-read secret scan (section 6.3) is not measured yet.
+
+Planned at the time:
 - `codewatch hook --client kiro`, `.kiro/hooks/prism-harness.json`.
 - `prism-cli enable agent-hooks` with `--dry-run`, `--status`, `--uninstall`, backups.
 - Manual test: whether a Kiro `Stop` hook's output starts another agent turn in CLI V3 and in the
@@ -886,7 +940,9 @@ Where 1.11.0 differs from or settles something in the text above:
   [permissions: wildcard patterns, wrappers](https://code.claude.com/docs/en/permissions#wildcard-patterns)).
   `env`, `sh -c` and `/usr/bin/git` are not stripped, so `Bash(git push*)` would miss
   `env git push`, `git -C dir push` and `sh -c 'git push'`. The plugin uses
-  `Bash(*git*push*)` for the `pre-push` event, and `Bash(*git*config*)` and `Bash(*git*-c*)` for
+  `Bash(*git*push*)` for the `pre-push` event, and `Bash(*git*config*)`, `Bash(*git*-c*)`,
+  `Bash(*git*ref*)`, `Bash(*git*remote*)`, `Bash(*git*fetch*)`, `Bash(*git*pull*)`, `Bash(*git*branch*)`, `Bash(*git*tag*)`,
+  `Bash(*git*checkout*)` and `Bash(*git*switch*)` (1.12.0, the ref moves in D4) for
   a `bash-guard` event that runs only the bypass check (never a review, so a command matched by
   two rules is reviewed once). A command that only looks like a push to the filter
   (`git log --grep push`) costs one tokenize in prism-cli: about 120 ms per hook, measured, most
@@ -903,6 +959,41 @@ Where 1.11.0 differs from or settles something in the text above:
   results show in the dashboard's run trend and are skipped by the pre-push review views), and
   `allow-config` (open question 3).
 
+## Phase 2 implementation notes
+
+Where 1.12.0 differs from or settles something in the text above, for Kiro:
+
+- **Verified contract** (kiro-cli 3.3.0, the spike plus a headless `--agent-engine v3` live check:
+  a push with a committed key was denied and the remote stayed unchanged; a push with only a high
+  finding went ahead and the agent reported the finding in the same prompt; with the finish gate on,
+  a key written to an uncommitted file made the agent remove it before it finished). Payload:
+  `session_id` (`sess_<uuid>`), `hook_event_name`, `cwd`; PreToolUse adds `tool_name:
+  "execute_bash"` and `tool_input` (`command`, `description`, `cwd` (null when unset),
+  `run_in_background`, `timeout`); SessionEnd adds `reason`. Stop carries nothing else. Kiro also
+  sets `KIRO_SESSION_ID` to the same id in the hook's and the agent shell's environment.
+- **The repo** is `tool_input.cwd` when set, else the payload `cwd`. A push the hook cannot place in
+  any git repository is denied as an unknown target. shortcut: like the Claude adapter, a `cd other
+  && git push` or `git -C other push` is checked against the hook's repository, not `other`; the
+  git pre-push hook and the CI gate are the backstop.
+- **Findings at a push reach the agent through Stop.** Kiro forwards hook stdout on exit 0 only for
+  SessionStart, UserPromptSubmit, PreTaskExec, PreCompact and PostCompact (its own `createHook`
+  text lists PreToolUse too, but the 3.3.0 code drops it). So a push with findings stores them in
+  `.prism/harness/<session>.push-notice.json`, and the Stop hook hands them over once with
+  `decision: "block"`, finish gate on or off. That costs one more model turn, only after a push with
+  findings. SessionEnd and the state TTL delete the file.
+- **Messages** name "the PRISM Kiro hook (.kiro/hooks/prism-harness.json)" and never the Claude Code
+  plugin.
+- **Cost of the push matcher.** `shell` selects every shell call, so prism-cli starts for each one:
+  about 80 ms for a command that is not a push (measured, median of 7, most of it node start-up).
+- **Installed path.** prism-cli missing from the hook's PATH makes the shell exit 127, which Kiro
+  treats as a failed hook and lets the push run; D5 cannot cover a process that never starts. A
+  project file (committed, shared) always calls `prism-cli` on PATH, because an absolute path from
+  one machine would be missing on the next; the installer warns when prism-cli is not on the system
+  PATH. `--global` writes the absolute node and entry script in that case, and `--status` reports a
+  file whose command differs as `outdated`.
+- **Engine unchanged.** The Kiro adapter calls the same `runHarnessReview` as the Claude adapter and
+  reuses its tokenizer, bypass check and finding quoting.
+
 ## Open questions
 
 Decisions D1 to D3 (fail-open, gate defaults, blocking severity) are settled and no longer listed.
@@ -911,8 +1002,9 @@ Decisions D1 to D3 (fail-open, gate defaults, blocking severity) are settled and
 2. `max_rounds`: 2 by default with a ceiling of 3, or a fixed 2?
 3. Should a person be able to allow a config change for one session (`allow-config`), or is `stop`
    always the answer?
-4. Does a Kiro `Stop` hook re-wake the agent in CLI V3 and in the IDE?
-5. Do `.kiro/hooks` apply inside Kiro Crew sessions?
+4. ~~Does a Kiro `Stop` hook re-wake the agent in CLI V3 and in the IDE?~~ CLI V3: yes, once per
+   prompt (verified). IDE: not tested.
+5. ~~Do `.kiro/hooks` apply inside Kiro Crew sessions?~~ No (verified with Kiro Crew 0.12.2.4).
 6. Is `session_id` present in every Codex hook event, and does Codex have a session-end event?
 7. Does a Claude plugin's hook set run under Cursor's third-party hooks support, and would the
    Cursor adapter then run twice?

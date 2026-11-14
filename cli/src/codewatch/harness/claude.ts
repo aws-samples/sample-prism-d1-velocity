@@ -233,7 +233,162 @@ export function parsePushTarget(cmd: string): PushTarget | null {
 /** git accepts any unambiguous prefix of a long option; `--no-v` is the shortest that means `--no-verify` for push. */
 const isNoVerify = (a: string) => a.length >= '--no-v'.length && '--no-verify'.startsWith(a);
 
-/** A command that would turn off or route around PRISM's hooks (section 6.2). */
+/** A ref under refs/remotes/: the remote-tracking refs the push range and the upstream base are read from. */
+const isRemoteRef = (r: string) => /^(refs\/)?remotes\//.test(r.replace(/^\+/, ''));
+/**
+ * A branch or tag name that looks like a remote-tracking short name (`origin/main`) or a full ref.
+ * Defense in depth only: the engine and pushbase.ts read full `refs/remotes/<remote>/...` names and
+ * `@{upstream}`, which a branch or tag cannot shadow, so this does not list every remote name.
+ */
+const SHADOW_NAME = /^(refs\/|remotes\/|origin\/|upstream\/)/;
+/** Options of `git tag` that take the next word as their value (`git branch -m` renames and takes none). */
+const TAG_VALUE_OPTS = new Set(['-m', '-F', '-u', '--message', '--file', '--local-user', '--cleanup', '--format', '--sort', '--color']);
+const BRANCH_VALUE_OPTS = new Set(['--format', '--sort', '--color']);
+/** Words after a git subcommand that are not options, nor the value of one in `valueOpts`. */
+const positionals = (args: string[], valueOpts?: Set<string>) => args.filter((a, i) => !a.startsWith('-') && !(valueOpts?.has(args[i - 1] ?? '')));
+/** The destination of a `src:dst` refspec, or null for a refspec without one. */
+const refspecDst = (spec: string) => { const i = spec.indexOf(':'); return i < 0 ? null : spec.slice(i + 1); };
+
+const MOVES_REF = 'moves a remote-tracking ref (refs/remotes/...), which the PRISM push check compares the push against';
+const MOVES_UPSTREAM = 'changes the branch\'s upstream, which the PRISM push check compares the push against';
+const SHADOWS = 'shadows a remote-tracking ref the PRISM push check reads';
+/** Config keys that decide where an ordinary `git fetch` writes remote-tracking refs (a URL rewrite included). */
+const REMOTE_FETCH_KEY = /^(remote\..+\.(fetch|url)|url\..+\.insteadof)$/i;
+/** `alias.*` and config includes: the check reads the subcommand and keys literally, so an alias or an included file would hide a ref move from it. */
+const ALIAS_KEY = /^(alias\..|include\.path$|includeif\..+\.path$)/i;
+const HIDES_FROM_CHECK = 'defines a git alias or config include, which the PRISM push check cannot see through';
+const MOVES_FETCH = 'changes where git fetch writes remote-tracking refs, which the PRISM push check compares the push against';
+/** Config sections that hold a branch's upstream or a remote's fetch setup. */
+const TRACKING_SECTION = /^(branch|remote)\../i;
+
+/** Longest command word quoted back in a deny reason. */
+const MAX_REASON_ARG = 80;
+const BRANCH_OR_TAG_REF = /^\+?refs\/(heads|tags)\//;
+/** A full ref that moves what the push check reads: refs/remotes/*, or a branch or tag named like one. */
+const movesTracking = (r: string) => isRemoteRef(r) || (BRANCH_OR_TAG_REF.test(r) && SHADOW_NAME.test(r.replace(BRANCH_OR_TAG_REF, '')));
+const quoted = (s: string) => JSON.stringify(s.slice(0, MAX_REASON_ARG));
+const hasOpt = (g: GitCall, ...o: string[]) => g.args.some((a) => o.includes(a));
+
+/** The name a `git branch` or `git tag` call creates, or null when it only lists, deletes or reads. */
+function createdName(g: GitCall, readOnly: string[]): string | null {
+  if (hasOpt(g, ...readOnly)) return null;
+  const pos = positionals(g.args, g.sub === 'tag' ? TAG_VALUE_OPTS : BRANCH_VALUE_OPTS);
+  // `git branch <new> [<start>]` names the new branch first; -m/-M/-c/-C (rename, copy) name it last.
+  return (g.sub === 'branch' && hasOpt(g, '-m', '-M', '-c', '-C', '--move', '--copy') ? pos[pos.length - 1] : pos[0]) ?? null;
+}
+
+/** A write to a git config key matching `key` (old `git config k v` and new `git config set k v` forms). */
+function configWrite(g: GitCall, key: RegExp): string | null {
+  const k = g.args.findIndex((a) => key.test(a));
+  if (k < 0) return null;
+  const reads = hasOpt(g, '--get', '--get-all', '--get-regexp', '-l', '--list') || g.args[0] === 'get' || g.args[0] === 'list';
+  const writes = hasOpt(g, '--unset', '--unset-all', '--add', '--replace-all') || g.args[0] === 'set' || g.args[0] === 'unset' || (!reads && positionals(g.args.slice(k + 1)).length > 0);
+  return writes ? g.args[k] : null;
+}
+
+/** Remote-tracking refs and the upstream: what the push range and the finish gate's upstream base are read from (D4). */
+const REF_CHECKS: Record<string, (g: GitCall) => string | null> = {
+  'update-ref': (g) => (hasOpt(g, '--stdin') ? 'git update-ref --stdin can move any ref, including remote-tracking refs the PRISM push check compares the push against'
+    : positionals(g.args).some(movesTracking) ? `git update-ref ${MOVES_REF}` : null),
+  'symbolic-ref': (g) => {
+    const named = positionals(g.args, new Set(['-m']));
+    return (named.length >= 2 || hasOpt(g, '-d', '--delete')) && named[0] && isRemoteRef(named[0]) ? `git symbolic-ref ${MOVES_REF}` : null;
+  },
+  fetch: (g) => refspecBypass(g),
+  pull: (g) => refspecBypass(g),
+  push: (g) => refspecBypass(g),
+  branch: (g) => {
+    if (g.args.some((a) => /^-[a-zA-Z]*u/.test(a) || a === '--set-upstream-to' || a.startsWith('--set-upstream-to=') || a === '--unset-upstream')) return `git branch --set-upstream-to ${MOVES_UPSTREAM}`;
+    // `git branch -d -r origin/main` (also `-dr`, `-Dr`) deletes a remote-tracking ref.
+    const short = g.args.filter((a) => /^-[a-zA-Z]+$/.test(a)).join('');
+    const deletes = /[dD]/.test(short) || hasOpt(g, '--delete');
+    if (deletes && (short.includes('r') || hasOpt(g, '--remotes'))) return `git branch --delete --remotes ${MOVES_REF}`;
+    const name = createdName(g, ['-l', '--list', '-a', '--all', '-r', '--remotes', '-d', '-D', '--delete', '-v', '-vv', '--show-current', '--contains', '--merged', '--no-merged', '--points-at']);
+    return name && SHADOW_NAME.test(name) ? `git branch ${quoted(name)} creates a branch that ${SHADOWS}` : null;
+  },
+  tag: (g) => {
+    const name = createdName(g, ['-l', '--list', '-d', '--delete', '-v', '--verify', '-n', '--contains', '--points-at', '--merged', '--no-merged']);
+    return name && SHADOW_NAME.test(name) ? `git tag ${quoted(name)} creates a tag that ${SHADOWS}` : null;
+  },
+  checkout: (g) => createFlagBypass(g),
+  switch: (g) => createFlagBypass(g),
+  // rename and remove move or delete refs/remotes/<name>/*; set-branches, set-url and a mirror remote change what a later fetch writes there.
+  // `git remote prune` (like `git fetch --prune`) is allowed: it deletes only refs whose branch is gone from the real remote.
+  remote: (g) => (['rename', 'remove', 'rm', 'set-branches', 'set-url'].includes(g.args[0] ?? '') || (g.args[0] === 'add' && g.args.some((a) => a === '--mirror' || a.startsWith('--mirror=')))
+    ? `git remote ${g.args[0]} ${MOVES_REF}` : null),
+  config: (g) => {
+    const up = configWrite(g, /^branch\..+\.(merge|remote)$/i);
+    if (up) return `git config ${quoted(up)} ${MOVES_UPSTREAM}`;
+    const fetch = configWrite(g, REMOTE_FETCH_KEY);
+    if (fetch) return `git config ${quoted(fetch)} ${MOVES_FETCH}`;
+    const alias = configWrite(g, ALIAS_KEY);
+    if (alias) return `git config ${quoted(alias)} ${HIDES_FROM_CHECK}`;
+    const i = g.args.findIndex((a) => a === '--remove-section' || a === '--rename-section' || a === 'remove-section' || a === 'rename-section');
+    const section = i >= 0 ? g.args[i + 1] : undefined;
+    return section && TRACKING_SECTION.test(section) ? `git config ${g.args[i]} ${quoted(section)} ${MOVES_UPSTREAM}` : null;
+  },
+};
+
+/** A fetch or push refspec (or `--refmap=`) whose destination is a remote-tracking ref, or a branch or tag named like one. */
+function refspecBypass(g: GitCall): string | null {
+  // A shadow-named destination matters only when it lands in this repository: fetch and pull, or a push to `.`.
+  // shortcut: other spellings of this repository (`./`, its absolute path, file://) are not recognized; full
+  // refs/remotes/* destinations are denied for every remote, and the engine reads full ref names anyway.
+  const local = g.sub !== 'push' || positionals(g.args)[0] === '.';
+  const shadowsOrMoves = (d: string) => {
+    const s = d.replace(/^\+/, '');
+    // A glob destination (`refs/*`, `*`) can expand into refs/remotes/.
+    if (s.includes('*')) return 'refs/remotes/'.startsWith(s.slice(0, s.indexOf('*'))) || s.startsWith('refs/remotes/');
+    return s.startsWith('refs/') ? movesTracking(s) : local && SHADOW_NAME.test(s);
+  };
+  const specs = [...positionals(g.args), ...g.args.filter((a) => a.startsWith('--refmap=')).map((a) => a.slice('--refmap='.length))];
+  const refmap = g.args.indexOf('--refmap');
+  if (refmap >= 0 && g.args[refmap + 1]) specs.push(g.args[refmap + 1]);
+  // `git push . --delete <ref>` deletes a ref in this repository.
+  if (g.sub === 'push' && local && hasOpt(g, '-d', '--delete')) {
+    const gone = positionals(g.args).slice(1).find(shadowsOrMoves);
+    if (gone) return `git push . --delete ${quoted(gone)} ${MOVES_REF}`;
+  }
+  const dst = specs.map(refspecDst).find((d) => d !== null && shadowsOrMoves(d));
+  return dst ? `a git ${g.sub} refspec that writes ${quoted(dst)} ${MOVES_REF}` : null;
+}
+
+const CREATE_FLAGS = ['-b', '-B', '-c', '-C', '--create', '--force-create', '--orphan'];
+
+/** `git checkout -b <name>` / `git switch -c <name>` (also `--create=<name>`, `-b<name>`) with a name that shadows a remote-tracking ref. */
+function createFlagBypass(g: GitCall): string | null {
+  let name: string | undefined;
+  for (let i = 0; i < g.args.length && name === undefined; i++) {
+    const a = g.args[i];
+    if (CREATE_FLAGS.includes(a)) name = g.args[i + 1];
+    else if (a.startsWith('--') && CREATE_FLAGS.includes(a.split('=')[0]) && a.includes('=')) name = a.slice(a.indexOf('=') + 1);
+    else if (/^-[a-zA-Z]/.test(a) && !a.startsWith('--')) {
+      // A short-option cluster (`-fb`, `-borigin/main`): the create flag takes the rest of the word, else the next word.
+      const k = a.slice(1).search(/[bBcC]/);
+      if (k >= 0) name = a.slice(k + 2) || g.args[i + 1];
+    }
+  }
+  return name && SHADOW_NAME.test(name) ? `git ${g.sub} creating ${quoted(name)} makes a branch that ${SHADOWS}` : null;
+}
+
+const refBypass = (g: GitCall) => {
+  // `git -c remote.<name>.fetch=...`, `.url=` or `url.<x>.insteadOf=` remaps any fetch this run does; `-c alias.x=...` hides the subcommand.
+  const oneShot = g.configs.find((c) => REMOTE_FETCH_KEY.test(c.split('=')[0]));
+  if (oneShot) return `git -c ${quoted(oneShot.split('=')[0])} ${MOVES_FETCH}`;
+  const alias = g.configs.find((c) => ALIAS_KEY.test(c.split('=')[0]));
+  if (alias) return `git -c ${quoted(alias.split('=')[0])} ${HIDES_FROM_CHECK}`;
+  return g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null;
+};
+
+/**
+ * A command that would turn off or route around PRISM's hooks (section 6.2), or move what the
+ * push check measures against (D4): a remote-tracking ref (`git update-ref refs/remotes/...`, a
+ * fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`),
+ * a branch or tag named like one (`origin/main`), or the branch's upstream.
+ *
+ * shortcut: a write to `.git/refs/`, `.git/packed-refs` or `.git/config` by a command other than
+ * git is not seen; the git pre-push review and the CI gate are the backstop.
+ */
 export function bypassReason(cmd: string): string | null {
   for (const g of gitCalls(cmd)) {
     if (g.configs.some((c) => c.toLowerCase().startsWith('core.hookspath='))) return '-c core.hooksPath= routes around the git hooks';
@@ -243,14 +398,16 @@ export function bypassReason(cmd: string): string | null {
       if (keys.includes('core.hookspath')) return 'git config core.hooksPath changes which git hooks run';
       if (keys.some((k) => k.startsWith('prism.'))) return 'git config prism.* changes PRISM codewatch settings';
     }
+    const ref = refBypass(g);
+    if (ref) return ref;
   }
   return null;
 }
 
-const oneLine = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
+export const oneLine = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
+export const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
 
-function capBytes(s: string, max: number): string {
+export function capBytes(s: string, max: number): string {
   if (Buffer.byteLength(s, 'utf8') <= max) return s;
   const note = '\n[PRISM: list truncated]';
   const cps = Array.from(s);
@@ -286,7 +443,7 @@ export function agentText(v: HarnessVerdict, opts: { includeNonBlocking?: boolea
 }
 
 /** One line for the person (systemMessage). */
-function personText(v: HarnessVerdict): string {
+export function personText(v: HarnessVerdict): string {
   const bits = [`PRISM harness: ${v.verdict}`];
   if (v.reasons.length) bits.push(v.reasons.join('; '));
   if (v.warnings.length) bits.push(`warnings: ${v.warnings.map((w) => clip(oneLine(w), 300)).join('; ')}`);

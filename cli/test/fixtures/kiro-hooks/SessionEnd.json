@@ -1,0 +1,6 @@
+{
+  "session_id": "sess_00000000-1111-4222-8333-444444444444",
+  "hook_event_name": "SessionEnd",
+  "cwd": "__REPO__",
+  "reason": "client_disconnect"
+}

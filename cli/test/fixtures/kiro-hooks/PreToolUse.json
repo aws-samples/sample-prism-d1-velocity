@@ -1,0 +1,13 @@
+{
+  "session_id": "sess_00000000-1111-4222-8333-444444444444",
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "execute_bash",
+  "tool_input": {
+    "command": "git push origin feat/live",
+    "description": "Push feat/live branch to origin",
+    "cwd": null,
+    "run_in_background": false,
+    "timeout": null
+  }
+}

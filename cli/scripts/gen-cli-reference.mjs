@@ -42,6 +42,7 @@ const GUIDE = {
   'codewatch report': ['Scan Reports', 'USER_GUIDE.md#scan-reports'],
   'enable codeburn': ['Developer Setup', 'USER_GUIDE.md#developer-setup'],
   'enable codewatch': ['Codewatch', 'USER_GUIDE.md#codewatch-local-git-hooks'],
+  'enable agent-hooks': ['Installing the hooks', 'USER_GUIDE.md#installing-the-hooks-enable-agent-hooks'],
   'enable kirocrew': ['Kiro Crew app', 'USER_GUIDE.md#kiro-crew-app'],
   'enable security': ['Security Agent Setup', 'USER_GUIDE.md#security-agent-setup-enable-security'],
   'export otel': ['Developer Setup', 'USER_GUIDE.md#developer-setup'],

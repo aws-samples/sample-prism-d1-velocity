@@ -20,7 +20,7 @@ export const GROUP_DESCRIPTIONS: Record<string, string> = {
   'bedrock-protection': 'Audit an AWS account, organization or repo for LLMjacking exposure',
   bootstrapper: 'Install PRISM CI workflows, the eval harness and the coding agent, and set up CI OIDC roles',
   codewatch: 'Git hook entry points and scan reports for the local codewatch hooks, and the agent harness loop (review, hook)',
-  enable: 'Turn on a PRISM feature on this machine or repo: codewatch hooks, codeburn sync, Security Agent, the Kiro Crew app',
+  enable: 'Turn on a PRISM feature on this machine or repo: codewatch hooks, agent harness hooks, codeburn sync, Security Agent, the Kiro Crew app',
   export: 'Push local usage data to PRISM now',
   git: 'Claude Code session hook, and the retired AI-origin commit trailers',
   'parse-code-tool': 'Parse Kiro CLI and Kiro IDE sessions into codeburn-compatible token usage',
@@ -75,6 +75,16 @@ async function registerTop(program: any, name: string): Promise<boolean> {
 }
 
 /**
+ * Commands whose module file is named otherwise, as `<category> <command>` -> file base name.
+ * `enable agent-hooks` lives in harness-hooks.ts so CI path filters on `**\/agent*.ts`
+ * (the agent eval workflow) do not select it.
+ */
+export const COMMAND_FILES: Record<string, string> = { 'enable agent-hooks': 'harness-hooks' };
+const FILE_COMMANDS = new Map(Object.entries(COMMAND_FILES).map(([cmd, file]) => [`${cmd.split(' ')[0]} ${file}`, cmd.split(' ')[1]]));
+/** The command a `<category>/<file>` module registers as. */
+const commandFor = (category: string, file: string) => FILE_COMMANDS.get(`${category} ${file}`) ?? file;
+
+/**
  * Fast path: import and register ONLY the `<category> <command>` module being
  * invoked. Returns false if the module can't be found (so we can fall back).
  * Supports both compiled `.js` (published) and `.ts` (tsx dev) layouts.
@@ -82,9 +92,12 @@ async function registerTop(program: any, name: string): Promise<boolean> {
 async function registerOne(program: any, category: string, command: string): Promise<boolean> {
   const categoryDir = resolve(commandsDir, category);
   if (!existsSync(categoryDir) || !statSync(categoryDir).isDirectory()) return false;
+  const name = COMMAND_FILES[`${category} ${command}`] ?? command;
+  // A file that belongs to a differently named command is not this one.
+  if (commandFor(category, name) !== command) return false;
 
   let file = '';
-  for (const candidate of [`${command}.js`, `${command}.ts`]) {
+  for (const candidate of [`${name}.js`, `${name}.ts`]) {
     const p = resolve(categoryDir, candidate);
     if (existsSync(p)) { file = p; break; }
   }
@@ -114,10 +127,9 @@ async function registerAll(program: any) {
     const files = readdirSync(categoryDir).filter((f) => f.endsWith('.js') && !f.endsWith('.d.ts'));
 
     for (const file of files) {
-      const commandName = basename(file, '.js');
       const modulePath = pathToFileURL(resolve(categoryDir, file)).href;
       const mod = await import(modulePath);
-      attach(program, category, commandName, mod.default || mod);
+      attach(program, category, commandFor(category, basename(file, '.js')), mod.default || mod);
     }
   }
 }
@@ -129,7 +141,7 @@ async function registerAll(program: any) {
  *   commands/
  *     _top/<name>.js       → becomes `prism-cli <name>` (top-level command)
  *     <category>/          → becomes `prism-cli <category>`
- *       <command>.js       → becomes `prism-cli <category> <command>`
+ *       <command>.js       → becomes `prism-cli <category> <command>` (or its COMMAND_FILES name)
  *
  * Each command file must export a default object:
  *   { description: string, options?: [{flags, description, default?}], action: (options) => void }

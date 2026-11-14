@@ -62,6 +62,15 @@ class ManifestTest(unittest.TestCase):
         self.assertNotIn("entryPoint", MANIFEST["backend"])
         self.assertEqual(MANIFEST["permissions"]["api"], ["/api/apps/" + MANIFEST["name"] + "/*"])
 
+    def test_fix_skill_defers_to_active_kiro_hooks(self):
+        # 0.2.4: with the PRISM Kiro hooks active for the session, the skill reads their verdict
+        # instead of running its own rounds, so a session is not reviewed with two budgets.
+        text = (ROOT / "skills" / "prism-fix-findings" / "SKILL.md").read_text(encoding="utf-8")
+        for needle in ("$KIRO_SESSION_ID", ".prism/harness/<that id>.json", "`client`", "do **not** run your own review rounds", "harness.session"):
+            self.assertIn(needle, text)
+        self.assertLess(text.index("KIRO_SESSION_ID"), text.index("1. Call `prism_review`"), "the hook check comes first")
+        self.assertGreaterEqual(tuple(int(p) for p in MANIFEST["version"].split(".")[:3]), (0, 2, 4))
+
     def test_platform_os_names(self):
         self.assertTrue(set(MANIFEST["platform"]["os"]) <= {"macos", "linux", "windows"})
 
