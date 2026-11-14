@@ -42,12 +42,8 @@ export type KiroEvent = typeof KIRO_EVENTS[number];
 export const KIRO_DENY_EXIT = 2;
 /** Kiro's shell tool id; the `shell` matcher selects it. */
 export const KIRO_SHELL_TOOL = 'execute_bash';
-/**
- * Raw hook input that could be a shell call or a push (D5): an unparseable pre-tool payload that
- * matches fails closed. Built from KIRO_SHELL_TOOL and the `shell` category, plus any `push` text,
- * so a payload cut off before its tool name but mentioning a push is still held.
- */
-const MAYBE_SHELL_INPUT = new RegExp(`${KIRO_SHELL_TOOL}|"shell"|push`);
+/** Start of the deny for pre-tool input that is not a JSON object (D5). */
+export const UNREADABLE_INPUT = 'PRISM could not read the hook input';
 /** Last line of every push deny: who blocked it. */
 export const KIRO_DENY_TAIL = 'This was blocked by the PRISM push check: the PRISM Kiro hook (.kiro/hooks/prism-harness.json), which runs prism-cli codewatch hook. Stop and tell the user that this hook blocked the command and why; do not attribute it to anyone else.';
 /** Kiro has no message channel to the person, so the agent relays it. */
@@ -97,7 +93,7 @@ const block = (reason: string): KiroHookResult => ({ exit: 0, stdout: JSON.strin
 
 // ------------------------------------------------------------ push findings, handed over at Stop
 
-/** `.prism/harness/<session>.push-notice.json`: the push findings the agent has not seen yet. */
+/** `<harness dir>/<session>.push-notice.json`: the push findings the agent has not seen yet. */
 const noticePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.push-notice.json`);
 
 /**
@@ -130,12 +126,22 @@ const clearPushNotice = (repoRoot: string, session: string) => rmSync(noticePath
 
 // ------------------------------------------------------------ events
 
+/** Repository root per directory, so one hook run asks git once per directory. */
+const roots = new Map<string, string | null>();
+function rootOf(dir: string): string | null {
+  if (!roots.has(dir)) {
+    const top = gitIn(dir, ['rev-parse', '--show-toplevel']);
+    roots.set(dir, top.ok && top.stdout ? top.stdout : null);
+  }
+  return roots.get(dir)!;
+}
+
+/** The session's directory: payload `cwd`, else the process cwd. */
+const sessionDir = (input: KiroInput) => (typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd());
+
 /** The repo the hook runs for: the shell call's own cwd, else the session's, else the process cwd. */
 function repoOf(input: KiroInput): string | null {
-  const dir = typeof input.tool_input?.cwd === 'string' && input.tool_input.cwd ? input.tool_input.cwd
-    : typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
-  const top = gitIn(dir, ['rev-parse', '--show-toplevel']);
-  return top.ok && top.stdout ? top.stdout : null;
+  return rootOf(typeof input.tool_input?.cwd === 'string' && input.tool_input.cwd ? input.tool_input.cwd : sessionDir(input));
 }
 
 function prePush(cmd: string, input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv): KiroHookResult {
@@ -201,9 +207,8 @@ function finishCheck(repoRoot: string, session: string | null, pushNotice: strin
  */
 function toolWindow(input: KiroInput, edge: 'pre' | 'post'): string {
   const session = sanitizeSession(input.session_id);
-  const dir = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
-  const top = session ? gitIn(dir, ['rev-parse', '--show-toplevel']) : null;
-  return top?.ok && top.stdout ? recordWindow(top.stdout, session, edge, input.tool_use_id) : '';
+  const root = session ? rootOf(sessionDir(input)) : null;
+  return root ? recordWindow(root, session, edge, input.tool_use_id) : '';
 }
 
 /**
@@ -241,22 +246,21 @@ function toolCheck(input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv)
 export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHookDeps = {}): KiroHookResult {
   const env = deps.env ?? process.env;
   if (env[HARNESS_CHILD_ENV] === '1') return ok();
-  // Kiro always sends a JSON object. No input, unreadable input, or a shell call without a command
-  // cannot be told apart from a push, so the push check holds it (D5); other events go on.
+  // Kiro always sends a JSON object, so input that is missing or not one is not a glitch to work
+  // around: it cannot be told apart from a push, and every pre-tool call is held (D5, decided by
+  // the user for 1.12.1 in place of guessing from the raw text). Other events record nothing and go on.
   let input: KiroInput;
   try {
     if (!stdin || !stdin.trim()) throw new Error('empty');
     input = JSON.parse(stdin);
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('not an object');
   } catch {
-    // pre-tool runs on every tool (matcher `*`), so a parse glitch must not block them all: it fails
-    // closed only when the raw input could be a shell call or a push (D5). pre-push is shell-only.
-    const shellish = MAYBE_SHELL_INPUT.test(stdin ?? '');
-    return event === 'pre-push' || (event === 'pre-tool' && shellish) ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
+    return event === 'pre-push' || event === 'pre-tool' ? deny(`${UNREADABLE_INPUT}: it was missing or not a JSON object, so the tool call was not run. Tell the person; retry the call, or run it from their own terminal.`) : ok();
   }
   if (event === 'post-tool') return ok(toolWindow(input, 'post')); // Kiro drops this stderr on exit 0; it is for a person running the hook by hand
   if (event === 'pre-push' || event === 'pre-tool') {
-    const w = harnessWriteReason(input.tool_name, input.tool_input);
+    const root = rootOf(sessionDir(input));
+    const w = root ? harnessWriteReason(input.tool_name, input.tool_input, harnessDir(root), sessionDir(input)) : null;
     if (w) return deny(`PRISM harness: ${w}. Do not edit PRISM's harness state.`);
     toolWindow(input, 'pre');
     const r = toolCheck(input, deps, env);

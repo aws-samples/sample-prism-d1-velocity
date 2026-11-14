@@ -108,7 +108,7 @@ The once-per-session marker is an empty file under the plugin's data directory. 
 
 | Hook | What it does | Default |
 |---|---|---|
-| `SessionStart` | Records the session's baseline in `.prism/harness/<session>.json`: a snapshot of the working tree, taken without touching your index | always |
+| `SessionStart` | Records the session's baseline in `.git/prism/harness/<session>.json` (the git common directory): a snapshot of the working tree, taken without touching your index | always |
 | `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. A secret (also in any pushed commit), a failed secret scan, a change to the checks or a push that does not say what it sends (`--all`, `--mirror`, several refspecs, a glob) denies the push; review findings never do, they come back to Claude as context. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
 | `PreToolUse` on Bash, `if: "Bash(*git*config*)"`, `"Bash(*git*-c*)"`, and (0.3.1) `"Bash(*git*ref*)"`, `"Bash(*git*remote*)"`, `"Bash(*git*fetch*)"`, `"Bash(*git*pull*)"`, `"Bash(*git*branch*)"`, `"Bash(*git*tag*)"`, `"Bash(*git*checkout*)"`, `"Bash(*git*switch*)"` | The same bypass check, with no review: `git config` and `git -c` hook changes, and commands that move a remote-tracking ref or the branch's upstream (`git update-ref refs/remotes/...`, `git fetch . HEAD:refs/remotes/origin/main`, `git branch -f origin/main`, `git branch -u ...`), which the push check compares the push against | on |
 | `Stop`, `SubagentStop` | Finish gate: `fix` keeps Claude working with the findings (`decision: "block"`), at most 2 rounds | off |

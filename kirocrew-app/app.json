@@ -1,6 +1,6 @@
 {
   "name": "prism",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "displayName": "PRISM",
   "description": "Codewatch findings, AI spend and setup status from your local prism-cli for Kiro Crew agents, and a daily digest that speaks only when something changed.",
   "author": "aws-samples",

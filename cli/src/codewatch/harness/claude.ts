@@ -7,14 +7,14 @@
  * Events: session-start (record the baseline), stop (finish gate, opt-in),
  * pre-push (PreToolUse on Bash git push, on by default), session-end.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve as resolvePath, sep as pathSep } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict, type PushTarget } from './engine.js';
 import { deleteGuard, guardEvent, recordWindow } from './guard.js';
-import { deleteState, loadState, recordBaseline, sanitizeSession } from './state.js';
+import { deleteState, harnessDir, loadState, recordBaseline, sanitizeSession } from './state.js';
 
 /** pre-tool / post-tool run around every file-writing tool and Bash call (D6); they record tool windows only. */
 export const CLAUDE_EVENTS = ['session-start', 'pre-tool', 'post-tool', 'stop', 'pre-push', 'bash-guard', 'session-end'] as const;
@@ -382,49 +382,61 @@ const refBypass = (g: GitCall) => {
   return g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null;
 };
 
-/** Commands that only read a file: allowed on PRISM's harness state (the Kiro Crew skill reads it). */
-const READ_ONLY_COMMANDS = new Set(['cat', 'ls', 'head', 'tail', 'less', 'grep', 'rg', 'jq', 'wc', 'stat', 'file', 'test', '[']);
-/** Tool names that only read: allowed to name the harness state (Kiro and Claude Code read and search tools). */
+/** File tools that only read: allowed to name the harness state (Kiro and Claude Code read and search tools). */
 const READ_TOOL = /^(fs_read|read|grep|glob|ls|list_directory|view|search|code)$/i;
-const HARNESS_STATE = '.prism/harness';
+/** How deep tool inputs are searched for a path (`file_path`, `path`, `notebook_path`, MCP arguments ...). */
+const MAX_INPUT_DEPTH = 3;
 
-/**
- * A tool call that would write PRISM's harness state (`.prism/harness/`, the session state and
- * the tool-window record of D6), so an agent cannot rewrite who changed what. Shell commands are
- * judged per simple command: one that names the directory and is not a plain reader is refused.
- * Other tools are refused when any string input names it, unless the tool only reads.
- *
- * shortcut: a write through an interpreter (`python -c`, `node -e`) that spells the path out
- * of pieces, or a relative path after `cd .prism`, is not seen; the state is not signed (section
- * 6.2 non-goal), and the git pre-push hook and the CI gate are the backstop.
- */
-export function harnessWriteReason(toolName: unknown, toolInput: unknown): string | null {
-  const why = 'writes PRISM\'s harness state (.prism/harness/), which records which changes are the agent\'s';
-  const name = typeof toolName === 'string' ? toolName : '';
-  const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
-  if (typeof input.command === 'string') {
-    if (!input.command.includes(HARNESS_STATE)) return null;
-    // A redirect writes whatever the command is (`cat > .prism/harness/x`). Quoted text and
-    // redirects to /dev/null are not writes to the state.
-    const unquoted = input.command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '').replace(/\d?>>?\s*\/dev\/null/g, '');
-    if (unquoted.includes('>')) return `this command ${why}`;
-    for (const raw of shellCommands(input.command)) {
-      const w = stripPrefix(raw);
-      if (w.some((x) => x.includes(HARNESS_STATE)) && !READ_ONLY_COMMANDS.has(base(w[0] ?? ''))) return `this command ${why}`;
-    }
-    // A redirect is caught above; here each simple command that names the directory must be a reader.
-    return null;
+/** Longest tool-input string treated as a path. */
+const MAX_PATH_CHARS = 4096;
+
+/** The real path of `p`; a path that does not exist yet is placed by its nearest existing parent. */
+function realPath(p: string): string {
+  let dir = p;
+  let rest = '';
+  while (true) {
+    try { return rest ? join(realpathSync(dir), rest) : realpathSync(dir); } catch { /* not there yet: try the parent */ }
+    const parent = dirname(dir);
+    if (parent === dir) return p;
+    rest = rest ? join(basename(dir), rest) : basename(dir);
+    dir = parent;
   }
-  if (READ_TOOL.test(name)) return null;
-  const strings: string[] = [];
-  const collect = (v: unknown, depth: number) => {
-    if (typeof v === 'string') strings.push(v);
-    else if (v && typeof v === 'object' && depth < 3) for (const x of Object.values(v as object)) collect(x, depth + 1);
-  };
-  collect(input, 0);
-  return strings.some((s) => s.includes(HARNESS_STATE)) ? `this ${name || 'tool'} call ${why}` : null;
 }
 
+/** Shell tools: their `command` text is never judged as a path (decided for 1.12.1, D6). */
+const SHELL_TOOL = /^(bash|execute_bash|shell)$/i;
+
+/**
+ * A file-tool call (Write, Edit, fs_write, an MCP tool ...) whose path input points into PRISM's
+ * harness state (`stateDir`, in the git directory): exact path resolution against `cwd`, no
+ * command-text guessing. Shell commands are not judged here, by the user's decision for 1.12.1
+ * (it replaced command-text heuristics that could not be made exact): the state lives outside the
+ * worktree, and an agent that writes it from a shell is the stated non-goal (D6); the push-time
+ * secret scan and the CI gate remain.
+ */
+export function harnessWriteReason(toolName: unknown, toolInput: unknown, stateDir: string, cwd: string): string | null {
+  const name = typeof toolName === 'string' ? toolName : '';
+  const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
+  if (SHELL_TOOL.test(name) || READ_TOOL.test(name)) return null;
+  // Real paths on both sides, so a symlinked spelling of the same directory (/home and
+  // /local/home) still matches. Only strings naming `prism` (any case) are resolved, against the session's
+  // directory. Limit: a symlink the agent made under another name, pointing at the state
+  // directory, is not followed; that is deliberate evasion (the non-goal above).
+  const dir = realPath(stateDir);
+  const inside = (s: string) => {
+    if (!/prism/i.test(s) || s.length > MAX_PATH_CHARS || s.includes('\n')) return false;
+    const p = realPath(resolvePath(cwd, s));
+    return p === dir || p.startsWith(dir + pathSep);
+  };
+  let hit = false;
+  const visit = (v: unknown, depth: number) => {
+    if (hit) return;
+    if (typeof v === 'string') hit = inside(v);
+    else if (v && typeof v === 'object' && depth < MAX_INPUT_DEPTH) for (const x of Object.values(v as object)) visit(x, depth + 1);
+  };
+  visit(input, 0);
+  return hit ? `this ${name || 'tool'} call writes PRISM's harness state, which records which changes are the agent's` : null;
+}
 /**
  * A command that would turn off or route around PRISM's hooks (section 6.2), or move what the
  * push check measures against (D4): a remote-tracking ref (`git update-ref refs/remotes/...`, a
@@ -538,7 +550,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
   try {
     if (event === 'pre-tool' || event === 'post-tool') {
       if (event === 'pre-tool') {
-        const w = harnessWriteReason(input.tool_name, input.tool_input);
+        const w = harnessWriteReason(input.tool_name, input.tool_input, harnessDir(repoRoot), cwd);
         if (w) return deny(`PRISM harness: ${w}. Do not edit PRISM's harness state.`);
       }
       // Never fails the tool: on an error nothing is recorded, which leaves every change the agent's.
@@ -575,11 +587,10 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
       return v.warnings.length || v.findings.length ? JSON.stringify({ systemMessage: personText(v) }) : '';
     }
 
-    // pre-push: a git push (checked above). Claude Code runs the pre-tool hook beside this one, in
-    // parallel, so fold the person's changes here too before the engine reads them (D6).
-    const note = recordWindow(repoRoot, session, 'pre', input.tool_use_id);
-    if (note) process.stderr.write(note);
-    const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
+    // pre-push: a git push (checked above). The pre-tool hook Claude Code runs beside this one
+    // records the window edge, in parallel; the tamper check folds the gap before this call itself (D6).
+    const toolUseId = typeof input.tool_use_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(input.tool_use_id) ? input.tool_use_id : null;
+    const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env), toolUseId });
     const reason = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
     if (v.verdict === 'stop') {
