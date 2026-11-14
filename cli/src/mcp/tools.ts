@@ -20,6 +20,7 @@ import { discoverRepos, repoLabels, type Discovery, type RepoRef } from '../dash
 import { buildReport, renderReportHtml, renderReportMarkdown, reviewEntries, reviewForCommit, type ScanReport } from '../dashboard/report.js';
 import { readLog } from '../dashboard/commits.js';
 import { UsageCache, usageCachePath } from '../dashboard/usage-cache.js';
+import { UpdateCheck, updateCachePath } from '../dashboard/update-check.js';
 import { emptyUsage, localDate, type UsagePanel } from '../dashboard/usage.js';
 import type { MachineDeps } from '../dashboard/setup.js';
 import { readResultEntries, type PrismResult } from '../codewatch/results.js';
@@ -186,6 +187,9 @@ export function cachedUsage(ctx: ToolContext): UsagePanel | null {
   return cache.peek();
 }
 
+/** The cached update check only: prism-cli mcp never asks npm. */
+const cachedVersion = (ctx: ToolContext) => async () => new UpdateCheck({ installed: ctx.version, file: updateCachePath(ctx.home), env: ctx.env }).current();
+
 function payload(ctx: ToolContext): Promise<DashboardPayload> {
   return buildPayload({
     cwd: ctx.cwd, root: ctx.root, home: ctx.home, pathEnv: ctx.pathEnv,
@@ -194,6 +198,7 @@ function payload(ctx: ToolContext): Promise<DashboardPayload> {
       const u = cachedUsage(ctx);
       return { usage: u ?? emptyUsage('loading', NO_CACHE), cacheHit: !!u };
     },
+    version: cachedVersion(ctx),
   });
 }
 
@@ -386,6 +391,7 @@ async function snapshot(ctx: ToolContext, a: Args): Promise<Record<string, unkno
     usage: async () => {
       return { usage: usage ?? emptyUsage('no-data', NO_CACHE), cacheHit: !!usage };
     },
+    versionInfo: cachedVersion(ctx),
   });
   const dir = mkdtempSync(join(ctx.tmpDir ?? tmpdir(), 'prism-mcp-snapshot-'));
   const file = join(dir, 'prism-dashboard.html');

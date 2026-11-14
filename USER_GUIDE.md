@@ -1171,7 +1171,7 @@ the review runs locally at all, see [Why local code review](docs/WHY-LOCAL-CODE-
 ## Local Dashboard
 
 `prism-cli dashboard` starts a web page for one developer that shows codewatch results across your
-repos, a codeburn usage summary and a setup checklist. Run it from any directory:
+repos, codeburn spend, Security Agent and AWS check results, and a Setup view with the setup checklist. Run it from any directory:
 
 ```bash
 prism-cli dashboard
@@ -1186,13 +1186,21 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   for you to run. The **Setup** view (below) can run a fixed set of local setup commands for you.
 - **Read-only in AWS.** Loading the page makes no AWS calls. On the Setup view, **Check now**,
   `aws check` and `team info` make read-only calls; nothing on the page writes to AWS.
-- **Theme.** The **Light / Dark / System** toggle in the header is saved in your browser
-  (`localStorage`). System follows your OS setting.
+- **Theme.** The page opens in the dark theme. The **Light / Dark / System** toggle in the header is
+  saved in your browser (`localStorage`) and wins on the next load; System follows your OS setting.
+- **Update check.** The version pill in the header shows `prism-cli <version>`, or
+  `Update: <installed> → <latest>` in orange when npm has a newer release; it links to the Updates
+  section of the Setup view, which shows the `npm i -g @prism-d1/cli@latest` command to copy.
+  The dashboard asks the npm registry (`registry.npmjs.org`) at most once a day, with a 3-second
+  timeout, caches the answer in `~/.prism/cache/update-check.json` and says nothing when offline. It
+  never updates anything by itself. `PRISM_NO_UPDATE_CHECK=1` turns the check off. The same
+  `version` block (`installed`, `latest`, `publishedAt`, `update`, `checkedAt`) is in `--json`.
 
 ### Setup View
 
-The **Setup** tab lists the setup checklist with a **Run** or **Copy** button per item, in four
-sections: This machine, Repos, Usage sync (codeburn) and AWS. Every Run first shows the exact
+The **Setup** tab lists the setup checklist with a **Run** or **Copy** button per item, in five
+sections: Updates (installed and latest prism-cli, see the update check above), This machine, Repos,
+Usage sync (codeburn) and AWS. Every Run first shows the exact
 command in a confirm dialog. Runs use this CLI's own binary with a fixed argument list, one at a
 time, without a terminal (so prompts take their no-terminal answer), with a timeout. The output
 is shown with secrets masked, and each run is logged to `~/.prism/logs/dashboard-actions.log`
@@ -1218,42 +1226,7 @@ account, caller ARN and region, whether they match the saved account, and fixes 
 are expired or invalid. On a match it updates the saved verified time, and says so. Account ids and
 ARNs appear only on the page, never in `prism-cli dashboard --json`.
 
-### Finding Repos
-
-The dashboard scans your home directory, 3 levels deep, for every git repository, including linked
-worktrees. It skips hidden directories and build or dependency folders (`node_modules`, `build`,
-`dist`, `target`, `venv` and similar), does not follow symlinks, and does not look inside a repo it
-has already found. It stops after 200 repos or 20,000 directories, and the page header then says
-"scan capped". Use `--root <dir>`
-to scan somewhere else. The repo you started it in is listed first.
-
-### Panels
-
-**Codewatch.** One summary row per repo with codewatch results: high, medium and low findings in the
-latest reviews, the last run, the reviewer, commits pushed without a secret scan, and the gitleaks
-state. A banner warns when gitleaks is not installed, because commits on this machine are then not
-scanned. Under **Per repo**, each repo expands to:
-
-- **Commits:** the latest 50 commits with results, each with its secret scan and review status. A row
-  with findings expands to list them. Each finding is placed on the commit that introduced the line,
-  using `git blame` at the reviewed tip. When blame cannot place it, the finding is shown on the tip
-  and marked "in push of <tip>".
-- **Scans:** recent pre-push reviews, each linking to its scan report. The review cells in the
-  Commits table and the last-run time in the summary row link to reports too.
-- **Trend:** findings by severity over recent runs.
-- **Gitleaks blocks:** commits that the pre-commit scan blocked.
-- **Commits pushed without a pre-commit scan:** usually `git commit --no-verify`; rebases and
-  cherry-picks also appear here.
-
-**Usage (codeburn).** Today's and this month's cost, top models and top projects, from the local
-codeburn data, with the time it was collected ("updated ..."). For full charts it points you to
-`codeburn web`. The numbers come from one `codeburn export` for this calendar month (today is read
-from its per-day rows) and are cached for 5 minutes in `~/.prism/cache/usage.json` (readable only by
-you). The page paints from local data first, with the usage cards showing "loading", then fills
-usage in. A cache older than 5 minutes is shown at once and refreshed in the background. A failed
-or missing codeburn is shown as such and never cached.
-
-**Setup checklist.** For this machine: codeburn installed, the scheduled sync from `enable codeburn`
+**Checklist.** The Setup view's This machine and Repos sections list, for this machine: codeburn installed, the scheduled sync from `enable codeburn`
 and its last run (by sync mode: local shows "local only" as info with how to join a team; team without
 a collector URL says to ask your platform team, with Setup instructions and Platform team guide links;
 admin lists the platform-team steps and `prism-cli team` commands), gitleaks, AWS credentials, and the global codewatch hooks (optional, so "not installed" is info and
@@ -1271,6 +1244,44 @@ the fix `cd <repo> && prism-cli enable security`. That is local evidence only; `
 When the global hooks are not installed and at least two repos are missing codewatch, the page
 suggests covering them all with `prism-cli enable codewatch --global` (see
 [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)).
+
+### Finding Repos
+
+The dashboard scans your home directory, 3 levels deep, for every git repository, including linked
+worktrees. It skips hidden directories and build or dependency folders (`node_modules`, `build`,
+`dist`, `target`, `venv` and similar), does not follow symlinks, and does not look inside a repo it
+has already found. It stops after 200 repos or 20,000 directories, and the page header then says
+"scan capped". Use `--root <dir>`
+to scan somewhere else. The repo you started it in is listed first.
+
+### Dashboard View
+
+![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, and the Get more from PRISM strip](assets/images/prism-cli/dashboard-main-dark.png)
+
+**Summary cards.** The latest codewatch review in any repo (severity pills, or skipped / failed),
+spend today and this month, and **Settings warnings**: the checklist items that are missing or warn,
+plus repos whose own hooks bypass the global hooks (info items never count), with a link to the
+Setup view. The Setup tab shows the same count.
+
+**Codewatch.** One row per repo with codewatch installed or results: the findings in the latest
+review of each branch, a **Trend** column with the last 12 pre-push reviews as stacked high / medium
+/ low bars (a clean review is a thin green tick, a skipped one a thin grey tick), the last run (a link
+to its report), the reviewer, commits pushed without a secret scan, the gitleaks state and this
+month's spend for the repo. A banner warns when gitleaks is not installed, because commits on this
+machine are then not scanned. Click a row for the repo's own view.
+
+**Spend.** From the local codeburn data: a heatmap of spend per day for the last 12 weeks (a day with
+no usage is the lightest square; a day codeburn was not asked about is an empty outline, "no data"),
+this month's total and busiest day, bars by model, by project (Kiro Crew workspaces read as
+`crew: <name>`) and by activity, and a strip with API calls, sessions, projects, input, output and
+cache-read tokens and the top tools. For codeburn's own breakdown run `codeburn web --period month`,
+or `codeburn month` in a terminal. The numbers come from one `codeburn export` for this calendar
+month (today is read from its per-day rows), plus one for the heatmap weeks before this month, which
+runs at most once a day because those days do not change. Both are cached in
+`~/.prism/cache/usage.json` (readable only by you) for 5 minutes. The page paints from local data
+first, with the spend cards showing "loading", then fills usage in. A cache older than 5 minutes is
+shown at once and refreshed in the background. A failed or missing codeburn is shown as such and
+never cached.
 
 **Security findings.** The latest AWS Security Agent code review per repo, from the results
 `prism-cli security code-review` and `security findings` cache in `.prism/results/`: the job time, the
@@ -1293,14 +1304,30 @@ from, pass / fail / not-checked counts, fails by severity and the top 5 failures
 `prism-cli aws recommend`. With none cached, it points to `prism-cli aws check`. Local files only;
 no AWS calls (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend)).
 
+**Get more from PRISM.** A section with nothing recorded yet (codewatch, spend, Security Agent
+results, AWS account checks) is not shown; instead this strip lists it with the command that
+fills it.
+
 Data is read when the page loads, and again every minute while the tab is visible (usage from the
-cache). The **Refresh** button also runs new codeburn exports. The **Setup warnings** card counts the
-checklist items that are missing or warn, plus repos whose own hooks bypass the global hooks; info
-items never count.
+cache). The **Refresh** button also runs new codeburn exports.
+
+### Repo View
+
+![The repo view for the demo repo checkout-service: four cards, findings over time, the newest reviews with report links and skip reasons, commits, setup, Security Agent and the open findings](assets/images/prism-cli/dashboard-repo-dark.png)
+
+`#repo/<id>` (open it from a Codewatch row; the browser's Back returns to the dashboard) shows one
+repo: cards for open findings, pre-push reviews in the last 30 days (and how many were skipped),
+commits the pre-commit scan blocked for secrets, and this month's spend; a chart of the last 24
+pre-push reviews by severity; the newest 10 reviews with their report links and skip reasons; the
+commits with their secret scan and review status (a row with findings expands to list them; each
+finding is placed on the commit that introduced the line with `git blame` at the reviewed tip, or
+marked "in push of <tip>" when blame cannot place it); the repo's codewatch setup and fix; its
+Security Agent setup and latest cached code review and threat model; and the open findings.
+Sections with nothing to show are left out.
 
 ### Scan Report Pages
 
-Each review in the **Scans** list links to `/report/<id>`, a printable page with the same content as
+Each review in the repo view's **Reviews** list links to `/report/<id>`, a printable page with the same content as
 `prism-cli codewatch report`. `/report/<id>.md` returns it as Markdown. See
 [Scan Reports](#scan-reports) to export a report without the server.
 

@@ -8,21 +8,23 @@
  * a confirm dialog first. AWS-writing commands are Copy only.
  */
 
-/** Runs in <head> before first paint: applies a saved Light/Dark choice so the page does not flash. */
-export const THEME_BOOT = `(function(){try{var t=localStorage.getItem('prism-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
+/**
+ * Runs in <head> before first paint: applies a saved Light, Dark or System
+ * choice so the page does not flash. The page starts as data-theme="dark", the default.
+ */
+export const THEME_BOOT = `(function(){try{var t=localStorage.getItem('prism-theme');if(t==='light'||t==='dark'||t==='system')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
 
-/** The header toggle: Light, Dark or System (no data-theme; follows prefers-color-scheme). Saved in localStorage only. */
+/** The header toggle: Light, Dark (the default) or System (follows prefers-color-scheme). Saved in localStorage only. */
 export const THEME_SCRIPT = `
 const THEME_KEY = 'prism-theme';
-function storedTheme() { try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' ? t : 'system'; } catch (e) { return 'system'; } }
+function storedTheme() { try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' || t === 'system' ? t : 'dark'; } catch (e) { return 'dark'; } }
 function applyTheme(t) {
-  const root = document.documentElement;
-  if (t === 'light' || t === 'dark') root.setAttribute('data-theme', t); else root.removeAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', t);
   for (const b of document.querySelectorAll('[data-theme-set]')) b.setAttribute('aria-pressed', String(b.getAttribute('data-theme-set') === t));
 }
 function setTheme(t) {
-  const v = t === 'light' || t === 'dark' ? t : 'system';
-  try { if (v === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage off: applies for this page only */ }
+  const v = t === 'light' || t === 'system' ? t : 'dark';
+  try { localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage off: applies for this page only */ }
   applyTheme(v);
 }
 for (const b of document.querySelectorAll('[data-theme-set]')) b.addEventListener('click', () => setTheme(b.getAttribute('data-theme-set')));
@@ -31,19 +33,21 @@ applyTheme(storedTheme());
 
 export const SETUP_STYLE = `
 [hidden] { display:none !important; }
-nav.tabs { display:flex; gap:4px; }
-nav.tabs a { color:var(--muted); text-decoration:none; padding:4px 10px; border-radius:6px; border:1px solid transparent; }
-nav.tabs a[aria-current="page"] { color:var(--text); background:var(--bg); border-color:var(--line); font-weight:600; }
-a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-.theme { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+nav.tabs { display:flex; gap:4px; margin-left:8px; }
+nav.tabs a { color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:8px; font-weight:550; display:inline-flex; align-items:center; gap:6px; }
+nav.tabs a[aria-current="page"] { color:var(--accent); background:var(--accent-soft); }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible, tr.click:focus-within { outline:2px solid var(--accent); outline-offset:1px; }
+.theme { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .theme button { border:none; border-radius:0; background:var(--card); color:var(--muted); padding:4px 9px; }
-.theme button[aria-pressed="true"] { background:var(--bg); color:var(--text); font-weight:600; }
+.theme button[aria-pressed="true"] { background:var(--raised); color:var(--text); font-weight:600; }
+#setup { display:grid; gap:0 18px; grid-template-columns:repeat(auto-fit, minmax(min(420px, 100%), 1fr)); align-items:start; } #setup > .wide { grid-column:1 / -1; }
 .srow { padding:8px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; } .srow:first-of-type { border-top:none; }
 .srow-head { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
 .srow-ctl { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px; }
 .cmdline { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; max-width:100%; } .cmdline code { white-space:normal; overflow-wrap:anywhere; }
-.badge { font-size:11px; padding:0 6px; border-radius:8px; border:1px solid var(--line); color:var(--muted); background:var(--raised); white-space:nowrap; }
-button.run { background:var(--accent); border-color:var(--accent); color:var(--card); font-weight:600; }
+.badge { font-size:11px; padding:0 6px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:var(--raised); white-space:nowrap; font-weight:600; }
+.badge.warn { color:var(--warn); }
+button.run { background:var(--accent); border-color:var(--accent); color:var(--bg); font-weight:600; }
 button.run.danger { background:var(--card); border-color:var(--bad); color:var(--bad); }
 button:disabled { opacity:.55; cursor:not-allowed; }
 input.url { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); min-width:min(320px,100%); flex:1; }
@@ -68,14 +72,21 @@ const OUT = { status: el('div', { class: 'srow-head' }), pre: el('pre', { class:
 const ACTION_PANEL = el('section', { class: 'card wide', hidden: '' }, el('h2', {}, 'Action output'), OUT.status, OUT.pre,
   el('p', { class: 'note' }, 'Secrets are masked. Each run is logged to ~/.prism/logs/dashboard-actions.log (time, action, repo, exit code).'));
 
-function currentView() { return location.hash === '#setup' ? 'setup' : 'dashboard'; }
+/** #setup (or #setup/<section>), #repo/<16 hex>, else the dashboard. */
+function repoRoute() { const m = /^#repo\\/([0-9a-f]{16})$/.exec(location.hash); return m ? m[1] : null; }
+function currentView() { return /^#setup(\\/|$)/.test(location.hash) ? 'setup' : repoRoute() ? 'repo' : 'dashboard'; }
 function showView() {
   const v = currentView();
   document.getElementById('main').hidden = v !== 'dashboard';
+  document.getElementById('repo').hidden = v !== 'repo';
   document.getElementById('setup').hidden = v !== 'setup';
+  if (v === 'repo') renderRepo(repoRoute());
   for (const a of document.querySelectorAll('[data-view]')) {
-    if (a.getAttribute('data-view') === v) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    if (a.getAttribute('data-view') === (v === 'repo' ? 'dashboard' : v)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
+  const section = /^#setup\\/([a-z]+)$/.exec(location.hash);
+  const target = section && document.getElementById('setup-' + section[1]);
+  if (target) target.scrollIntoView({ block: 'start' }); else if (typeof window.scrollTo === 'function') window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', showView);
 showView();
@@ -245,6 +256,8 @@ function reposSection(data) {
   const recheck = el('button', { type: 'button', disabled: SNAPSHOT ? '' : null, title: SNAPSHOT ? 'Not in a static snapshot' : null }, 'Re-check status');
   recheck.addEventListener('click', async () => { recheck.disabled = true; try { await api('/api/recheck'); } catch (e) { /* load() reports */ } await load(); });
   s.append(el('div', { class: 'srow-ctl' }, recheck, el('span', { class: 'fix' }, 'Codewatch hooks and Security Agent setup per repo, from local files.')));
+  const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
+  if (sg) s.append(suggestionCallout(sg));
   const ids = SETUP.repoIds || {}, cds = SETUP.repoCd || {}, cp = SETUP.copy || {};
   const rowOf = (r) => {
     const cw = el('div', {}, pill(CW_PILL[r.status] || 'missing', r.status === 'opted-out' ? 'opted out' : r.status + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
@@ -349,13 +362,42 @@ function awsSection(a) {
   return s;
 }
 
+/** Info (or warn) callout for the global install. */
+function suggestionCallout(sg) {
+  if (sg.style === 'warn') {
+    return el('div', { class: 'callout warn', role: 'note' },
+      el('strong', {}, sg.missing + " repos don't have codewatch."),
+      el('div', {}, 'Your global core.hooksPath is set to ', el('code', {}, txt(sg.currentHooksPath)), ', so the plain global install would refuse. Use ',
+        el('code', {}, sg.command), ': it saves that value and still runs its hooks after codewatch.'));
+  }
+  return el('div', { class: 'callout info', role: 'note' },
+    el('strong', {}, sg.missing + " repos don't have codewatch. Cover all of them at once: "), el('code', {}, sg.command),
+    el('div', { class: 'fix' }, 'Applies to every repo on this machine, including new clones. Repos can opt out with ', el('code', {}, 'git config prism.codewatch false'), '.'));
+}
+
+/** The update command. The page shows it; nothing updates by itself. */
+const UPDATE_CMD = 'npm i -g @prism-d1/cli@latest';
+
+/** Installed vs latest prism-cli, from the payload's version block (a daily npm registry check). */
+function updatesSection(v) {
+  const s = el('section', { class: 'card wide', id: 'setup-updates' }, el('h2', {}, 'Updates'));
+  if (!v) return s;
+  const state = v.update ? sevPill('medium', 'update available') : v.latest ? sevPill('ok', 'up to date') : sevPill('zero', 'not checked');
+  s.append(el('div', { class: 'srow-head' }, state, el('b', {}, 'prism-cli ' + txt(v.installed)),
+    v.latest ? el('span', { class: 'fix' }, 'latest on npm: ' + txt(v.latest) + (v.publishedAt ? ', published ' + when(v.publishedAt) : '')) : null));
+  s.append(el('p', { class: 'fix' }, v.checkedAt ? 'Checked ' + ago(v.checkedAt) + '. The dashboard asks the npm registry at most once a day; PRISM_NO_UPDATE_CHECK=1 turns it off.'
+    : 'Not checked yet. The dashboard asks the npm registry at most once a day and stays quiet when offline; PRISM_NO_UPDATE_CHECK=1 turns it off.'));
+  if (v.update) s.append(copyOnly(UPDATE_CMD, 'installs software'), el('p', { class: 'note' }, 'Then restart prism-cli dashboard.'));
+  return s;
+}
+
 async function renderSetup(data) {
   try { const r = await api('/api/setup'); if (r.ok) SETUP = r.json; } catch (e) { /* keep the last good copy */ }
   const root = document.getElementById('setup');
   const openState = new Map([...root.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
   root.replaceChildren();
   if (!SETUP) { root.append(el('section', { class: 'card wide' }, pill('error'), ' could not load the setup data')); return; }
-  root.append(machineSection(data), syncSection(data), reposSection(data), awsSection(SETUP.aws || {}), ACTION_PANEL);
+  root.append(updatesSection(data.version), machineSection(data), syncSection(data), reposSection(data), awsSection(SETUP.aws || {}), ACTION_PANEL);
   for (const d of root.querySelectorAll('details[data-key]')) { const k = d.getAttribute('data-key'); if (openState.has(k)) d.open = openState.get(k); }
 }
 // A reload while an action runs picks its output back up.

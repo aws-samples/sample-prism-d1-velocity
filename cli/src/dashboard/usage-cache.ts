@@ -8,7 +8,7 @@
  * an earlier local day is ignored, since its "today" is no longer today.
  */
 import { join } from 'node:path';
-import { localDate, type UsagePanel } from './usage.js';
+import { localDate, type PriorDays, type UsagePanel } from './usage.js';
 import { readJson, writePrivateJson } from '../utils/private-json.js';
 
 export const USAGE_CACHE_SCHEMA = 'prism.usage-cache.v1';
@@ -31,8 +31,8 @@ const cacheable = (u: UsagePanel) => u.status === 'ok' || u.status === 'no-data'
 
 export interface UsageCacheDeps {
   file: string;
-  /** Runs the codeburn exports (collectUsage). */
-  collect: () => Promise<UsagePanel>;
+  /** Runs the codeburn exports (collectUsage); `prior` is the cached copy of the weeks before this month, for reuse. */
+  collect: (prior?: PriorDays | null) => Promise<UsagePanel>;
   now?: () => Date;
   ttlMs?: number;
 }
@@ -70,11 +70,17 @@ export class UsageCache {
     return this.peek() || this.lastFailure;
   }
 
+  /** The weeks-before-this-month copy in the cache file, from any day; collectUsage reuses it only for the same range. */
+  private cachedPrior(): PriorDays | null {
+    const p = readJson(this.d.file)?.panel?.prior;
+    return p && typeof p.from === 'string' && typeof p.to === 'string' && Array.isArray(p.daily) ? p : null;
+  }
+
   /** Runs the exports now; one at a time, so concurrent callers share the same run. Writes only real data. */
   refresh(): Promise<UsagePanel> {
     if (!this.refreshing) {
       this.refreshing = (async () => {
-        const u = await this.d.collect();
+        const u = await this.d.collect(this.cachedPrior());
         if (cacheable(u)) {
           this.lastError = null;
           this.lastFailure = null;

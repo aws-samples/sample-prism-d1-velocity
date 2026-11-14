@@ -343,7 +343,7 @@ that is a sanity check, not a validation of the assumed token counts.
 
 ### 5.4 Reproduce the numbers on your machine
 
-- **Spend by model:** `prism-cli dashboard`, Usage panel, top models ([Panels](../USER_GUIDE.md#panels)).
+- **Spend by model:** `prism-cli dashboard`, Spend section, By model ([Dashboard View](../USER_GUIDE.md#dashboard-view)).
   The same numbers come from codeburn directly: `codeburn report` for the interactive view,
   `codeburn export` for CSV or JSON ([Developer Setup](../USER_GUIDE.md#developer-setup)). Filter
   by the reviewer's model name.

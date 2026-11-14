@@ -56,6 +56,6 @@ test('page: has the AWS account panel and places values as text', () => {
   const html = renderPage('n0nce');
   assert.match(html, /function awsPanel\(aws\)/);
   assert.match(html, /awsPanel\(data\.aws\)/);
-  assert.match(html, /emptyLine\('AWS account', 'no checks yet\. Run '/);
+  assert.match(html, /moreItem\('AWS account checks', el\('code', \{\}, \(aws && aws\.hint\) \|\| 'prism-cli aws check'\)/, 'empty: one item in the Get more strip');
   assert.doesNotMatch(html.slice(html.indexOf('function awsPanel'), html.indexOf('async function load')), /innerHTML/);
 });

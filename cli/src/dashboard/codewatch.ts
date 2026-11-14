@@ -85,9 +85,16 @@ export interface CodewatchPanel {
   lastReviewId: string | null;
   /** Newest pre-push reviews (at most MAX_SCANS), each linking to its report. */
   scans: ScanRow[];
+  /** Pre-push reviews in the last REVIEW_WINDOW_DAYS days, and how many of them were skipped (the repo view's card). */
+  reviews30d: { total: number; skipped: number };
 }
 
-export const MAX_SCANS = 20;
+const DAY_MS = 86_400_000;
+/** The repo view's "Reviews (N days)" window. */
+export const REVIEW_WINDOW_DAYS = 30;
+
+/** Enough for the per-repo chart (the last 24 reviews). */
+export const MAX_SCANS = 24;
 
 export interface ScanRow {
   id: string;
@@ -160,7 +167,7 @@ function isBlock(r: PrismResult): boolean {
 
 const byTime = (a: PrismResult, b: PrismResult) => String(a.started_at).localeCompare(String(b.started_at));
 
-export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS, gitleaksAvailable = true): CodewatchPanel {
+export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUNS, gitleaksAvailable = true, now = Date.now()): CodewatchPanel {
   // Security Agent reviews have their own panel; the codewatch panel is the git-hook gate only.
   const entries = readResultEntries(repoRoot).filter((e) => e.result && typeof e.result.started_at === 'string' && e.result.kind !== 'security-review' && e.result.kind !== 'security-threat-model' && e.result.kind !== 'aws-check');
   const idOf = new Map(entries.map((e) => [e.result, e.id]));
@@ -189,6 +196,7 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
   const reviews = all.filter((r) => r.kind === 'review' && r.tool && r.tool !== 'none');
   const allReviews = all.filter((r) => r.kind === 'review' && r.hook === 'pre-push');
   const lastReview = allReviews.length ? allReviews[allReviews.length - 1] : null;
+  const recent = allReviews.filter((r) => now - Date.parse(r.started_at) <= REVIEW_WINDOW_DAYS * DAY_MS);
   return {
     hasResults: all.length > 0,
     lastRunAt: all.length ? all[all.length - 1].started_at : null,
@@ -198,6 +206,7 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
       const c = countBySeverity(r.findings || []);
       return { id: idOf.get(r) as string, started_at: r.started_at, branch: r.branch ?? null, tool: r.tool, model: r.model ?? null, status: r.status, high: c.high, medium: c.medium, low: c.low, reason: r.reason ?? null };
     }),
+    reviews30d: { total: recent.length, skipped: recent.filter((r) => r.status === 'skipped').length },
     totalRuns: all.length,
     latestByBranch: [...latest.values()].sort((a, b) => a.branch.localeCompare(b.branch)),
     findings: findings.slice(0, MAX_FINDINGS),

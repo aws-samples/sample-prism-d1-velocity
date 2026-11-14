@@ -12,6 +12,7 @@ import { readResults } from '../codewatch/results.js';
 import { globalStatus, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { homedir } from 'node:os';
+import { ownVersion } from '../commands/_top/version.js';
 import { sep } from 'node:path';
 
 export function tildeHome(p: string, home: string): string {
@@ -22,10 +23,19 @@ import { collectUsage, spendByRepo, type CodeburnExport, type RepoSpend, type Us
 import { versionCachePath } from './usage-cache.js';
 import { collectSecurity, type SecurityPanel } from './security.js';
 import { collectAws, type AwsPanel } from './aws.js';
+import { repoId } from './actions.js';
+import type { VersionInfo } from './update-check.js';
 
 export const PAYLOAD_SCHEMA = 'prism.dashboard.v2';
 
+/** The version block without asking npm: tests, prism-cli mcp, and anything that must stay offline. */
+export function noUpdateCheck(): VersionInfo {
+  return { installed: ownVersion(), latest: null, publishedAt: null, update: false, checkedAt: null };
+}
+
 export interface RepoPayload {
+  /** Stable id for the page's #repo/<id> route (same as the Setup actions' repo id). */
+  id: string;
   name: string;
   /** The name, or a short parent path when another repo has the same name. */
   label: string;
@@ -68,8 +78,15 @@ export interface SetupRow {
   collapsed: boolean;
 }
 
+/** Runs shown in a row's Trend column. */
+export const ROW_TREND_RUNS = 12;
+
+/** One pre-push review in a Trend column, oldest first; a skipped run has no counts. */
+export interface TrendPoint { started_at: string; status: string; high: number; medium: number; low: number }
+
 /** One row of the codewatch summary table. */
 export interface CodewatchRow {
+  id: string;
   name: string;
   label: string;
   path: string;
@@ -88,6 +105,13 @@ export interface CodewatchRow {
   unscannedCommits: number;
   /** Commits here were made while gitleaks was missing. */
   gitleaksWarning: boolean;
+  /** The last ROW_TREND_RUNS pre-push reviews, oldest first, skipped ones included. */
+  trend: TrendPoint[];
+}
+
+/** A row's Trend: the newest pre-push reviews (scans are newest first), oldest first. */
+export function rowTrend(scans: CodewatchPanel['scans'], n = ROW_TREND_RUNS): TrendPoint[] {
+  return scans.slice(0, n).reverse().map((s) => ({ started_at: s.started_at, status: s.status, high: s.high, medium: s.medium, low: s.low }));
 }
 
 /** A next step the page suggests. Read-only: the page shows the command, it never runs it. */
@@ -140,6 +164,8 @@ export interface DashboardPayload {
   aws: AwsPanel;
   /** The one-glance summary shown at the top of the page (buildSummary). */
   summary: DashboardSummary;
+  /** This prism-cli and the latest on npm (update-check.ts); the page's version pill. */
+  version: VersionInfo;
   /**
    * Milliseconds per stage, for diagnosis (`dashboard --json --timing`). scan:
    * repo discovery. setup: checks and codewatch results for every repo and
@@ -173,6 +199,8 @@ export interface PayloadOptions extends DiscoverOptions {
   usage?: UsageSource;
   /** Runs the per-repo git calls; injected in tests. */
   git?: GitRunner;
+  /** The version block; default: this CLI's version with no update check (no network). */
+  version?: () => Promise<VersionInfo>;
   machineDeps?: MachineDeps;
   pathEnv?: string;
 }
@@ -199,6 +227,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   const tScan = Date.now();
   // Usage (codeburn) and the git checks are child processes: start both, then do the in-process work while they run.
   let usageMs = 0;
+  const versionP = (opts.version || (async () => noUpdateCheck()))();
   const usageP = (opts.usage || (async () => ({ usage: await collectUsage({ exporter: opts.exporter, pathEnv: opts.pathEnv }), cacheHit: false })))()
     .finally(() => { usageMs = Date.now() - tScan; });
   const g = globalStatus(opts.home || homedir());
@@ -221,6 +250,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     const s = spend.get(r.path) || null;
     const securityResults = repoResults.some((x) => SECURITY_RESULT_KINDS.some(([k]) => k === x.kind));
     return {
+      id: repoId(r.path),
       name: r.name,
       label: labels.get(r.path) || r.name,
       path: r.path,
@@ -244,13 +274,14 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   // results; the rest have nothing to summarize and appear in the setup list.
   const withCodewatch = repos.filter((r) => r.setup.status === 'ok' || r.codewatch.hasResults);
   const cwRows = sortCodewatchRows(withCodewatch.map((r) => ({
-    name: r.name, label: r.label, path: r.path, current: r.current, active: r.active, spendMonth: r.spend ? r.spend.cost : null,
+    id: r.id, name: r.name, label: r.label, path: r.path, current: r.current, active: r.active, spendMonth: r.spend ? r.spend.cost : null,
     high: r.codewatch.bySeverity.high, medium: r.codewatch.bySeverity.medium, low: r.codewatch.bySeverity.low,
     lastRunAt: r.codewatch.lastRunAt,
     lastReviewId: r.codewatch.lastReviewId,
     reviewer: r.codewatch.lastReviewer ?? r.setup.reviewer,
     unscannedCommits: r.codewatch.secretScanning.unscannedCommits,
     gitleaksWarning: r.codewatch.secretScanning.unscannedCommits > 0,
+    trend: rowTrend(r.codewatch.scans),
   })));
   return {
     schema: PAYLOAD_SCHEMA,
@@ -269,6 +300,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     security: collectSecurity(repos, (p) => results.get(p) ?? readResults(p)),
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
     summary: buildSummary(repos, usage, machineSetup),
+    version: await versionP,
     timing: { scan: tScan - t0, setup: setupMs, usage: usageMs, total: Date.now() - t0, cacheHit },
   };
 }

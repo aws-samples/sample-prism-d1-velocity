@@ -162,10 +162,10 @@ test('usage: today, this month, top models and projects from codeburn export', a
   }
 });
 
-test('usage: asks codeburn for this calendar month', async () => {
+test('usage: asks codeburn for this calendar month, and for the heatmap weeks before it', async () => {
   const seen: string[][] = [];
   await collectUsage({ exporter: async (a) => { seen.push(a); return fixtureExporter(a); }, now: new Date(2026, 1, 9) });
-  assert.deepEqual(seen.find((a) => a.includes('--from')), ['--from', '2026-02-01', '--to', '2026-02-09']);
+  assert.deepEqual(seen.sort(), [['--from', '2025-11-17', '--to', '2026-01-31'], ['--from', '2026-02-01', '--to', '2026-02-09']]);
 });
 
 test('usage: not-installed, error and no-data states', async () => {
@@ -339,7 +339,7 @@ test('overview: setup rows put the current repo first, then installed, then miss
 
 test('overview: codewatch rows sort by high, then medium, then low', () => {
   const row = (name: string, high: number, medium: number, low: number) =>
-    ({ name, label: name, path: '/r/' + name, current: false, active: true, spendMonth: null, high, medium, low, lastRunAt: null, lastReviewId: null, reviewer: null, unscannedCommits: 0, gitleaksWarning: false });
+    ({ id: name, name, label: name, path: '/r/' + name, current: false, active: true, spendMonth: null, high, medium, low, lastRunAt: null, lastReviewId: null, reviewer: null, unscannedCommits: 0, gitleaksWarning: false, trend: [] });
   const sorted = sortCodewatchRows([row('quiet', 0, 0, 0), row('med', 0, 3, 0), row('hi1', 1, 0, 0), row('hi2', 2, 0, 9), row('low', 0, 0, 4)]);
   assert.deepEqual(sorted.map((r) => r.name), ['hi2', 'hi1', 'med', 'low', 'quiet']);
 });
@@ -450,8 +450,8 @@ test('payload carries the suggestion; opted-out repos are not counted as missing
   assert.equal(p.suggestions[0].missing, 2);
   assert.equal(p.overview.setup.find((r) => r.name === 'c')?.status, 'opted-out');
   const html = renderPage('N');
-  assert.ok(html.includes("Applies to every repo on this machine, including new clones."));
-  assert.ok(html.includes('Cover every repo at once: '));
+  assert.ok(html.includes("Applies to every repo on this machine, including new clones."), 'the callout, in the Setup view');
+  assert.match(html, /moreItem\('Codewatch', sg \? el\('code', \{\}, sg\.command\)/, 'the Get more strip names the global install');
   assert.ok(!/<button[^>]*(install|enable)/i.test(html), 'no action buttons');
 }));
 
@@ -463,13 +463,13 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'timing', 'usage']);
+  assert.deepEqual(Object.keys(p).sort(), ['aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'timing', 'usage', 'version']);
   assert.deepEqual(Object.keys(p.timing).sort(), ['cacheHit', 'scan', 'setup', 'total', 'usage']);
   assert.equal(p.timing.cacheHit, false);
   assert.deepEqual(p.aws.accounts, [], 'no aws check results in the fixtures');
   assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'root_display', 'scan_ms', 'truncated']);
   assert.equal(p.scope.root_display, '~');
-  assert.deepEqual(Object.keys(p.repos[0]).sort(), ['active', 'codewatch', 'current', 'hasPrism', 'label', 'name', 'path', 'security', 'setup', 'spend']);
+  assert.deepEqual(Object.keys(p.repos[0]).sort(), ['active', 'codewatch', 'current', 'hasPrism', 'id', 'label', 'name', 'path', 'security', 'setup', 'spend']);
   assert.deepEqual(p.repos[0].security, { status: 'missing', detail: 'not set up', fix: `cd ${p.repos[0].path} && prism-cli enable security` });
   assert.ok(p.overview.setup.every((r) => r.security && r.security.status === 'missing'));
   assert.equal(p.repos.length, 2);
@@ -480,7 +480,11 @@ test('--json payload shape', async () => {
 
   // overview: the repo with a high finding sorts first; both repos lack hooks
   assert.deepEqual(Object.keys(p.overview.codewatch[0]).sort(),
-    ['active', 'current', 'gitleaksWarning', 'high', 'label', 'lastReviewId', 'lastRunAt', 'low', 'medium', 'name', 'path', 'reviewer', 'spendMonth', 'unscannedCommits']);
+    ['active', 'current', 'gitleaksWarning', 'high', 'id', 'label', 'lastReviewId', 'lastRunAt', 'low', 'medium', 'name', 'path', 'reviewer', 'spendMonth', 'trend', 'unscannedCommits']);
+  assert.equal(p.overview.codewatch[0].id, p.repos[0].id, 'the row and its repo share the #repo/<id> id');
+  assert.match(p.repos[0].id, /^[0-9a-f]{16}$/);
+  assert.deepEqual(Object.keys(p.version).sort(), ['checkedAt', 'installed', 'latest', 'publishedAt', 'update'], 'version block, no npm call by default');
+  assert.equal(p.version.latest, null);
   assert.equal(p.overview.codewatch[0].path, p.repos[0].path);
   assert.equal(p.overview.codewatch[0].high, 1);
   assert.equal(p.overview.codewatch[0].gitleaksWarning, true);
@@ -614,19 +618,18 @@ test('page uses textContent for data and loads nothing from the network', () => 
   assert.match(html, /title: p\.path/);
 });
 
-test('the Security findings panel is a one-column card: compact blocks and wrapping rows, no wide table', () => {
+test('the Security findings panel: compact blocks and wrapping rows, no wide table; hidden when empty', () => {
   const html = renderPage('NONCE');
-  const panel = html.slice(html.indexOf('function securityPanel(sec) {'), html.indexOf('async function load('));
+  const panel = html.slice(html.indexOf('function codeReviewBlock('), html.indexOf('const THREAT_LEVELS'));
   assert.ok(panel.length > 0);
-  assert.match(panel, /el\('section', \{ class: 'card' \}, el\('h2', \{\}, 'Security findings'\)\)/);
-  assert.doesNotMatch(panel, /card wide|table\(/, 'not full-width and no table');
-  assert.match(panel, /'no findings'/, 'all-zero state');
-  assert.match(panel, /filter\(\(k\) => \(counts\[k\] \|\| 0\) > 0\)/, 'zero counts hidden');
+  assert.match(panel, /el\('section', \{ class: 'card', id: 'security' \}, el\('h2', \{\}, 'Security findings'/);
+  assert.doesNotMatch(panel, /table\(/, 'no table');
+  assert.match(html, /riskPills\(r\.counts, RISKS, 'no findings'\)/, 'all-zero state');
+  assert.match(html, /levels\.filter\(\(k\) => \(\(counts \|\| \{\}\)\[k\] \|\| 0\) > 0\)/, 'zero counts hidden');
   assert.match(panel, /showing the first/, 'cap note kept');
-  assert.match(panel, /No Security Agent code reviews, threat models or penetration tests yet/, 'empty state kept');
+  assert.match(panel, /return moreItem\('Security Agent'/, 'empty: an item in the Get more strip, not a card');
   assert.match(html, /ul\.sec-findings li \{[^}]*overflow-wrap:anywhere/, 'rows wrap');
-  // Order in the grid: Codewatch (full width), then Usage, Setup, Security and AWS account side by side.
-  assert.match(html, /\[summaryPanel\(data\.summary\), codewatchPanel\(data\), usagePanel\(data\.usage\), setupPanel\(data\), securityPanel\(data\.security\), awsPanel\(data\.aws\)\]/);
+  assert.match(html, /\[summaryCards\(data\.summary\), codewatchPanel\(data\), spendPanel\(data\.usage\), securityPanel\(data\.security\), awsPanel\(data\.aws\)\]/);
 });
 
 test('parsePort validates --port', () => {
