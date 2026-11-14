@@ -224,6 +224,12 @@ function createExclusive(path: string, token: string): boolean {
   } finally { rmSync(tmp, { force: true }); }
 }
 
+/** A lost race (the file appeared or went away meanwhile); any other fs error is thrown to the caller. */
+const raceOnly = (e: any): false => { // any: fs error, code only
+  if (e?.code === 'EEXIST' || e?.code === 'ENOENT') return false;
+  throw e;
+};
+
 /**
  * Takes `<guard>.lock` (an exclusive create holding pid:time:nonce) without waiting. A lock whose
  * holder is dead or older than LOCK_STALE_MS is broken only by the one process that creates
@@ -239,11 +245,11 @@ function createExclusive(path: string, token: string): boolean {
 export function takeLock(lock: string, token: string): boolean {
   if (createExclusive(lock, token)) return true;
   let held: string;
-  try { held = readFileSync(lock, 'utf8'); } catch { return false; }
+  try { held = readFileSync(lock, 'utf8'); } catch (e) { return raceOnly(e); }
   if (!holderGone(held)) return false;
   const brk = `${lock}.break`;
   if (!createExclusive(brk, token)) {
-    try { if (holderGone(readFileSync(brk, 'utf8'))) rmSync(brk, { force: true }); } catch { /* gone */ }
+    try { if (holderGone(readFileSync(brk, 'utf8'))) rmSync(brk, { force: true }); } catch (e) { raceOnly(e); }
     return false;
   }
   const mine = `${lock}.${token.replace(/:/g, '-')}`;
@@ -252,7 +258,7 @@ export function takeLock(lock: string, token: string): boolean {
     writeFileSync(mine, token, { flag: 'wx', mode: 0o600 });
     renameSync(mine, lock);
     return true;
-  } catch { return false; } finally { rmSync(mine, { force: true }); rmSync(brk, { force: true }); }
+  } catch (e) { return raceOnly(e); } finally { rmSync(mine, { force: true }); rmSync(brk, { force: true }); }
 }
 
 const taintPrefix = (session: string) => `${session}.guard.missed.`;

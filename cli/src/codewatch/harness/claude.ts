@@ -403,19 +403,25 @@ function realPath(p: string): string {
   }
 }
 
+/** Shell tools: their `command` text is never judged as a path (decided for 1.12.1, D6). */
+const SHELL_TOOL = /^(bash|execute_bash|shell)$/i;
+
 /**
  * A file-tool call (Write, Edit, fs_write, an MCP tool ...) whose path input points into PRISM's
  * harness state (`stateDir`, in the git directory): exact path resolution against `cwd`, no
- * command-text guessing. Shell commands are not judged here (decided for 1.12.1): the state lives
- * outside the worktree, and an agent that writes it from a shell is the stated non-goal (D6).
+ * command-text guessing. Shell commands are not judged here, by the user's decision for 1.12.1
+ * (it replaced command-text heuristics that could not be made exact): the state lives outside the
+ * worktree, and an agent that writes it from a shell is the stated non-goal (D6); the push-time
+ * secret scan and the CI gate remain.
  */
 export function harnessWriteReason(toolName: unknown, toolInput: unknown, stateDir: string, cwd: string): string | null {
   const name = typeof toolName === 'string' ? toolName : '';
   const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
-  if (typeof input.command === 'string' || READ_TOOL.test(name)) return null;
+  if (SHELL_TOOL.test(name) || READ_TOOL.test(name)) return null;
   // Real paths on both sides, so a symlinked spelling of the same directory (/home and
-  // /local/home) still matches. Only strings naming `harness` are resolved: a path into the state
-  // directory names it unless it goes through a symlink made to hide it (the non-goal above).
+  // /local/home) still matches. Only strings naming `harness` are resolved, against the session's
+  // directory. Limit: a symlink the agent made under another name, pointing at the state
+  // directory, is not followed; that is deliberate evasion (the non-goal above).
   const dir = realPath(stateDir);
   const inside = (s: string) => {
     if (!s.includes('harness') || s.length > MAX_PATH_CHARS || s.includes('\n')) return false;

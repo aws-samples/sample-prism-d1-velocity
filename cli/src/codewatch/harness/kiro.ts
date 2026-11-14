@@ -246,8 +246,9 @@ function toolCheck(input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv)
 export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHookDeps = {}): KiroHookResult {
   const env = deps.env ?? process.env;
   if (env[HARNESS_CHILD_ENV] === '1') return ok();
-  // Kiro always sends a JSON object. Input that is missing or not one cannot be told apart from a
-  // push, so a pre-tool call is held (D5); other events record nothing and go on.
+  // Kiro always sends a JSON object, so input that is missing or not one is not a glitch to work
+  // around: it cannot be told apart from a push, and every pre-tool call is held (D5, decided by
+  // the user for 1.12.1 in place of guessing from the raw text). Other events record nothing and go on.
   let input: KiroInput;
   try {
     if (!stdin || !stdin.trim()) throw new Error('empty');
