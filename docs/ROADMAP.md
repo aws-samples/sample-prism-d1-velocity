@@ -2,7 +2,6 @@
 
 > **Last updated:** 2026-04-22
 > **Status:** Open for contributions
-> **Context:** See competitive-landscape.md for the full gap analysis driving these priorities.
 
 ---
 

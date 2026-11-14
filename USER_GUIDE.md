@@ -572,7 +572,7 @@ or later.
 | `prism_status` | none | Spend today and this month, setup warning count and the first warning, the latest codewatch review (repo, when, counts), repos with codewatch, sync mode, prism-cli version |
 | `prism_findings` | `repo`, `branch`, `limit` (at most 50) | Findings of the latest pre-push review: severity, category, file, line, message, branch, commit, reviewer, time. Default repo: the one containing the client's working directory |
 | `prism_spend` | `days` (at most 31) | Today, this month, calls, sessions, top models, top projects (folder names), per-day rows, `updatedAt` and `stale` |
-| `prism_report` | `repo`, `commit` (default `HEAD`), `format` (`md` or `html`) | The scan report for the review covering the commit, or the latest review, and which branch and range it covers. `md` returns the text; `html` writes a file under the OS temp directory and returns its path |
+| `prism_report` | `repo` (required), `commit` (default `HEAD`), `format` (`md`, the default, or `html`) | The scan report for the review covering the commit, or the latest review, and which branch and range it covers. `md` returns the text; `html` writes a file under the OS temp directory and returns its path |
 | `prism_snapshot` | `open` (default false) | Writes the dashboard as one static HTML file (see [Static snapshot](#static-snapshot)) under a new folder in the OS temp directory and returns its path, and with `open` true opens it when a display is available. Needs prism-cli 1.10.0 |
 | `prism_dashboard` | `open` (default true) | Starts `prism-cli dashboard` (127.0.0.1, per-run token) as a child of the MCP server, or returns the one it already started, and returns its URL. Opens the browser only with a display and outside SSH; otherwise it says how to forward the port. The server stops when the MCP server exits. Needs prism-cli 1.10.0 |
 | `prism_dashboard_stop` | none | Stops the dashboard `prism_dashboard` started (recorded in `~/.prism/run/dashboard.json`, mode 0600), never another one |
@@ -611,7 +611,7 @@ the absolute path that `command -v prism-cli` prints as the command, for example
 
 ### Claude Code plugin
 
-[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.3, work in progress), and
+[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.3.1), and
 this repository is its plugin marketplace. It runs the [agent harness loop](#agent-harness-loop):
 gitleaks and a PRISM review before Claude runs `git push` (on by default), and optionally before
 Claude finishes (`finish_gate`, off by default). It registers `prism-cli mcp` as the `prism` MCP server
@@ -882,7 +882,8 @@ commit was not scanned and records the run as `skipped` with reason `gitleaks-mi
 
 **pre-push** reviews what the push adds. For each pushed branch it diffs `base...tip`, where `base`
 is the branch's upstream, else what the remote already has for that branch, else the remote's
-default branch (a first push). Lock files are left out of the diff. A diff over 200,000 characters
+default branch (a first push), else the commits that are on no remote; when none of the history is
+on a remote, the whole tree is reviewed. Lock files are left out of the diff. A diff over 200,000 characters
 is cut to that length before review, and the result says so. The reviewer reads the diff against
 `.prism/review/rules.md` and the hook prints a short summary.
 
@@ -957,13 +958,14 @@ One engine command does the work: `prism-cli codewatch review --json`. On each r
    started (the plugin's SessionStart hook snapshots the working tree into
    `.prism/harness/<session>.json`, so your own uncommitted work is not blamed on the agent). Without
    a session it is the branch against its upstream plus uncommitted changes. At a push it is every
-   commit the push would send: against the upstream, else the remote branch the push names or
-   `origin/main`, else the commits on no remote, and on a first push the whole tree. A push whose
+   commit the push would send: against the upstream, else the remote branch the push names, else
+   the remote's default branch (`HEAD`, `main` or `master`), else the commits on no remote, and when
+   none of the history is on a remote, the whole tree. A push whose
    target the command does not name (`--all`, several refspecs) is held. An empty diff passes
    at once, with no cost.
 2. Stops (`stop`, `human_why: tamper`) if the session changed PRISM's or gitleaks' own
    configuration: `.gitleaksignore`, `.gitleaks.toml`, the gitleaks baseline, `.prism/config.json`,
-   the review rules, `.prism/results/`, the eval-gate workflows, client hook files, or an added
+   the review rules, the eval-gate workflows, client hook files, or an added
    `gitleaks:allow`. A person decides those.
 3. Runs gitleaks on the changed files, redacted. Only file, line and rule are kept; the secret
    value never reaches the reviewer, the agent or the result file. When gitleaks is missing the
@@ -990,7 +992,8 @@ lines the agent changed. Medium and low findings are reported but do not block, 
 adds `"medium"` to `harness.block_on`, which applies to the finish gate only. A finding on a line
 the agent did not change never keeps it working.
 
-The agent gets at most 2 fix rounds per session, counted by prism-cli, not by a prompt. After that,
+The agent gets at most 2 fix rounds per session (`harness.max_rounds`, at most 3), counted by
+prism-cli, not by a prompt. After that,
 or when the agent tries again without changing anything, the answer is `stop` and the agent reports
 what remains to you.
 
@@ -1005,7 +1008,7 @@ The git hooks for people do not change: `pre-push` stays report-only and never b
 
 | Gate | Hook | Default | What it does |
 |---|---|---|---|
-| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. Only a secret, a failed secret scan or a change to the checks denies the push, and the reason tells Claude to tell you which hook blocked it. Review findings let the push go ahead and come back to Claude as context. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath`, and commands that move the refs the push check measures against: `git update-ref refs/remotes/...`, a fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, a branch or tag named `origin/...`, and changing the branch's upstream |
+| Push gate | `PreToolUse` on Bash commands that contain `git` and `push` (also behind `env`, `git -C dir`, `sh -c`) | on | Runs gitleaks and the review before Claude's `git push`. Only a secret, a failed secret scan, a change to the checks or a push that does not say what it sends denies the push, and the reason tells Claude to tell you which hook blocked it. Review findings let the push go ahead and come back to Claude as context. The hook also denies `git push --no-verify`, `git -c core.hooksPath=...` and `git config prism.*` or `core.hooksPath`, and commands that move the refs the push check measures against: `git update-ref refs/remotes/...`, a fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, a branch or tag named `origin/...`, and changing the branch's upstream |
 | Finish gate | `Stop` and `SubagentStop` | off | Reviews when Claude says it is done and keeps it working on blocking findings, at most 2 rounds |
 
 Turn the finish gate on for yourself in Claude Code with `/config` (the plugin's

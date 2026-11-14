@@ -1,12 +1,12 @@
 # prism-cli: overview of the commands
 
-For engineering managers and leaders. Covers prism-cli **1.9.0** on npm (`@prism-d1/cli`). How to run each command is in the [User Guide](../USER_GUIDE.md#using-prism-locally); every flag is in the [command reference](CLI-REFERENCE.md). This page says what each command is for, what it touches in AWS and what it costs, the safety defaults, and what was decided along the way.
+For engineering managers and leaders. Covers prism-cli **1.12.0** on npm (`@prism-d1/cli`). How to run each command is in the [User Guide](../USER_GUIDE.md#using-prism-locally); every flag is in the [command reference](CLI-REFERENCE.md). This page says what each command is for, what it touches in AWS and what it costs, the safety defaults, and what was decided along the way.
 
 ## Summary
 
 prism-cli is the command-line tool a developer installs from npm to measure, secure and review their AI-assisted work from their own machine. The roadmap slide "prism-cli: one tool, three jobs" groups its commands as **Observe** (what is happening in my repos), **Secure** (AWS Security Agent reviews, threat models and penetration tests) and **Advise** (what to fix in my AWS account). 13 of the slide's 15 commands have shipped, plus `security threats`, which is not on the slide. One was dropped (`security design-review`, no public API) and one is blocked (`install transformation-center`, scope unknown).
 
-Since the slide, prism-cli also gained an MCP server for AI agents (`mcp`, 1.8.0) and an installer for the PRISM Kiro Crew app (`enable kirocrew`, 1.9.0). The platform-team, Bedrock-audit, CI-bootstrap, assessment and workshop commands predate the slide and are listed under [Other commands](#other-commands).
+Since the slide, prism-cli also gained an MCP server for AI agents (`mcp`, 1.8.0), an installer for the PRISM Kiro Crew app (`enable kirocrew`, 1.9.0), a Claude Code status line (`statusline` and `enable claude-code`, 1.10.0), the agent harness loop (`codewatch review` and `codewatch hook`, 1.11.0) and its hook installer for Kiro CLI and Claude Code (`enable agent-hooks`, 1.12.0). The platform-team, Bedrock-audit, CI-bootstrap, assessment and workshop commands predate the slide and are listed under [Other commands](#other-commands).
 
 ## Commands by job
 
@@ -22,7 +22,10 @@ Since the slide, prism-cli also gained an MCP server for AI agents (`mcp`, 1.8.0
 | `enable codeburn` | Installs codeburn and, in team mode, schedules it to send AI usage and commit attribution to the team's PRISM collector every 12 hours. Local mode (the default) keeps usage on the machine. | None | None in AWS beyond the team's existing PRISM pipeline. | 1.3.0 |
 | `enable security` | Sets up AWS Security Agent for one account and region, and this repo's code review for the CI gate. | Deploys resources | A KMS key, an S3 bucket and SSM parameters (small monthly charges). | 1.3.0 |
 | `dashboard` | A local web page with each repo's codewatch results, AI usage, security findings and a setup checklist. | None on load; the Setup view's checks are read-only | None | 1.2.0 |
-| `mcp` | An MCP server on stdio that gives an AI agent (Kiro, Claude Code) the dashboard's findings, reports, cached spend and setup checklist, read-only. | None | None | 1.8.0 |
+| `mcp` | An MCP server on stdio that gives an AI agent (Kiro, Claude Code) the dashboard's findings, reports, cached spend and setup checklist. It can also write a static dashboard file, start the live dashboard on 127.0.0.1, and run the harness review (`prism_review`), which writes its result file. | None | None in AWS; `prism_review` uses the developer's own AI tool. | 1.8.0 |
+| `codewatch review` | The agent harness loop's engine: gitleaks, then the AI review of an agent's changes, answering pass, fix or stop. `codewatch hook` runs it from Claude Code and Kiro CLI hooks; the agent's push is denied only for secrets, a failed secret scan, edits to the checks or an unclear push target. | None | None in AWS; the review uses the developer's own AI tool. | 1.11.0 |
+| `enable agent-hooks` | Writes the harness loop hooks for Kiro CLI (`.kiro/hooks/prism-harness.json`) or Claude Code without the PRISM plugin. | None | None | 1.12.0 |
+| `enable claude-code`, `statusline` | Sets Claude Code's status line to PRISM's findings and spend, after a diff and a backup. | None | None | 1.10.0 |
 | `enable kirocrew` | Installs or updates the PRISM app in Kiro Crew: a PRISM page, the MCP tools, a fix-findings skill and a daily digest. | None | None | 1.9.0 |
 | `export otel` | Sends unsent AI usage to the PRISM collector now, instead of waiting for the schedule. | None | None | 1.3.0 |
 | `install transformation-center` | Not built. | | | Blocked |
@@ -76,12 +79,12 @@ Developers who report AI usage also run `prism-cli enable codeburn --url` with t
 ## Safety defaults
 
 - **Private dashboard.** `dashboard` listens on the local machine only (127.0.0.1), needs a one-time token in its URL, reads local files only and makes no AWS calls when it loads. Its Setup view runs only a fixed list of local setup commands and read-only AWS checks, each after a confirmation. Remote use goes through an SSH tunnel.
-- **No network listener for agents and editors.** `mcp` talks over stdin and stdout only. The editor extension opens no port and makes no network calls. The Kiro Crew app's page is served through the Kiro Crew gateway's authenticated routes.
+- **No network listener for agents and editors.** `mcp` talks over stdin and stdout; the one port it can open is the live dashboard's, on 127.0.0.1, as its own child process. The editor extension opens no port and makes no network calls. The Kiro Crew app's page is served through the Kiro Crew gateway's authenticated routes.
 - **Read-only checks.** `aws connect`, `aws check`, `aws recommend`, `security findings`, `security threats` and `team info` only describe, get and list. `aws check` does not even generate an IAM credential report; a missing report shows as a check it could not decide. The three `aws` commands say they are read-only before their first AWS call.
 - **Confirmation before any deploy or write.** `enable security`, `security pentest` and `team add-developer` show the account, region and what they will create, then ask. All three have `--dry-run`. Without a terminal they refuse unless `--yes` is passed, for CI.
 - **Penetration tests target only what they just deployed.** `security pentest` never takes a URL. It deploys the app into a new private network with no public subnet, no internet gateway and no inbound rule from the internet, reachable only by the test agent. It tears the environment down once the job has finished (seen by `--status` or `--wait`), unless asked to keep it.
 - **No credentials stored.** `aws connect` saves only the profile name, region, account and alias; the standard AWS credential chain supplies the credentials. Secrets in the pentest config must be references to AWS Secrets Manager; plain values are refused.
-- **Local reviews never block a push.** The AI review on push only reports. CI stays the gate that can block a merge.
+- **Local reviews never block a person's push.** The git pre-push review only reports. The agent harness loop denies an AI agent's own `git push` only for a secret, a failed secret scan or an edit to the checks; its review findings never block. CI stays the gate that can block a merge.
 
 ## What was tested live
 

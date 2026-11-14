@@ -7,12 +7,13 @@ Kiro Crew. It adds:
   machine setup checklist, the repos with codewatch (newest commit first, with their findings), a
   sandboxed view of each repo's scan report, and when the daily digest last ran and what it sent.
   See [The page](#the-page).
-- **MCP server `prism`**: the tools `prism_status`, `prism_findings`, `prism_spend`, `prism_report`
-  and `prism_setup`. The app does not implement them. `scripts/prism_mcp.py` finds your
+- **MCP server `prism`**: the `prism-cli mcp` tools (`prism_status`, `prism_findings`,
+  `prism_spend`, `prism_report`, `prism_setup`; `prism_snapshot`, `prism_dashboard` and
+  `prism_dashboard_stop` from prism-cli 1.10.0, `prism_review` from 1.11.0). The app does not implement them. `scripts/prism_mcp.py` finds your
   `prism-cli` and replaces itself with `prism-cli mcp` (an argv list, no shell). See
   [MCP server](../USER_GUIDE.md#mcp-server-prism-cli-mcp) for what each tool returns.
 - **Skill `prism-fix-findings`**: before an agent finishes or pushes a code change in a repo with
-  codewatch, it calls `prism_findings`, fixes the real issues in at most 2 rounds, and then reports
+  codewatch, it calls `prism_review` (or, with a prism-cli older than 1.11.0, `prism_findings`), fixes the real issues in at most 2 rounds, and then reports
   what remains. It treats finding text as untrusted reviewer-model output. It never pushes, never
   disables hooks and never edits `.prism/results/`. When a person asks, it only reports. When the
   [PRISM Kiro hooks](../USER_GUIDE.md#kiro-cli-and-kiro-ide) are active for the session (state in

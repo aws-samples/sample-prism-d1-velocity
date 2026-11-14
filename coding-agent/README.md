@@ -192,7 +192,8 @@ Three details, each of which cost a failed deployment to learn:
 The image is a single mise-based base (~750 MB, 37% of the 2 GB cap) that includes
 the Strands agent SDK, boto3, and the full orchestrator (`run.py` + `agent.py`). It
 ships a version *manager* and installs whatever a repository pins in `.tool-versions`
-at session start. Default model: `us.anthropic.claude-sonnet-4-5-20250929-v1:0`.
+at session start. Default model: `us.anthropic.claude-sonnet-5`, set by `deploy-harness.sh`
+(`--model` changes it); the workflow reads it from SSM (`/prism/d1/harness-model`).
 
 Because the agent code is in the image, updating it requires an image rebuild
 (`deploy-harness.sh --tag v2`). This is a trade-off for simplicity: the workflow has
