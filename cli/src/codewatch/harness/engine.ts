@@ -405,10 +405,11 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
  * with the base's copy instead (scannerOverride).
  */
 function integrityChecks(r: Run, d: Diffs): Integrity {
-  if (!d.state) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  const state = d.state;
+  if (!state) return { tamper: [], allowMarkers: d.diff.allowMarkers };
   // D6: a guarded file the person changed between agent tool calls, and still holds as they left it, is theirs.
   const persons = (paths: string[]) => {
-    const theirs = personsChanges(r.repoRoot, d.state!.session, paths);
+    const theirs = personsChanges(r.repoRoot, state.session, paths);
     if (theirs.size) r.warnings.push(`not counted as session changes: ${[...theirs].slice(0, 5).join(', ')} (changed by the person between agent tool calls)`);
     return paths.filter((p) => !theirs.has(p));
   };

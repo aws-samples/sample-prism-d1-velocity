@@ -22,8 +22,10 @@
  * attribution uses this: secrets in session lines block whoever wrote them.
  *
  * shortcut: an agent that edits a guarded file from a detached background
- * process between tool calls is taken for the person. Deliberate evasion is a
- * non-goal (section 1); the push-time secret scan and the CI gate still apply.
+ * process between tool calls is taken for the person, and the guard record
+ * itself, like the session state (section 6.2), is not signed, so an agent
+ * that writes it directly can claim a change. Deliberate evasion is a non-goal
+ * (section 1); the push-time secret scan and the CI gate still apply.
  */
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -65,11 +67,11 @@ export function tamperHashes(repoRoot: string): { hashes: Record<string, string>
   let complete = true;
   const walk = (rel: string, deep: boolean) => {
     let names: string[];
-    try { names = readdirSync(join(repoRoot, rel)); } catch { return; }
+    try { names = readdirSync(join(repoRoot, rel)); } catch { return; } // no such directory: nothing guarded there
     for (const name of names) {
       const p = rel ? `${rel}/${name}` : name;
       let st;
-      try { st = lstatSync(join(repoRoot, p)); } catch { continue; }
+      try { st = lstatSync(join(repoRoot, p)); } catch { continue; } // removed while walking: absent
       if (st.isDirectory()) { if (deep) walk(p, true); continue; }
       if (!(st.isFile() || st.isSymbolicLink()) || !isTamperPath(p) || p in out) continue;
       if (n >= MAX_FILES) { complete = false; return; }
@@ -156,6 +158,8 @@ function withLock<T>(repoRoot: string, session: string, fn: () => T): T {
   for (;;) {
     try { writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 }); break; } catch (e: any) { // any: fs error, code only
       if (e?.code !== 'EEXIST') throw e;
+      // shortcut: two waiters that both find the same stale lock (a hook killed while holding it)
+      // can both remove it and race once; a lock with a pid check would close that, if it shows up.
       try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true }); } catch { /* gone already */ }
       if (Date.now() > until) throw new Error('the tool window record is locked by another hook');
       Atomics.wait(SLEEP_CELL, 0, 0, LOCK_POLL_MS); // a synchronous sleep: the hook is a short-lived process

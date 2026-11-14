@@ -375,6 +375,8 @@ test('D6: a person\'s config change carried by a push is not tamper; the pre-too
   for (let i = 0; i < 20; i++) assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: 'a' } }), deps(r)).exit, 0);
   assert.ok((Date.now() - t0) / 20 < 50, 'in-process pre-tool for a non-shell tool: hash only, no diff or gitleaks');
   assert.equal(runKiroHook('post-tool', '{not json', deps(r)).exit, 0, 'post-tool never blocks');
+  assert.equal(runKiroHook('pre-tool', '{"tool_name":"fs_wri', deps(r)).exit, 0, 'a broken non-shell payload does not block every tool');
+  assert.equal(runKiroHook('pre-tool', '{"tool_name":"execute_bash","tool_input":{"command":"git pu', deps(r)).exit, 2, 'a broken shell payload still fails closed');
 });
 
 test('D6 (Claude Code): the same windows through pre-tool and post-tool', () => {

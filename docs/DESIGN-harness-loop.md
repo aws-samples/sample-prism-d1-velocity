@@ -985,7 +985,10 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   guarded files attributes nothing to the person; an unreadable guarded file gets a fixed
   fingerprint rather than looking deleted; files over 1 MB are fingerprinted by size and mtime,
   symlinks by target. A failed record is reported on stderr and leaves changes the agent's. With
-  a prism-cli older than 1.12.1 the plugin's two window hooks do nothing.
+  a prism-cli older than 1.12.1 the plugin's two window hooks do nothing. Like the session state
+  (section 6.2), the guard record is not signed: an agent that writes it directly is outside the
+  threat model. On Kiro, `pre-tool` runs for every tool, so a payload that does not parse fails
+  closed (D5) only when its raw text could be a shell call or a push; other tools go on.
 - **What a window edge costs.** No git diff and no gitleaks: one `git rev-parse` and a sha256 of
   each guarded file that exists (at most 500), written atomically to
   `.prism/harness/<session>.guard.json`. A guard record that fails to load or save leaves every

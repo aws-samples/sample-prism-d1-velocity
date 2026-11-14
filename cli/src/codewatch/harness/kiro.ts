@@ -217,7 +217,10 @@ export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHo
     input = JSON.parse(stdin);
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('not an object');
   } catch {
-    return event === 'pre-push' || event === 'pre-tool' ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
+    // pre-tool runs on every tool (matcher `*`), so a parse glitch must not block them all: it fails
+    // closed only when the raw input could be a shell call or a push (D5). pre-push is shell-only.
+    const shellish = /execute_bash|"shell"|push/.test(stdin ?? '');
+    return event === 'pre-push' || (event === 'pre-tool' && shellish) ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
   const windowNote = event === 'pre-tool' || event === 'post-tool' || event === 'pre-push' ? toolWindow(input, event === 'post-tool' ? 'post' : 'pre') : '';
   // Kiro drops hook stderr on exit 0; the note is for a person running the hook by hand.
