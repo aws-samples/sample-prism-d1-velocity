@@ -92,7 +92,11 @@ test('one self-contained file: no external resource, strict CSP whose hashes mat
   assert.equal(scripts(html).length, 2, 'theme boot + page script');
   // Every script element is one of the two exact forms: inline code, or the JSON data block.
   assert.deepEqual(scriptOpeners(html), [M.script, M.data, M.script]);
-  assert.doesNotMatch(html, /<link|<iframe|<img|\ssrc=|@import|url\(\s*['"]?https?:/i);
+  assert.doesNotMatch(html, /<iframe|@import|url\(\s*['"]?https?:/i);
+  // The only images are the PRISM marks, inlined as data: URIs (img-src data:).
+  const refs = [...html.matchAll(/\s(?:src|href)="([^"]*)"/g)].map((m) => m[1]).filter((u) => !u.startsWith('#'));
+  assert.ok(refs.length >= 2 && refs.every((u) => u.startsWith('data:image/png;base64,')), 'favicon and logo only, as data: URIs');
+  assert.match(csp!, /img-src data:;/);
   assert.doesNotMatch(outsideScripts(html), /https?:\/\//, 'no URL in the static markup');
 });
 

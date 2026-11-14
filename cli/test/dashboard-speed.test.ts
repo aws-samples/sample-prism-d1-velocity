@@ -43,9 +43,12 @@ const okPanel = (cost: number, at = '2026-11-05T10:00:00.000Z'): UsagePanel => (
 
 const monthFixture = () => JSON.parse(readFileSync(join(FIX, 'codeburn-export-month.json'), 'utf8'));
 
+/** The heatmap's weeks before November 2026-11-05, already collected: no export for them. */
+const PRIOR_NOV5 = { from: '2026-08-10', to: '2026-10-31', daily: [] };
+
 test('usage: one month export; today comes from its per-day rows', async () => {
   const seen: string[][] = [];
-  const u = await collectUsage({ exporter: async (a) => { seen.push(a); return monthFixture(); }, now: new Date(2026, 10, 5, 12) });
+  const u = await collectUsage({ exporter: async (a) => { seen.push(a); return monthFixture(); }, now: new Date(2026, 10, 5, 12), prior: PRIOR_NOV5 });
   assert.deepEqual(seen, [['--from', '2026-11-01', '--to', '2026-11-05']], 'no all-time export, no second export');
   assert.deepEqual(u.today, { cost: 14.46, calls: 65, sessions: 23 });
   assert.equal(u.month?.cost, 24.83);
@@ -63,7 +66,7 @@ test('usage: no per-day row for today is zero; an export without per-day rows as
     delete j.periods[0].daily;
     return j;
   };
-  const u = await collectUsage({ exporter: noDaily, now: new Date(2026, 10, 5, 12) });
+  const u = await collectUsage({ exporter: noDaily, now: new Date(2026, 10, 5, 12), prior: PRIOR_NOV5 });
   assert.deepEqual(seen, [['--from', '2026-11-01', '--to', '2026-11-05'], ['--from', '2026-11-05', '--to', '2026-11-05']]);
   assert.deepEqual(u.today, { cost: 3, calls: 4, sessions: 2 });
 });

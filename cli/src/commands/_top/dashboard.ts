@@ -11,6 +11,7 @@ import { collectUsage, emptyUsage } from '../../dashboard/usage.js';
 import { UsageCache, usageCachePath } from '../../dashboard/usage-cache.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../../dashboard/snapshot.js';
 import { ownVersion } from './version.js';
+import { UpdateCheck, updateCachePath } from '../../dashboard/update-check.js';
 import { resolve } from 'node:path';
 
 export function parsePort(v: string | undefined): number {
@@ -42,7 +43,9 @@ export default {
   async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean }) {
     // stderr, so --json output stays parseable.
     if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
-    const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: () => collectUsage() });
+    const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: (prior) => collectUsage({ prior }) });
+    // At most one npm registry request a day (3 s timeout, silent offline); PRISM_NO_UPDATE_CHECK=1 turns it off.
+    const updates = new UpdateCheck({ installed: ownVersion(), file: updateCachePath(homedir()) });
 
     if (opts.snapshot !== undefined) {
       if (opts.json) { console.error('Error: --snapshot and --json are separate outputs; pick one.'); process.exit(1); }
@@ -53,6 +56,7 @@ export default {
         const html = await buildSnapshotHtml({
           cwd: process.cwd(), home: homedir(), root: opts.root, version: ownVersion(),
           usage: async () => { const r = await usageCache.get({ fresh: opts.fresh }); refresh = r.refresh; return r; },
+          versionInfo: () => updates.get(),
         });
         bytes = writeSnapshot(file, html);
       } catch (e: any) {
@@ -74,6 +78,7 @@ export default {
       const payload = await buildPayload({
         cwd: process.cwd(), root: opts.root,
         usage: async () => { const r = await usageCache.get({ fresh: opts.fresh }); refresh = r.refresh; return r; },
+        version: () => updates.get(),
       });
       process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
       if (opts.timing) console.error(formatTiming(payload.timing));
@@ -88,6 +93,8 @@ export default {
         const u = usageCache.current();
         return u ? { usage: u, cacheHit: true } : { usage: emptyUsage('loading', 'Loading usage from codeburn...'), cacheHit: false };
       },
+      // Never waits for npm: the cached answer now; a due check runs in the background and the next load shows it.
+      version: async () => updates.current(),
     });
 
     let port: number;
@@ -96,6 +103,7 @@ export default {
     let srv;
     try {
       const payload = cachedPayload(build);
+      if (updates.due()) updates.get().then(() => payload.invalidate(), () => {});
       const repos = async () => ((await payload()) as DashboardPayload).repos;
       // Reports are looked up only in the repos the dashboard itself discovered.
       const getReport = async (id: string) => reportFromRepos((await repos()).map((r) => r.path), id);

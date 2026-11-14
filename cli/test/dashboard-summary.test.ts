@@ -13,8 +13,9 @@ import { join } from 'node:path';
 
 import { makeResult, writeResult, type PrismResult } from '../src/codewatch/results.js';
 import { collectCodewatch } from '../src/dashboard/codewatch.js';
-import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
+import { buildPayload, ROW_TREND_RUNS, rowTrend, type DashboardPayload } from '../src/dashboard/payload.js';
 import { renderPage } from '../src/dashboard/page.js';
+import { FakeElement, runPage, SETUP_STUB } from './page-dom.js';
 import { repoLabels } from '../src/dashboard/repos.js';
 import { machineChecks, securitySetup, type CheckItem } from '../src/dashboard/setup.js';
 import { LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, SETUP_DOCS, TEAM_NO_URL_HELP } from '../src/utils/sync-mode.js';
@@ -96,21 +97,26 @@ test('security status: saved results without a marker are "in use", neither is "
 
 // ---------------------------------------------------------------- trend
 
-test('trend: skipped runs are left out by design and counted, so the page can say why the chart is empty', () => {
+test('trend: the codewatch row charts the last 12 pre-push reviews, skipped ones included as their own tick', () => {
   const repo = gitRepo(join(tmp('tr'), 'r'));
   for (const [i, at] of ['2026-11-07T22:28:33Z', '2026-11-09T03:05:39Z', '2026-11-09T15:01:41Z'].entries()) {
     writeResult(repo, review(at, 'skipped', { reason: 'no changes against upstream', branch: `refs/tags/v1.${i}` }));
   }
   const cw = collectCodewatch(repo);
   assert.equal(cw.totalRuns, 3);
-  assert.deepEqual(cw.trend, []);
+  assert.deepEqual(cw.trend, [], 'the older trend field still leaves skipped runs out');
   assert.equal(cw.skippedRuns, 3);
   writeResult(repo, review('2026-11-10T00:00:00Z', 'findings', { findings: [{ severity: 'high', category: 'security', file: 'a.ts', line: 1, rule: 'r', message: 'm' }] }));
-  const after = collectCodewatch(repo);
-  assert.equal(after.trend.length, 1);
-  assert.equal(after.skippedRuns, 3);
+  const t = rowTrend(collectCodewatch(repo).scans);
+  assert.deepEqual(t.map((x) => [x.status, x.high]), [['skipped', 0], ['skipped', 0], ['skipped', 0], ['findings', 1]], 'oldest first');
+  for (let d = 11; d < 25; d++) writeResult(repo, review(`2026-11-${d}T00:00:00Z`, 'ok'));
+  const last = rowTrend(collectCodewatch(repo).scans);
+  assert.equal(last.length, ROW_TREND_RUNS);
+  assert.equal(last[last.length - 1].started_at, '2026-11-24T00:00:00Z');
   const html = renderPage('N');
-  assert.match(html, /skipped runs have no findings to chart/);
+  assert.match(html, /svg\.bars rect\.skip \{ fill:var\(--muted\)/, 'skipped: a muted tick');
+  assert.match(html, /svg\.bars rect\.clean \{ fill:var\(--ok\)/, 'clean: an ok tick');
+  assert.match(html, /svg\.bars rect\.high \{ fill:var\(--high\); \}/, 'fills are CSS variables');
 });
 
 // ---------------------------------------------------------------- labels
@@ -171,93 +177,29 @@ test('payload: active repos first, the rest collapse; labels, spend and the summ
   assert.ok(!JSON.stringify(p.summary).includes(home + '/quiet'), 'summary carries only the reviewed repo');
 });
 
-// ---------------------------------------------------------------- page script in a tiny DOM
+// ---------------------------------------------------------------- page script in a tiny DOM (test/page-dom.ts)
 
-/** Just enough DOM for the page script: elements, text, attributes, details.open and two selector shapes. */
-function fakeDom() {
-  class Node { childNodes: Node[] = []; parent: Node | null = null; nodeName = '#node';
-    get textContent(): string { return this.childNodes.map((c) => c.textContent).join(''); }
-    set textContent(v: string) { this.childNodes = [new Text(String(v))]; }
-    append(...kids: (Node | string)[]) { for (const k of kids) { const n = typeof k === 'string' ? new Text(k) : k; n.parent = this; this.childNodes.push(n); } }
-    replaceChildren(...kids: Node[]) { this.childNodes = []; this.append(...kids); }
-  }
-  class Text extends Node { constructor(public data: string) { super(); this.nodeName = '#text'; }
-    get textContent() { return this.data; } set textContent(v: string) { this.data = v; } }
-  class Element extends Node {
-    attrs = new Map<string, string>(); listeners: Record<string, () => void> = {};
-    constructor(tag: string) { super(); this.nodeName = tag.toUpperCase(); }
-    setAttribute(k: string, v: string) { this.attrs.set(k, String(v)); }
-    getAttribute(k: string) { return this.attrs.has(k) ? this.attrs.get(k)! : null; }
-    hasAttribute(k: string) { return this.attrs.has(k); }
-    removeAttribute(k: string) { this.attrs.delete(k); }
-    get open() { return this.attrs.has('open'); } set open(v: boolean) { if (v) this.attrs.set('open', ''); else this.attrs.delete('open'); }
-    get classList() { return { add: (c: string) => this.setAttribute('class', ((this.getAttribute('class') || '') + ' ' + c).trim()) }; }
-    addEventListener(t: string, f: () => void) { this.listeners[t] = f; }
-    all(): Element[] { return this.childNodes.flatMap((c) => (c instanceof Element ? [c, ...c.all()] : [])); }
-    querySelectorAll(sel: string): Element[] {
-      const m = /^([a-z]*)((?:\[[a-z-]+\])*)$/.exec(sel)!;
-      const attrs = [...m[2].matchAll(/\[([a-z-]+)\]/g)].map((x) => x[1]);
-      return this.all().filter((e) => (!m[1] || e.nodeName === m[1].toUpperCase()) && attrs.every((a) => e.hasAttribute(a)));
-    }
-  }
-  const byId: Record<string, Element> = { main: new Element('main'), setup: new Element('main'), meta: new Element('span'), refresh: new Element('button') };
-  const document = {
-    visibilityState: 'visible',
-    createElement: (t: string) => new Element(t),
-    createElementNS: (_: string, t: string) => new Element(t),
-    createTextNode: (s: string) => new Text(s),
-    getElementById: (id: string) => byId[id],
-    querySelector: () => null,
-    querySelectorAll: () => [],
-    documentElement: new Element('html'),
-    body: new Element('body'),
-    addEventListener: () => {},
-  };
-  return { Node, document, byId };
-}
-
-async function runPage(payloads: unknown[]) {
-  const html = renderPage('N');
-  // The last script is the page; the first (in <head>) only applies a saved theme.
-  const js = html.slice(html.lastIndexOf('<script nonce="N">') + '<script nonce="N">'.length, html.lastIndexOf('</script>'));
-  const dom = fakeDom();
-  let i = 0;
-  // /api/data gets the payloads in turn; the Setup view's routes answer 404 here (tested in dashboard-setup.test.ts).
-  const fetch = async (url: string) => url === '/api/data'
-    ? { ok: true, json: async () => JSON.parse(JSON.stringify(payloads[Math.min(i++, payloads.length - 1)])) }
-    : { ok: false, status: 404, json: async () => ({}) };
-  const window = { addEventListener: () => {} };
-  const location = { hash: '' };
-  const localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
-  new Function('document', 'Node', 'fetch', 'setInterval', 'window', 'location', 'localStorage', js)(dom.document, dom.Node, fetch, () => 0, window, location, localStorage);
-  const settle = () => new Promise((r) => setTimeout(r, 20));
-  await settle();
-  return { dom, reload: async () => { dom.byId.refresh.listeners.click(); await settle(); }, text: () => dom.byId.main.textContent, meta: () => dom.byId.meta.textContent };
-}
-
-test('page: summary on top, collapsed repo lines, labels, trend note and one-line empty sections', async () => {
+test('page: four cards on top, codewatch rows open their repo view, empty sections in the Get more strip', async () => {
   const { p } = await payloadFixture();
   const page = await runPage([p]);
   const t = page.text();
-  assert.ok(t.startsWith('Summary'), t.slice(0, 80));
-  assert.match(t, /Latest codewatch review/);
-  assert.match(t, /Latest codewatch reviewSkippedcw · .* · kiro · no changes against upstream/);
+  assert.ok(t.startsWith('Latest codewatch review'), t.slice(0, 80));
+  assert.match(t, /Latest codewatch reviewskippedcw · .* · kiro · no changes against upstream/);
   assert.match(t, /Spend today\$1\.50codeburn, all projects/);
   assert.match(t, /Spend this month\$9\.00codeburn, this calendar month/);
-  assert.match(t, /Setup warnings4codeburn installed: not on PATH/, 'every missing or warn machine item counts; the optional global hooks (info) do not');
-  assert.match(t, /5 other repos: not set up/, 'setup checklist');
-  assert.match(t, /7 other repos: no codewatch/, 'codewatch per-repo section');
-  assert.match(t, /workplace\/dup/);
-  assert.match(t, /old\/dup/);
-  assert.match(t, /Trend: nothing to chart\. All 1 run was skipped/);
-  assert.match(t, /in use \(threat model results found; no local marker\)/);
-  assert.match(t, /Nothing recorded yet/);
-  assert.match(t, /AWS account: no checks yet\. Run prism-cli aws check/);
-  assert.doesNotMatch(t, /No AWS account checks yet/, 'no full AWS panel');
-  assert.match(t, /\$2\.00/, 'per-repo spend next to the codewatch row');
+  assert.match(t, /Settings warnings4codeburn installed: not on PATH.*Open Setup →/, 'every missing or warn machine item counts; the optional global hooks (info) do not');
+  const link = page.dom.byId.main.byClass('scard')[3].querySelectorAll('a')[0];
+  assert.equal(link.getAttribute('href'), '#setup');
+  assert.doesNotMatch(t, /other repos: not set up|Setup checklist/, 'the checklist moved to the Setup view');
+  assert.match(t, /Codewatch1 repo with codewatch · click a repo for its own page/);
+  const cw = p.repos.find((r) => r.label === 'cw')!;
+  assert.ok(page.dom.byId.main.querySelectorAll('a').some((a) => a.getAttribute('href') === '#repo/' + cw.id), 'the repo name links to #repo/<id>');
+  assert.match(t, /Get more from PRISMSecurity Agent: prism-cli enable security, then prism-cli security code-reviewAWS account checks: prism-cli aws check \(read-only\)/);
+  assert.doesNotMatch(t, /AWS account latest aws check/, 'no empty AWS panel');
+  assert.match(t, /\$2\.00/, 'per-repo spend in the codewatch row');
 });
 
-test('page: before /api/usage answers, spend cards and the usage panel say loading, not 0', async () => {
+test('page: before /api/usage answers, spend cards and the Spend section say loading, not 0', async () => {
   const { p } = await payloadFixture();
   const loading = JSON.parse(JSON.stringify(p)) as DashboardPayload;
   loading.usage = emptyUsage('loading', 'Loading usage from codeburn...');
@@ -265,69 +207,66 @@ test('page: before /api/usage answers, spend cards and the usage panel say loadi
   const t = (await runPage([loading])).text();
   assert.match(t, /Spend todayloadingLoading usage from codeburn/);
   assert.match(t, /Spend this monthloading/);
-  assert.match(t, /Usage \(codeburn\)Loading usage from codeburn\.\.\./);
+  assert.match(t, /SpendcodeburnLoading usage from codeburn\.\.\./);
   assert.doesNotMatch(t, /Spend today\$0\.00/);
 });
 
-test('page: a refresh outlines values that changed since the previous load and keeps open sections open', async () => {
+test('page: a refresh outlines values that changed since the previous load', async () => {
   const { p } = await payloadFixture();
   const next = JSON.parse(JSON.stringify(p)) as DashboardPayload;
   next.summary.spend.today = 99;
   const page = await runPage([p, next]);
-  const group = page.dom.byId.main.querySelectorAll('details').find((d) => d.getAttribute('data-key') === 'setup:other')!;
-  group.open = true;
   await page.reload();
-  const changed = page.dom.byId.main.querySelectorAll('').filter((e) => (e.getAttribute('class') || '').includes('changed'));
+  const changed = page.dom.byId.main.byClass('changed');
   assert.deepEqual(changed.map((e) => e.getAttribute('data-track')), ['sum:today']);
   assert.match(changed[0].getAttribute('title') || '', /was 1\.5/);
   assert.match(page.meta(), /1 value changed \(outlined\)/);
-  assert.ok(page.dom.byId.main.querySelectorAll('details').find((d) => d.getAttribute('data-key') === 'setup:other')!.open, 'stays open');
   const html = renderPage('N');
   assert.match(html, /document\.visibilityState === 'visible'/, 'auto-refresh pauses while hidden');
   assert.match(html, /AUTO_REFRESH_MS = 60000/);
   assert.match(html, /@media \(prefers-reduced-motion: no-preference\) \{ \.changed \{ animation/, 'motion only when not reduced');
+  assert.match(html, /const openState = new Map\(\[\.\.\.document\.querySelectorAll\('details\[data-key\]'\)\]/, 'open sections stay open across a redraw');
 });
 
-test('page: the summary is a full-width card grid that stacks below 640px; long details are clamped with a title', async () => {
+test('page: four summary cards, two per row below 860px and one below 520px; long details are clamped with a title', async () => {
   const html = renderPage('N');
-  assert.match(html, /\.summary \{ display:grid; gap:14px; grid-template-columns: repeat\(auto-fit, minmax\(220px, 1fr\)\); \}/);
-  assert.match(html, /@media \(max-width: 640px\) \{ \.summary \{ grid-template-columns: 1fr;/);
-  assert.match(html, /\.scard \.v \{[^}]*font-variant-numeric:tabular-nums/);
+  assert.match(html, /\.cards \{ display:grid; grid-template-columns:repeat\(4, minmax\(0,1fr\)\);/);
+  assert.match(html, /@media \(max-width: 860px\) \{ \.cards \{ grid-template-columns:repeat\(2, minmax\(0,1fr\)\); \}/);
+  assert.match(html, /@media \(max-width: 520px\) \{ \.cards \{ grid-template-columns:1fr; \} \}/);
+  assert.match(html, /body \{[^}]*font-variant-numeric:tabular-nums/, 'tabular numbers everywhere');
   assert.match(html, /\.scard \.d \{[^}]*overflow-wrap:anywhere[^}]*-webkit-line-clamp:3/);
-  assert.match(html, /minmax\(min\(420px, 100%\), 1fr\)/, 'columns never force sideways scroll on a narrow screen');
-  assert.match(html, /const s = el\('section', \{ class: 'card wide' \}, el\('h2', \{\}, 'Summary'\)\)/, 'spans every column');
 
   const { p } = await payloadFixture();
   const long = 'Scheduled codeburn sync push: ' + 'cannot read your crontab '.repeat(10);
   p.summary.warnings = { count: 2, first: long };
   p.summary.review = { ...p.summary.review!, status: 'findings', reason: null, high: 3, medium: 1, low: 0 };
   const page = await runPage([p]);
-  const cards = page.dom.byId.main.querySelectorAll('div').filter((d) => d.getAttribute('class') === 'scard');
-  assert.deepEqual(cards.map((c) => (c.childNodes[0] as any).textContent), ['Latest codewatch review', 'Spend today', 'Spend this month', 'Setup warnings']);
+  const cards = page.dom.byId.main.byClass('scard');
+  assert.deepEqual(cards.map((c) => c.childNodes[0].textContent), ['Latest codewatch review', 'Spend today', 'Spend this month', 'Settings warnings']);
   for (const c of cards) assert.equal(c.childNodes.length, 3, 'label, value, one detail line');
-  assert.equal((cards[0].childNodes[1] as any).textContent, '3high1med0low');
-  const warnDetail = cards[3].childNodes[2] as any;
+  assert.equal(cards[0].childNodes[1].textContent, '3 high1 medium', 'pills for the counts that are not zero');
+  const warnDetail = cards[3].childNodes[2] as FakeElement;
   assert.equal(warnDetail.getAttribute('class'), 'd');
-  assert.equal(warnDetail.getAttribute('title'), long, 'full text in the title');
-  assert.equal((cards[3].childNodes[1] as any).textContent, '2');
-  assert.equal((cards[1].childNodes[2] as any).getAttribute('title'), null, 'short details get no title');
+  assert.ok((warnDetail.getAttribute('title') || '').startsWith(long), 'full text in the title');
+  assert.equal(cards[3].childNodes[1].textContent, '2');
+  assert.equal((cards[1].childNodes[2] as FakeElement).getAttribute('title'), null, 'short details get no title');
+  assert.equal(page.dom.byId['setup-badge'].textContent, '2', 'the Setup tab shows the warnings count');
+  assert.equal(page.dom.byId['setup-badge'].hidden, false);
 });
 
-test('page: low counts have their own colour, apart from muted text, in both themes; dark summary cards are raised', () => {
+test('page: low differs from muted in both themes; dark cards are raised; medium is yellow, the accent is the logo orange', () => {
   const html = renderPage('N');
-  const light = /:root \{ color-scheme: light;[^}]*\}/.exec(html)![0];
-  // The same dark tokens apply for System on a dark OS and for the Dark toggle.
-  const dark = /@media \(prefers-color-scheme: dark\) \{ :root:not\(\[data-theme="light"\]\) \{[^}]*\}/.exec(html)![0];
-  const forced = /:root\[data-theme="dark"\] \{[^}]*\}/.exec(html)![0];
-  assert.equal(forced.replace(/^[^{]*/, ''), dark.replace(/^.*:root:not\(\[data-theme="light"\]\) /, ''));
+  const dark = /:root \{ color-scheme: dark;[^}]*\}/.exec(html)![0];
+  const light = /:root\[data-theme="light"\] \{[^}]*\}/.exec(html)![0];
+  const system = /:root\[data-theme="system"\] \{[^}]*\}/.exec(html)![0];
+  assert.equal(system.replace(/^[^{]*/, ''), light.replace(/^[^{]*/, ''), 'System on a light OS uses the light set');
   const v = (block: string, name: string) => new RegExp(`--${name}:([^;]+);`).exec(block)![1];
   for (const b of [light, dark]) assert.notEqual(v(b, 'low'), v(b, 'muted'), 'low differs from muted');
-  assert.notEqual(v(dark, 'raised'), v(dark, 'card'), 'dark cards differ from the panel');
-  assert.notEqual(v(dark, 'raised'), v(dark, 'bg'));
-  assert.match(html, /\.scard \{[^}]*background:var\(--raised\)/);
-  assert.match(html, /class: rv\.low \? 'sev-low' : ''/, 'a zero low count keeps the default colour');
+  assert.notEqual(v(dark, 'raised'), v(dark, 'card'));
+  assert.deepEqual([v(dark, 'medium'), v(light, 'medium')], ['#e3c341', '#a68a00']);
+  assert.deepEqual([v(dark, 'accent'), v(light, 'accent')], ['#f59a2a', '#b85c00']);
+  for (const b of [light, dark]) for (const k of ['accent-soft', 'heat0', 'heat1', 'heat2', 'heat3', 'heat4']) assert.ok(v(b, k));
 });
-
 
 // ---------------------------------------------------------------- codeburn sync rows by mode
 
@@ -340,7 +279,8 @@ function modeHome(p: string, o: { mode?: string; url?: boolean } = {}): string {
 const syncRow = (home: string, scheduleExists: () => boolean = () => false) =>
   machineChecks({ pathEnv: tmp('none'), home, env: {}, scheduleExists, schedulerName: () => 'crontab', systemdAvailable: () => false, global: { state: 'not-installed', hooksPath: null, dir: '' } })
     .find((i) => i.id === 'codeburn-sync')!;
-const pageLinks = (page: Awaited<ReturnType<typeof runPage>>) => page.dom.byId.main.querySelectorAll('a')
+/** The sync row's help links, in the Setup view. */
+const pageLinks = (page: Awaited<ReturnType<typeof runPage>>) => page.dom.byId.setup.querySelectorAll('a')
   .filter((a) => (a.getAttribute('href') || '').startsWith('https://github.com/aws-samples/'))
   .map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]);
 
@@ -357,8 +297,8 @@ test('sync mode local (no mode, no endpoint): info row, one setup link, not a wa
   const json = JSON.parse(JSON.stringify(p));
   assert.deepEqual(json.machine.codeburnSync, { mode: 'local', source: 'default', help: LOCAL_MODE_HELP });
   assert.ok(!json.summary.warnings.first?.includes('collector URL'), 'local is not a warning');
-  const page = await runPage([p]);
-  assert.match(page.text(), /Scheduled codeburn sync pushlocal only: codeburn usage stays on this machineIf your team uses PRISM/);
+  const page = await runPage([p], '#setup', SETUP_STUB);
+  assert.match(page.setupText(), /Scheduled codeburn sync pushlocal only: codeburn usage stays on this machineIf your team uses PRISM/);
   assert.deepEqual(pageLinks(page), [['Setup instructions', SETUP_DOCS.telemetryAccount, '_blank', 'noopener noreferrer']]);
 });
 
@@ -383,7 +323,7 @@ test('sync mode team without a URL: the platform-team hint with both links, coun
   const sum = buildSummary([], emptyUsage('ok', ''), [row]);
   assert.deepEqual(sum.warnings, { count: 1, first: TEAM_NO_URL_HELP.text }, 'the hint is the first warning when it is the first one');
   assert.deepEqual(JSON.parse(JSON.stringify(p)).machine.codeburnSync, { mode: 'team', source: 'saved', help: TEAM_NO_URL_HELP });
-  const page = await runPage([p]);
+  const page = await runPage([p], '#setup', SETUP_STUB);
   assert.deepEqual(pageLinks(page), [
     ['Setup instructions', SETUP_DOCS.telemetryAccount, '_blank', 'noopener noreferrer'],
     ['Platform team guide', SETUP_DOCS.platformTeamGuide, '_blank', 'noopener noreferrer'],
@@ -419,9 +359,9 @@ test('sync mode admin: info row with the platform-team steps, the team commands 
   assert.match(row.help!.steps!.join(' '), /Deploy the PRISM stack.*OtelCollectorUrl and OtelUserPoolId.*Add each developer.*Share the collector URL/);
   assert.deepEqual(row.help!.commands, ['prism-cli team info', 'prism-cli team add-developer <email>']);
   const { p } = await payloadFixture(machineDeps(modeHome('adm2', { mode: 'admin' })));
-  const page = await runPage([p]);
-  assert.match(page.text(), /platform team: set up PRISM for your developersYou are the platform team: set up PRISM so developers can sync\.Deploy the PRISM stack/);
-  assert.match(page.text(), /Commands: prism-cli team info, prism-cli team add-developer <email>/);
+  const page = await runPage([p], '#setup', SETUP_STUB);
+  assert.match(page.setupText(), /platform team: set up PRISM for your developersYou are the platform team: set up PRISM so developers can sync\.Deploy the PRISM stack/);
+  assert.match(page.setupText(), /Commands: prism-cli team info, prism-cli team add-developer <email>/);
   assert.deepEqual(pageLinks(page), [['Platform team guide', SETUP_DOCS.platformTeamGuide, '_blank', 'noopener noreferrer']]);
 });
 

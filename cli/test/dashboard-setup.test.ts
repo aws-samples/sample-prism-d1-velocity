@@ -428,17 +428,20 @@ function fakeDom(stored: Record<string, string>) {
   return { ctx: vm.createContext({ document, localStorage }), attrs, buttons };
 }
 
-test('theme toggle: saved in localStorage, applied before first paint, System follows the OS', () => {
+test('theme toggle: Dark by default, saved in localStorage, applied before first paint, System follows the OS', () => {
   const stored: Record<string, string> = {};
   const page = fakeDom(stored);
   vm.runInContext(THEME_BOOT, page.ctx);
-  assert.equal(page.attrs.get('data-theme'), undefined, 'nothing saved: no data-theme');
+  assert.equal(page.attrs.get('data-theme'), undefined, 'nothing saved: the boot script keeps the page default (data-theme="dark" in the markup)');
   vm.runInContext(THEME_SCRIPT, page.ctx);
-  assert.equal(page.buttons[2].a.get('aria-pressed'), 'true', 'System pressed by default');
+  assert.equal(page.buttons[1].a.get('aria-pressed'), 'true', 'Dark pressed by default');
+  assert.equal(page.attrs.get('data-theme'), 'dark');
+  page.buttons[2].click();
+  assert.equal(stored['prism-theme'], 'system');
+  assert.equal(page.attrs.get('data-theme'), 'system');
+  assert.equal(page.buttons[2].a.get('aria-pressed'), 'true');
   page.buttons[1].click();
   assert.equal(stored['prism-theme'], 'dark');
-  assert.equal(page.attrs.get('data-theme'), 'dark');
-  assert.equal(page.buttons[1].a.get('aria-pressed'), 'true');
 
   // Next load: the head script applies the saved choice before the body renders.
   const next = fakeDom(stored);
@@ -449,8 +452,10 @@ test('theme toggle: saved in localStorage, applied before first paint, System fo
   assert.equal(stored['prism-theme'], 'light');
   assert.equal(next.attrs.get('data-theme'), 'light');
   next.buttons[2].click();
-  assert.equal(stored['prism-theme'], undefined, 'System clears the saved choice');
-  assert.equal(next.attrs.get('data-theme'), undefined);
+  assert.equal(stored['prism-theme'], 'system', 'System is saved too, so it wins over the Dark default');
+  const sys = fakeDom(stored);
+  vm.runInContext(THEME_BOOT, sys.ctx);
+  assert.equal(sys.attrs.get('data-theme'), 'system');
 
   stored['prism-theme'] = '"><x';
   const junk = fakeDom(stored);
@@ -458,11 +463,13 @@ test('theme toggle: saved in localStorage, applied before first paint, System fo
   assert.equal(junk.attrs.get('data-theme'), undefined, 'unknown values are ignored');
 });
 
-test('page: theme boot script runs in <head>, dark tokens apply for Dark and for System on a dark OS', () => {
+test('page: theme boot script runs in <head>; dark is the default, light applies for Light and for System on a light OS', () => {
   const html = renderPage('N', 'tok');
   assert.ok(html.indexOf(THEME_BOOT) < html.indexOf('<style'), 'boot script before the stylesheet');
-  assert.match(html, /@media \(prefers-color-scheme: dark\) \{ :root:not\(\[data-theme="light"\]\) \{ color-scheme: dark; --bg:#0d1117;/);
-  assert.match(html, /:root\[data-theme="dark"\] \{ color-scheme: dark; --bg:#0d1117;/);
+  assert.match(html, /<html lang="en" data-theme="dark">/, 'dark before any script runs: no flash');
+  assert.match(html, /:root \{ color-scheme: dark; --bg:#0d1117;/);
+  assert.match(html, /:root\[data-theme="light"\] \{ color-scheme: light; --bg:#f7f7f8;/);
+  assert.match(html, /@media \(prefers-color-scheme: light\) \{ :root\[data-theme="system"\] \{ color-scheme: light; --bg:#f7f7f8;/);
   assert.match(html, /data-theme-set="light">Light<\/button><button type="button" data-theme-set="dark">Dark<\/button><button type="button" data-theme-set="system">System/);
   for (const s of [...html.matchAll(/<script nonce="N">([\s\S]*?)<\/script>/g)].map((m) => m[1])) new vm.Script(s);
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(html));

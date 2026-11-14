@@ -827,9 +827,9 @@ test('dashboard: a pending repo shows review running with its start time, stale?
   const done = collectSecurity([{ name: 'w', path: '/w', current: true }], () => [pending('2026-11-07T11:00:00Z'), result('job-p', 'unknown', '2026-11-07T11:00:00Z')], now).repos[0];
   assert.equal(done.pending, false);
   const html = renderPage('NONCE');
-  const panel = html.slice(html.indexOf('function securityPanel(sec) {'), html.indexOf('async function load() {'));
-  assert.match(panel, /pill\('warn', 'review running'\)/);
-  assert.match(panel, /pill\('skipped', 'stale\?'\)/);
+  const panel = html.slice(html.indexOf('const jobLine = '), html.indexOf('async function load('));
+  assert.match(panel, /pendingBlock\(b, 'review running', r\.stale/);
+  assert.match(panel, /sevPill\('zero', 'stale\?'\)/);
   assert.match(panel, /'started ' \+ when\(r\.started_at\)/);
   assert.match(panel, /sec\.pending_hint/);
 });
