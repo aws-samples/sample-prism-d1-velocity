@@ -99,13 +99,19 @@ function migrateOldState(repoRoot: string, to: string): void {
     mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
     renameSync(from, to);
     for (const n of readdirSync(to)) if (n.includes('.guard.')) rmSync(join(to, n), { force: true });
-  } catch { /* the new directory starts empty or partial; missing state only means fewer person claims */ }
+  } catch (e: any) { // any: fs error, message only
+    // The new directory starts empty or partial; missing state only means fewer person claims.
+    process.stderr.write(`PRISM harness: could not move the old .prism/harness state (${String(e?.message || e).split('\n')[0].slice(0, 200)}); sessions start again.\n`);
+  }
 }
 
 export const statePath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.json`);
 
+/** Creates the state directory, inside an existing git directory only. */
 export function ensureHarnessDir(repoRoot: string): void {
-  mkdirSync(harnessDir(repoRoot), { recursive: true, mode: 0o700 });
+  const d = harnessDir(repoRoot);
+  if (!existsSync(dirname(dirname(d)))) throw new Error(`no git directory for ${repoRoot}`);
+  mkdirSync(d, { recursive: true, mode: 0o700 });
 }
 
 function atomicWrite(file: string, data: unknown): void {
@@ -176,7 +182,7 @@ export function cleanupState(repoRoot: string, ttlDays: number, now = Date.now()
   let names: string[];
   try { names = readdirSync(dir); } catch { return; }
   const files = names
-    .filter((n) => n.endsWith('.json') || n.endsWith('.json.bad'))
+    .filter((n) => n.endsWith('.json') || n.endsWith('.json.bad') || n.includes('.guard.missed.'))
     .map((n) => { try { return { p: join(dir, n), m: statSync(join(dir, n)).mtimeMs }; } catch { return null; } })
     .filter((x): x is { p: string; m: number } => !!x)
     .sort((a, b) => b.m - a.m);
