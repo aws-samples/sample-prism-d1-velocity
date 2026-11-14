@@ -4,13 +4,14 @@
  * value from the payload is placed with textContent or an attribute.
  */
 
+import { MAX_SCANS, REVIEW_WINDOW_DAYS } from './codewatch.js';
+
 export const REPO_SCRIPT = `
-/** Last N reviews in the repo view's chart. */
-const REPO_CHART_RUNS = 24;
+/** Reviews per repo in the payload (codewatch.ts MAX_SCANS); the chart shows all of them. */
+const SCANS_LOADED = ${MAX_SCANS};
+const REPO_CHART_RUNS = SCANS_LOADED;
 /** Newest reviews listed in the repo view. */
 const REPO_REVIEW_ROWS = 10;
-/** Reviews per repo in the payload (codewatch.ts MAX_SCANS). */
-const SCANS_LOADED = 24;
 /** Open findings listed before "N more". */
 const REPO_FINDING_ROWS = 20;
 
@@ -57,7 +58,7 @@ function repoCards(repo, row) {
   const r30 = cw.reviews30d || { total: 0, skipped: 0 }, blocks = cw.gitleaksBlocks.length;
   return el('div', { class: 'cards' },
     scard('Open findings', el('div', { class: 'v' }, String(open)), detail('latest review of each branch')),
-    scard('Reviews (30 days)', el('div', { class: 'v' }, String(r30.total)), detail(r30.skipped + ' skipped · ' + cw.totalRuns + ' results recorded')),
+    scard('Reviews (${REVIEW_WINDOW_DAYS} days)', el('div', { class: 'v' }, String(r30.total)), detail(r30.skipped + ' skipped · ' + cw.totalRuns + ' results recorded')),
     scard('Secrets blocked', el('div', { class: 'v' + (blocks ? ' s-bad' : '') }, String(blocks)), detail('pre-commit gitleaks')),
     scard('Spend this month', el('div', { class: 'v' }, repo.spend ? money(repo.spend.cost, LAST.usage && LAST.usage.currency) : '-'),
       detail(repo.spend ? 'codeburn, ' + repo.spend.sessions + ' session' + (repo.spend.sessions === 1 ? '' : 's') : 'no codeburn project here')));
@@ -128,7 +129,8 @@ function repoFindings(cw) {
   }
   s.append(list);
   const more = cw.findings.length - REPO_FINDING_ROWS;
-  if (more > 0 || cw.findingsTruncated) s.append(el('p', { class: 'note' }, (cw.findingsTruncated ? 'more than ' : '') + Math.max(more, 0) + ' more; run prism-cli codewatch report for all'));
+  if (more > 0) s.append(el('p', { class: 'note' }, (cw.findingsTruncated ? 'more than ' : '') + more + ' more; run prism-cli codewatch report for all'));
+  else if (cw.findingsTruncated) s.append(el('p', { class: 'note' }, 'list truncated; run prism-cli codewatch report for all'));
   return s;
 }
 

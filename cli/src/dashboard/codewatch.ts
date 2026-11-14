@@ -85,11 +85,13 @@ export interface CodewatchPanel {
   lastReviewId: string | null;
   /** Newest pre-push reviews (at most MAX_SCANS), each linking to its report. */
   scans: ScanRow[];
-  /** Pre-push reviews in the last 30 days, and how many of them were skipped (the repo view's card). */
+  /** Pre-push reviews in the last REVIEW_WINDOW_DAYS days, and how many of them were skipped (the repo view's card). */
   reviews30d: { total: number; skipped: number };
 }
 
 const DAY_MS = 86_400_000;
+/** The repo view's "Reviews (N days)" window. */
+export const REVIEW_WINDOW_DAYS = 30;
 
 /** Enough for the per-repo chart (the last 24 reviews). */
 export const MAX_SCANS = 24;
@@ -194,7 +196,7 @@ export function collectCodewatch(repoRoot: string, trendRuns = DEFAULT_TREND_RUN
   const reviews = all.filter((r) => r.kind === 'review' && r.tool && r.tool !== 'none');
   const allReviews = all.filter((r) => r.kind === 'review' && r.hook === 'pre-push');
   const lastReview = allReviews.length ? allReviews[allReviews.length - 1] : null;
-  const recent = allReviews.filter((r) => now - Date.parse(r.started_at) <= 30 * DAY_MS);
+  const recent = allReviews.filter((r) => now - Date.parse(r.started_at) <= REVIEW_WINDOW_DAYS * DAY_MS);
   return {
     hasResults: all.length > 0,
     lastRunAt: all.length ? all[all.length - 1].started_at : null,
