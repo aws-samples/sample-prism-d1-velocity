@@ -100,23 +100,28 @@ export class UsageCache {
   private startHistory(): void {
     if (this.history || !this.d.collectHistory) return;
     this.history = (async () => {
-      let r: HistoryResult;
-      try { r = await this.d.collectHistory!(); } catch (e: any) { r = { prior: null, history: { status: 'error', from: '', to: '', error: String(e?.message || e).split('\n')[0].slice(0, 120) } }; }
+      let r: Pick<HistoryResult, 'prior'> & { history: Partial<HistoryResult['history']> };
+      try { r = await this.d.collectHistory!(); } catch (e: any) {
+        const error = String(e?.message || e).split('\n')[0].slice(0, 120);
+        process.stderr.write(`prism dashboard: the earlier weeks' codeburn export failed: ${error}\n`);
+        r = { prior: null, history: { status: 'error', error } };
+      }
       const c = readJson(this.d.file);
       if (!c || c.schema !== USAGE_CACHE_SCHEMA || c.day !== localDate(this.now()) || !c.panel) return;
+      // The panel keeps its range; the result sets the status (and the reason on an error).
       this.write({ ...c.panel, prior: r.prior, history: { ...c.panel.history, ...r.history } }, c.savedAt);
     })().finally(() => { this.history = null; });
   }
 
-  /** Resolves when no earlier-weeks export is running (at once when none is). */
-  historyDone(): Promise<void> {
-    return this.history ?? Promise.resolve();
+  /** The running earlier-weeks export; null when none is running. */
+  historyRun(): Promise<void> | null {
+    return this.history;
   }
 
   /** The panel once the running refresh and earlier-weeks export have finished: what a one-shot output (--json, --snapshot) should show. */
   async settled(): Promise<UsagePanel | null> {
     if (this.refreshing) await this.refreshing.catch(() => null);
-    await this.historyDone();
+    await this.history;
     return this.current();
   }
 

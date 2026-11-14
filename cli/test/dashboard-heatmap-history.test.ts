@@ -93,6 +93,15 @@ test('history: the cache writes the month at once, runs the earlier weeks after 
   });
   await bad.get();
   assert.deepEqual((await bad.settled())?.history, { status: 'error', from: '2026-08-17', to: '2026-10-31', error: 'offline' });
+
+  const thrown = new UsageCache({
+    file: join(tmp('uc3'), 'usage.json'), now: () => NOW,
+    collect: (prior) => collectUsage({ exporter: e.fn, now: NOW, prior, history: 'defer' }),
+    collectHistory: async () => { throw new Error('boom'); },
+  });
+  await thrown.get();
+  assert.deepEqual((await thrown.settled())?.history, { status: 'error', from: '2026-08-17', to: '2026-10-31', error: 'boom' }, 'the range is kept');
+  assert.equal(thrown.historyRun(), null, 'none running afterwards');
 });
 
 // ---------------------------------------------------------------- page

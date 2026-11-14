@@ -79,7 +79,7 @@ export default {
         else console.error('prism dashboard: no display here (SSH session?), so it was not opened. Copy the file to your machine and open it there.');
       }
       if (refresh) await refresh;
-      await usageCache.historyDone();
+      await usageCache.historyRun();
       return;
     }
     if (opts.json) {
@@ -93,7 +93,7 @@ export default {
       if (opts.timing) console.error(formatTiming(payload.timing));
       // A stale cache was printed; finish its background refresh so the next run gets new data.
       if (refresh) await refresh;
-      await usageCache.historyDone();
+      await usageCache.historyRun();
       return;
     }
     // The page's first paint never waits for codeburn: it shows the cached usage, or "loading" until /api/usage answers.
@@ -137,7 +137,8 @@ export default {
         const r = await usageCache.get({ fresh: url.searchParams.get('fresh') === '1' });
         if (!r.cacheHit) payload.invalidate();
         // The earlier weeks land after the month: redraw when they do (the page polls while they are pending).
-        const later = () => usageCache.historyDone().then(() => payload.invalidate(), () => {});
+        // Only when one is running: otherwise every poll would drop the cached payload.
+        const later = () => usageCache.historyRun()?.then(() => payload.invalidate(), () => {});
         later();
         r.refresh?.then(() => { payload.invalidate(); later(); }, () => {});
         return { usage: r.usage, cacheHit: r.cacheHit };
