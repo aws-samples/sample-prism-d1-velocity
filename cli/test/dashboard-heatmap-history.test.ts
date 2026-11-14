@@ -102,6 +102,20 @@ test('history: the cache writes the month at once, runs the earlier weeks after 
   await thrown.get();
   assert.deepEqual((await thrown.settled())?.history, { status: 'error', from: '2026-08-17', to: '2026-10-31', error: 'boom' }, 'the range is kept');
   assert.equal(thrown.historyRun(), null, 'none running afterwards');
+
+  // A month refresh that returns pending after the weeks landed (the race) keeps them.
+  let pendingOnly = false;
+  const racy = new UsageCache({
+    file: join(tmp('uc4'), 'usage.json'), now: () => NOW, ttlMs: 0,
+    collect: (prior) => collectUsage({ exporter: e.fn, now: NOW, prior: pendingOnly ? null : prior, history: 'defer' }),
+    collectHistory: () => collectHistory({ exporter: e.fn, now: NOW }),
+  });
+  await racy.get();
+  assert.equal((await racy.settled())?.history?.status, 'ready');
+  pendingOnly = true;
+  await racy.refresh();
+  assert.equal(racy.peek()?.history?.status, 'ready', 'not flipped back to pending');
+  assert.equal(racy.peek()?.prior?.daily.length, 1);
 });
 
 // ---------------------------------------------------------------- page

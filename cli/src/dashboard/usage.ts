@@ -253,10 +253,13 @@ function readyHistory(now: Date, reuse: PriorDays | null): HistoryResult {
   return { prior: reuse, history: { status: 'ready', ...range } };
 }
 
+/** Longest failure reason shown under the heatmap. */
+const MAX_REASON = 120;
+
 /** A failure as a short reason for the page: one line, no export output. */
-function shortReason(e: any): string {
+export function shortReason(e: any): string {
   if (e?.killed || e?.signal) return `codeburn did not answer within ${EXPORT_TIMEOUT_MS / 1000} s`;
-  return String(e?.message || e).split('\n')[0].slice(0, 120);
+  return String(e?.message || e).split('\n')[0].slice(0, MAX_REASON);
 }
 
 /** Spend per day in `range`; on a failure, history is error with its reason (the page shows those days as unknown, never zero). */

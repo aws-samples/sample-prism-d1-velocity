@@ -8,7 +8,7 @@
  * an earlier local day is ignored, since its "today" is no longer today.
  */
 import { join } from 'node:path';
-import { localDate, type HistoryResult, type PriorDays, type UsagePanel } from './usage.js';
+import { localDate, shortReason, type HistoryResult, type PriorDays, type UsagePanel } from './usage.js';
 import { readJson, writePrivateJson } from '../utils/private-json.js';
 
 export const USAGE_CACHE_SCHEMA = 'prism.usage-cache.v1';
@@ -102,14 +102,18 @@ export class UsageCache {
     this.history = (async () => {
       let r: Pick<HistoryResult, 'prior'> & { history: Partial<HistoryResult['history']> };
       try { r = await this.d.collectHistory!(); } catch (e: any) {
-        const error = String(e?.message || e).split('\n')[0].slice(0, 120);
+        const error = shortReason(e);
         process.stderr.write(`prism dashboard: the earlier weeks' codeburn export failed: ${error}\n`);
         r = { prior: null, history: { status: 'error', error } };
       }
-      const c = readJson(this.d.file);
-      if (!c || c.schema !== USAGE_CACHE_SCHEMA || c.day !== localDate(this.now()) || !c.panel) return;
-      // The panel keeps its range; the result sets the status (and the reason on an error).
-      this.write({ ...c.panel, prior: r.prior, history: { ...c.panel.history, ...r.history } }, c.savedAt);
+      try {
+        const c = readJson(this.d.file);
+        if (!c || c.schema !== USAGE_CACHE_SCHEMA || c.day !== localDate(this.now()) || !c.panel) return;
+        // The panel keeps its range; the result sets the status (and the reason on an error).
+        this.write({ ...c.panel, prior: r.prior, history: { ...c.panel.history, ...r.history } }, c.savedAt);
+      } catch (e: any) {
+        process.stderr.write(`prism dashboard: could not merge the earlier weeks into the usage cache: ${e?.message || e}\n`);
+      }
     })().finally(() => { this.history = null; });
   }
 
@@ -129,7 +133,13 @@ export class UsageCache {
   refresh(): Promise<UsagePanel> {
     if (!this.refreshing) {
       this.refreshing = (async () => {
-        const u = await this.d.collect(this.cachedPrior());
+        let u = await this.d.collect(this.cachedPrior());
+        // The earlier weeks may have landed while the month exported: keep them rather than flip back to pending.
+        if (u.history?.status === 'pending') {
+          const c = readJson(this.d.file)?.panel;
+          const h = c?.history, p = c?.prior;
+          if (h?.status === 'ready' && h.from === u.history.from && h.to === u.history.to && p?.day === localDate(this.now())) u = { ...u, prior: p, history: h };
+        }
         if (cacheable(u)) {
           this.lastError = null;
           this.lastFailure = null;

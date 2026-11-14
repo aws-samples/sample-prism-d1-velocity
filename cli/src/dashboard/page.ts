@@ -568,7 +568,7 @@ const AUTO_REFRESH_MS = 60000;
 let lastLoad = 0, loading = false;
 /** While the heatmap's earlier weeks load: poll this often, at most this many times (past the export's 60 s timeout). */
 const HISTORY_POLL_MS = 3000, HISTORY_POLL_MAX = 40;
-let historyPolls = 0;
+let historyPolls = 0, historyTimer = null;
 const historyPending = () => !!(LAST && LAST.usage && LAST.usage.history && LAST.usage.history.status === 'pending');
 
 /**
@@ -590,7 +590,9 @@ async function load(fresh) {
     if (u && u.usage && (u.usage.updatedAt !== was.updatedAt || u.usage.status !== was.status || hist(u.usage) !== hist(was))) await render();
   } finally {
     loading = false; lastLoad = Date.now();
-    if (!SNAPSHOT && historyPending() && historyPolls < HISTORY_POLL_MAX) { historyPolls++; setTimeout(() => load(false), HISTORY_POLL_MS); }
+    // One poll chain at a time, whichever load (refresh, auto-refresh, poll) found the weeks pending.
+    clearTimeout(historyTimer);
+    if (!SNAPSHOT && historyPending() && historyPolls < HISTORY_POLL_MAX) { historyPolls++; historyTimer = setTimeout(() => load(false), HISTORY_POLL_MS); }
     else if (!historyPending()) historyPolls = 0;
   }
 }
