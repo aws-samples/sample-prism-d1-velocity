@@ -4,6 +4,7 @@ import { cachedPayload, startServer, BIND_HOST } from '../../dashboard/server.js
 import { reportFromRepos } from '../../dashboard/report.js';
 import { ActionRunner, cliEntry, repoId } from '../../dashboard/actions.js';
 import { setupApi } from '../../dashboard/setup-api.js';
+import { awsTargetFor, identityIn, LookupCache, targetArgs, WRITE_KIND, writeNotice } from '../../dashboard/security-agent.js';
 import { repoRootOf } from '../../aws/connection.js';
 import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
 import type { DashboardPayload, PayloadTiming } from '../../dashboard/payload.js';
@@ -118,12 +119,18 @@ export default {
       // Reports are looked up only in the repos the dashboard itself discovered.
       const getReport = async (id: string) => reportFromRepos((await repos()).map((r) => r.path), id);
       let systemd: boolean | undefined;
+      // The Security Agent page: commands run in the picked repo with the account and region prism-cli resolves there.
+      const lookups = new LookupCache();
+      const saIdentity = { identity: { env: process.env, home: homedir() } };
+      const targetIn = (path: string) => awsTargetFor(identityIn(saIdentity, path));
       const runner = new ActionRunner({
         execPath: process.execPath, entry: cliEntry(), cwd: process.cwd(), home: homedir(), platform: process.platform,
         repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
         systemdAvailable: () => (systemd ??= systemdUserAvailable()),
         npmPath: () => findOnPath('npm'),
         onDone: () => payload.invalidate(),
+        awsArgs: (repo) => targetArgs(targetIn(repo.path)),
+        writeGate: (id, repo) => { const kind = WRITE_KIND[id]; return kind ? writeNotice(kind, repo.name, lookups.fresh(targetIn(repo.path))).reason : 'not an AWS-writing action'; },
       });
       const api = setupApi({
         runner, cwd: process.cwd(),
@@ -131,6 +138,11 @@ export default {
         identity: { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) },
         refresh: () => { payload.invalidate(); return payload(); },
         checkUpdate: async () => { const v = await updates.get({ force: true }); payload.invalidate(); return v; },
+        securityAgent: {
+          ...saIdentity, cache: lookups,
+          repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path, current: r.current })),
+          exclusive: (fn) => runner.exclusive(fn),
+        },
       });
       // fresh=1 (the Refresh button) waits for new exports; otherwise the cache, refreshed in the background when stale.
       const getUsage = async (url: URL) => {

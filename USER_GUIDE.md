@@ -1171,7 +1171,8 @@ the review runs locally at all, see [Why local code review](docs/WHY-LOCAL-CODE-
 ## Local Dashboard
 
 `prism-cli dashboard` starts a web page for one developer that shows codewatch results across your
-repos, codeburn spend, Security Agent and AWS check results, and a Settings view with the setup checklist. Run it from any directory:
+repos, codeburn spend, Security Agent and AWS check results, a Security Agent page that runs the
+Security Agent commands in a repo you pick, and a Settings view with the setup checklist. Run it from any directory:
 
 ```bash
 prism-cli dashboard
@@ -1183,9 +1184,14 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   run; the first page load exchanges it for a cookie, and requests without it are refused. Do not
   share the URL. Ctrl-C stops the server.
 - **Read-only dashboard.** The dashboard view only reads data; every fix it suggests is a command
-  for you to run. The **Settings** view (below) can run a fixed set of local setup commands for you.
-- **Read-only in AWS.** Loading the page makes no AWS calls. On the Settings view, **Check now**
-  on the AWS tab, `aws check` and `team info` make read-only calls; nothing on the page writes to AWS.
+  for you to run. The **Settings** view (below) can run a fixed set of local setup commands for you,
+  and the **Security Agent** page (below) runs the Security Agent commands in a repo you pick.
+- **AWS.** Loading the page makes no AWS calls. **Check now** on the Settings AWS tab, `aws check`,
+  `team info`, the Security Agent page's agent-space lookup and its fetch and status buttons make
+  read-only calls. Only two buttons write to AWS, both on the Security Agent page and both after a
+  dialog that says what they upload and where: **Start code review** (`security code-review
+  --no-wait`, branch diff or `--full`) and **Start threat model** (`security threat-model --no-wait`).
+  `enable security` and every `security pentest` command stay Copy only.
 - **Theme.** The page opens in the dark theme. The **Light / Dark / System** toggle in the header is
   saved in your browser (`localStorage`) and wins on the next load; System follows your OS setting.
 - **Update check.** The version pill in the header shows `prism-cli <version>`, or
@@ -1243,9 +1249,10 @@ output and no URLs).
   `systemctl --user`, team mode), `--remove` (asks twice) and `--status`, `enable agent-hooks`,
   `enable kirocrew --yes`, `npm i -g @prism-d1/cli@latest` (not on Windows), and **Re-check status**.
 - **Run (read-only in AWS):** `aws check`, `team info` and **Check now**.
-- **Copy only:** the gitleaks install hint, `enable security`, `team add-developer`, `aws connect`
-  and the `security code-review / threat-model / pentest` commands, because they write to AWS,
-  install software or need a terminal.
+- **Copy only:** the gitleaks install hint, `team add-developer` and `aws connect`, because they
+  write to AWS, install software or need a terminal. The Security Agent commands moved to the
+  [Security Agent page](#security-agent-page); the AWS tab starts with a link to it, and each repo on
+  the Repos tab links to the page for that repo.
 
 The **AWS** section shows which credentials prism-cli would use and why, in the order every AWS
 command uses: env (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`), `.prism/aws.local.json`, `~/.prism/aws.json`,
@@ -1277,6 +1284,60 @@ the fix `cd <repo> && prism-cli enable security`. That is local evidence only; `
 When the global hooks are not installed and at least two repos are missing codewatch, the page
 suggests covering them all with `prism-cli enable codewatch --global` (see
 [Codewatch (Local Git Hooks)](#codewatch-local-git-hooks)).
+
+### Security Agent Page
+
+![The Security Agent page with demo data: the target repo picker and the results for demo-shop with Fetch buttons and Start code review, full review and threat model buttons on the left; the account and region, three agent spaces with the one prism-cli uses marked, and setup health on the right](assets/images/prism-cli/dashboard-security-agent-dark.png)
+
+**Security Agent** in the header (`#security`, or `#security/<repo-id>` for one repo) runs the
+existing [Security Agent commands](#security-scans-from-your-machine) in a repo you pick, as if you
+ran them in a terminal there. It adds no new setting and writes nothing to SSM.
+
+- **Target repo.** A picker over the repos the dashboard found, starting with the one it was
+  started in. Every command on the page runs with that repo as its working directory, and the
+  confirm dialog shows the exact line, for example
+  `cd ~/src/demo-shop && prism-cli security findings --profile demo --region us-west-2`. The page
+  sends only the action and the repo's id; the server looks the path up in its own list, adds
+  `--profile` and `--region` itself, and runs a fixed argument list with no shell.
+- **Account and region.** What prism-cli resolves in that repo, in the usual order (env, the repo's
+  `.prism/aws.local.json`, `~/.prism/aws.json`, the default chain). `--profile` is added only when a
+  profile was chosen (`AWS_PROFILE` or a saved `aws connect` profile). prism-cli has no flag to pick an
+  agent space: the commands use the one this account and region are set up with (SSM
+  `/prism/continuum/agent-space-id`). To use another, change the profile or region.
+- **Agent spaces.** **Look up agent spaces** runs, on a click only, `sts get-caller-identity`,
+  `securityagent list-agent-spaces` and `batch-get-agent-spaces`, and `ssm get-parameter` for the
+  agent space and scan bucket, with a 20-second timeout each, one action at a time. The answer is
+  kept for 5 minutes per profile and region (**Look up again** asks again); a failure is shown and
+  never kept. Each space is marked **used by prism-cli** (the one SSM names), **temporary pentest
+  space** (made by `security pentest` for one run) or **not used by prism-cli**, with whether it lists
+  the scan bucket. The account shows as its last 4 digits.
+- **Results.** The repo's latest code review, threat model and pentest from its `.prism/results/`,
+  with **Fetch findings** (`security findings`), **Fetch threats** (`security threats`) and **Fetch
+  pentest findings** (`security findings --pentest`). These are read-only in AWS and save to
+  `.prism/results/`.
+- **Start new work.** **Start code review** (`security code-review --no-wait`), **Start full review**
+  (`--full --no-wait`) and **Start threat model** (`security threat-model --no-wait`) are enabled after
+  a lookup has found the agent space and scan bucket. Their dialog says what happens, for example
+  "Uploads demo-shop source at HEAD to the scan bucket prism-d1-scan-demo in account ••••3333 /
+  us-west-2 and starts a code review job.", shows the command, and has Cancel focused, so Enter never
+  confirms; the run needs a click on **Upload and start**. The server checks the lookup again before it
+  runs. The job keeps running in AWS; fetch its result here later. `security pentest`, `--dry-run` and
+  `--status` are Copy only (`--status` tears the test environment down once the job has finished).
+  ![The confirm dialog for Start code review with demo data: it names demo-shop, the scan bucket prism-d1-scan-demo, account ••••3333 and us-west-2, shows the exact command, and has Cancel focused next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
+- **Setup.** With no agent space for prism-cli, the page leads with the set-up steps: **Dry run**
+  (`enable security --dry-run`, read-only; its first run installs the CDK app's npm packages into
+  prism-cli's own folder), `enable security` to copy (it deploys AWS resources and asks first), then
+  **Run status check** (`enable security --status`).
+- **Badge.** The Security Agent tab's count is what needs you in the picked repo: credentials that
+  failed, no agent space for prism-cli (only after a lookup), a HIGH or CRITICAL latest result, and a
+  pending code review or threat model job. A running pentest is not counted.
+
+Output goes to the same **Action output** drawer as the Settings view, and each run is logged to
+`~/.prism/logs/dashboard-actions.log`. IAM permissions the page uses, besides what each command
+needs (see [Security Scans from Your Machine](#security-scans-from-your-machine)):
+`sts:GetCallerIdentity`, `securityagent:ListAgentSpaces`, `securityagent:BatchGetAgentSpaces` and
+`ssm:GetParameter` on `/prism/continuum/*`. The static snapshot (`--snapshot`) shows a note instead:
+the page needs the live dashboard.
 
 ### Finding Repos
 
@@ -1327,7 +1388,8 @@ scope (branch diff, whole repo, or fetched later), counts by risk level, and the
 file, line and CWE. A job that was started but not fetched yet shows `review running`, the time it
 started and the `prism-cli security findings` command. After 2 hours it is also marked `stale?`:
 the page cannot tell whether the job has finished since. With none cached, it points to `prism-cli
-security code-review`. The page reads only those files; it makes no AWS calls.
+security code-review`. The page reads only those files; it makes no AWS calls. Each repo links to
+the [Security Agent page](#security-agent-page) for that repo, where you can fetch or start jobs.
 
 Below the code reviews, under **Threat models**, the panel shows the latest threat model per repo
 from the results `prism-cli security threat-model` and `security threats` cache. Each entry shows

@@ -32,6 +32,9 @@ export class FakeElement extends FakeNode {
     return null;
   }
   scrollIntoView() { /* no layout here */ }
+  /** <select>/<input> value and <dialog>, as far as the page uses them. */
+  value = ''; disabled = false; focused = false; modal = false;
+  showModal() { this.modal = true; } close() { this.modal = false; } focus() { this.focused = true; }
   all(): FakeElement[] { return this.childNodes.flatMap((c) => (c instanceof FakeElement ? [c, ...c.all()] : [])); }
   querySelectorAll(sel: string): FakeElement[] {
     const m = /^([a-z0-9]*)((?:\[[a-z-]+\])*)$/.exec(sel)!;
@@ -43,9 +46,9 @@ export class FakeElement extends FakeNode {
 }
 
 export function fakeDom() {
-  const ids = ['main', 'repo', 'settings', 'meta', 'refresh', 'ver', 'settings-badge'];
-  const byId: Record<string, FakeElement> = Object.fromEntries(ids.map((id) => [id, new FakeElement(id === 'meta' ? 'p' : id === 'refresh' ? 'button' : id === 'ver' || id === 'settings-badge' ? 'span' : 'main')]));
-  byId.repo.hidden = true; byId.settings.hidden = true;
+  const ids = ['main', 'repo', 'security', 'settings', 'meta', 'refresh', 'ver', 'settings-badge', 'security-badge'];
+  const byId: Record<string, FakeElement> = Object.fromEntries(ids.map((id) => [id, new FakeElement(id === 'meta' ? 'p' : id === 'refresh' ? 'button' : id === 'ver' || id.endsWith('-badge') ? 'span' : 'main')]));
+  byId.repo.hidden = true; byId.settings.hidden = true; byId.security.hidden = true; byId['security-badge'].hidden = true;
   const document = {
     visibilityState: 'visible',
     createElement: (t: string) => new FakeElement(t),
@@ -68,17 +71,26 @@ export const SETUP_STUB = { actions: [], repoIds: {}, repoCd: {}, cwd: '~', copy
  * Runs the live page's script over `payloads` (one per /api/data call); `hash`
  * is the starting location. `setup` answers /api/setup (default: 404).
  */
-export async function runPage(payloads: unknown[], hash = '', setup: unknown = null) {
+export async function runPage(payloads: unknown[], hash = '', setup: unknown = null, routes: Record<string, unknown> = {}) {
   const html = renderPage('N');
   // The last script is the page; the first (in <head>) only applies a saved theme.
   const js = html.slice(html.lastIndexOf('<script nonce="N">') + '<script nonce="N">'.length, html.lastIndexOf('</script>'));
   const dom = fakeDom();
   let i = 0;
   // /api/data gets the payloads in turn; the Setup view's routes answer 404 here (tested in dashboard-setup.test.ts).
-  const fetch = async (url: string) => url === '/api/data'
-    ? { ok: true, json: async () => JSON.parse(JSON.stringify(payloads[Math.min(i++, payloads.length - 1)])) }
-    : url === '/api/setup' && setup ? { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(setup)) }
-      : { ok: false, status: 404, json: async () => ({}) };
+  // `routes`: more answers by path (GET or POST); every request is recorded in `requests`.
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const fetch = async (url: string, init?: { method?: string; body?: string }) => {
+    requests.push({ url, method: init?.method || 'GET', body: init?.body ? JSON.parse(init.body) : undefined });
+    if (url === '/api/data') return { ok: true, json: async () => JSON.parse(JSON.stringify(payloads[Math.min(i++, payloads.length - 1)])) };
+    if (url === '/api/setup' && setup) return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(setup)) };
+    if (Object.prototype.hasOwnProperty.call(routes, url)) {
+      const v = routes[url];
+      const answer = typeof v === 'function' ? (v as (b: unknown) => unknown)(requests[requests.length - 1].body) : v;
+      return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(answer)) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
   const handlers: Record<string, () => void> = {};
   const window = { addEventListener: (t: string, f: () => void) => { handlers[t] = f; }, scrollTo: () => {} };
   const location = { hash };
@@ -93,6 +105,8 @@ export async function runPage(payloads: unknown[], hash = '', setup: unknown = n
     /** Moves to `h` as a link or Back would: sets the hash and fires hashchange. */
     go: (h: string) => { location.hash = h; handlers.hashchange?.(); },
     location,
+    requests,
+    settle,
     text: () => dom.byId.main.textContent,
     settingsText: () => dom.byId.settings.textContent,
     meta: () => dom.byId.meta.textContent,

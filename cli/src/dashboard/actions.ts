@@ -16,8 +16,15 @@
  *   - output is redacted before it leaves the server, and every run is
  *     appended to ~/.prism/logs/dashboard-actions.log (time, id, repo name,
  *     exit code; never output or URLs);
- *   - no action writes to AWS. aws check and team info are read-only;
- *     AWS-writing commands are copy-only on the page.
+ *   - only two kinds of action write to AWS, both from the Security Agent
+ *     page: security code-review --no-wait and security threat-model
+ *     --no-wait (an S3 upload of the repo at HEAD and one started job). They
+ *     need confirm: true and a current agent-space lookup for the repo's
+ *     account and region (writeGate), and the page's dialog names the
+ *     account, region and scan bucket. Every other AWS-writing command
+ *     (enable security, security pentest) stays copy-only on the page;
+ *   - AWS actions get --profile and --region from the server's own
+ *     resolution for that repo (awsArgs), never from the request.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -29,7 +36,9 @@ export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' 
   | 'codeburn-remove' | 'codeburn-status' | 'aws-check' | 'team-info'
   | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
   | 'agent-hooks-kiro-remove' | 'agent-hooks-kiro-global-remove' | 'agent-hooks-claude-remove' | 'agent-hooks-claude-global-remove'
-  | 'kirocrew-app' | 'update-cli';
+  | 'kirocrew-app' | 'update-cli'
+  | 'security-status' | 'security-dry-run' | 'security-findings' | 'security-threats' | 'security-pentest-findings'
+  | 'security-code-review' | 'security-code-review-full' | 'security-threat-model';
 
 export interface ActionDef {
   label: string;
@@ -43,12 +52,18 @@ export interface ActionDef {
   url?: true;
   /** Needs `confirm: true` in the request (a second confirmation on the page). */
   confirm?: true;
-  /** Makes read-only AWS calls (describe/get/list). No action writes to AWS. */
+  /** Makes read-only AWS calls (describe/get/list) only. */
   readOnlyAws?: true;
   /** Linux with a working `systemctl --user` only. */
   systemd?: true;
   /** Installs software from the npm registry (shown in the confirm dialog). */
   installs?: true;
+  /** Runs in the repo with --profile and --region appended from the server's resolution for that repo (RunnerDeps.awsArgs). */
+  awsTarget?: true;
+  /** Writes to AWS (an S3 upload and a started job). Needs confirm and a passing RunnerDeps.writeGate. */
+  writesAws?: true;
+  /** One line the confirm dialog adds (what else the run does on this machine). */
+  note?: string;
   timeoutMs: number;
 }
 
@@ -84,6 +99,16 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   // --yes: there is no terminal to answer its prompt; the page's confirm dialog is the confirmation.
   'kirocrew-app': { label: 'Install or update the PRISM Kiro Crew app', args: ['enable', 'kirocrew', '--yes'], timeoutMs: 5 * MIN },
   'update-cli': { label: 'Update prism-cli from npm', args: ['i', '-g', UPDATE_PACKAGE], program: 'npm', installs: true, timeoutMs: 10 * MIN },
+  // The Security Agent page. Each runs in the picked repo, as a user would run it there.
+  'security-status': { label: 'Security Agent status (read-only)', args: ['enable', 'security', '--status'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN },
+  'security-dry-run': { label: 'Security Agent setup plan (dry run)', args: ['enable', 'security', '--dry-run'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 10 * MIN,
+    note: 'Runs cdk synth and cdk diff on this machine. The first run installs the CDK app\'s npm packages into prism-cli\'s own infra folder.' },
+  'security-findings': { label: 'Fetch code review findings', args: ['security', 'findings'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
+  'security-threats': { label: 'Fetch threat model threats', args: ['security', 'threats'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the threats to .prism/results/ in the repo.' },
+  'security-pentest-findings': { label: 'Fetch pentest findings', args: ['security', 'findings', '--pentest'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
+  'security-code-review': { label: 'Start a code review of this branch', args: ['security', 'code-review', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
+  'security-code-review-full': { label: 'Start a code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
+  'security-threat-model': { label: 'Start a threat model', args: ['security', 'threat-model', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
 };
 
 const isActionId = (x: unknown): x is ActionId => typeof x === 'string' && Object.prototype.hasOwnProperty.call(ACTIONS, x);
@@ -150,6 +175,10 @@ export interface RunnerDeps {
   now?: () => Date;
   /** Called after each action finishes (the dashboard drops its cached payload). */
   onDone?: () => void;
+  /** --profile/--region for an awsTarget action in `repo`, resolved by the server. Absent: none appended. */
+  awsArgs?: (repo: ScanRepo) => string[];
+  /** For a writesAws action: null to allow it, else why not (no current lookup, no space, no bucket). Absent: refused. */
+  writeGate?: (id: ActionId, repo: ScanRepo) => string | null;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
 }
@@ -230,8 +259,14 @@ export class ActionRunner {
     if (def.confirm && b.confirm !== true) return bad('this action needs confirm: true');
     if (b.confirm !== undefined && typeof b.confirm !== 'boolean') return bad('confirm must be true or false');
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
+    if (def.writesAws) {
+      const why = this.d.writeGate ? this.d.writeGate(id, repo!) : 'AWS-writing actions are not enabled here';
+      if (why) return bad(why, 409);
+    }
+    const target = def.awsTarget && repo && this.d.awsArgs ? this.d.awsArgs(repo) : [];
+    if (!target.every((a) => /^(--profile|--region|[A-Za-z0-9_.+=,@:-]{1,128})$/.test(a))) return bad('the resolved AWS profile or region is not valid');
 
-    const args = [...def.args, ...(def.url ? [b.url as string] : [])];
+    const args = [...def.args, ...target, ...(def.url ? [b.url as string] : [])];
     const cwd = repo ? repo.path : this.d.cwd;
     const now = this.d.now ?? (() => new Date());
     this.busy = true;
