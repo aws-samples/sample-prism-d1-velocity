@@ -384,8 +384,8 @@ const refBypass = (g: GitCall) => {
 
 /** Commands that only read a file: allowed on PRISM's harness state (the Kiro Crew skill reads it). */
 const READ_ONLY_COMMANDS = new Set(['cat', 'ls', 'head', 'tail', 'less', 'grep', 'rg', 'jq', 'wc', 'stat', 'file', 'test', '[']);
-/** Tool names that only read: allowed to name the harness state. */
-const READ_TOOL = /read|grep|glob|search|list|view|find/i;
+/** Tool names that only read: allowed to name the harness state (Kiro and Claude Code read and search tools). */
+const READ_TOOL = /^(fs_read|read|grep|glob|ls|list_directory|view|search|code)$/i;
 const HARNESS_STATE = '.prism/harness';
 
 /**
@@ -395,7 +395,8 @@ const HARNESS_STATE = '.prism/harness';
  * Other tools are refused when any string input names it, unless the tool only reads.
  *
  * shortcut: a write through an interpreter (`python -c`, `node -e`) that spells the path out
- * of pieces is not seen; the state is not signed (section 6.2 non-goal).
+ * of pieces, or a relative path after `cd .prism`, is not seen; the state is not signed (section
+ * 6.2 non-goal), and the git pre-push hook and the CI gate are the backstop.
  */
 export function harnessWriteReason(toolName: unknown, toolInput: unknown): string | null {
   const why = 'writes PRISM\'s harness state (.prism/harness/), which records which changes are the agent\'s';
@@ -403,8 +404,10 @@ export function harnessWriteReason(toolName: unknown, toolInput: unknown): strin
   const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
   if (typeof input.command === 'string') {
     if (!input.command.includes(HARNESS_STATE)) return null;
-    // A redirect writes whatever the command is (`cat > .prism/harness/x`).
-    if (input.command.includes('>')) return `this command ${why}`;
+    // A redirect writes whatever the command is (`cat > .prism/harness/x`). Quoted text and
+    // redirects to /dev/null are not writes to the state.
+    const unquoted = input.command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '').replace(/\d?>>?\s*\/dev\/null/g, '');
+    if (unquoted.includes('>')) return `this command ${why}`;
     for (const raw of shellCommands(input.command)) {
       const w = stripPrefix(raw);
       if (w.some((x) => x.includes(HARNESS_STATE)) && !READ_ONLY_COMMANDS.has(base(w[0] ?? ''))) return `this command ${why}`;

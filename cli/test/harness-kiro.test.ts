@@ -453,11 +453,14 @@ test('D6: writing PRISM\'s harness state is denied in both adapters; reading it 
     ['execute_bash', { command: 'cd .prism && cp /tmp/g.json harness/x.json && sed -i s/a/b/ .prism/harness/x.json' }],
     ['fs_write', { path: `.prism/harness/${SESSION}.guard.json`, content: '{}' }],
     ['Write', { file_path: 'repo/.prism/harness/s.json', content: '{}' }],
+    ['spreadsheet_read_write', { file: '.prism/harness/s.json' }],
   ] as const) assert.ok(harnessWriteReason(tool, input), `${tool} ${JSON.stringify(input)}`);
   for (const [tool, input] of [
     ['execute_bash', { command: `cat .prism/harness/${SESSION}.json` }],
     ['execute_bash', { command: 'ls -la .prism/harness/' }],
     ['execute_bash', { command: 'git status' }],
+    ['execute_bash', { command: 'cat .prism/harness/x.json 2>/dev/null' }],
+    ['execute_bash', { command: `jq '.rounds > 1' .prism/harness/${SESSION}.json` }],
     ['fs_read', { path: '.prism/harness/s.json' }],
     ['fs_write', { path: 'src/a.ts', content: 'x' }],
   ] as const) assert.equal(harnessWriteReason(tool, input), null, `${tool} ${JSON.stringify(input)}`);

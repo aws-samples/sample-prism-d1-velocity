@@ -49,8 +49,8 @@ export const isTamperPath = (p: string) => TAMPER_RES.some((re) => re.test(p));
 /** Most guarded files hashed per snapshot. A snapshot cut off there attributes nothing to the person. */
 const MAX_FILES = 500;
 /**
- * Files larger than this get a fixed fingerprint of their size and mtime instead of a content hash,
- * to keep every tool call fast. Guarded files are configs and hook files, far below this.
+ * Files larger than this get a fixed fingerprint of their size and mtime instead of a content
+ * hash. Guarded files are configs and hook files of a few KB; this only bounds a pathological one.
  */
 const MAX_HASH_BYTES = 16 * 1024 * 1024;
 
@@ -166,8 +166,10 @@ function lockAbandoned(lock: string): boolean {
 }
 
 /**
- * Takes away an abandoned lock without ever removing a live one: rename it aside (only one waiter
+ * Takes away an abandoned lock without ever deleting a live one: rename it aside (only one waiter
  * can), then put it back if what was taken turns out to be a fresh lock another waiter just made.
+ * shortcut: in the moment between the rename and the put-back a third hook can take the lock, so
+ * two can hold it once; this only follows a hook that died holding the lock, which is rare.
  */
 function breakLock(lock: string): void {
   const aside = `${lock}.${process.pid}.${Date.now()}`;

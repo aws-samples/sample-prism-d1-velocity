@@ -983,7 +983,7 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   agent's for up to 30 minutes). Hook processes for parallel calls serialize on the guard record's lock, so no
   window is lost to a concurrent write. A snapshot cut off at 500
   guarded files attributes nothing to the person; an unreadable guarded file gets a fixed
-  fingerprint rather than looking deleted; files over 1 MB are fingerprinted by size and mtime,
+  fingerprint rather than looking deleted; files over 16 MB are fingerprinted by size and mtime,
   symlinks by target. A failed record is reported on stderr and leaves changes the agent's. With
   a prism-cli older than 1.12.1 the plugin's two window hooks do nothing. The guard record is not
   signed, but the `pre-tool` hooks deny a tool call that writes PRISM's harness state
