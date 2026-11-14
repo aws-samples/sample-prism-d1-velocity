@@ -419,12 +419,12 @@ export function harnessWriteReason(toolName: unknown, toolInput: unknown, stateD
   const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
   if (SHELL_TOOL.test(name) || READ_TOOL.test(name)) return null;
   // Real paths on both sides, so a symlinked spelling of the same directory (/home and
-  // /local/home) still matches. Only strings naming `harness` are resolved, against the session's
+  // /local/home) still matches. Only strings naming `prism` (any case) are resolved, against the session's
   // directory. Limit: a symlink the agent made under another name, pointing at the state
   // directory, is not followed; that is deliberate evasion (the non-goal above).
   const dir = realPath(stateDir);
   const inside = (s: string) => {
-    if (!s.includes('harness') || s.length > MAX_PATH_CHARS || s.includes('\n')) return false;
+    if (!/prism/i.test(s) || s.length > MAX_PATH_CHARS || s.includes('\n')) return false;
     const p = realPath(resolvePath(cwd, s));
     return p === dir || p.startsWith(dir + pathSep);
   };
