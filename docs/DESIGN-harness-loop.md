@@ -975,7 +975,15 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   and a `PostToolUse` group with matcher `Write|Edit|MultiEdit|NotebookEdit|Bash|Task|mcp__.*` (`Task` keeps a subagent's run inside one window; read and search tools stay out). Claude Code
   runs the hooks of one event in parallel, so the `pre-push` handler records the window edge too,
   before the engine reads it.
-- **Races and limits.** Claude Code's parallel `pre-tool` and `pre-push` for one Bash call fold the same changes, so the saved record is the same whichever writes last. A snapshot cut off at 500 guarded files attributes nothing to the person. Files over 1 MB are fingerprinted by size and mtime. A failed record is reported on stderr and leaves changes the agent's.
+- **Races and limits.** Claude Code runs parallel tool calls and subagents, so windows with a
+  `tool_use_id` are tracked per id and stay open until each closes; one that never closes stops
+  counting after 30 minutes (its changes stay the agent's). Kiro sends no id, so one window
+  flag is used. Claude Code's parallel `pre-tool` and `pre-push` for one Bash call fold the same
+  changes, so the saved record is the same whichever writes last. A snapshot cut off at 500
+  guarded files attributes nothing to the person; an unreadable guarded file gets a fixed
+  fingerprint rather than looking deleted; files over 1 MB are fingerprinted by size and mtime,
+  symlinks by target. A failed record is reported on stderr and leaves changes the agent's. With
+  a prism-cli older than 1.12.1 the plugin's two window hooks do nothing.
 - **What a window edge costs.** No git diff and no gitleaks: one `git rev-parse` and a sha256 of
   each guarded file that exists (at most 500), written atomically to
   `.prism/harness/<session>.guard.json`. A guard record that fails to load or save leaves every

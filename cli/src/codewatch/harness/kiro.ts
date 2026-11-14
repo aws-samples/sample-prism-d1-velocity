@@ -63,6 +63,7 @@ interface KiroInput {
   hook_event_name?: unknown;
   tool_name?: unknown;
   tool_input?: { command?: unknown; cwd?: unknown };
+  tool_use_id?: unknown;
 }
 
 const ok = (stderr = ''): KiroHookResult => ({ exit: 0, stdout: '', stderr });
@@ -196,7 +197,7 @@ function toolWindow(input: KiroInput, edge: 'pre' | 'post'): string {
   const session = sanitizeSession(input.session_id);
   const dir = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
   const top = session ? gitIn(dir, ['rev-parse', '--show-toplevel']) : null;
-  return top?.ok && top.stdout ? recordWindow(top.stdout, session, edge) : '';
+  return top?.ok && top.stdout ? recordWindow(top.stdout, session, edge, input.tool_use_id) : '';
 }
 
 /**

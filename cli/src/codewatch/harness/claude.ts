@@ -459,6 +459,7 @@ interface HookInput {
   hook_event_name?: unknown;
   stop_hook_active?: unknown;
   tool_input?: { command?: unknown };
+  tool_use_id?: unknown;
 }
 
 /** Runs one Claude Code hook event. Returns the JSON to print ('' for no output). Never throws. */
@@ -493,7 +494,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
   try {
     if (event === 'pre-tool' || event === 'post-tool') {
       // Never fails the tool: on an error nothing is recorded, which leaves every change the agent's.
-      const note = recordWindow(repoRoot, session, event === 'pre-tool' ? 'pre' : 'post');
+      const note = recordWindow(repoRoot, session, event === 'pre-tool' ? 'pre' : 'post', input.tool_use_id);
       if (note) process.stderr.write(note);
       return '';
     }
@@ -528,7 +529,7 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
 
     // pre-push: a git push (checked above). Claude Code runs the pre-tool hook beside this one, in
     // parallel, so fold the person's changes here too before the engine reads them (D6).
-    const note = recordWindow(repoRoot, session, 'pre');
+    const note = recordWindow(repoRoot, session, 'pre', input.tool_use_id);
     if (note) process.stderr.write(note);
     const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
     const reason = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });

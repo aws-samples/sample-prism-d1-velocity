@@ -78,18 +78,29 @@ export function tamperHashes(repoRoot: string): { hashes: Record<string, string>
         if (st.isSymbolicLink()) h.update(`symlink:${readlinkSync(join(repoRoot, p))}`);
         else if (st.size > MAX_HASH_BYTES) h.update(`size:${st.size}:mtime:${st.mtimeMs}`); else h.update(readFileSync(join(repoRoot, p)));
         out[p] = h.digest('hex');
-        n++;
-      } catch { /* unreadable: absent */ }
+      } catch {
+        // Present but unreadable: a fixed fingerprint, so it is never mistaken for a deletion.
+        out[p] = createHash('sha256').update(`unreadable:${p}`).digest('hex');
+      }
+      n++;
     }
   };
   for (const [dir, deep] of ROOTS) walk(dir, deep);
   return { hashes: out, complete };
 }
 
+/** A window with an id that never closes (no PostToolUse) stops counting as open after this long. */
+export const WINDOW_TTL_MS = 30 * 60 * 1000;
+
 export interface Guard {
   version: 1;
-  /** A tool window is open: PreToolUse seen, PostToolUse not yet. */
+  /** A tool window without an id is open: PreToolUse seen, PostToolUse not yet (Kiro sends no id). */
   open: boolean;
+  /**
+   * Open windows by tool-call id (Claude Code's tool_use_id), with the time each opened, so
+   * parallel tool calls and subagents keep a window open until each has closed.
+   */
+  windows: Record<string, number>;
   /** The guarded files at the last snapshot. */
   hashes: Record<string, string>;
   /** Guarded files the person changed, with the content they left (null: they deleted it). */
@@ -106,7 +117,9 @@ export function loadGuard(repoRoot: string, session: string): Guard | null {
   let v: any; // any: untrusted JSON, checked below
   try { v = JSON.parse(readFileSync(guardPath(repoRoot, session), 'utf8')); } catch { return null; }
   if (!v || v.version !== 1 || typeof v.open !== 'boolean' || !isHashMap(v.hashes, false) || !isHashMap(v.person, true)) return null;
-  return { version: 1, open: v.open, hashes: v.hashes as Record<string, string>, person: v.person };
+  const windows: Record<string, number> = {};
+  if (v.windows && typeof v.windows === 'object') for (const [id, t] of Object.entries(v.windows)) if (Number.isFinite(t)) windows[id] = t as number;
+  return { version: 1, open: v.open, windows, hashes: v.hashes as Record<string, string>, person: v.person };
 }
 
 function saveGuard(repoRoot: string, session: string, g: Guard): void {
@@ -127,24 +140,31 @@ export type GuardEvent = 'start' | 'pre' | 'post';
  * in parallel, so two `pre` events can race: both fold the same changes into `person`, or the later
  * one sees the window already open and keeps that fold; either way the saved record is the same.
  */
-export function guardEvent(repoRoot: string, session: string, event: GuardEvent): void {
+export function guardEvent(repoRoot: string, session: string, event: GuardEvent, toolId: string | null = null, nowMs = Date.now()): void {
   if (event === 'start' && loadGuard(repoRoot, session)) return; // a resumed session keeps its record
   const { hashes: now, complete } = tamperHashes(repoRoot);
   const prev = event === 'start' ? null : loadGuard(repoRoot, session);
   const person = { ...(prev?.person ?? {}) };
+  const anyOpen = !!prev && (prev.open || Object.keys(prev.windows).length > 0);
   // A cut-off snapshot cannot tell an unhashed file from a deleted one: attribute nothing then.
-  if (event === 'pre' && prev && !prev.open && complete) {
+  if (event === 'pre' && prev && !anyOpen && complete) {
     for (const p of new Set([...Object.keys(prev.hashes), ...Object.keys(now)])) {
       if (prev.hashes[p] !== now[p]) person[p] = now[p] ?? null;
     }
   }
-  saveGuard(repoRoot, session, { version: 1, open: event === 'pre', hashes: now, person });
+  // Windows that never closed stop counting once stale; their changes were already kept the agent's above.
+  const windows = Object.fromEntries(Object.entries(prev?.windows ?? {}).filter(([, t]) => nowMs - t < WINDOW_TTL_MS));
+  let open = prev?.open ?? false;
+  if (toolId) { if (event === 'pre') windows[toolId] = nowMs; else if (event === 'post') delete windows[toolId]; }
+  else if (event !== 'start') open = event === 'pre';
+  saveGuard(repoRoot, session, { version: 1, open, windows, hashes: now, person });
 }
 
 /** guardEvent for a hook: never throws; returns a one-line note for stderr when nothing could be recorded. */
-export function recordWindow(repoRoot: string, session: string | null, event: GuardEvent): string {
+export function recordWindow(repoRoot: string, session: string | null, event: GuardEvent, toolId?: unknown): string {
   if (!session) return '';
-  try { guardEvent(repoRoot, session, event); return ''; } catch (e: any) { // any: fs error, message only
+  const id = typeof toolId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(toolId) ? toolId : null;
+  try { guardEvent(repoRoot, session, event, id); return ''; } catch (e: any) { // any: fs error, message only
     return `PRISM harness: could not record the tool window (${String(e?.message || e).split('\n')[0].slice(0, 200)}); changes to guarded files count as the agent's.\n`;
   }
 }

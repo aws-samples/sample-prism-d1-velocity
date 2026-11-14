@@ -24,7 +24,9 @@ The plugin has four parts:
 - Claude Code 2.1.x.
 - prism-cli 1.11.0 or later on the `PATH` Claude Code sees (`npm install -g @prism-d1/cli`) for the
   harness loop and `/prism:review`; 1.10.0 is enough for everything else, and with an older prism-cli
-  the harness hooks do nothing. Node.js 22 or later, which prism-cli needs anyway. The hooks run with `node`.
+  the harness hooks do nothing. Tool-window tamper attribution (plugin 0.3.2) needs prism-cli 1.12.1;
+  an older one ignores those two hooks, and a guarded file you edit mid-session then counts as
+  Claude's. Node.js 22 or later, which prism-cli needs anyway. The hooks run with `node`.
 - For findings: the [codewatch git hooks](../USER_GUIDE.md#codewatch-local-git-hooks) in the repo
   (`prism-cli enable codewatch`). A review is recorded on each `git push`.
 

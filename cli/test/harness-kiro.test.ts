@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { FAIL_CLOSED, KIRO_DENY_TAIL, KIRO_PERSON_NOTE, KIRO_ROUND_NOTE, runKiroHook, type KiroHookResult } from '../src/codewatch/harness/kiro.js';
 import { bypassReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { guardEvent, personsChanges, WINDOW_TTL_MS } from '../src/codewatch/harness/guard.js';
 import { loadState } from '../src/codewatch/harness/state.js';
 import { FAKE_SECRET, finding, leak, rig, type Rig } from './harness-rig.js';
 
@@ -398,4 +399,29 @@ test('D6: a snapshot cut off at the file cap attributes nothing to the person', 
   r.write(CONFIG, '{}\n');
   agentTool(r, () => r.write('src/b.ts', 'y\n'));
   assert.ok(isTamper(finish(r)), 'fail toward the agent');
+});
+
+test('D6 (Claude Code): parallel tool calls keep the window open until each has closed; a stale one expires', () => {
+  const r = rig();
+  const cin = (extra: object = {}) => JSON.stringify({ session_id: 'cc-par', cwd: r.dir, ...extra });
+  const env = { env: { PRISM_HARNESS_FINISH_GATE: '1' }, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks } };
+  const ev = (e: 'pre-tool' | 'post-tool', id: string) => runClaudeHook(e, cin({ tool_name: 'Bash', tool_use_id: id }), env);
+  runClaudeHook('session-start', cin(), env);
+  ev('pre-tool', 'toolu_A'); ev('pre-tool', 'toolu_B'); ev('post-tool', 'toolu_A');
+  r.write(CONFIG, '{}\n'); // B still runs: the agent's
+  ev('post-tool', 'toolu_B'); ev('pre-tool', 'toolu_C'); ev('post-tool', 'toolu_C');
+  assert.match(runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env), /hook configuration/);
+
+  // A window that never closes stops counting after WINDOW_TTL_MS; what changed while it was open stays the agent's.
+  const s = rig();
+  const t0 = Date.now();
+  guardEvent(s.dir, 'cc-ttl', 'start', null, t0);
+  guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_X', t0);
+  s.write(CONFIG, '{}\n');
+  guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_Y', t0 + WINDOW_TTL_MS + 1);
+  assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 0, 'changed while X was open');
+  guardEvent(s.dir, 'cc-ttl', 'post', 'toolu_Y', t0 + WINDOW_TTL_MS + 2);
+  s.write(CONFIG, '{ "a": 1 }\n');
+  guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_Z', t0 + WINDOW_TTL_MS + 3);
+  assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 1, 'X expired, so the gap after Y is the person\'s');
 });
