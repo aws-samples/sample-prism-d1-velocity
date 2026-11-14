@@ -382,6 +382,46 @@ const refBypass = (g: GitCall) => {
   return g.sub && Object.hasOwn(REF_CHECKS, g.sub) ? REF_CHECKS[g.sub](g) : null;
 };
 
+/** Commands that only read a file: allowed on PRISM's harness state (the Kiro Crew skill reads it). */
+const READ_ONLY_COMMANDS = new Set(['cat', 'ls', 'head', 'tail', 'less', 'grep', 'rg', 'jq', 'wc', 'stat', 'file', 'test', '[']);
+/** Tool names that only read: allowed to name the harness state. */
+const READ_TOOL = /read|grep|glob|search|list|view|find/i;
+const HARNESS_STATE = '.prism/harness';
+
+/**
+ * A tool call that would write PRISM's harness state (`.prism/harness/`, the session state and
+ * the tool-window record of D6), so an agent cannot rewrite who changed what. Shell commands are
+ * judged per simple command: one that names the directory and is not a plain reader is refused.
+ * Other tools are refused when any string input names it, unless the tool only reads.
+ *
+ * shortcut: a write through an interpreter (`python -c`, `node -e`) that spells the path out
+ * of pieces is not seen; the state is not signed (section 6.2 non-goal).
+ */
+export function harnessWriteReason(toolName: unknown, toolInput: unknown): string | null {
+  const why = 'writes PRISM\'s harness state (.prism/harness/), which records which changes are the agent\'s';
+  const name = typeof toolName === 'string' ? toolName : '';
+  const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
+  if (typeof input.command === 'string') {
+    if (!input.command.includes(HARNESS_STATE)) return null;
+    // A redirect writes whatever the command is (`cat > .prism/harness/x`).
+    if (input.command.includes('>')) return `this command ${why}`;
+    for (const raw of shellCommands(input.command)) {
+      const w = stripPrefix(raw);
+      if (w.some((x) => x.includes(HARNESS_STATE)) && !READ_ONLY_COMMANDS.has(base(w[0] ?? ''))) return `this command ${why}`;
+    }
+    // A redirect is caught above; here each simple command that names the directory must be a reader.
+    return null;
+  }
+  if (READ_TOOL.test(name)) return null;
+  const strings: string[] = [];
+  const collect = (v: unknown, depth: number) => {
+    if (typeof v === 'string') strings.push(v);
+    else if (v && typeof v === 'object' && depth < 3) for (const x of Object.values(v as object)) collect(x, depth + 1);
+  };
+  collect(input, 0);
+  return strings.some((s) => s.includes(HARNESS_STATE)) ? `this ${name || 'tool'} call ${why}` : null;
+}
+
 /**
  * A command that would turn off or route around PRISM's hooks (section 6.2), or move what the
  * push check measures against (D4): a remote-tracking ref (`git update-ref refs/remotes/...`, a
@@ -458,6 +498,7 @@ interface HookInput {
   cwd?: unknown;
   hook_event_name?: unknown;
   stop_hook_active?: unknown;
+  tool_name?: unknown;
   tool_input?: { command?: unknown };
   tool_use_id?: unknown;
 }
@@ -493,6 +534,10 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
 
   try {
     if (event === 'pre-tool' || event === 'post-tool') {
+      if (event === 'pre-tool') {
+        const w = harnessWriteReason(input.tool_name, input.tool_input);
+        if (w) return deny(`PRISM harness: ${w}. Do not edit PRISM's harness state.`);
+      }
       // Never fails the tool: on an error nothing is recorded, which leaves every change the agent's.
       const note = recordWindow(repoRoot, session, event === 'pre-tool' ? 'pre' : 'post', input.tool_use_id);
       if (note) process.stderr.write(note);

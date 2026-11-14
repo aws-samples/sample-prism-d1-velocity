@@ -410,7 +410,8 @@ function integrityChecks(r: Run, d: Diffs): Integrity {
   // D6: a guarded file the person changed between agent tool calls, and still holds as they left it, is theirs.
   const persons = (paths: string[]) => {
     const theirs = personsChanges(r.repoRoot, state.session, paths);
-    if (theirs.size) r.warnings.push(`not counted as session changes: ${[...theirs].slice(0, 5).join(', ')} (changed by the person between agent tool calls)`);
+    const note = `not counted as session changes: ${[...theirs].slice(0, 5).join(', ')} (changed by the person between agent tool calls)`;
+    if (theirs.size && !r.warnings.includes(note)) r.warnings.push(note);
     return paths.filter((p) => !theirs.has(p));
   };
   // No fork point with the session's start: judge what this run reviews, not nothing.

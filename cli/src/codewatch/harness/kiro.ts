@@ -29,7 +29,7 @@ import { readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
-import { agentText, bypassReason, capBytes, clip, finishGateOn, HOOK_BUDGET_MS, isGitPush, MAX_FINDING_CHARS, MAX_REASON_BYTES, noticeOnce, oneLine, parsePushTarget, personText, pushGateOn } from './claude.js';
+import { agentText, bypassReason, capBytes, clip, finishGateOn, harnessWriteReason, HOOK_BUDGET_MS, isGitPush, MAX_FINDING_CHARS, MAX_REASON_BYTES, noticeOnce, oneLine, parsePushTarget, personText, pushGateOn } from './claude.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict } from './engine.js';
 import { deleteGuard, guardEvent, recordWindow } from './guard.js';
 import { deleteState, ensureHarnessDir, harnessDir, loadState, recordBaseline, sanitizeSession } from './state.js';
@@ -207,6 +207,32 @@ function toolWindow(input: KiroInput, edge: 'pre' | 'post'): string {
 }
 
 /**
+ * The PreToolUse check of one tool call: bypass commands and the push check on shell calls;
+ * every other tool passes. Errors on a command that is a push fail closed (D5).
+ */
+function toolCheck(input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv): KiroHookResult {
+  // Any call with a command is checked, whatever its tool id says (a renamed shell tool must not
+  // skip the check). A call without one is skipped only when it is plainly another tool.
+  if (typeof input.tool_input?.command !== 'string') {
+    const otherTool = typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell';
+    return otherTool ? ok() : failClosed('the shell call in the hook input has no command');
+  }
+  const cmd = input.tool_input.command;
+  let push: boolean;
+  try {
+    const bypass = bypassReason(cmd);
+    if (bypass) return deny(`PRISM harness: ${bypass}. Do not bypass or reconfigure the hooks.`);
+    push = isGitPush(cmd);
+  } catch (e: any) { // any: an internal error; only its message is shown
+    return failClosed(`the command could not be parsed (${e?.message || e})`);
+  }
+  if (!push) return ok();
+  try { return prePush(cmd, input, deps, env); } catch (e: any) { // any: as above
+    return failClosed(String(e?.message || e));
+  }
+}
+
+/**
  * Runs one Kiro hook event and returns the exit code and output. Never
  * throws. Non-push shell commands return exit 0 before any git call; on a
  * push every internal error is a deny (fail closed); on other events an
@@ -228,29 +254,15 @@ export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHo
     const shellish = MAYBE_SHELL_INPUT.test(stdin ?? '');
     return event === 'pre-push' || (event === 'pre-tool' && shellish) ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
-  const windowNote = event === 'pre-tool' || event === 'post-tool' || event === 'pre-push' ? toolWindow(input, event === 'post-tool' ? 'post' : 'pre') : '';
-  // Kiro drops hook stderr on exit 0; the note is for a person running the hook by hand.
-  if (event === 'post-tool') return ok(windowNote);
+  if (event === 'post-tool') return ok(toolWindow(input, 'post')); // Kiro drops this stderr on exit 0; it is for a person running the hook by hand
   if (event === 'pre-push' || event === 'pre-tool') {
-    // Any call with a command is checked, whatever its tool id says (a renamed shell tool must not
-    // skip the check). A call without one is skipped only when it is plainly another tool.
-    if (typeof input.tool_input?.command !== 'string') {
-      const otherTool = typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell';
-      return otherTool ? ok() : failClosed('the shell call in the hook input has no command');
-    }
-    const cmd = input.tool_input.command;
-    let push: boolean;
-    try {
-      const bypass = bypassReason(cmd);
-      if (bypass) return deny(`PRISM harness: ${bypass}. Do not bypass or reconfigure the hooks.`);
-      push = isGitPush(cmd);
-    } catch (e: any) { // any: an internal error; only its message is shown
-      return failClosed(`the command could not be parsed (${e?.message || e})`);
-    }
-    if (!push) return ok();
-    try { return prePush(cmd, input, deps, env); } catch (e: any) { // any: as above
-      return failClosed(String(e?.message || e));
-    }
+    const w = harnessWriteReason(input.tool_name, input.tool_input);
+    if (w) return deny(`PRISM harness: ${w}. Do not edit PRISM's harness state.`);
+    toolWindow(input, 'pre');
+    const r = toolCheck(input, deps, env);
+    // A denied call never runs and gets no PostToolUse: close its window, so it does not hold later gaps open.
+    if (r.exit === KIRO_DENY_EXIT) toolWindow(input, 'post');
+    return r;
   }
   try {
     const repoRoot = event === 'stop' ? null : repoOf(input);

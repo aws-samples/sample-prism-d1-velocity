@@ -9,12 +9,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FAIL_CLOSED, KIRO_DENY_TAIL, KIRO_PERSON_NOTE, KIRO_ROUND_NOTE, runKiroHook, type KiroHookResult } from '../src/codewatch/harness/kiro.js';
-import { bypassReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { bypassReason, harnessWriteReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
 import { guardEvent, personsChanges, WINDOW_TTL_MS } from '../src/codewatch/harness/guard.js';
 import { loadState } from '../src/codewatch/harness/state.js';
 import { FAKE_SECRET, finding, leak, rig, type Rig } from './harness-rig.js';
@@ -83,7 +83,11 @@ test('kiro push gate (D4): a secret denies with exit 2, never JSON; the value ne
   noClaudeWording(x);
 
   r.leaks(null);
+  // The agent edits the scanner config through a tool (D6: inside a tool window).
+  const tool = { tool_name: 'fs_write', tool_input: { path: '.gitleaksignore' } };
+  runKiroHook('pre-tool', payload('PreToolUse', r, tool), deps(r));
   r.write('.gitleaksignore', 'everything\n');
+  runKiroHook('post-tool', payload('PostToolUse', r, tool), deps(r));
   r.commit('ignore');
   const t = runKiroHook('pre-push', payload('PreToolUse', r), deps(r));
   assert.equal(t.exit, 2, 'tamper denies');
@@ -439,4 +443,51 @@ test('D6 (Kiro, no tool ids): overlapping calls keep the window open until both 
   r.write(CONFIG, '{}\n'); // the second call still runs
   ev('post-tool'); ev('pre-tool'); ev('post-tool');
   assert.ok(isTamper(finish(r)));
+});
+
+test('D6: writing PRISM\'s harness state is denied in both adapters; reading it is not', () => {
+  for (const [tool, input] of [
+    ['execute_bash', { command: `echo '{}' > .prism/harness/${SESSION}.guard.json` }],
+    ['execute_bash', { command: 'cat > .prism/harness/x.json' }],
+    ['execute_bash', { command: 'rm -f .prism/harness/*.guard.json' }],
+    ['execute_bash', { command: 'cd .prism && cp /tmp/g.json harness/x.json && sed -i s/a/b/ .prism/harness/x.json' }],
+    ['fs_write', { path: `.prism/harness/${SESSION}.guard.json`, content: '{}' }],
+    ['Write', { file_path: 'repo/.prism/harness/s.json', content: '{}' }],
+  ] as const) assert.ok(harnessWriteReason(tool, input), `${tool} ${JSON.stringify(input)}`);
+  for (const [tool, input] of [
+    ['execute_bash', { command: `cat .prism/harness/${SESSION}.json` }],
+    ['execute_bash', { command: 'ls -la .prism/harness/' }],
+    ['execute_bash', { command: 'git status' }],
+    ['fs_read', { path: '.prism/harness/s.json' }],
+    ['fs_write', { path: 'src/a.ts', content: 'x' }],
+  ] as const) assert.equal(harnessWriteReason(tool, input), null, `${tool} ${JSON.stringify(input)}`);
+
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  const k = runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: `.prism/harness/${SESSION}.guard.json` } }), deps(r));
+  assert.equal(k.exit, 2);
+  assert.match(k.stderr, /Do not edit PRISM's harness state/);
+  const c = JSON.parse(runClaudeHook('pre-tool', JSON.stringify({ session_id: 'cc-w', cwd: r.dir, tool_name: 'Edit', tool_input: { file_path: `${r.dir}/.prism/harness/cc-w.guard.json` } }), { env: {} }));
+  assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('D6 (Kiro): a denied call closes its window, so it does not hold later gaps open', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, { command: 'git push --no-verify' }), deps(r)).exit, 2);
+  r.write(CONFIG, '{}\n');
+  agentTool(r, () => r.write('src/a.ts', 'x\n'));
+  assert.ok(!isTamper(finish(r)), 'the edit after the denied push is the person\'s');
+});
+
+test('D6: a lock left by a dead hook process is broken; a live one is waited for', () => {
+  const r = rig();
+  guardEvent(r.dir, 'lk', 'start');
+  const lock = `${join(r.dir, '.prism', 'harness', 'lk.guard.json')}.lock`;
+  writeFileSync(lock, '999999999:0'); // no such pid
+  guardEvent(r.dir, 'lk', 'pre', 'toolu_1');
+  assert.ok(!existsSync(lock), 'taken and released');
+  writeFileSync(lock, `${process.pid}:${Date.now()}`); // held by a live process (this one)
+  assert.throws(() => guardEvent(r.dir, 'lk', 'post', 'toolu_1'), /locked by another hook/);
+  assert.ok(existsSync(lock), 'a live lock is never removed');
 });

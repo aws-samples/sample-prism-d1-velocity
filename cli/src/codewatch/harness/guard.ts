@@ -22,13 +22,14 @@
  * attribution uses this: secrets in session lines block whoever wrote them.
  *
  * shortcut: an agent that edits a guarded file from a detached background
- * process between tool calls is taken for the person, and the guard record
- * itself, like the session state (section 6.2), is not signed, so an agent
- * that writes it directly can claim a change. Deliberate evasion is a non-goal
- * (section 1); the push-time secret scan and the CI gate still apply.
+ * process between tool calls is taken for the person. The guard record is
+ * not signed; the pre-tool hooks deny tool calls that write it
+ * (harnessWriteReason), but not an interpreter that builds the path from
+ * pieces. Deliberate evasion is a non-goal (section 1); the push-time secret
+ * scan and the CI gate still apply.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureHarnessDir, harnessDir } from './state.js';
 
@@ -47,8 +48,11 @@ export const isTamperPath = (p: string) => TAMPER_RES.some((re) => re.test(p));
 
 /** Most guarded files hashed per snapshot. A snapshot cut off there attributes nothing to the person. */
 const MAX_FILES = 500;
-/** Files larger than this are fingerprinted by size and mtime instead of read, to keep every tool call fast. */
-const MAX_HASH_BYTES = 1024 * 1024;
+/**
+ * Files larger than this get a fixed fingerprint of their size and mtime instead of a content hash,
+ * to keep every tool call fast. Guarded files are configs and hook files, far below this.
+ */
+const MAX_HASH_BYTES = 16 * 1024 * 1024;
 
 /** The directories that can hold a guarded file, and whether to walk them recursively. */
 const ROOTS: [string, boolean][] = [...new Map(TAMPER_GLOBS.map((g) => {
@@ -144,11 +148,34 @@ function saveGuard(repoRoot: string, session: string, g: Guard): void {
 
 export type GuardEvent = 'start' | 'pre' | 'post';
 
-/** Lock wait, poll and stale age: hook processes for parallel tool calls write the same guard file. */
-const LOCK_WAIT_MS = 2000;
-const LOCK_POLL_MS = 10;
+/** Lock wait and poll: hook processes for parallel tool calls write the same guard file; each holds it for a few ms. */
+const LOCK_WAIT_MS = 1000;
+const LOCK_POLL_MS = 5;
 const LOCK_STALE_MS = 10_000;
 const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+
+/** True when the lock file names a process that no longer runs, or is older than any hook can hold it. */
+function lockAbandoned(lock: string): boolean {
+  try {
+    const pid = Number(readFileSync(lock, 'utf8').split(':')[0]);
+    if (Number.isInteger(pid) && pid > 0) {
+      try { process.kill(pid, 0); } catch (e: any) { return e?.code === 'ESRCH'; } // any: signal error, code only
+    }
+    return Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS;
+  } catch { return false; }
+}
+
+/**
+ * Takes away an abandoned lock without ever removing a live one: rename it aside (only one waiter
+ * can), then put it back if what was taken turns out to be a fresh lock another waiter just made.
+ */
+function breakLock(lock: string): void {
+  const aside = `${lock}.${process.pid}.${Date.now()}`;
+  try { renameSync(lock, aside); } catch { return; }
+  if (lockAbandoned(aside)) { rmSync(aside, { force: true }); return; }
+  try { linkSync(aside, lock); } catch { /* a newer lock exists: theirs stands */ }
+  rmSync(aside, { force: true });
+}
 
 /** Runs `fn` holding `<guard>.lock` (an exclusive create). Throws when the lock cannot be had, which leaves changes the agent's. */
 function withLock<T>(repoRoot: string, session: string, fn: () => T): T {
@@ -156,11 +183,9 @@ function withLock<T>(repoRoot: string, session: string, fn: () => T): T {
   const lock = `${guardPath(repoRoot, session)}.lock`;
   const until = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try { writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 }); break; } catch (e: any) { // any: fs error, code only
+    try { writeFileSync(lock, `${process.pid}:${Date.now()}`, { flag: 'wx', mode: 0o600 }); break; } catch (e: any) { // any: fs error, code only
       if (e?.code !== 'EEXIST') throw e;
-      // shortcut: two waiters that both find the same stale lock (a hook killed while holding it)
-      // can both remove it and race once; a lock with a pid check would close that, if it shows up.
-      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true }); } catch { /* gone already */ }
+      if (lockAbandoned(lock)) breakLock(lock);
       if (Date.now() > until) throw new Error('the tool window record is locked by another hook');
       Atomics.wait(SLEEP_CELL, 0, 0, LOCK_POLL_MS); // a synchronous sleep: the hook is a short-lived process
     }
