@@ -25,7 +25,7 @@
  * non-goal (section 1); the push-time secret scan and the CI gate still apply.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureHarnessDir, harnessDir } from './state.js';
 
@@ -70,11 +70,13 @@ export function tamperHashes(repoRoot: string): { hashes: Record<string, string>
       let st;
       try { st = lstatSync(join(repoRoot, p)); } catch { continue; }
       if (st.isDirectory()) { if (deep) walk(p, true); continue; }
-      if (!st.isFile() || !isTamperPath(p) || p in out) continue;
+      if (!(st.isFile() || st.isSymbolicLink()) || !isTamperPath(p) || p in out) continue;
       if (n >= MAX_FILES) { complete = false; return; }
       const h = createHash('sha256');
       try {
-        if (st.size > MAX_HASH_BYTES) h.update(`size:${st.size}:mtime:${st.mtimeMs}`); else h.update(readFileSync(join(repoRoot, p)));
+        // A symlink is fingerprinted by its target, so replacing a guarded file with a link is a change.
+        if (st.isSymbolicLink()) h.update(`symlink:${readlinkSync(join(repoRoot, p))}`);
+        else if (st.size > MAX_HASH_BYTES) h.update(`size:${st.size}:mtime:${st.mtimeMs}`); else h.update(readFileSync(join(repoRoot, p)));
         out[p] = h.digest('hex');
         n++;
       } catch { /* unreadable: absent */ }
