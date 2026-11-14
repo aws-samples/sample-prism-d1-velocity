@@ -977,8 +977,10 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   before the engine reads it.
 - **Races and limits.** Claude Code runs parallel tool calls and subagents, so windows with a
   `tool_use_id` are tracked per id and stay open until each closes; one that never closes stops
-  counting after 30 minutes (its changes stay the agent's). Kiro sends no id, so one window
-  flag is used. Hook processes for parallel calls serialize on the guard record's lock, so no
+  counting after 30 minutes (its changes stay the agent's). Kiro sends no id, so its windows are
+  counted: each `PostToolUse` closes one, and the window stays open until every call has closed
+  (stricter than "open until the next `PreToolUse`": a call that never posts keeps later gaps the
+  agent's for up to 30 minutes). Hook processes for parallel calls serialize on the guard record's lock, so no
   window is lost to a concurrent write. A snapshot cut off at 500
   guarded files attributes nothing to the person; an unreadable guarded file gets a fixed
   fingerprint rather than looking deleted; files over 1 MB are fingerprinted by size and mtime,

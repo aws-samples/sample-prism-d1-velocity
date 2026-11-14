@@ -7,9 +7,10 @@
  * `.prism/harness/<session>.guard.json`:
  *
  * - `pre` (PreToolUse): changes since the last snapshot happened while no
- *   agent tool ran, so they are the person's, unless the previous window never
- *   closed (a PreToolUse with no PostToolUse: crash, timeout), in which case
- *   they stay the agent's. Then a window opens.
+ *   agent tool ran, so they are the person's, unless a window is still open (a
+ *   parallel call, or a PreToolUse with no PostToolUse: crash, timeout), in
+ *   which case they stay the agent's. Then a window opens. An open window that
+ *   never closes stops counting after WINDOW_TTL_MS.
  * - `post` (PostToolUse): changes inside the window are the agent's; the
  *   window closes.
  * - `start` (SessionStart): the first snapshot. Nothing is the person's yet.
@@ -93,9 +94,12 @@ export function tamperHashes(repoRoot: string): { hashes: Record<string, string>
 export const WINDOW_TTL_MS = 30 * 60 * 1000;
 
 export interface Guard {
-  version: 1;
-  /** A tool window without an id is open: PreToolUse seen, PostToolUse not yet (Kiro sends no id). */
-  open: boolean;
+  version: 2;
+  /**
+   * Open windows without an id (Kiro sends none), as the times they opened: a PostToolUse closes
+   * the oldest. A count, not a flag, so overlapping calls keep the window open until all closed.
+   */
+  anon: number[];
   /**
    * Open windows by tool-call id (Claude Code's tool_use_id), with the time each opened, so
    * parallel tool calls and subagents keep a window open until each has closed.
@@ -118,12 +122,12 @@ const isHashMap = (v: unknown, nullable: boolean): v is Record<string, string | 
 export function loadGuard(repoRoot: string, session: string): Guard | null {
   let v: any; // any: untrusted JSON, checked below
   try { v = JSON.parse(readFileSync(guardPath(repoRoot, session), 'utf8')); } catch { return null; }
-  if (!v || v.version !== 1 || typeof v.open !== 'boolean' || !isHashMap(v.hashes, false) || !isHashMap(v.person, true)) return null;
+  if (!v || v.version !== 2 || !Array.isArray(v.anon) || !isHashMap(v.hashes, false) || !isHashMap(v.person, true)) return null;
   const windows: Record<string, number> = {};
   if (v.windows && typeof v.windows === 'object') for (const [id, t] of Object.entries(v.windows)) if (Number.isFinite(t)) windows[id] = t as number;
   const agent: Record<string, true> = {};
   if (v.agent && typeof v.agent === 'object') for (const k of Object.keys(v.agent)) agent[k] = true;
-  return { version: 1, open: v.open, windows, hashes: v.hashes as Record<string, string>, person: v.person, agent };
+  return { version: 2, anon: v.anon.filter(Number.isFinite), windows, hashes: v.hashes as Record<string, string>, person: v.person, agent };
 }
 
 function saveGuard(repoRoot: string, session: string, g: Guard): void {
@@ -138,9 +142,11 @@ function saveGuard(repoRoot: string, session: string, g: Guard): void {
 
 export type GuardEvent = 'start' | 'pre' | 'post';
 
-/** Lock wait and stale age: hook processes for parallel tool calls write the same guard file. */
+/** Lock wait, poll and stale age: hook processes for parallel tool calls write the same guard file. */
 const LOCK_WAIT_MS = 2000;
+const LOCK_POLL_MS = 10;
 const LOCK_STALE_MS = 10_000;
+const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
 /** Runs `fn` holding `<guard>.lock` (an exclusive create). Throws when the lock cannot be had, which leaves changes the agent's. */
 function withLock<T>(repoRoot: string, session: string, fn: () => T): T {
@@ -152,7 +158,7 @@ function withLock<T>(repoRoot: string, session: string, fn: () => T): T {
       if (e?.code !== 'EEXIST') throw e;
       try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true }); } catch { /* gone already */ }
       if (Date.now() > until) throw new Error('the tool window record is locked by another hook');
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      Atomics.wait(SLEEP_CELL, 0, 0, LOCK_POLL_MS); // a synchronous sleep: the hook is a short-lived process
     }
   }
   try { return fn(); } finally { rmSync(lock, { force: true }); }
@@ -173,7 +179,7 @@ function guardEventLocked(repoRoot: string, session: string, event: GuardEvent, 
   const prev = event === 'start' ? null : loadGuard(repoRoot, session);
   const person = { ...(prev?.person ?? {}) };
   const agent = { ...(prev?.agent ?? {}) };
-  const anyOpen = !!prev && (prev.open || Object.keys(prev.windows).length > 0);
+  const anyOpen = !!prev && (prev.anon.length > 0 || Object.keys(prev.windows).length > 0);
   const changed = prev ? [...new Set([...Object.keys(prev.hashes), ...Object.keys(now)])].filter((p) => prev.hashes[p] !== now[p]) : [];
   // A cut-off snapshot cannot tell an unhashed file from a deleted one: attribute nothing then.
   if (event === 'pre' && prev && !anyOpen && complete) {
@@ -183,11 +189,13 @@ function guardEventLocked(repoRoot: string, session: string, event: GuardEvent, 
     for (const p of changed) { agent[p] = true; delete person[p]; }
   }
   // Windows that never closed stop counting once stale; their changes were already kept the agent's above.
-  const windows = Object.fromEntries(Object.entries(prev?.windows ?? {}).filter(([, t]) => nowMs - t < WINDOW_TTL_MS));
-  let open = prev?.open ?? false;
+  const fresh = (t: number) => nowMs - t < WINDOW_TTL_MS;
+  const windows = Object.fromEntries(Object.entries(prev?.windows ?? {}).filter(([, t]) => fresh(t)));
+  const anon = (prev?.anon ?? []).filter(fresh).sort((a, b) => a - b);
   if (toolId) { if (event === 'pre') windows[toolId] = nowMs; else if (event === 'post') delete windows[toolId]; }
-  else if (event !== 'start') open = event === 'pre';
-  saveGuard(repoRoot, session, { version: 1, open, windows, hashes: now, person, agent });
+  else if (event === 'pre') anon.push(nowMs);
+  else if (event === 'post') anon.shift();
+  saveGuard(repoRoot, session, { version: 2, anon, windows, hashes: now, person, agent });
 }
 
 /** guardEvent for a hook: never throws; returns a one-line note for stderr when nothing could be recorded. */

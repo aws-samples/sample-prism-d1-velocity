@@ -422,7 +422,19 @@ test('D6 (Claude Code): parallel tool calls keep the window open until each has 
   guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_Y', t0 + WINDOW_TTL_MS + 1);
   assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 0, 'changed while X was open');
   guardEvent(s.dir, 'cc-ttl', 'post', 'toolu_Y', t0 + WINDOW_TTL_MS + 2);
-  s.write(CONFIG, '{ "a": 1 }\n');
+  s.write('.gitleaksignore', 'x\n');
   guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_Z', t0 + WINDOW_TTL_MS + 3);
-  assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 1, 'X expired, so the gap after Y is the person\'s');
+  assert.equal(personsChanges(s.dir, 'cc-ttl', ['.gitleaksignore']).size, 1, 'X expired, so the gap after Y is the person\'s');
+  assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 0, 'the config changed in X\'s window stays the agent\'s');
+});
+
+test('D6 (Kiro, no tool ids): overlapping calls keep the window open until both have closed', () => {
+  const r = rig();
+  const tool = { tool_name: 'fs_write', tool_input: { path: 'src/x.ts' } };
+  const ev = (e: 'pre-tool' | 'post-tool') => runKiroHook(e, payload(e === 'pre-tool' ? 'PreToolUse' : 'PostToolUse', r, tool), deps(r));
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  ev('pre-tool'); ev('pre-tool'); ev('post-tool');
+  r.write(CONFIG, '{}\n'); // the second call still runs
+  ev('post-tool'); ev('pre-tool'); ev('post-tool');
+  assert.ok(isTamper(finish(r)));
 });
