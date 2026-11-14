@@ -1035,7 +1035,7 @@ kiro-cli chat --no-interactive --agent-engine v3 "..."
 
 | Gate | Hook | Default | What it does |
 |---|---|---|---|
-| Push gate | `PreToolUse`, matcher `shell` (every shell command) | on | Before the agent's `git push`: gitleaks and the review. A secret, a failed secret scan, a change to the checks, a push that does not say what it sends, or a hook bypass (`--no-verify`, `core.hooksPath`, `git config prism.*`, or moving a remote-tracking ref or the upstream, as in Claude Code) denies the push. Other shell commands pass after a parse of about 80 ms |
+| Push gate | `PreToolUse`, matcher `*` (every tool call; the push check reads shell calls) | on | Before the agent's `git push`: gitleaks and the review. A secret, a failed secret scan, a change to the checks, a push that does not say what it sends, or a hook bypass (`--no-verify`, `core.hooksPath`, `git config prism.*`, or moving a remote-tracking ref or the upstream, as in Claude Code) denies the push. Other shell commands pass after a parse of about 80 ms |
 | Finish gate | `Stop` | off | Reviews the session's changes when the agent finishes and keeps it working on blocking findings |
 
 How it differs from Claude Code, because of how Kiro hooks work:
@@ -1059,7 +1059,19 @@ How it differs from Claude Code, because of how Kiro hooks work:
 Turn the finish gate on with `harness.finish_gate: true` in `.prism/config.json`, or for yourself
 with `PRISM_HARNESS_FINISH_GATE=1` in the environment Kiro starts from.
 
-The Kiro IDE reads the same `.kiro/hooks` files; the gates were tested in Kiro CLI V3 only.
+**Sessions and your own edits.** The Kiro IDE reads the same `.kiro/hooks` files. It keeps one
+Kiro session per opened folder: a new chat or a window reload shares that session, and only
+closing and reopening the folder starts a new one. So a session can include a lot of your own
+work. The hooks around each agent tool call (`PreToolUse` and `PostToolUse`) record PRISM's
+guarded files: the gitleaks config, `.prism/config.json`, the review rules, the eval-gate
+workflows and hook files. A guarded file you change between the agent's tool calls is yours: it
+does not make the agent `stop` for tamper while it holds what you left. These still count as the
+agent's: a change during one of its tool calls, after a tool call that never finished, and after
+its last tool call before it finishes or pushes. Secrets are judged the same for everyone: a key
+you wrote still blocks the agent's push. (An agent that edited a guarded file from a background
+process between tool calls would be taken for you; the push-time secret scan and the CI gate
+still apply.) Claude Code gets the same rule, through hooks on `Write`, `Edit`, `MultiEdit`,
+`NotebookEdit` and `Bash`.
 [Kiro Crew](#kiro-crew-app) sessions do not load project hooks, so there the `prism-fix-findings`
 skill is the check. When the hooks are active for its session it reads their verdict instead of
 running its own rounds.
@@ -1095,6 +1107,9 @@ prism-cli enable agent-hooks --client kiro --uninstall
 - Kiro runs global and project hooks side by side, so it warns when both scopes have the file.
 - `--uninstall` removes only PRISM's entries.
 - `--client cursor` and `--client codex` are planned.
+
+Hook files from 1.12.0 still work. `--status` shows them as outdated until you run the installer
+again, which adds the `PostToolUse` hook for tool windows (see [Kiro CLI and Kiro IDE](#kiro-cli-and-kiro-ide)).
 
 Hook files are on the tamper list: an agent's push that carries a change to them is held. Commit
 the hook file yourself before the agent's session.

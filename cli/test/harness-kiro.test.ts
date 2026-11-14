@@ -24,7 +24,7 @@ const TSX = import.meta.resolve('tsx');
 const SESSION = 'sess_00000000-1111-4222-8333-444444444444';
 
 /** A captured Kiro payload with this rig's repo as cwd, and optional overrides. */
-function payload(event: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd', r: Rig, over: Record<string, unknown> = {}): string {
+function payload(event: 'SessionStart' | 'PreToolUse' | 'PostToolUse' | 'Stop' | 'SessionEnd', r: Rig, over: Record<string, unknown> = {}): string {
   const p = JSON.parse(readFileSync(join(HERE, 'fixtures', 'kiro-hooks', `${event}.json`), 'utf8'));
   p.cwd = r.dir;
   if (typeof over.command === 'string') { p.tool_input.command = over.command; delete over.command; }
@@ -299,4 +299,92 @@ test('ref moves are denied by both adapters with the --no-verify wording, before
   }
   assert.deepEqual(r.calls(), [], 'no gitleaks, no reviewer');
   assert.equal(runClaudeHook('bash-guard', JSON.stringify({ cwd: r.dir, tool_input: { command: 'git fetch origin' } }), { env: {} }), '');
+});
+
+// ---------------------------------------------------------------- D6: tamper attribution by tool window
+
+const CONFIG = '.prism/config.json';
+/** One agent tool call (Kiro fs_write): PreToolUse, what the tool does, PostToolUse. `post: false` drops the PostToolUse (crash, timeout). */
+function agentTool(r: Rig, act: () => void, post = true) {
+  const tool = { tool_name: 'fs_write', tool_input: { path: 'src/x.ts' } };
+  assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, tool), deps(r)).exit, 0);
+  act();
+  if (post) assert.equal(runKiroHook('post-tool', payload('PostToolUse', r, tool), deps(r)).exit, 0);
+}
+const finish = (r: Rig) => runKiroHook('stop', payload('Stop', r), deps(r, { PRISM_HARNESS_FINISH_GATE: '1' }));
+const isTamper = (x: KiroHookResult) => !!x.stdout && /tamper|PRISM, secret-scan or hook configuration/.test(JSON.parse(x.stdout).reason);
+
+test('D6: a guarded file the person edits between agent tool calls is theirs, not session tamper', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'export const a = 1;\n'));
+  r.write(CONFIG, '{ "eval": {} }\n');
+  agentTool(r, () => r.write('src/b.ts', 'export const b = 2;\n'));
+  const x = finish(r);
+  assert.equal(x.exit, 0);
+  assert.equal(x.stdout, '', 'no block: the config edit is the person\'s');
+  assert.match(x.stderr, /\.prism\/config\.json \(changed by the person between agent tool calls\)/);
+  // The person's edit before the very first tool call (after SessionStart) is theirs too.
+  const s = rig();
+  runKiroHook('session-start', payload('SessionStart', s), deps(s));
+  s.write(CONFIG, '{}\n');
+  agentTool(s, () => s.write('src/a.ts', 'x\n'));
+  assert.ok(!isTamper(finish(s)));
+});
+
+test('D6: changes inside a window, after an unclosed window, or after the last tool call are the agent\'s', () => {
+  const cases: [string, (r: Rig) => void][] = [
+    ['inside a tool window', (r) => agentTool(r, () => r.write(CONFIG, '{}\n'))],
+    ['PreToolUse with no PostToolUse', (r) => { agentTool(r, () => r.write(CONFIG, '{}\n'), false); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
+    ['between the last PostToolUse and Stop', (r) => { agentTool(r, () => r.write('src/a.ts', 'x\n')); r.write(CONFIG, '{}\n'); }],
+    ['the agent changes it again after the person', (r) => { r.write(CONFIG, '{}\n'); agentTool(r, () => r.write(CONFIG, '{ "x": 1 }\n')); }],
+    ['no SessionStart record', (r) => { r.write(CONFIG, '{}\n'); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
+  ];
+  for (const [name, steps] of cases) {
+    const r = rig();
+    if (name !== 'no SessionStart record') runKiroHook('session-start', payload('SessionStart', r), deps(r));
+    steps(r);
+    assert.ok(isTamper(finish(r)), name);
+  }
+});
+
+test('D6: a secret the person writes between tool calls still blocks the finish and the push', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'export const a = 1;\n'));
+  r.write('src/k.ts', `export const k = "${FAKE_SECRET}";\n`);
+  r.leaks([leak('src/k.ts', 1)]);
+  agentTool(r, () => r.write('src/b.ts', 'export const b = 2;\n'));
+  const x = finish(r);
+  assert.match(JSON.parse(x.stdout).reason, /Remove the secret at src\/k\.ts:1/);
+  r.commit('k');
+  assert.equal(runKiroHook('pre-push', payload('PreToolUse', r), deps(r)).exit, 2);
+});
+
+test('D6: a person\'s config change carried by a push is not tamper; the pre-tool path is fast and never denies', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'x\n'));
+  r.write(CONFIG, '{}\n');
+  r.commit('person config');
+  const push = runKiroHook('pre-tool', payload('PreToolUse', r), deps(r));
+  assert.equal(push.exit, 0, push.stderr);
+  const t0 = Date.now();
+  for (let i = 0; i < 20; i++) assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: 'a' } }), deps(r)).exit, 0);
+  assert.ok((Date.now() - t0) / 20 < 50, 'in-process pre-tool for a non-shell tool: hash only, no diff or gitleaks');
+  assert.equal(runKiroHook('post-tool', '{not json', deps(r)).exit, 0, 'post-tool never blocks');
+});
+
+test('D6 (Claude Code): the same windows through pre-tool and post-tool', () => {
+  const r = rig();
+  const cin = (extra: object = {}) => JSON.stringify({ session_id: 'cc-d6', cwd: r.dir, ...extra });
+  const env = { env: { PRISM_HARNESS_FINISH_GATE: '1' }, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks } };
+  runClaudeHook('session-start', cin(), env);
+  const tool = (act: () => void) => { runClaudeHook('pre-tool', cin({ tool_name: 'Edit' }), env); act(); runClaudeHook('post-tool', cin({ tool_name: 'Edit' }), env); };
+  tool(() => r.write('src/a.ts', 'x\n'));
+  r.write(CONFIG, '{}\n');
+  tool(() => r.write('src/b.ts', 'y\n'));
+  assert.ok(!runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env).includes('tamper'), 'the person\'s edit');
+  tool(() => r.write(CONFIG, '{ "x": 1 }\n'));
+  assert.match(runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env), /tamper|hook configuration/, 'the agent\'s edit');
 });

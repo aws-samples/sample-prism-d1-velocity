@@ -114,7 +114,7 @@ test('hooks.json wires every harness event through harness-hook.mjs with enough 
 
 test('plugin options: finish gate off and push gate on by default', () => {
   const m = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
-  assert.equal(m.version, '0.3.1');
+  assert.equal(m.version, '0.3.2');
   assert.deepEqual([m.userConfig.finish_gate.type, m.userConfig.finish_gate.default], ['boolean', false]);
   assert.deepEqual([m.userConfig.push_gate.type, m.userConfig.push_gate.default], ['boolean', true]);
 });

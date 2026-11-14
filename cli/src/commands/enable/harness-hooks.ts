@@ -95,7 +95,8 @@ export function kiroHookFile(cli: string): Record<string, unknown> {
     version: 'v1',
     hooks: [
       h('PRISM harness: session start', 'Records the working tree at session start, so only this session\'s changes are reviewed.', 'SessionStart', 'session-start', SESSION_TIMEOUT_S),
-      h('PRISM harness: push check', 'Before a git push: gitleaks and the PRISM review. Denies only secrets, a failed secret scan, changes to the checks, an unknown push target and hook bypasses (exit 2). Other shell commands pass at once.', 'PreToolUse', 'pre-push', REVIEW_TIMEOUT_S, 'shell'),
+      h('PRISM harness: push check', 'Before every agent tool call: records which guarded files the person changed since the last call. Before a git push: gitleaks and the PRISM review; denies only secrets, a failed secret scan, changes to the checks, an unknown push target and hook bypasses (exit 2). Other calls pass at once.', 'PreToolUse', 'pre-tool', REVIEW_TIMEOUT_S, '*'),
+      h('PRISM harness: tool window end', 'After every agent tool call: records the guarded files, so changes inside the call count as the agent\'s.', 'PostToolUse', 'post-tool', SESSION_TIMEOUT_S, '*'),
       h('PRISM harness: finish check', 'When the agent finishes: hands over push findings, and with harness.finish_gate (or PRISM_HARNESS_FINISH_GATE=1) reviews the session\'s changes.', 'Stop', 'stop', REVIEW_TIMEOUT_S),
       h('PRISM harness: session end', 'Deletes this session\'s harness state.', 'SessionEnd', 'session-end', SESSION_TIMEOUT_S),
     ],
@@ -188,6 +189,9 @@ function kiroUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
 /** The plugin's bash-guard `if` rules (claude-plugin/hooks/hooks.json): the bypass check only, never a review. */
 export const BASH_GUARD_IFS = ['Bash(*git*config*)', 'Bash(*git*-c*)', 'Bash(*git*ref*)', 'Bash(*git*remote*)', 'Bash(*git*fetch*)', 'Bash(*git*pull*)', 'Bash(*git*branch*)', 'Bash(*git*tag*)', 'Bash(*git*checkout*)', 'Bash(*git*switch*)'];
 
+/** Claude Code tools that can change a file: the tool windows of tamper attribution (D6). */
+export const WINDOW_TOOLS = 'Write|Edit|MultiEdit|NotebookEdit|Bash';
+
 /** The plugin's harness hooks (claude-plugin/hooks/hooks.json), calling prism-cli directly instead of the plugin's script. */
 export function claudeHooks(cli: string): Record<string, unknown[]> {
   const c = (event: string, timeout: number, extra: object = {}) => ({ type: 'command', ...extra, command: hookCmd(cli, 'claude', event), timeout });
@@ -198,7 +202,8 @@ export function claudeHooks(cli: string): Record<string, unknown[]> {
     PreToolUse: [{ matcher: 'Bash', hooks: [
       c('pre-push', REVIEW_TIMEOUT_S, { if: 'Bash(*git*push*)' }),
       ...BASH_GUARD_IFS.map((rule) => c('bash-guard', GUARD_TIMEOUT_S, { if: rule })),
-    ] }],
+    ] }, { matcher: WINDOW_TOOLS, hooks: [c('pre-tool', SESSION_TIMEOUT_S)] }],
+    PostToolUse: [{ matcher: WINDOW_TOOLS, hooks: [c('post-tool', SESSION_TIMEOUT_S)] }],
     SessionEnd: [{ hooks: [c('session-end', SESSION_TIMEOUT_S)] }],
   };
 }

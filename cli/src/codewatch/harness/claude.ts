@@ -13,9 +13,11 @@ import { join } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict, type PushTarget } from './engine.js';
+import { deleteGuard, guardEvent } from './guard.js';
 import { deleteState, loadState, recordBaseline, sanitizeSession } from './state.js';
 
-export const CLAUDE_EVENTS = ['session-start', 'stop', 'pre-push', 'bash-guard', 'session-end'] as const;
+/** pre-tool / post-tool run around every file-writing tool and Bash call (D6); they record tool windows only. */
+export const CLAUDE_EVENTS = ['session-start', 'pre-tool', 'post-tool', 'stop', 'pre-push', 'bash-guard', 'session-end'] as const;
 export type ClaudeEvent = typeof CLAUDE_EVENTS[number];
 
 export const MAX_FINDINGS_SHOWN = 10;
@@ -489,12 +491,17 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
   const hookEventName = typeof input.hook_event_name === 'string' && /^[A-Za-z]{1,40}$/.test(input.hook_event_name) ? input.hook_event_name : event === 'stop' ? 'Stop' : 'PreToolUse';
 
   try {
+    if (event === 'pre-tool' || event === 'post-tool') {
+      // Never fails the tool: on an error nothing is recorded, which leaves every change the agent's.
+      if (session) { try { guardEvent(repoRoot, session, event === 'pre-tool' ? 'pre' : 'post'); } catch { /* fail toward the agent */ } }
+      return '';
+    }
     if (event === 'session-start') {
-      if (session) recordBaseline(repoRoot, session, 'claude');
+      if (session) { recordBaseline(repoRoot, session, 'claude'); guardEvent(repoRoot, session, 'start'); }
       return '';
     }
     if (event === 'session-end') {
-      if (session) deleteState(repoRoot, session);
+      if (session) { deleteState(repoRoot, session); deleteGuard(repoRoot, session); }
       return '';
     }
     const cfg = readHarnessConfig(repoRoot);
@@ -518,7 +525,9 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
       return v.warnings.length || v.findings.length ? JSON.stringify({ systemMessage: personText(v) }) : '';
     }
 
-    // pre-push: a git push (checked above)
+    // pre-push: a git push (checked above). Claude Code runs the pre-tool hook beside this one, in
+    // parallel, so fold the person's changes here too before the engine reads them (D6).
+    if (session) { try { guardEvent(repoRoot, session, 'pre'); } catch { /* fail toward the agent */ } }
     const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
     const reason = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());

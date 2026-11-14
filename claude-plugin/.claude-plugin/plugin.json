@@ -1,7 +1,7 @@
 {
   "name": "prism",
   "displayName": "PRISM",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "PRISM codewatch in Claude Code: the harness loop (gitleaks and a PRISM review before Claude runs git push, and optionally before it finishes), the prism-cli MCP tools, /prism slash commands and a SessionStart summary of this branch's open findings. Needs prism-cli 1.11.0 or later on PATH for the harness loop and /prism:review (1.10.0 for the rest).",
   "author": {
     "name": "PRISM D1 Velocity maintainers",
