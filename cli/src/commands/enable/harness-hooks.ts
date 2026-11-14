@@ -103,7 +103,10 @@ export function kiroHookFile(cli: string): Record<string, unknown> {
   };
 }
 
-const kiroDir = (o: AgentHooksOptions, d: AgentHooksDeps) => (o.global ? join(d.home, '.kiro', 'hooks') : join(d.repoRoot!, '.kiro', 'hooks'));
+/** The deps that only locate and read the hook files. */
+type FileDeps = Pick<AgentHooksDeps, 'home' | 'env' | 'repoRoot' | 'cli'>;
+
+const kiroDir = (o: AgentHooksOptions, d: FileDeps) => (o.global ? join(d.home, '.kiro', 'hooks') : join(d.repoRoot!, '.kiro', 'hooks'));
 
 type State = 'installed' | 'outdated' | 'missing';
 
@@ -238,10 +241,10 @@ function claudeState(hooks: Record<string, Json>, want: Record<string, unknown[]
   return JSON.stringify(mergeClaude(hooks, want)) === JSON.stringify(hooks) ? 'installed' : 'outdated';
 }
 
-const claudeSettings = (o: AgentHooksOptions, d: AgentHooksDeps) => (o.global ? join(configDir(d.env, d.home), 'settings.json') : join(d.repoRoot!, '.claude', 'settings.json'));
+const claudeSettings = (o: AgentHooksOptions, d: FileDeps) => (o.global ? join(configDir(d.env, d.home), 'settings.json') : join(d.repoRoot!, '.claude', 'settings.json'));
 
 /** The PRISM plugin, read from the user's Claude Code config: installed and not disabled. */
-function pluginActive(d: AgentHooksDeps): { active: boolean; version: string | null } {
+function pluginActive(d: FileDeps): { active: boolean; version: string | null } {
   let user: Record<string, unknown> = {};
   try { user = readObject(join(configDir(d.env, d.home), 'settings.json')).json; } catch { /* unreadable settings: plugin state from installed_plugins only */ }
   const p = pluginState(configDir(d.env, d.home), user);
@@ -320,8 +323,7 @@ export function pluginPredatesHooks(version: string | null): boolean {
 }
 
 /** Installed, outdated or missing per client and scope, and the Claude plugin state. Reads files only. */
-export function agentHookStatus(d: Pick<AgentHooksDeps, 'home' | 'env' | 'repoRoot' | 'cli'>, clients: readonly Client[] = CLIENTS): AgentHookStatus {
-  const dd = d as AgentHooksDeps;
+export function agentHookStatus(d: FileDeps, clients: readonly Client[] = CLIENTS): AgentHookStatus {
   const rows: AgentHookRow[] = [];
   for (const client of clients) {
     for (const global of [false, true]) {
@@ -329,7 +331,7 @@ export function agentHookStatus(d: Pick<AgentHooksDeps, 'home' | 'env' | 'repoRo
       const scope = global ? 'global' as const : 'project' as const;
       const cli = global ? d.cli : PORTABLE_CLI;
       if (!global && !d.repoRoot) { rows.push({ client, scope, state: 'no-repo', path: null, others: 0, error: null }); continue; }
-      const path = client === 'kiro' ? join(kiroDir(o, dd), KIRO_FILE) : claudeSettings(o, dd);
+      const path = client === 'kiro' ? join(kiroDir(o, d), KIRO_FILE) : claudeSettings(o, d);
       try {
         const f = readObject(path);
         if (client === 'kiro') {
@@ -343,7 +345,7 @@ export function agentHookStatus(d: Pick<AgentHooksDeps, 'home' | 'env' | 'repoRo
       }
     }
   }
-  const p = pluginActive(dd);
+  const p = pluginActive(d);
   return { rows, plugin: { active: p.active, version: p.version, outdated: p.active && pluginPredatesHooks(p.version) } };
 }
 

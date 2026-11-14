@@ -415,12 +415,6 @@ function helpBlock(h) {
 
 const SEC_LABEL = { ok: 'ok', 'in-use': 'in use', missing: 'missing' };
 
-/** Security Agent per repo: the enable security marker, else saved results (local evidence; the page makes no AWS calls). */
-function securityCell(sec) {
-  if (!sec) return el('span', { class: 'fix' }, '-');
-  return el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', SEC_LABEL[sec.status] || sec.status), ' ', sec.status === 'missing' ? '' : txt(sec.detail).replace(/^in use /, ''),
-    sec.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, sec.fix)) : null);
-}
 
 /** Risk levels of Security Agent results, highest first; the pills follow the codewatch severity pills. */
 const RISKS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFORMATIONAL', 'UNKNOWN'];
