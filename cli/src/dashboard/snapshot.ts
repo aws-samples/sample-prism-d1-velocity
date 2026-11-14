@@ -13,6 +13,7 @@ import { ActionRunner, cliEntry, repoId } from './actions.js';
 import { setupApi } from './setup-api.js';
 import { repoRootOf } from '../aws/connection.js';
 import { systemdUserAvailable } from '../utils/otel-sync-schedule.js';
+import { findOnPath } from '../utils/tool-check.js';
 
 export interface SnapshotOptions {
   cwd: string;
@@ -34,7 +35,7 @@ export async function buildSnapshotHtml(o: SnapshotOptions): Promise<string> {
   // Only the action catalog is read (labels, commands, availability); nothing is started.
   const runner = new ActionRunner({
     execPath: process.execPath, entry: cliEntry(), cwd: o.cwd, home: o.home, platform: process.platform,
-    repos: async () => repos, systemdAvailable: () => systemdUserAvailable(),
+    repos: async () => repos, systemdAvailable: () => systemdUserAvailable(), npmPath: () => findOnPath('npm', o.pathEnv),
   });
   const api = setupApi({
     runner, cwd: o.cwd,

@@ -361,7 +361,7 @@ test('overview: counts, collapsed missing group, and an empty codewatch table', 
   assert.deepEqual(none.overview.codewatch, [], 'empty table when codewatch is enabled nowhere');
   const html = renderPage('N');
   assert.ok(html.includes("Codewatch isn't enabled in any repo yet."));
-  assert.ok(html.includes("': not set up'"));
+  assert.ok(html.includes("'Repos without codewatch'"), 'repos without codewatch are collapsed in the Settings view');
 });
 
 // ---------------------------------------------------------------- global hooks
@@ -463,7 +463,7 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'timing', 'usage', 'version']);
+  assert.deepEqual(Object.keys(p).sort(), ['agentHooks', 'aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'timing', 'usage', 'version']);
   assert.deepEqual(Object.keys(p.timing).sort(), ['cacheHit', 'scan', 'setup', 'total', 'usage']);
   assert.equal(p.timing.cacheHit, false);
   assert.deepEqual(p.aws.accounts, [], 'no aws check results in the fixtures');

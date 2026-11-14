@@ -43,9 +43,9 @@ export class FakeElement extends FakeNode {
 }
 
 export function fakeDom() {
-  const ids = ['main', 'repo', 'setup', 'meta', 'refresh', 'ver', 'setup-badge'];
-  const byId: Record<string, FakeElement> = Object.fromEntries(ids.map((id) => [id, new FakeElement(id === 'meta' ? 'p' : id === 'refresh' ? 'button' : id === 'ver' || id === 'setup-badge' ? 'span' : 'main')]));
-  byId.repo.hidden = true; byId.setup.hidden = true;
+  const ids = ['main', 'repo', 'settings', 'meta', 'refresh', 'ver', 'settings-badge'];
+  const byId: Record<string, FakeElement> = Object.fromEntries(ids.map((id) => [id, new FakeElement(id === 'meta' ? 'p' : id === 'refresh' ? 'button' : id === 'ver' || id === 'settings-badge' ? 'span' : 'main')]));
+  byId.repo.hidden = true; byId.settings.hidden = true;
   const document = {
     visibilityState: 'visible',
     createElement: (t: string) => new FakeElement(t),
@@ -94,7 +94,7 @@ export async function runPage(payloads: unknown[], hash = '', setup: unknown = n
     go: (h: string) => { location.hash = h; handlers.hashchange?.(); },
     location,
     text: () => dom.byId.main.textContent,
-    setupText: () => dom.byId.setup.textContent,
+    settingsText: () => dom.byId.settings.textContent,
     meta: () => dom.byId.meta.textContent,
   };
 }

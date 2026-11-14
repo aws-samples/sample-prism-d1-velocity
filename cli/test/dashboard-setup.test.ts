@@ -47,7 +47,7 @@ const REPOS = [{ id: repoId(REPO_A), name: 'repo-a', path: REPO_A }];
 function runner(calls: Spawned[], over: Partial<ConstructorParameters<typeof ActionRunner>[0]> = {}) {
   return new ActionRunner({
     execPath: '/usr/bin/node', entry: '/opt/prism/dist/bin/prism-cli.js', cwd: '/work', home: tmp('home'),
-    repos: async () => REPOS, systemdAvailable: () => true, platform: 'linux', spawn: fakeSpawn(calls), ...over,
+    repos: async () => REPOS, systemdAvailable: () => true, npmPath: () => '/usr/bin/npm', platform: 'linux', spawn: fakeSpawn(calls), ...over,
   });
 }
 
@@ -185,8 +185,9 @@ test('the page embeds the CSRF token; GET routes stay GET-only', async () => {
 
 // ---------------------------------------------------------------- argv
 
-test('each allowed action spawns the CLI binary with a fixed argv and shell:false', async () => {
-  const expected: Record<ActionId, { args: string[]; cwd: string; body?: Record<string, unknown> }> = {
+test('each allowed action spawns the CLI binary (npm for the update) with a fixed argv and shell:false', async () => {
+  const hooks = (c: string, g: boolean, rm: boolean) => ({ args: ['enable', 'agent-hooks', '--client', c, ...(g ? ['--global'] : []), ...(rm ? ['--uninstall'] : [])], cwd: '/work' });
+  const expected: Record<ActionId, { args: string[]; cwd: string; body?: Record<string, unknown>; npm?: true }> = {
     'codewatch-repo': { args: ['enable', 'codewatch'], cwd: REPO_A, body: { repo: repoId(REPO_A) } },
     'codewatch-global': { args: ['enable', 'codewatch', '--global'], cwd: '/work' },
     'codeburn-local': { args: ['enable', 'codeburn', '--local'], cwd: '/work' },
@@ -196,6 +197,12 @@ test('each allowed action spawns the CLI binary with a fixed argv and shell:fals
     'codeburn-status': { args: ['enable', 'codeburn', '--status'], cwd: '/work' },
     'aws-check': { args: ['aws', 'check'], cwd: '/work' },
     'team-info': { args: ['team', 'info'], cwd: '/work' },
+    'agent-hooks-kiro': hooks('kiro', false, false), 'agent-hooks-kiro-global': hooks('kiro', true, false),
+    'agent-hooks-claude': hooks('claude', false, false), 'agent-hooks-claude-global': hooks('claude', true, false),
+    'agent-hooks-kiro-remove': hooks('kiro', false, true), 'agent-hooks-kiro-global-remove': hooks('kiro', true, true),
+    'agent-hooks-claude-remove': hooks('claude', false, true), 'agent-hooks-claude-global-remove': hooks('claude', true, true),
+    'kirocrew-app': { args: ['enable', 'kirocrew', '--yes'], cwd: '/work' },
+    'update-cli': { args: ['i', '-g', '@prism-d1/cli@latest'], cwd: '/work', npm: true },
   };
   for (const [id, e] of Object.entries(expected) as [ActionId, typeof expected[ActionId]][]) {
     const calls: Spawned[] = [];
@@ -203,8 +210,8 @@ test('each allowed action spawns the CLI binary with a fixed argv and shell:fals
     const res = await r.start({ action: id, ...e.body });
     assert.equal(res.status, 202, id);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].file, '/usr/bin/node', id);
-    assert.deepEqual(calls[0].args, ['/opt/prism/dist/bin/prism-cli.js', ...e.args], id);
+    assert.equal(calls[0].file, e.npm ? '/usr/bin/npm' : '/usr/bin/node', id);
+    assert.deepEqual(calls[0].args, e.npm ? e.args : ['/opt/prism/dist/bin/prism-cli.js', ...e.args], id);
     assert.equal(calls[0].opts.shell, false, id);
     assert.equal(calls[0].opts.cwd, e.cwd, id);
     assert.deepEqual(calls[0].opts.stdio, ['ignore', 'pipe', 'pipe'], `${id}: stdin closed`);
@@ -214,6 +221,17 @@ test('each allowed action spawns the CLI binary with a fixed argv and shell:fals
   for (const a of Object.values(ACTIONS)) {
     assert.ok(!/^(security|team add-developer|enable security|aws connect)/.test(a.args.join(' ')), a.args.join(' '));
   }
+});
+
+test('the update action needs npm on PATH and is not offered on Windows; it shows as npm i -g', async () => {
+  const calls: Spawned[] = [];
+  assert.equal((await runner(calls, { npmPath: () => null }).start({ action: 'update-cli' })).status, 400);
+  assert.equal((await runner(calls, { platform: 'win32' }).start({ action: 'update-cli' })).status, 400);
+  assert.equal(calls.length, 0);
+  const r = runner(calls);
+  assert.equal((await r.start({ action: 'update-cli', url: 'https://x.example.com' })).status, 400, 'takes no input');
+  const ok = await r.start({ action: 'update-cli' });
+  assert.equal((ok.json as any).command, 'npm i -g @prism-d1/cli@latest');
 });
 
 test('systemd action is refused where systemctl --user is not available', async () => {

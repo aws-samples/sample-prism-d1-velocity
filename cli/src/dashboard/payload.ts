@@ -25,6 +25,8 @@ import { collectSecurity, type SecurityPanel } from './security.js';
 import { collectAws, type AwsPanel } from './aws.js';
 import { repoId } from './actions.js';
 import type { VersionInfo } from './update-check.js';
+import { agentHookStatus, type AgentHookStatus } from '../commands/enable/harness-hooks.js';
+import { ownCliLocation, prismCliCommand } from '../commands/enable/claude-code.js';
 
 export const PAYLOAD_SCHEMA = 'prism.dashboard.v2';
 
@@ -167,6 +169,11 @@ export interface DashboardPayload {
   /** This prism-cli and the latest on npm (update-check.ts); the page's version pill. */
   version: VersionInfo;
   /**
+   * The agent harness hooks, as `enable agent-hooks --status` reports them: kiro and claude, for
+   * the repo the dashboard started in (project) and for this user (global), plus the Claude plugin.
+   */
+  agentHooks: AgentHookStatus;
+  /**
    * Milliseconds per stage, for diagnosis (`dashboard --json --timing`). scan:
    * repo discovery. setup: checks and codewatch results for every repo and
    * this machine. usage: codeburn (runs alongside setup). cacheHit: usage came
@@ -201,6 +208,8 @@ export interface PayloadOptions extends DiscoverOptions {
   git?: GitRunner;
   /** The version block; default: this CLI's version with no update check (no network). */
   version?: () => Promise<VersionInfo>;
+  /** Default: agentHookStatus for the current repo and this user. File reads only. */
+  agentHooks?: (repoRoot: string | null) => AgentHookStatus;
   machineDeps?: MachineDeps;
   pathEnv?: string;
 }
@@ -301,6 +310,9 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
     summary: buildSummary(repos, usage, machineSetup),
     version: await versionP,
+    agentHooks: (opts.agentHooks || ((repoRoot) => agentHookStatus({
+      home: opts.machineDeps?.home || opts.home || homedir(), env: opts.machineDeps?.env || process.env, repoRoot, cli: prismCliCommand(ownCliLocation()),
+    })))(d.currentRepo),
     timing: { scan: tScan - t0, setup: setupMs, usage: usageMs, total: Date.now() - t0, cacheHit },
   };
 }

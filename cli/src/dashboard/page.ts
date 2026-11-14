@@ -2,7 +2,7 @@
  * The dashboard's single-page app: one self-contained HTML document with
  * inline CSS and JS (nonce-gated by the CSP), no CDN and no network fetch
  * other than its own GET routes (/api/data, then /api/usage), so it works offline.
- * Views are hash routes: # (dashboard), #setup, #repo/<id>.
+ * Views are hash routes: # (dashboard), #settings[/<tab>] (#setup is an alias), #repo/<id>.
  *
  * Every value from the payload is placed with textContent or a DOM attribute;
  * innerHTML is never used for data.
@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { SETUP_SCRIPT, SETUP_STYLE, THEME_BOOT, THEME_SCRIPT } from './setup-page.js';
+import { SETTINGS_SCRIPT, SETTINGS_STYLE } from './settings-page.js';
 import { REPO_SCRIPT } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
 
@@ -118,6 +119,7 @@ details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--mut
 @keyframes prism-flash { from { background-color:color-mix(in srgb, var(--accent) 35%, transparent); } to { background-color:transparent; } }
 @media (prefers-reduced-motion: no-preference) { .changed { animation:prism-flash 2.5s ease-out 1; } }
 ${SETUP_STYLE}
+${SETTINGS_STYLE}
 `;
 
 const SCRIPT = `
@@ -229,7 +231,7 @@ function summaryCards(sum) {
   const w = (sum && sum.warnings) || { count: 0, first: null };
   box.append(scard('Settings warnings',
     track('sum:warnings', w.count, el('div', { class: 'v' + (w.count ? ' s-warn' : '') }, String(w.count))),
-    detail(w.first ? txt(w.first) + ' ' : 'Nothing needs attention. ', el('a', { href: '#setup' }, 'Open Setup →'))));
+    detail(w.first ? txt(w.first) + ' ' : 'Nothing needs attention. ', el('a', { href: '#settings' }, 'Open Settings →'))));
   return box;
 }
 
@@ -416,12 +418,6 @@ function helpBlock(h) {
 
 const SEC_LABEL = { ok: 'ok', 'in-use': 'in use', missing: 'missing' };
 
-/** Security Agent per repo: the enable security marker, else saved results (local evidence; the page makes no AWS calls). */
-function securityCell(sec) {
-  if (!sec) return el('span', { class: 'fix' }, '-');
-  return el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', SEC_LABEL[sec.status] || sec.status), ' ', sec.status === 'missing' ? '' : txt(sec.detail).replace(/^in use /, ''),
-    sec.fix ? el('div', { class: 'fix' }, 'Fix: ', el('code', {}, sec.fix)) : null);
-}
 
 /** Risk levels of Security Agent results, highest first; the pills follow the codewatch severity pills. */
 const RISKS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFORMATIONAL', 'UNKNOWN'];
@@ -549,19 +545,10 @@ function versionPill(v) {
   const box = document.getElementById('ver');
   if (!box || !v) return;
   const checked = v.checkedAt ? 'checked ' + when(v.checkedAt) : 'not checked yet';
-  const a = el('a', { href: '#setup/updates', class: 'verpill' + (v.update ? ' up' : ''),
+  const a = el('a', { href: '#settings/updates', class: 'verpill' + (v.update ? ' up' : ''),
     title: v.update ? 'prism-cli ' + v.latest + ' is on npm (' + checked + '). Click for the update command.' : v.latest ? 'latest on npm: ' + v.latest + ' (' + checked + ')' : 'update check: ' + checked },
     v.update ? 'Update: ' + v.installed + ' → ' + v.latest : 'prism-cli ' + v.installed);
   box.replaceChildren(a);
-}
-
-/** The Setup tab's badge: the settings warnings count, hidden at zero. */
-function setupBadge(sum) {
-  const b = document.getElementById('setup-badge');
-  const n = (sum && sum.warnings && sum.warnings.count) || 0;
-  if (!b) return;
-  b.textContent = n ? String(n) : '';
-  if (n) b.removeAttribute('hidden'); else b.setAttribute('hidden', '');
 }
 
 /** Auto-refresh period while the tab is visible; paused while hidden. */
@@ -627,7 +614,6 @@ async function render() {
   main.replaceChildren();
   renderMain(main, data);
   versionPill(data.version);
-  setupBadge(data.summary);
   const changed = new Set(changedKeys(PREV, CUR));
   for (const n of main.querySelectorAll('[data-track]')) {
     const k = n.getAttribute('data-track');
@@ -648,6 +634,7 @@ async function render() {
   return data;
 }
 ${SETUP_SCRIPT}
+${SETTINGS_SCRIPT}
 ${THEME_SCRIPT}
 if (SNAPSHOT) {
   const at = document.getElementById('snapshot-at');
@@ -680,14 +667,14 @@ function shell(live: boolean): { head: string; header: string } {
   const head = m.icon ? `<link rel="icon" type="image/png" href="${m.icon}">` : '';
   const logo = m.logo ? `<img class="logo" src="${m.logo}" width="36" height="36" alt="">` : '';
   const header = `<header><h1>${logo}PRISM dashboard</h1>
-<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#setup" data-view="setup">Setup <span class="badge warn" id="setup-badge" hidden></span></a></nav>
+<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#settings" data-view="settings">Settings <span class="badge warn" id="settings-badge" hidden></span></a></nav>
 <span class="spacer"></span>
 <div class="tools"><span id="ver"></span>${live ? '<button id="refresh" type="button">Refresh</button>' : ''}
 <div class="theme" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div></header>`;
   return { head, header };
 }
 
-const VIEWS = '<main id="main"></main>\n<main id="repo" hidden></main>\n<main id="setup" hidden></main>\n<p class="note meta" id="meta"></p>';
+const VIEWS = '<main id="main"></main>\n<main id="repo" hidden></main>\n<main id="settings" hidden></main>\n<p class="note meta" id="meta"></p>';
 
 export function renderPage(nonce: string, csrf = ''): string {
   // The nonce and the CSRF token are base64/base64url generated server-side; nothing user-derived is interpolated here.
@@ -734,7 +721,7 @@ const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt
  * The same page as renderPage, as one static file: the data is embedded, the
  * scripts and the style are allowed by hash in a CSP meta tag with
  * default-src 'none' (no fetch, no remote resource; images only as data:
- * URIs), and the Setup page's Run buttons become Copy buttons. No token, no server.
+ * URIs), and the Settings page's Run buttons become Copy buttons. No token, no server.
  */
 export function renderSnapshotPage(s: SnapshotData): string {
   const M = SNAPSHOT_MARKERS;
