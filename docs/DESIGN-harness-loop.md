@@ -974,8 +974,9 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   1.12.0 name). Claude Code (plugin 0.3.2 and the `enable agent-hooks` template): a `PreToolUse`
   and a `PostToolUse` group with matcher `Write|Edit|MultiEdit|NotebookEdit|Bash|Task|mcp__.*` (`Task` keeps a subagent's run inside one window; read and search tools stay out). Claude Code
   runs the hooks of one event in parallel, so the `pre-push` handler does not record a window
-  edge: the `pre-tool` hook beside it does, and anything it has not folded yet counts as the
-  agent's.
+  edge (the `pre-tool` hook beside it does). Its tamper check folds the gap since the last
+  snapshot itself, in memory and with the push call's own window set aside, so it does not depend
+  on which hook runs first.
 - **Where the state lives.** `$(git rev-parse --git-common-dir)/prism/harness/` (`.git/prism/harness/`
   in a plain clone; linked worktrees share it). It is outside the worktree, so no diff, snapshot or
   `git add` sees it. The CLI finds the directory by reading `.git` (and a worktree's `gitdir:` and

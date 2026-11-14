@@ -12,7 +12,7 @@
  * loop's threat model (section 6.2). Values in an unexpected shape are ignored,
  * and a file that does not parse is renamed to `.bad` and never blocks.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { gitIn, HARNESS_DIR, revParse, snapshotTree } from './diff.js';
 
@@ -86,7 +86,11 @@ export function harnessDir(repoRoot: string): string {
  */
 function migrateOldState(repoRoot: string, to: string): void {
   const from = resolve(repoRoot, HARNESS_DIR);
-  if (existsSync(to) || !existsSync(from)) return;
+  if (existsSync(to)) return;
+  try {
+    // Only a real directory: a symlink placed there is not followed into the git directory.
+    if (!lstatSync(from).isDirectory()) return;
+  } catch { return; } // nothing to move
   try {
     mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
     renameSync(from, to);

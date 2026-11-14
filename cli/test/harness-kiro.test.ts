@@ -522,6 +522,19 @@ test('D6 (Kiro): a denied call closes its window, so it does not hold later gaps
   assert.ok(!isTamper(finish(r)), 'the edit after the denied push is the person\'s');
 });
 
+test('D6 (Claude Code): the push check folds the gap before its own call, without waiting for the parallel pre-tool hook', () => {
+  const r = rig();
+  guardEvent(r.dir, 'pp', 'start');
+  r.write(CONFIG, '{}\n'); // the person, before the push call's pre-tool hook has folded
+  assert.equal(personsChanges(r.dir, 'pp', [CONFIG]).size, 0, 'without the call id nothing is folded');
+  assert.equal(personsChanges(r.dir, 'pp', [CONFIG], 'toolu_P').size, 1, 'folded in memory');
+  guardEvent(r.dir, 'pp', 'pre', 'toolu_P');
+  assert.equal(personsChanges(r.dir, 'pp', [CONFIG], 'toolu_P').size, 1, 'same result once pre-tool has folded and opened the call\'s window');
+  guardEvent(r.dir, 'pp', 'pre', 'toolu_Other');
+  r.write('.gitleaksignore', 'x\n'); // while another call runs
+  assert.equal(personsChanges(r.dir, 'pp', ['.gitleaksignore'], 'toolu_P').size, 0, 'another open window keeps it the agent\'s');
+});
+
 test('D6: a lock left by a dead hook is broken; a live one is never waited for or removed, and the event counts as missed', () => {
   const r = rig();
   guardEvent(r.dir, 'lk', 'start');

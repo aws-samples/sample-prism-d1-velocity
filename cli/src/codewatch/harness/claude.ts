@@ -387,27 +387,39 @@ const READ_TOOL = /^(fs_read|read|grep|glob|ls|list_directory|view|search|code)$
 /** How deep tool inputs are searched for a path (`file_path`, `path`, `notebook_path`, MCP arguments ...). */
 const MAX_INPUT_DEPTH = 3;
 
+/** Longest tool-input string treated as a path. */
+const MAX_PATH_CHARS = 4096;
+
+/** The real path of `p`; a path that does not exist yet is placed by its nearest existing parent. */
+function realPath(p: string): string {
+  let dir = p;
+  let rest = '';
+  while (true) {
+    try { return rest ? join(realpathSync(dir), rest) : realpathSync(dir); } catch { /* not there yet: try the parent */ }
+    const parent = dirname(dir);
+    if (parent === dir) return p;
+    rest = rest ? join(basename(dir), rest) : basename(dir);
+    dir = parent;
+  }
+}
+
 /**
  * A file-tool call (Write, Edit, fs_write, an MCP tool ...) whose path input points into PRISM's
  * harness state (`stateDir`, in the git directory): exact path resolution against `cwd`, no
- * command-text guessing. Shell commands are not judged here: the state lives outside the
- * worktree, and an agent that writes it from a shell is the stated non-goal (D6).
+ * command-text guessing. Shell commands are not judged here (decided for 1.12.1): the state lives
+ * outside the worktree, and an agent that writes it from a shell is the stated non-goal (D6).
  */
 export function harnessWriteReason(toolName: unknown, toolInput: unknown, stateDir: string, cwd: string): string | null {
   const name = typeof toolName === 'string' ? toolName : '';
   const input = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {};
   if (typeof input.command === 'string' || READ_TOOL.test(name)) return null;
-  // Real paths on both sides, so a symlinked spelling of the same directory still matches. A path
-  // that does not exist yet is placed by its nearest existing parent.
-  const real = (p: string): string => {
-    for (let d = p, rest = ''; ; rest = rest ? join(basename(d), rest) : basename(d), d = dirname(d)) {
-      try { return rest ? join(realpathSync(d), rest) : realpathSync(d); } catch { if (dirname(d) === d) return p; }
-    }
-  };
-  const dir = real(stateDir);
+  // Real paths on both sides, so a symlinked spelling of the same directory (/home and
+  // /local/home) still matches. Only strings naming `harness` are resolved: a path into the state
+  // directory names it unless it goes through a symlink made to hide it (the non-goal above).
+  const dir = realPath(stateDir);
   const inside = (s: string) => {
-    if (!s || s.length > 4096 || s.includes('\n')) return false;
-    const p = real(resolvePath(cwd, s));
+    if (!s.includes('harness') || s.length > MAX_PATH_CHARS || s.includes('\n')) return false;
+    const p = realPath(resolvePath(cwd, s));
     return p === dir || p.startsWith(dir + pathSep);
   };
   let hit = false;
@@ -570,8 +582,9 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
     }
 
     // pre-push: a git push (checked above). The pre-tool hook Claude Code runs beside this one
-    // records the window edge; changes it has not folded yet count as the agent's (D6).
-    const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
+    // records the window edge, in parallel; the tamper check folds the gap before this call itself (D6).
+    const toolUseId = typeof input.tool_use_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(input.tool_use_id) ? input.tool_use_id : null;
+    const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env), toolUseId });
     const reason = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
     if (v.verdict === 'stop') {

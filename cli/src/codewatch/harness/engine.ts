@@ -121,6 +121,8 @@ export interface HarnessOptions {
   noticeOnce?: (key: string) => boolean;
   /** pre-push: what the agent's `git push` command writes (parsed by the adapter). */
   push?: PushTarget;
+  /** Claude Code pre-push: the push call's tool_use_id, so the tamper check can fold the gap before it (D6). */
+  toolUseId?: string | null;
   /** PATH for reviewer detection (tests). */
   pathEnv?: string;
   gitleaksBin?: string;
@@ -409,7 +411,7 @@ function integrityChecks(r: Run, d: Diffs): Integrity {
   if (!state) return { tamper: [], allowMarkers: d.diff.allowMarkers };
   // D6: a guarded file the person changed between agent tool calls, and still holds as they left it, is theirs.
   const persons = (paths: string[]) => {
-    const theirs = personsChanges(r.repoRoot, state.session, paths);
+    const theirs = personsChanges(r.repoRoot, state.session, paths, r.event === 'pre-push' ? r.opts.toolUseId : null);
     const note = `not counted as session changes: ${[...theirs].slice(0, 5).join(', ')} (changed by the person between agent tool calls)`;
     if (theirs.size && !r.warnings.includes(note)) r.warnings.push(note);
     return paths.filter((p) => !theirs.has(p));

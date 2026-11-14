@@ -27,7 +27,7 @@
  * non-goal (section 1); the push-time secret scan and the CI gate still apply.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureHarnessDir, harnessDir } from './state.js';
 
@@ -106,7 +106,7 @@ export function tamperHashes(repoRoot: string, prev?: Pick<Snapshot, 'hashes' | 
     let names: string[];
     try { names = readdirSync(join(repoRoot, rel)); } catch { return true; } // no such directory: nothing guarded there
     for (const name of names) {
-      const p = `${rel}/${name}`;
+      const p = rel ? `${rel}/${name}` : name;
       if (deep) { try { if (lstatSync(join(repoRoot, p)).isDirectory()) { if (!walk(p, true)) return false; continue; } } catch { continue; } }
       if (!add(p)) return false;
     }
@@ -199,18 +199,37 @@ export function attribute(
 /** A lock held longer than the window hooks' own timeout (15 s) has no live holder. */
 const LOCK_STALE_MS = 15_000;
 
+/** True when the holder named in a lock file (`pid:time:nonce`) is dead or older than LOCK_STALE_MS. */
 const holderGone = (content: string): boolean => {
   const [pid, at] = content.split(':').map(Number);
-  if (Number.isFinite(at) && Date.now() - at > LOCK_STALE_MS) return true;
-  if (!Number.isInteger(pid) || pid <= 0) return true;
+  // Lock files are created complete (createExclusive), so unparseable content is not a half-written lock.
+  if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(at)) return true;
+  if (Date.now() - at > LOCK_STALE_MS) return true;
   try { process.kill(pid, 0); return false; } catch (e: any) { return e?.code === 'ESRCH'; } // any: signal error, code only
 };
 
 /**
- * Takes `<guard>.lock` (an O_EXCL create holding pid:time:nonce) without waiting. A lock whose
+ * Creates `path` holding `token`, only if it does not exist (false then). The content is written
+ * to a private file first and hard-linked into place, so no reader ever sees an empty lock.
+ */
+function createExclusive(path: string, token: string): boolean {
+  const tmp = `${path}.${token.replace(/:/g, '-')}.new`;
+  try {
+    writeFileSync(tmp, token, { flag: 'wx', mode: 0o600 });
+    linkSync(tmp, path);
+    return true;
+  } catch (e: any) { // any: fs error, code only
+    if (e?.code === 'EEXIST') return false;
+    throw e;
+  } finally { rmSync(tmp, { force: true }); }
+}
+
+/**
+ * Takes `<guard>.lock` (an exclusive create holding pid:time:nonce) without waiting. A lock whose
  * holder is dead or older than LOCK_STALE_MS is broken only by the one process that creates
- * `<lock>.break` (O_EXCL): it checks the lock still holds what it judged stale, then renames its
- * own lock file into place, so the lock path is never empty and two breakers cannot both win.
+ * `<lock>.break` (exclusive too): it checks the lock still holds what it judged stale, then
+ * renames its own lock file into place, so the lock path is never empty and two breakers cannot
+ * both win.
  *
  * shortcut: a `.break` left by a breaker killed mid-break is removed once stale, and that event
  * counts as missed; removing it while another breaker starts could let two break at once. It needs
@@ -218,14 +237,12 @@ const holderGone = (content: string): boolean => {
  * before saving (guardEvent) is the backstop.
  */
 export function takeLock(lock: string, token: string): boolean {
-  try { writeFileSync(lock, token, { flag: 'wx', mode: 0o600 }); return true; } catch (e: any) { // any: fs error, code only
-    if (e?.code !== 'EEXIST') throw e;
-  }
+  if (createExclusive(lock, token)) return true;
   let held: string;
   try { held = readFileSync(lock, 'utf8'); } catch { return false; }
   if (!holderGone(held)) return false;
   const brk = `${lock}.break`;
-  try { writeFileSync(brk, token, { flag: 'wx', mode: 0o600 }); } catch {
+  if (!createExclusive(brk, token)) {
     try { if (holderGone(readFileSync(brk, 'utf8'))) rmSync(brk, { force: true }); } catch { /* gone */ }
     return false;
   }
@@ -246,9 +263,13 @@ function taint(repoRoot: string, session: string): void {
   writeFileSync(join(harnessDir(repoRoot), `${taintPrefix(session)}${process.pid}.${randomBytes(4).toString('hex')}`), '', { flag: 'wx', mode: 0o600 });
 }
 
+const listTaints = (repoRoot: string, session: string): string[] => {
+  try { return readdirSync(harnessDir(repoRoot)).filter((n) => n.startsWith(taintPrefix(session))); } catch { return []; }
+};
+const hasTaints = (repoRoot: string, session: string) => listTaints(repoRoot, session).length > 0;
+
 function takeTaints(repoRoot: string, session: string): boolean {
-  let names: string[] = [];
-  try { names = readdirSync(harnessDir(repoRoot)).filter((n) => n.startsWith(taintPrefix(session))); } catch { return false; }
+  const names = listTaints(repoRoot, session);
   for (const n of names) rmSync(join(harnessDir(repoRoot), n), { force: true });
   return names.length > 0;
 }
@@ -302,12 +323,23 @@ export function recordWindow(repoRoot: string, session: string | null, event: Gu
   }
 }
 
-/** The given guarded paths that the person changed and that still hold exactly what they left. */
-export function personsChanges(repoRoot: string, session: string, paths: string[]): Set<string> {
+/**
+ * The given guarded paths that the person changed and that still hold exactly what they left.
+ * With `ownToolId` (Claude Code's push check, whose `pre-tool` hook runs in parallel and may not
+ * have folded yet), the gap since the last snapshot is folded here too, in memory only, with that
+ * call's own window set aside: the same result the `pre` event gives, without waiting for its lock.
+ */
+export function personsChanges(repoRoot: string, session: string, paths: string[], ownToolId?: string | null, nowMs = Date.now()): Set<string> {
   const g = paths.length ? loadGuard(repoRoot, session) : null;
   if (!g) return new Set();
-  const { hashes: now } = tamperHashes(repoRoot, g);
-  return new Set(paths.filter((p) => p in g.person && !g.agent[p] && (now[p] ?? null) === g.person[p]));
+  const snap = tamperHashes(repoRoot, g);
+  let { person, agent } = g;
+  if (ownToolId) {
+    const fresh = (t: number) => nowMs - t < WINDOW_TTL_MS;
+    const open = g.anon.some(fresh) || Object.entries(g.windows).some(([id, t]) => id !== ownToolId && fresh(t));
+    ({ person, agent } = attribute(g, snap.hashes, 'pre', open || hasTaints(repoRoot, session), snap.complete));
+  }
+  return new Set(paths.filter((p) => p in person && !agent[p] && (snap.hashes[p] ?? null) === person[p]));
 }
 
 export function deleteGuard(repoRoot: string, session: string): void {
