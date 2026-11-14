@@ -73,7 +73,7 @@ Known limits in 0.1: one repository per window (the first workspace folder insid
 
 ## Releasing
 
-For maintainers. `.github/workflows/editor-extension-release.yml` runs on tags `ext-v*`: it checks the tag against `package.json`, runs the tests, packages the `.vsix` and creates a GitHub release with the `.vsix` and its `.sha256`. It passes `--latest=false`, so it does not take the Latest label from another release. While it is the repo's only release, GitHub still shows it as Latest.
+For maintainers. `.github/workflows/editor-extension-release.yml` runs on tags `ext-v*`: it checks the tag against `package.json`, runs the tests, packages the `.vsix` and creates a GitHub release with the `.vsix` and its `.sha256`. It passes `--latest=false`, so it does not take the Latest label from another release. While the editor extension's releases are the repo's only releases, GitHub still shows the newest as Latest.
 
 1. Bump `version` in `editor-extension/package.json` in a PR and merge it.
 2. Tag the merge commit and push the tag:

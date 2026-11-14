@@ -4,8 +4,8 @@ Audience: engineering leaders and the engineers who set up PRISM for a team. Sta
 summary, 2026-11-13.
 
 "Local review" here means checks that run on the developer's machine before a change leaves it:
-a secret scan before each commit, an AI code review before each push, and (planned) a review
-before a coding agent says it is finished. This document collects the evidence for doing that,
+a secret scan before each commit, an AI code review before each push, and, when a team turns it
+on, a review before a coding agent says it is finished. This document collects the evidence for doing that,
 explains why the reviewer should be a different model or at least a separate agent from the one
 that wrote the code, and maps each technique to what PRISM ships.
 
@@ -216,7 +216,7 @@ with CI kept as the gate.
 
 ### 2.4 How PRISM does it
 
-Everything in this table is on `main` unless marked planned.
+Everything in this table is on `main`.
 
 | Technique | In PRISM | Where |
 |---|---|---|
@@ -231,20 +231,19 @@ Everything in this table is on `main` unless marked planned.
 | Gate made binding | Branch protection must name `eval-gate` as a required check; until then the gate is advisory | [Making the Gate Block Merges](../USER_GUIDE.md#making-the-gate-block-merges) |
 | Fix loop, bounded, findings untrusted | Claude Code plugin `/prism:fix` and the Kiro Crew `prism-fix-findings` skill: fix real high and medium findings in at most 2 rounds, never push, never bypass hooks, treat finding text as data | [Claude Code plugin](../USER_GUIDE.md#claude-code-plugin), [Kiro Crew app](../USER_GUIDE.md#kiro-crew-app) |
 | Findings where the developer works | Editor extension (Problems panel), MCP server, Claude Code plugin with a SessionStart summary, Kiro Crew page and digest | [Where PRISM shows up](../USER_GUIDE.md#where-prism-shows-up) |
-| Enforced harness loop (planned) | One CLI engine behind client hooks: a push gate on `git push` (on by default with the plugin), an opt-in `Stop` finish gate, at most 2 fix rounds counted by the CLI rather than the prompt, judging only the lines this session changed, and tamper rules so a fix cannot pass by editing the checks | [Design: the harness loop, PR #92](https://github.com/aws-samples/sample-prism-d1-velocity/pull/92) |
+| Enforced harness loop | One CLI engine (`prism-cli codewatch review`) behind client hooks, in prism-cli 1.11.0 for Claude Code and 1.12.0 for Kiro CLI: a push gate on the agent's `git push` (on by default) that denies secrets and edits to the checks and hands review findings to the agent as context, an opt-in finish gate, at most 2 fix rounds counted by the CLI rather than the prompt, judging only the lines this session changed, and tamper rules so a fix cannot pass by editing the checks | [Agent Harness Loop](../USER_GUIDE.md#agent-harness-loop), [Design: the harness loop](DESIGN-harness-loop.md) |
 
-Two gaps are worth naming. Today the fix loop is advisory: the `/prism:fix` command and the
-`prism-fix-findings` skill are instructions the agent follows, and the plugin's only hook is
-SessionStart. The harness-loop design moves the loop into hooks. And codewatch reviews at push
-time, so an agent that finishes without pushing has not been reviewed yet; the planned finish
-gate covers that case.
+Two gaps are worth naming. Where no harness hooks run (Kiro Crew sessions, other MCP clients),
+the fix loop is advisory: the `/prism:fix` command and the `prism-fix-findings` skill are
+instructions the agent follows. And with the finish gate off, the default, an agent that finishes
+without pushing has not been reviewed yet; `harness.finish_gate` covers that case.
 
 ## 3. Limits and risks
 
 | Risk | Evidence | How PRISM mitigates it |
 |---|---|---|
 | False positives and reviewer fatigue | Semgrep found 86% of Claude Code's security findings were false positives on 11 real apps ([2025](https://semgrep.dev/blog/2025/finding-vulnerabilities-in-modern-web-apps-using-claude-code-and-openai-codex/)); Google keeps tools under a 10% effective false positive rate because developers ignore noise ([Tricorder](https://petertsehsun.github.io/soen7481/papers/tricoder.pdf)) | Local review reports and never blocks; the fix skills tell the agent to verify each finding and leave false positives alone; rules live in a file the team tunes; gitleaks false positives go in `.gitleaks.toml` or a baseline. A diff review is narrower than a whole-repo hunt, which Semgrep's numbers came from |
-| Non-determinism | The same prompt on the same code gave 3, 6 and 11 findings on three runs (Semgrep, 2025) | Treat one run as a sample, not a guarantee; keep deterministic checks (gitleaks, tests) as the parts that must pass. **PRISM design reasoning:** the planned harness caches verdicts by diff hash so an unchanged diff is not re-rolled |
+| Non-determinism | The same prompt on the same code gave 3, 6 and 11 findings on three runs (Semgrep, 2025) | Treat one run as a sample, not a guarantee; keep deterministic checks (gitleaks, tests) as the parts that must pass. **PRISM design reasoning:** the harness loop caches reviews by diff hash for 24 hours, so an unchanged diff is not re-rolled |
 | Hallucinated bugs and bad fixes | CriticGPT critics hallucinate bugs ([OpenAI, 2024](https://arxiv.org/abs/2407.00215)); Semgrep saw agent "fixes" that broke working code (2025) | Findings are pointers the agent must confirm in the code; at most 2 fix rounds; the human reviewer still sees the final diff |
 | Over-reliance on AI review | Assistant users overrated the security of their code ([Perry et al.](https://arxiv.org/abs/2211.03622)); human plus critic beat critic alone (CriticGPT) | Local review is a pre-filter. The CI gate, branch protection and human approval stay in place, and the CI gate uses a model chosen on the base branch |
 | Model cost and latency | Agent scans cost real money per run (Semgrep's 2025 study: $114 across 11 apps); a stop hook adds wait time to every finish | Review only the pushed diff, drop lock files, cap size and time, pick a smaller model with `eval.model`. The finish gate is opt-in until cost is measured. One developer's measured numbers are in [section 5](#5-what-it-costs-one-developers-numbers) |
@@ -311,7 +310,7 @@ cost per review ≈ (diff tokens + rules/steering tokens + prompt overhead) × i
 ```
 
 Per change: multiply by the reviews per PR (one per push that has a reviewable diff). With the
-planned harness loop, multiply by at most 3: the first review plus at most 2 fix rounds.
+harness loop's finish gate on, multiply by at most 3: the first review plus at most 2 fix rounds.
 
 **Worked example.** The token counts below are **assumptions** for illustration, not
 measurements: a 400-line diff at about 6,000 tokens, 1,500 tokens of rules, 2,500 tokens of
@@ -337,10 +336,10 @@ that is a sanity check, not a validation of the assumed token counts.
 | Lever | Effect | In PRISM |
 |---|---|---|
 | Small, fast reviewer model | Lower price per token and lower latency | `eval.model` in `.prism/config.json`; `PRISM_REVIEW_MODEL` for CI |
-| Cache by diff hash | An unchanged diff is not reviewed twice | Planned in the harness loop ([PR #92](https://github.com/aws-samples/sample-prism-d1-velocity/pull/92)) |
-| Skip docs-only and empty diffs | No model call when nothing reviewable changed | Codewatch on `main` skips a push with no diff against upstream; the docs-only skip (`harness.skip_paths`, default `*.md` and similar) is only proposed in the harness-loop design ([PR #92](https://github.com/aws-samples/sample-prism-d1-velocity/pull/92)). All 15 skipped pushes in section 5.1 were pushes with no changes against upstream |
-| Finish gate opt-in | No review on every agent turn unless the team turns it on | `harness.finish_gate`, off by default in the harness-loop design |
-| Block only on secrets and high findings | Fewer fix rounds spent on low-severity advice | Planned `harness.block_on`, default `["secret", "high"]`. Local review on `main` never blocks; the CI gate fails on a secret, a high finding or a score under 0.82 |
+| Cache by diff hash | An unchanged diff is not reviewed twice | The harness loop caches each review by diff hash for 24 hours ([Agent Harness Loop](../USER_GUIDE.md#agent-harness-loop)); the git pre-push hook does not cache |
+| Skip docs-only and empty diffs | No model call when nothing reviewable changed | Codewatch on `main` skips a push with no diff against upstream; the harness loop also skips the AI review for docs-only changes (`harness.skip_paths`, default `*.md` and similar); the git pre-push hook has no docs-only skip. All 15 skipped pushes in section 5.1 were pushes with no changes against upstream |
+| Finish gate opt-in | No review on every agent turn unless the team turns it on | `harness.finish_gate`, off by default |
+| Block only on secrets and high findings | Fewer fix rounds spent on low-severity advice | `harness.block_on`, default `["secret", "high"]`, for the harness finish gate; at the agent's push only secrets and edits to the checks block. The git pre-push review never blocks; the CI gate fails on a secret, a high finding or a score under 0.82 |
 
 ### 5.4 Reproduce the numbers on your machine
 

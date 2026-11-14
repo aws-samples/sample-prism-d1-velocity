@@ -1,4 +1,4 @@
-# PRISM plugin for Claude Code (v0.3, work in progress)
+# PRISM plugin for Claude Code (v0.3.1)
 
 Brings PRISM's local results into [Claude Code](https://code.claude.com/docs/en/overview): codewatch
 review findings, scan reports, AI spend and the setup checklist. It reads the same local data as
@@ -107,14 +107,14 @@ The once-per-session marker is an empty file under the plugin's data directory. 
 | Hook | What it does | Default |
 |---|---|---|
 | `SessionStart` | Records the session's baseline in `.prism/harness/<session>.json`: a snapshot of the working tree, taken without touching your index | always |
-| `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. A secret (also in any pushed commit), a failed secret scan or a change to the checks denies the push; review findings never do, they come back to Claude as context. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
+| `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. A secret (also in any pushed commit), a failed secret scan, a change to the checks or a push that does not say what it sends (`--all`, `--mirror`, several refspecs, a glob) denies the push; review findings never do, they come back to Claude as context. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
 | `PreToolUse` on Bash, `if: "Bash(*git*config*)"`, `"Bash(*git*-c*)"`, and (0.3.1) `"Bash(*git*ref*)"`, `"Bash(*git*remote*)"`, `"Bash(*git*fetch*)"`, `"Bash(*git*pull*)"`, `"Bash(*git*branch*)"`, `"Bash(*git*tag*)"`, `"Bash(*git*checkout*)"`, `"Bash(*git*switch*)"` | The same bypass check, with no review: `git config` and `git -c` hook changes, and commands that move a remote-tracking ref or the branch's upstream (`git update-ref refs/remotes/...`, `git fetch . HEAD:refs/remotes/origin/main`, `git branch -f origin/main`, `git branch -u ...`), which the push check compares the push against | on |
 | `Stop`, `SubagentStop` | Finish gate: `fix` keeps Claude working with the findings (`decision: "block"`), at most 2 rounds | off |
 | `SessionEnd` | Deletes the session's state file | always |
 
 What blocks a push: only secrets, in the changed lines or in any commit the push would send, plus a
-secret scan that failed or did not finish and changes to the checks themselves (gitleaks config,
-`gitleaks:allow`, hook or PRISM config). Review findings, high ones included, never deny a push:
+secret scan that failed or did not finish, changes to the checks themselves (gitleaks config,
+`gitleaks:allow`, hook or PRISM config), and a push that does not say what it sends. Review findings, high ones included, never deny a push:
 you get a message listing them and Claude gets them as context for a follow-up. The finish gate,
 when on, blocks on secrets and high findings on lines Claude changed (`harness.block_on`). When the
 reviewer is missing or fails, the gate fails open with a warning; the git pre-push review and the
@@ -259,7 +259,8 @@ claude-plugin/
   .claude-plugin/plugin.json        manifest
   .mcp.json                         MCP server "prism" -> ${PRISM_CLI:-prism-cli} mcp
   hooks/hooks.json                  SessionStart -> session-start.mjs; SessionStart, Stop, SubagentStop,
-                                    PreToolUse (Bash: git push, git config, git -c), SessionEnd -> harness-hook.mjs
+                                    PreToolUse (Bash: git push, and the git config, -c, ref, remote, fetch,
+                                    pull, branch, tag, checkout and switch bypass checks), SessionEnd -> harness-hook.mjs
   scripts/session-start.mjs
   scripts/harness-hook.mjs          passes hook JSON to prism-cli codewatch hook --client claude
   skills/<name>/SKILL.md            prism, findings, report, fix, review, spend, dashboard

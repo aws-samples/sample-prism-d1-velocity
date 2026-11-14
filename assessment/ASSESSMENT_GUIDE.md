@@ -1182,7 +1182,7 @@ Thresholds:
 
 ## Part 6: Report Generation
 
-The `reports/report-generator.ts` produces the customer-facing assessment report in three formats.
+The report generator in `prism-cli assessment web` produces the customer-facing assessment report as an HTML page.
 
 ### Report Sections
 
@@ -1220,7 +1220,7 @@ The markdown report template is at `reports/templates/assessment-report.md`. The
 ### Step 1: Scan
 
 ```bash
-npx ts-node src/index.ts --repo /path/to/arcline-repo --verbose
+prism-cli assessment run --repo /path/to/arcline-repo --verbose
 ```
 
 Results:
@@ -1288,26 +1288,8 @@ Generated PDF includes radar chart showing strengths (Commit Hygiene, Tooling) a
 
 ```bash
 # 1. Scan
-cd assessment/scanner && npx ts-node src/index.ts --repo /path/to/repo --output json --output-file ../reports/scan.json
+prism-cli assessment run --repo /path/to/repo --output json --output-file scan.json
 
-# 2. Interview (manual — use the guide and scoring sheet above)
-
-# 3. Compute + Route
-cd assessment && npx ts-node -e "
-  const { computeAssessment } = require('./scoring/scoring-model');
-  const { routeOnboarding } = require('./onboarding/onboarding-router');
-  const result = computeAssessment({ scannerScore: 52, interviewScore: 62, orgReadiness: { executiveSponsor: true, budgetAllocated: true, dedicatedOwner: true, awsRelationship: false, teamSizeAppropriate: true } });
-  console.log(result);
-  const plan = routeOnboarding(result, { name: 'Arcline Health', teamSize: 14, fundingStage: 'Series B' });
-  console.log(plan);
-"
-
-# 4. Generate report
-cd assessment/reports && npx ts-node -e "
-  const { generateReport } = require('./report-generator');
-  // ... pass full assessment data
-"
-
-# 5. Generate PDF
-bash generate-pdfs.sh
+# 2-4. Interview, compute, route and generate the report: import scan.json in the web UI
+prism-cli assessment web
 ```

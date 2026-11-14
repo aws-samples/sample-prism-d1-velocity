@@ -180,7 +180,7 @@ This guide is for engineering leaders (VPs, Directors, CTOs) and the Solutions A
 - **Team Velocity (CloudWatch):** `https://REGION.console.aws.amazon.com/cloudwatch/home?region=REGION#dashboards:name=PRISM-D1-TeamVelocity`
 - **Executive Readout (CloudWatch):** `https://REGION.console.aws.amazon.com/cloudwatch/home?region=REGION#dashboards:name=PRISM-D1-ExecutiveReadout`
 
-*This readout was generated using the PRISM D1 Velocity metrics platform. Data sourced from CloudWatch (`PRISM/D1` namespace) and Timestream (`prism_d1_velocity` database).*
+*This readout was generated using the PRISM D1 Velocity metrics platform. Data sourced from CloudWatch (`PRISM/D1` namespace) and the DynamoDB events table and attribution store.*
 
 *Formatting guidance: Use Green/Amber/Red text or cell background in the final version (Google Slides, PowerPoint, or Notion). Replace all bracketed placeholders with actual values from the dashboards.*
 
@@ -514,4 +514,4 @@ Use the conservative estimate as your "floor" when presenting. If the floor is s
 
 ---
 
-*This guide is part of the PRISM D1 Velocity metrics platform. All input metrics are sourced from the `PRISM/D1` CloudWatch namespace and Timestream database. Update input variables quarterly or when team structure changes significantly.*
+*This guide is part of the PRISM D1 Velocity metrics platform. All input metrics are sourced from the `PRISM/D1` CloudWatch namespace and the DynamoDB events table and attribution store. Update input variables quarterly or when team structure changes significantly.*
