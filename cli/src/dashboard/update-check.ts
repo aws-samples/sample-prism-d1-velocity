@@ -39,13 +39,34 @@ export function updateCachePath(home: string): string {
 /** Registry answer: the latest version and its publish time. Injected in tests. */
 export type RegistryFetch = () => Promise<{ latest: string; publishedAt: string | null }>;
 
+/**
+ * The response body as text, read chunk by chunk with a running byte count;
+ * past `max` bytes the read is cancelled and this throws, so an oversized
+ * answer (with or without a content-length) is never held in full.
+ */
+export async function readCapped(res: Response, max: number): Promise<string> {
+  if (Number(res.headers.get('content-length') || 0) > max) throw new Error('registry answer too large');
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > max) {
+      await reader.cancel().catch(() => { /* the stream is dropped either way */ });
+      throw new Error('registry answer too large');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export const realRegistryFetch: RegistryFetch = async () => {
   const res = await fetch(REGISTRY_URL, { signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS), headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  if (Number(res.headers.get('content-length') || 0) > MAX_REGISTRY_BYTES) throw new Error('registry answer too large');
-  const text = await res.text();
-  if (text.length > MAX_REGISTRY_BYTES) throw new Error('registry answer too large');
-  const doc = JSON.parse(text);
+  const doc = JSON.parse(await readCapped(res, MAX_REGISTRY_BYTES));
   const latest = doc?.['dist-tags']?.latest;
   if (typeof latest !== 'string' || !/^\d+\.\d+\.\d+/.test(latest)) throw new Error('no latest version in the registry answer');
   const t = doc?.time?.[latest];

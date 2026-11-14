@@ -338,6 +338,8 @@ const projectName = (p) => /^workspace-member-./.test(txt(p.name)) ? 'crew: ' + 
 
 const isoDay = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 const HEAT_WEEKS = 12;
+/** Shades for days with spend (CSS .l1 to .l4). */
+const HEAT_LEVELS = 4;
 
 /**
  * Spend per day, HEAT_WEEKS weeks to today, a column per week (Monday on top).
@@ -358,7 +360,8 @@ function heatmap(u) {
   for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const k = isoDay(d), c = cost.get(k);
     if (!known(k)) { grid.append(el('i', { class: 'nd', title: k + ': no data' })); continue; }
-    const lvl = !c ? 0 : Math.min(4, 1 + Math.floor((c / max) * 3.999));
+    // Levels 1..HEAT_LEVELS split (0, max] evenly; the busiest day is the top level.
+    const lvl = !c ? 0 : Math.min(HEAT_LEVELS, Math.ceil((c / max) * HEAT_LEVELS));
     grid.append(el('i', { class: lvl ? 'l' + lvl : '', title: k + ': ' + (c ? money(c, u.currency) : 'no usage') }));
   }
   return el('div', {}, grid, el('div', { class: 'heat-legend' }, 'less ', el('i'), el('i', { class: 'l1' }), el('i', { class: 'l2' }), el('i', { class: 'l3' }), el('i', { class: 'l4' }), ' more', el('i', { class: 'nd' }), ' no data'));

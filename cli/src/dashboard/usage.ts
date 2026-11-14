@@ -54,7 +54,8 @@ export interface UsagePanel {
   fullView: string;
 }
 
-export interface PriorDays { from: string; to: string; daily: { date: string; cost: number }[] }
+/** `day`: the local date it was exported, so a copy is reused for that day only (late-recorded usage shows up the next day). */
+export interface PriorDays { from: string; to: string; day: string; daily: { date: string; cost: number }[] }
 
 export interface CodeburnStats {
   calls: number;
@@ -153,10 +154,10 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
   const from = `${to.slice(0, 8)}01`;
   const failed = (e: any) => emptyUsage('error', `codeburn export failed: ${String(e?.message || e).split('\n')[0].slice(0, 200)}`);
   const badSchema = (j: any) => emptyUsage('error', `unrecognised codeburn export schema: ${String(j?.schema).slice(0, 40)}`);
-  // The weeks before this month do not change during the day: a cached copy for the same range is reused.
+  // The weeks before this month are exported at most once a day: a copy from today for the same range is reused.
   const range = priorRange(now);
-  const reuse = range && opts.prior && opts.prior.from === range.from && opts.prior.to === range.to ? opts.prior : null;
-  const priorP = range && !reuse ? collectPrior(exporter, range) : Promise.resolve(reuse);
+  const reuse = range && opts.prior && opts.prior.from === range.from && opts.prior.to === range.to && opts.prior.day === to ? opts.prior : null;
+  const priorP = range && !reuse ? collectPrior(exporter, range, to) : Promise.resolve(reuse);
   let month: any;
   try { month = await exporter(['--from', from, '--to', to]); } catch (e) { return failed(e); }
   if (!isExport(month)) return badSchema(month);
@@ -223,7 +224,7 @@ export function priorRange(now: Date): { from: string; to: string } | null {
 }
 
 /** Spend per day in `range`; null when the export fails (the page then shows those days as unknown). */
-async function collectPrior(exporter: CodeburnExport, range: { from: string; to: string }): Promise<PriorDays | null> {
+async function collectPrior(exporter: CodeburnExport, range: { from: string; to: string }, day: string): Promise<PriorDays | null> {
   try {
     const j = await exporter(['--from', range.from, '--to', range.to]);
     if (!isExport(j) || !Array.isArray(j?.periods?.[0]?.daily)) return null;
@@ -231,7 +232,7 @@ async function collectPrior(exporter: CodeburnExport, range: { from: string; to:
       .filter((r) => typeof r?.Date === 'string' && r.Date >= range.from && r.Date <= range.to)
       .map((r) => ({ date: r.Date as string, cost: num(r['Cost (USD)']) }))
       .sort((a, b) => a.date.localeCompare(b.date));
-    return { ...range, daily };
+    return { ...range, day, daily };
   } catch {
     return null;
   }

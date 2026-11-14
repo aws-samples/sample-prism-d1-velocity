@@ -10,7 +10,8 @@
  * Writes <dir>/home/src/<repo> git repos with codewatch hooks and results,
  * and <dir>/bin/codeburn, a stand-in that answers `codeburn export -f json`
  * with made-up spend. No real path, repo, account or figure is used. Dates are
- * relative to now, so the 30-day and 12-week views have data.
+ * relative to now, so the 30-day and 12-week views have data. The screenshots
+ * made from it are in assets/images/prism-cli/dashboard-*.png.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';

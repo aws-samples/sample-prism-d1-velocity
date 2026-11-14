@@ -15,7 +15,7 @@ import { makeResult, writeResult, type PrismResult } from '../src/codewatch/resu
 import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
 import { collectUsage, codeburnStats, heatmapStart, priorRange, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
 import { UsageCache, USAGE_CACHE_SCHEMA } from '../src/dashboard/usage-cache.js';
-import { UpdateCheck, UPDATE_CACHE_SCHEMA, UPDATE_CHECK_INTERVAL_MS, type RegistryFetch } from '../src/dashboard/update-check.js';
+import { readCapped, UpdateCheck, UPDATE_CACHE_SCHEMA, UPDATE_CHECK_INTERVAL_MS, type RegistryFetch } from '../src/dashboard/update-check.js';
 import { renderPage } from '../src/dashboard/page.js';
 import { FakeElement, runPage } from './page-dom.js';
 
@@ -70,6 +70,22 @@ test('update check: offline is silent, keeps the last known version and waits a 
   assert.equal(first.check.due(), false);
 });
 
+test('update check: the registry body is read with a running byte count and cut off past the cap, content-length or not', async () => {
+  const MB = 1024 * 1024;
+  let pulled = 0, cancelled = false;
+  /** A chunked body (no content-length): 1 MB chunks, forever. */
+  const endless = new ReadableStream<Uint8Array>({
+    pull(c) { pulled++; c.enqueue(new Uint8Array(MB)); },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(readCapped(new Response(endless), 5 * MB), /too large/);
+  assert.ok(cancelled, 'the read is cancelled');
+  assert.ok(pulled <= 7, `stops right after the cap (${pulled} chunks read)`);
+  const declared = new Response('{}', { headers: { 'content-length': String(6 * MB) } });
+  await assert.rejects(readCapped(declared, 5 * MB), /too large/, 'a declared size over the cap is refused before reading');
+  assert.equal(await readCapped(new Response('{"dist-tags":{"latest":"1.0.0"}}'), 5 * MB), '{"dist-tags":{"latest":"1.0.0"}}');
+});
+
 test('update check: PRISM_NO_UPDATE_CHECK=1 turns it off; same or older latest is no update; a clock moved back is due', async () => {
   const off = updates({ env: { PRISM_NO_UPDATE_CHECK: '1' } });
   assert.equal(off.check.due(), false);
@@ -110,12 +126,15 @@ test('usage: the heatmap starts on a Monday 12 weeks back; the weeks before this
   };
   const u = await collectUsage({ exporter, now });
   assert.deepEqual(seen.sort(), [['--from', '2026-08-17', '--to', '2026-10-31'], ['--from', '2026-11-01', '--to', '2026-11-14']]);
-  assert.deepEqual(u.prior, { from: '2026-08-17', to: '2026-10-31', daily: [{ date: '2026-10-02', cost: 3 }] }, 'rows outside the range are dropped');
+  assert.deepEqual(u.prior, { from: '2026-08-17', to: '2026-10-31', day: '2026-11-14', daily: [{ date: '2026-10-02', cost: 3 }] }, 'rows outside the range are dropped');
 
   seen.length = 0;
   const again = await collectUsage({ exporter, now, prior: u.prior });
-  assert.deepEqual(seen, [['--from', '2026-11-01', '--to', '2026-11-14']], 'same range: the cached weeks are reused');
+  assert.deepEqual(seen, [['--from', '2026-11-01', '--to', '2026-11-14']], 'same range, same day: the cached weeks are reused');
   assert.deepEqual(again.prior, u.prior);
+  seen.length = 0;
+  await collectUsage({ exporter, now: new Date(2026, 10, 15, 12), prior: u.prior });
+  assert.equal(seen.length, 2, 'the next day the weeks are exported again, same range or not');
 
   const failing: CodeburnExport = async (a) => { if (a[1] !== '2026-11-01') throw new Error('boom'); return exportOf([]); };
   const partial = await collectUsage({ exporter: failing, now });
@@ -136,7 +155,7 @@ test('usage: codeburn strip from the month export: calls, sessions, projects, su
 
 test('usage cache: a refresh hands the cached weeks to the collector', async () => {
   const file = join(tmp('uc'), 'usage.json');
-  const prior = { from: '2026-08-17', to: '2026-10-31', daily: [{ date: '2026-10-02', cost: 3 }] };
+  const prior = { from: '2026-08-17', to: '2026-10-31', day: '2026-11-13', daily: [{ date: '2026-10-02', cost: 3 }] };
   mkdirSync(join(file, '..'), { recursive: true });
   writeFileSync(file, JSON.stringify({ schema: USAGE_CACHE_SCHEMA, savedAt: 0, day: '2026-11-13', panel: { status: 'ok', prior } }));
   let got: unknown = 'not called';

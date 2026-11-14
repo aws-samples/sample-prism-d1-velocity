@@ -1198,7 +1198,7 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
 
 ### Settings View
 
-![The Settings view with demo data: vertical section tabs with count badges and green dots, scores for machine checks, repos with codewatch and agent hook installs, and the Needs you list with fix commands](docs/images/settings-1.13-overview.png)
+![The Settings view with demo data: vertical section tabs with count badges and green dots, scores for machine checks, repos with codewatch and agent hook installs, and the Needs you list with fix commands](assets/images/prism-cli/dashboard-settings-overview-dark.png)
 
 The **Settings** tab (`#settings`; the old `#setup` links still work) has the setup checklist with a
 **Run** or **Copy** button per item, in section tabs down the left (across the top on a narrow
@@ -1227,9 +1227,9 @@ and links straight to it as `#settings/<tab>`:
   Claude Code plugin and run `prism-cli enable kirocrew` after an update; and the versions of the
   plugin, the Kiro Crew app, gitleaks and codeburn.
 
-![The Agent hooks tab with demo data: kiro and claude, project and global, with Install and Remove buttons, and a Claude Code plugin 0.2.0 flagged as needing 0.3.0 or newer](docs/images/settings-1.13-agent-hooks.png)
+![The Agent hooks tab with demo data: kiro and claude, project and global, with Install and Remove buttons, and a Claude Code plugin 0.2.0 flagged as needing 0.3.0 or newer](assets/images/prism-cli/dashboard-settings-agent-hooks-dark.png)
 
-![The Updates tab with demo data: installed 1.13.0, latest 1.13.1 with its publish time, the Update prism-cli, Check now and Release notes controls, and the components table](docs/images/settings-1.13-updates.png)
+![The Updates tab with demo data: installed 1.13.0, latest 1.13.1 with its publish time, the Update prism-cli, Check now and Release notes controls, and the components table](assets/images/prism-cli/dashboard-settings-updates-dark.png)
 
 Every Run first shows the exact command in a confirm dialog. The page sends only an action id; the
 server maps it to a fixed argument list for this CLI's own binary (or for npm, for the update), runs
@@ -1289,7 +1289,7 @@ to scan somewhere else. The repo you started it in is listed first.
 
 ### Dashboard View
 
-![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, and the Get more from PRISM strip](docs/images/dashboard-1.13-dark.png)
+![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, and the Get more from PRISM strip](assets/images/prism-cli/dashboard-main-dark.png)
 
 **Summary cards.** The latest codewatch review in any repo (severity pills, or skipped / failed),
 spend today and this month, and **Settings warnings**: the checklist items that are missing or warn,
@@ -1346,7 +1346,7 @@ cache). The **Refresh** button also runs new codeburn exports.
 
 ### Repo View
 
-![The repo view for the demo repo checkout-service: four cards, findings over time, the newest reviews with report links and skip reasons, commits, setup, Security Agent and the open findings](docs/images/dashboard-1.13-repo.png)
+![The repo view for the demo repo checkout-service: four cards, findings over time, the newest reviews with report links and skip reasons, commits, setup, Security Agent and the open findings](assets/images/prism-cli/dashboard-repo-dark.png)
 
 `#repo/<id>` (open it from a Codewatch row; the browser's Back returns to the dashboard) shows one
 repo: cards for open findings, pre-push reviews in the last 30 days (and how many were skipped),
