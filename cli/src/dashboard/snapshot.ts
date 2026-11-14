@@ -31,6 +31,9 @@ export interface SnapshotOptions {
 
 export async function buildSnapshotHtml(o: SnapshotOptions): Promise<string> {
   const data = await buildPayload({ cwd: o.cwd, root: o.root, home: o.home, pathEnv: o.pathEnv, machineDeps: o.machineDeps, usage: o.usage, version: o.versionInfo });
+  // A static file cannot finish loading later: earlier weeks still pending here are unavailable, never "loading" forever.
+  const h = data.usage.history;
+  if (h?.status === 'pending') data.usage = { ...data.usage, history: { ...h, status: 'error', error: 'not loaded when this snapshot was written' } };
   const repos = data.repos.map((r) => ({ id: repoId(r.path), name: r.name, path: r.path }));
   // Only the action catalog is read (labels, commands, availability); nothing is started.
   const runner = new ActionRunner({

@@ -8,7 +8,7 @@
  * an earlier local day is ignored, since its "today" is no longer today.
  */
 import { join } from 'node:path';
-import { localDate, type PriorDays, type UsagePanel } from './usage.js';
+import { localDate, type HistoryResult, type PriorDays, type UsagePanel } from './usage.js';
 import { readJson, writePrivateJson } from '../utils/private-json.js';
 
 export const USAGE_CACHE_SCHEMA = 'prism.usage-cache.v1';
@@ -33,6 +33,12 @@ export interface UsageCacheDeps {
   file: string;
   /** Runs the codeburn exports (collectUsage); `prior` is the cached copy of the weeks before this month, for reuse. */
   collect: (prior?: PriorDays | null) => Promise<UsagePanel>;
+  /**
+   * Runs the earlier weeks' export (collectHistory). When set, a panel that
+   * comes back with history pending is cached at once and this runs after it,
+   * merging its result into the cached panel.
+   */
+  collectHistory?: () => Promise<HistoryResult>;
   now?: () => Date;
   ttlMs?: number;
 }
@@ -46,6 +52,8 @@ export interface UsageResult {
 
 export class UsageCache {
   private refreshing: Promise<UsagePanel> | null = null;
+  /** The running earlier-weeks export, if any. */
+  private history: Promise<void> | null = null;
   private lastError: string | null = null;
   /** The last refresh's result when it was a failure; kept in memory only, never written. */
   private lastFailure: UsagePanel | null = null;
@@ -76,6 +84,42 @@ export class UsageCache {
     return p && typeof p.from === 'string' && typeof p.to === 'string' && Array.isArray(p.daily) ? p : null;
   }
 
+  private write(panel: UsagePanel, savedAt = this.now().getTime()): void {
+    try {
+      writePrivateJson(this.d.file, { schema: USAGE_CACHE_SCHEMA, savedAt, day: localDate(this.now()), panel });
+    } catch (e: any) {
+      process.stderr.write(`prism dashboard: could not write the usage cache: ${e?.message || e}\n`);
+    }
+  }
+
+  /**
+   * Starts the earlier weeks' export for a cached panel whose history is
+   * pending; one at a time. Its result (ready or error) is merged into the
+   * cached panel as it is then, so a month refresh in between is kept.
+   */
+  private startHistory(): void {
+    if (this.history || !this.d.collectHistory) return;
+    this.history = (async () => {
+      let r: HistoryResult;
+      try { r = await this.d.collectHistory!(); } catch (e: any) { r = { prior: null, history: { status: 'error', from: '', to: '', error: String(e?.message || e).split('\n')[0].slice(0, 120) } }; }
+      const c = readJson(this.d.file);
+      if (!c || c.schema !== USAGE_CACHE_SCHEMA || c.day !== localDate(this.now()) || !c.panel) return;
+      this.write({ ...c.panel, prior: r.prior, history: { ...c.panel.history, ...r.history } }, c.savedAt);
+    })().finally(() => { this.history = null; });
+  }
+
+  /** Resolves when no earlier-weeks export is running (at once when none is). */
+  historyDone(): Promise<void> {
+    return this.history ?? Promise.resolve();
+  }
+
+  /** The panel once the running refresh and earlier-weeks export have finished: what a one-shot output (--json, --snapshot) should show. */
+  async settled(): Promise<UsagePanel | null> {
+    if (this.refreshing) await this.refreshing.catch(() => null);
+    await this.historyDone();
+    return this.current();
+  }
+
   /** Runs the exports now; one at a time, so concurrent callers share the same run. Writes only real data. */
   refresh(): Promise<UsagePanel> {
     if (!this.refreshing) {
@@ -84,11 +128,8 @@ export class UsageCache {
         if (cacheable(u)) {
           this.lastError = null;
           this.lastFailure = null;
-          try {
-            writePrivateJson(this.d.file, { schema: USAGE_CACHE_SCHEMA, savedAt: this.now().getTime(), day: localDate(this.now()), panel: u });
-          } catch (e: any) {
-            process.stderr.write(`prism dashboard: could not write the usage cache: ${e?.message || e}\n`);
-          }
+          this.write(u);
+          if (u.history?.status === 'pending') this.startHistory();
         } else {
           this.lastError = u.message || u.status;
           this.lastFailure = u;
@@ -107,6 +148,8 @@ export class UsageCache {
     if (!opts.fresh) {
       const hit = this.peek();
       if (hit) {
+        // A pending history from another process or an earlier run: export it here.
+        if (hit.history?.status === 'pending') this.startHistory();
         const refresh = hit.stale ? this.refresh().catch((e) => { this.lastError = String(e?.message || e); return hit; }) : null;
         return { usage: hit, cacheHit: true, refresh };
       }
