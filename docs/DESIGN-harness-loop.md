@@ -978,8 +978,8 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
 - **Races and limits.** Claude Code runs parallel tool calls and subagents, so windows with a
   `tool_use_id` are tracked per id and stay open until each closes; one that never closes stops
   counting after 30 minutes (its changes stay the agent's). Kiro sends no id, so one window
-  flag is used. Claude Code's parallel `pre-tool` and `pre-push` for one Bash call fold the same
-  changes, so the saved record is the same whichever writes last. A snapshot cut off at 500
+  flag is used. Hook processes for parallel calls serialize on the guard record's lock, so no
+  window is lost to a concurrent write. A snapshot cut off at 500
   guarded files attributes nothing to the person; an unreadable guarded file gets a fixed
   fingerprint rather than looking deleted; files over 1 MB are fingerprinted by size and mtime,
   symlinks by target. A failed record is reported on stderr and leaves changes the agent's. With
@@ -990,8 +990,9 @@ mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
   change the agent's.
 - **What is attributed.** Only paths on the tamper list. Added `gitleaks:allow` lines in other
   files, and edits to ordinary files, stay session work as before. A guarded file is the person's
-  only while it holds exactly what they left; a later change inside a window makes it tamper
-  again. The finish and push checks name the files they did not count, as a warning.
+  only while it holds exactly what they left, and never once the agent changed it inside a window
+  this session (a later edit by the person does not hide the agent's change). Hook processes for
+  parallel tool calls take a lock on the guard record (`.lock`, 2 s wait, stale after 10 s). The finish and push checks name the files they did not count, as a warning.
 - **Tests.** The person edits `.prism/config.json` between tool calls (and before the first one):
   no tamper. Inside a window, after a missing `PostToolUse`, between the last `PostToolUse` and
   `Stop`, an agent edit after the person's, and with no guard record: tamper. A secret the person

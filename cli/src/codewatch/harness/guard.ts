@@ -16,8 +16,8 @@
  *
  * The finish and push checks never fold anything themselves, so a change
  * after the last PostToolUse counts as the agent's. A guarded file is the
- * person's only while it still holds exactly the content they left; any later
- * change, by anyone inside a window, makes it session tamper again. Only tamper
+ * person's only while it still holds exactly the content they left, and never
+ * once the agent changed it inside a window during this session. Only tamper
  * attribution uses this: secrets in session lines block whoever wrote them.
  *
  * shortcut: an agent that edits a guarded file from a detached background
@@ -25,7 +25,7 @@
  * non-goal (section 1); the push-time secret scan and the CI gate still apply.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureHarnessDir, harnessDir } from './state.js';
 
@@ -105,6 +105,8 @@ export interface Guard {
   hashes: Record<string, string>;
   /** Guarded files the person changed, with the content they left (null: they deleted it). */
   person: Record<string, string | null>;
+  /** Guarded files that changed while a window was open: never the person's for the rest of the session. */
+  agent: Record<string, true>;
 }
 
 export const guardPath = (repoRoot: string, session: string) => join(harnessDir(repoRoot), `${session}.guard.json`);
@@ -119,7 +121,9 @@ export function loadGuard(repoRoot: string, session: string): Guard | null {
   if (!v || v.version !== 1 || typeof v.open !== 'boolean' || !isHashMap(v.hashes, false) || !isHashMap(v.person, true)) return null;
   const windows: Record<string, number> = {};
   if (v.windows && typeof v.windows === 'object') for (const [id, t] of Object.entries(v.windows)) if (Number.isFinite(t)) windows[id] = t as number;
-  return { version: 1, open: v.open, windows, hashes: v.hashes as Record<string, string>, person: v.person };
+  const agent: Record<string, true> = {};
+  if (v.agent && typeof v.agent === 'object') for (const k of Object.keys(v.agent)) agent[k] = true;
+  return { version: 1, open: v.open, windows, hashes: v.hashes as Record<string, string>, person: v.person, agent };
 }
 
 function saveGuard(repoRoot: string, session: string, g: Guard): void {
@@ -134,30 +138,56 @@ function saveGuard(repoRoot: string, session: string, g: Guard): void {
 
 export type GuardEvent = 'start' | 'pre' | 'post';
 
+/** Lock wait and stale age: hook processes for parallel tool calls write the same guard file. */
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 10_000;
+
+/** Runs `fn` holding `<guard>.lock` (an exclusive create). Throws when the lock cannot be had, which leaves changes the agent's. */
+function withLock<T>(repoRoot: string, session: string, fn: () => T): T {
+  ensureHarnessDir(repoRoot);
+  const lock = `${guardPath(repoRoot, session)}.lock`;
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try { writeFileSync(lock, String(process.pid), { flag: 'wx', mode: 0o600 }); break; } catch (e: any) { // any: fs error, code only
+      if (e?.code !== 'EEXIST') throw e;
+      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true }); } catch { /* gone already */ }
+      if (Date.now() > until) throw new Error('the tool window record is locked by another hook');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  try { return fn(); } finally { rmSync(lock, { force: true }); }
+}
+
 /**
- * Records one hook event (see the module comment). Errors are thrown; callers report them and go
- * on, which leaves changes the agent's. Claude Code runs a Bash call's pre-tool and pre-push hooks
- * in parallel, so two `pre` events can race: both fold the same changes into `person`, or the later
- * one sees the window already open and keeps that fold; either way the saved record is the same.
+ * Records one hook event (see the module comment) under a lock, since parallel tool calls run
+ * their hooks at the same time. Errors are thrown; callers report them and go on, which leaves
+ * changes the agent's.
  */
 export function guardEvent(repoRoot: string, session: string, event: GuardEvent, toolId: string | null = null, nowMs = Date.now()): void {
+  withLock(repoRoot, session, () => guardEventLocked(repoRoot, session, event, toolId, nowMs));
+}
+
+function guardEventLocked(repoRoot: string, session: string, event: GuardEvent, toolId: string | null, nowMs: number): void {
   if (event === 'start' && loadGuard(repoRoot, session)) return; // a resumed session keeps its record
   const { hashes: now, complete } = tamperHashes(repoRoot);
   const prev = event === 'start' ? null : loadGuard(repoRoot, session);
   const person = { ...(prev?.person ?? {}) };
+  const agent = { ...(prev?.agent ?? {}) };
   const anyOpen = !!prev && (prev.open || Object.keys(prev.windows).length > 0);
+  const changed = prev ? [...new Set([...Object.keys(prev.hashes), ...Object.keys(now)])].filter((p) => prev.hashes[p] !== now[p]) : [];
   // A cut-off snapshot cannot tell an unhashed file from a deleted one: attribute nothing then.
   if (event === 'pre' && prev && !anyOpen && complete) {
-    for (const p of new Set([...Object.keys(prev.hashes), ...Object.keys(now)])) {
-      if (prev.hashes[p] !== now[p]) person[p] = now[p] ?? null;
-    }
+    for (const p of changed) if (!agent[p]) person[p] = now[p] ?? null;
+  } else if (event === 'post' || anyOpen) {
+    // Changed inside a window: the agent's, and a later edit by the person does not hide it.
+    for (const p of changed) { agent[p] = true; delete person[p]; }
   }
   // Windows that never closed stop counting once stale; their changes were already kept the agent's above.
   const windows = Object.fromEntries(Object.entries(prev?.windows ?? {}).filter(([, t]) => nowMs - t < WINDOW_TTL_MS));
   let open = prev?.open ?? false;
   if (toolId) { if (event === 'pre') windows[toolId] = nowMs; else if (event === 'post') delete windows[toolId]; }
   else if (event !== 'start') open = event === 'pre';
-  saveGuard(repoRoot, session, { version: 1, open, windows, hashes: now, person });
+  saveGuard(repoRoot, session, { version: 1, open, windows, hashes: now, person, agent });
 }
 
 /** guardEvent for a hook: never throws; returns a one-line note for stderr when nothing could be recorded. */
@@ -174,7 +204,7 @@ export function personsChanges(repoRoot: string, session: string, paths: string[
   const g = paths.length ? loadGuard(repoRoot, session) : null;
   if (!g) return new Set();
   const { hashes: now } = tamperHashes(repoRoot);
-  return new Set(paths.filter((p) => p in g.person && (now[p] ?? null) === g.person[p]));
+  return new Set(paths.filter((p) => p in g.person && !g.agent[p] && (now[p] ?? null) === g.person[p]));
 }
 
 export const deleteGuard = (repoRoot: string, session: string) => rmSync(guardPath(repoRoot, session), { force: true });

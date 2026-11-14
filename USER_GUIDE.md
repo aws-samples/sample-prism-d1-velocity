@@ -1066,8 +1066,9 @@ work. The hooks around each agent tool call (`PreToolUse` and `PostToolUse`) rec
 guarded files: the gitleaks config, `.prism/config.json`, the review rules, the eval-gate
 workflows and hook files. A guarded file you change between the agent's tool calls is yours: it
 does not make the agent `stop` for tamper while it holds what you left. These still count as the
-agent's: a change during one of its tool calls, after a tool call that never finished, and after
-its last tool call before it finishes or pushes. Secrets are judged the same for everyone: a key
+agent's: a change during one of its tool calls (even if you edit that file afterwards), after a
+tool call that never finished, and after its last tool call before it finishes or pushes. Secrets
+are judged the same for everyone: a key
 you wrote still blocks the agent's push. (An agent that edited a guarded file from a background
 process between tool calls would be taken for you; the push-time secret scan and the CI gate
 still apply.) Claude Code gets the same rule, through hooks on `Write`, `Edit`, `MultiEdit`,

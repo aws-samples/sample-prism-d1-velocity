@@ -339,6 +339,7 @@ test('D6: changes inside a window, after an unclosed window, or after the last t
     ['PreToolUse with no PostToolUse', (r) => { agentTool(r, () => r.write(CONFIG, '{}\n'), false); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
     ['between the last PostToolUse and Stop', (r) => { agentTool(r, () => r.write('src/a.ts', 'x\n')); r.write(CONFIG, '{}\n'); }],
     ['the agent changes it again after the person', (r) => { r.write(CONFIG, '{}\n'); agentTool(r, () => r.write(CONFIG, '{ "x": 1 }\n')); }],
+    ['the person touches a file the agent changed', (r) => { agentTool(r, () => r.write(CONFIG, '{ "x": 1 }\n')); r.write(CONFIG, '{ "x": 1, "y": 2 }\n'); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
     ['no SessionStart record', (r) => { r.write(CONFIG, '{}\n'); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
   ];
   for (const [name, steps] of cases) {
