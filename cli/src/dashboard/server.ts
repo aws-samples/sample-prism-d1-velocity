@@ -9,7 +9,7 @@
  *   - the Host header must be 127.0.0.1:<port> or localhost:<port>, which
  *     defeats DNS rebinding (a rebound name arrives with its own Host);
  *   - GET for every read route; no CORS headers; strict CSP.
- *   - POST only for the Setup page's action routes (postApi), and each POST
+ *   - POST only for the Settings page's action routes (postApi), and each POST
  *     also needs: an Origin (or, without one, a Referer) of this server; the
  *     per-run anti-CSRF token embedded in the page, in the X-Prism-CSRF header;
  *     and Content-Type application/json with a body of at most 16 KB.

@@ -1,9 +1,11 @@
 /**
- * The Setup page's Run buttons: a fixed allowlist of action ids, each mapped
- * here (server side) to a fixed argv for this CLI's own binary.
+ * The Settings page's Run buttons: a fixed allowlist of action ids, each mapped
+ * here (server side) to a fixed argv for this CLI's own binary, or for npm in
+ * the one update action (`npm install -g @prism-d1/cli@latest`).
  *
  * Safety properties, enforced in start():
- *   - spawn(process.execPath, [cli entry, ...fixed args]) with shell:false and
+ *   - spawn(process.execPath, [cli entry, ...fixed args]) (or npm's path from
+ *     PATH with fixed args) with shell:false and
  *     stdin closed, so prompts take their no-terminal path and nothing is parsed
  *     by a shell;
  *   - the request names an action id and nothing else free-form: a repo is an
@@ -24,12 +26,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
-  | 'codeburn-remove' | 'codeburn-status' | 'aws-check' | 'team-info';
+  | 'codeburn-remove' | 'codeburn-status' | 'aws-check' | 'team-info'
+  | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
+  | 'agent-hooks-kiro-remove' | 'agent-hooks-kiro-global-remove' | 'agent-hooks-claude-remove' | 'agent-hooks-claude-global-remove'
+  | 'kirocrew-app' | 'update-cli';
 
 export interface ActionDef {
   label: string;
-  /** Fixed CLI arguments after the entry script. codeburn-team appends the validated URL. */
+  /** Fixed arguments: after this CLI's entry script, or after `npm` when program is npm. codeburn-team appends the validated URL. */
   args: readonly string[];
+  /** Runs npm (found on PATH) instead of this CLI. Not offered on Windows, where npm is a .cmd that needs a shell. */
+  program?: 'npm';
   /** Runs inside a repo picked from the scan list. */
   repo?: true;
   /** Takes the collector URL. */
@@ -40,10 +47,21 @@ export interface ActionDef {
   readOnlyAws?: true;
   /** Linux with a working `systemctl --user` only. */
   systemd?: true;
+  /** Installs software from the npm registry (shown in the confirm dialog). */
+  installs?: true;
   timeoutMs: number;
 }
 
+/** The package the update action installs. A fixed string: the page sends only the action id. */
+export const UPDATE_PACKAGE = '@prism-d1/cli@latest';
+
 const MIN = 60_000;
+/** enable agent-hooks for one client and scope; project scope runs in the repo the dashboard started in. */
+const hooks = (client: 'kiro' | 'claude', global: boolean, remove: boolean): ActionDef => ({
+  label: `${remove ? 'Remove' : 'Install'} the ${client} agent hooks (${global ? 'global' : 'this project'})`,
+  args: ['enable', 'agent-hooks', '--client', client, ...(global ? ['--global'] : []), ...(remove ? ['--uninstall'] : [])],
+  timeoutMs: MIN,
+});
 export const ACTIONS: Record<ActionId, ActionDef> = {
   'codewatch-repo': { label: 'Enable codewatch in this repo', args: ['enable', 'codewatch'], repo: true, timeoutMs: 2 * MIN },
   'codewatch-global': { label: 'Enable codewatch for every repo', args: ['enable', 'codewatch', '--global'], timeoutMs: 2 * MIN },
@@ -55,6 +73,17 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'codeburn-status': { label: 'codeburn status', args: ['enable', 'codeburn', '--status'], timeoutMs: MIN },
   'aws-check': { label: 'AWS account check (read-only)', args: ['aws', 'check'], readOnlyAws: true, timeoutMs: 10 * MIN },
   'team-info': { label: 'Team stack info (read-only)', args: ['team', 'info'], readOnlyAws: true, timeoutMs: 2 * MIN },
+  'agent-hooks-kiro': hooks('kiro', false, false),
+  'agent-hooks-kiro-global': hooks('kiro', true, false),
+  'agent-hooks-claude': hooks('claude', false, false),
+  'agent-hooks-claude-global': hooks('claude', true, false),
+  'agent-hooks-kiro-remove': hooks('kiro', false, true),
+  'agent-hooks-kiro-global-remove': hooks('kiro', true, true),
+  'agent-hooks-claude-remove': hooks('claude', false, true),
+  'agent-hooks-claude-global-remove': hooks('claude', true, true),
+  // --yes: there is no terminal to answer its prompt; the page's confirm dialog is the confirmation.
+  'kirocrew-app': { label: 'Install or update the PRISM Kiro Crew app', args: ['enable', 'kirocrew', '--yes'], timeoutMs: 5 * MIN },
+  'update-cli': { label: 'Update prism-cli from npm', args: ['i', '-g', UPDATE_PACKAGE], program: 'npm', installs: true, timeoutMs: 10 * MIN },
 };
 
 const isActionId = (x: unknown): x is ActionId => typeof x === 'string' && Object.prototype.hasOwnProperty.call(ACTIONS, x);
@@ -114,6 +143,8 @@ export interface RunnerDeps {
   home: string;
   repos(): Promise<ScanRepo[]>;
   systemdAvailable(): boolean;
+  /** npm on PATH, for the update action; null (or absent) when there is none. */
+  npmPath?: () => string | null;
   platform: NodeJS.Platform;
   spawn?: SpawnFn;
   now?: () => Date;
@@ -142,9 +173,9 @@ export interface ActionStatus {
 const MAX_OUTPUT = 256 * 1024;
 const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm']);
 
-/** `prism-cli <args>` as shown on the page. Arguments are fixed words or the validated https URL. */
-export function displayCommand(args: readonly string[]): string {
-  return ['prism-cli', ...args.map((a) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`))].join(' ');
+/** The command as shown on the page: `prism-cli <args>`, or `npm <args>`. Arguments are fixed words or the validated https URL. */
+export function displayCommand(args: readonly string[], program: ActionDef['program'] = undefined): string {
+  return [program ?? 'prism-cli', ...args.map((a) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`))].join(' ');
 }
 
 export function actionLogPath(home: string): string {
@@ -171,7 +202,9 @@ export class ActionRunner {
   }
 
   available(id: ActionId): boolean {
-    return !ACTIONS[id].systemd || (this.d.platform === 'linux' && this.d.systemdAvailable());
+    const a = ACTIONS[id];
+    if (a.program === 'npm') return this.d.platform !== 'win32' && !!this.d.npmPath?.();
+    return !a.systemd || (this.d.platform === 'linux' && this.d.systemdAvailable());
   }
 
   /** Validates the request, then starts the action. 202 with the command, else 4xx with the reason. */
@@ -204,7 +237,7 @@ export class ActionRunner {
     this.busy = true;
     const runId = ++this.seq;
     const st = this.cur = {
-      state: 'running' as const, runId, action: id, repo: repo?.name ?? null, command: displayCommand(args), cwd,
+      state: 'running' as const, runId, action: id, repo: repo?.name ?? null, command: displayCommand(args, def.program), cwd,
       buf: '', exitCode: null, timedOut: false, startedAt: now().toISOString(), finishedAt: null,
     } as ActionStatus & { buf: string };
     const add = (chunk: Buffer | string) => {
@@ -213,7 +246,9 @@ export class ActionRunner {
     };
     let child: ChildProcess;
     try {
-      child = (this.d.spawn ?? nodeSpawn)(this.d.execPath, [this.d.entry, ...args], {
+      // npm: its own path from PATH, argv only (no shell). Everything else: this CLI's binary.
+      const [file, argv] = def.program === 'npm' ? [this.d.npmPath!()!, args] : [this.d.execPath, [this.d.entry, ...args]];
+      child = (this.d.spawn ?? nodeSpawn)(file, argv, {
         cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
       });

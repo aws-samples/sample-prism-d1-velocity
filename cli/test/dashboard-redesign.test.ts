@@ -308,13 +308,13 @@ test('page: heatmap days neither export covered are drawn as no data, distinct f
   assert.ok(cells2.every((c) => c.getAttribute('class') !== 'nd' || /: no data$/.test(c.getAttribute('title') || '')));
 });
 
-test('page: the version pill is grey with the installed version, orange with the update, linking to the Setup update section', async () => {
+test('page: the version pill is grey with the installed version, orange with the update, linking to the Settings Updates tab', async () => {
   const { p } = await fixture();
   const up = await runPage([p]);
   const a = up.dom.byId.ver.querySelectorAll('a')[0];
   assert.equal(a.textContent, 'Update: 1.13.0 → 1.14.0');
   assert.equal(a.getAttribute('class'), 'verpill up');
-  assert.equal(a.getAttribute('href'), '#setup/updates');
+  assert.equal(a.getAttribute('href'), '#settings/updates');
   const current = JSON.parse(JSON.stringify(p)) as DashboardPayload;
   current.version = { installed: '1.13.0', latest: '1.13.0', publishedAt: null, update: false, checkedAt: null };
   const b = (await runPage([current])).dom.byId.ver.querySelectorAll('a')[0];

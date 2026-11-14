@@ -1,7 +1,7 @@
 /**
  * The PRISM Kiro Crew app (kirocrew-app/, bundled in dist/assets/kirocrew-app):
  * where kirocrew is, which app version is bundled, and the quick installed
- * version read that `prism-cli version` and the dashboard Setup tab use.
+ * version read that `prism-cli version` and the dashboard Settings view use.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -64,7 +64,7 @@ export interface KirocrewAppState {
   bundled: string | null;
 }
 
-/** null when kirocrew is not on this machine: then neither `version` nor the Setup tab mentions the app. */
+/** null when kirocrew is not on this machine: then neither `version` nor the Settings view mentions the app. */
 export function kirocrewAppState(o: { pathEnv?: string; home: string; env?: NodeJS.ProcessEnv; bundleDir?: string | null }): KirocrewAppState | null {
   if (!findKirocrew(o.pathEnv ?? process.env.PATH, o.home)) return null;
   const dir = o.bundleDir === undefined ? bundledAppDir() : o.bundleDir;

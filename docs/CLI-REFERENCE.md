@@ -8,7 +8,7 @@ Every command and option of prism-cli 1.13.0, exactly as `--help` prints it. For
 
 | Command | What it does |
 |---|---|
-| [`prism-cli dashboard`](#prism-cli-dashboard) | Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a Setup page that runs local setup steps. Read-only in AWS. |
+| [`prism-cli dashboard`](#prism-cli-dashboard) | Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a Settings page that runs local setup steps. Read-only in AWS. |
 | [`prism-cli mcp`](#prism-cli-mcp) | MCP server on stdio for Kiro, Claude Code and other MCP clients: read-only codewatch findings and reports, cached spend and the setup checklist, a static dashboard snapshot file, the live dashboard on 127.0.0.1 as a child process, and prism_review, which runs the harness review now and writes its result file. The MCP server itself opens no port; it exits when stdin closes, stopping that dashboard. |
 | [`prism-cli statusline`](#prism-cli-statusline) | Claude Code status line: reads Claude Code's status JSON on stdin and prints the latest codewatch review counts, spend today and this month, and the session's cost, lines, context and cache. Reads cached files only; set it up with prism-cli enable claude-code. |
 | [`prism-cli version`](#prism-cli-version) | Print the CLI version, check npm for a newer release, and warn about other prism-cli copies on PATH |
@@ -97,7 +97,7 @@ Options:
 
 Commands:
   dashboard [options]   Local web dashboard (127.0.0.1 only): codewatch
-                        results, codeburn usage, and a Setup page that runs
+                        results, codeburn usage, and a Settings page that runs
                         local setup steps. Read-only in AWS.
   mcp                   MCP server on stdio for Kiro, Claude Code and other MCP
                         clients: read-only codewatch findings and reports,
@@ -153,7 +153,7 @@ Guide: [Local Dashboard](../USER_GUIDE.md#local-dashboard)
 Usage: prism-cli dashboard [options]
 
 Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a
-Setup page that runs local setup steps. Read-only in AWS.
+Settings page that runs local setup steps. Read-only in AWS.
 
 Options:
   --json                 Print the dashboard data as JSON and exit (no server)

@@ -1,5 +1,6 @@
 /**
- * The Setup view and the theme toggle, as CSS and JS strings concatenated into
+ * The Settings view's shared parts (actions, confirm dialog, action drawer, the
+ * machine, usage sync and AWS sections) and the theme toggle, as CSS and JS strings concatenated into
  * page.ts's single document (same nonce, same el()/txt()/pill() helpers).
  *
  * Every value from the server is placed with textContent or an attribute.
@@ -69,27 +70,13 @@ export const SETUP_SCRIPT = `
 const CSRF = (document.querySelector('meta[name="prism-csrf"]') || {}).content || '';
 let SETUP = null, POLL = null, DIALOG = null, CHECK = null, URL_DRAFT = '';
 const OUT = { status: el('div', { class: 'srow-head' }), pre: el('pre', { class: 'out', 'aria-live': 'polite' }) };
-const ACTION_PANEL = el('section', { class: 'card wide', hidden: '' }, el('h2', {}, 'Action output'), OUT.status, OUT.pre,
+/** Action output: a drawer fixed to the bottom of the window, outside the redrawn Settings view, so a refresh keeps it. */
+const DRAWER_CLOSE = el('button', { type: 'button' }, 'Close');
+const ACTION_PANEL = el('div', { class: 'drawer', id: 'action-drawer', role: 'region', 'aria-label': 'Action output', hidden: '' },
+  el('div', { class: 'drawer-head' }, el('b', {}, 'Action output'), OUT.status, el('span', { class: 'spacer' }), DRAWER_CLOSE), OUT.pre,
   el('p', { class: 'note' }, 'Secrets are masked. Each run is logged to ~/.prism/logs/dashboard-actions.log (time, action, repo, exit code).'));
-
-/** #setup (or #setup/<section>), #repo/<16 hex>, else the dashboard. */
-function repoRoute() { const m = /^#repo\\/([0-9a-f]{16})$/.exec(location.hash); return m ? m[1] : null; }
-function currentView() { return /^#setup(\\/|$)/.test(location.hash) ? 'setup' : repoRoute() ? 'repo' : 'dashboard'; }
-function showView() {
-  const v = currentView();
-  document.getElementById('main').hidden = v !== 'dashboard';
-  document.getElementById('repo').hidden = v !== 'repo';
-  document.getElementById('setup').hidden = v !== 'setup';
-  if (v === 'repo') renderRepo(repoRoute());
-  for (const a of document.querySelectorAll('[data-view]')) {
-    if (a.getAttribute('data-view') === (v === 'repo' ? 'dashboard' : v)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
-  }
-  const section = /^#setup\\/([a-z]+)$/.exec(location.hash);
-  const target = section && document.getElementById('setup-' + section[1]);
-  if (target) target.scrollIntoView({ block: 'start' }); else if (typeof window.scrollTo === 'function') window.scrollTo(0, 0);
-}
-window.addEventListener('hashchange', showView);
-showView();
+DRAWER_CLOSE.addEventListener('click', () => { ACTION_PANEL.hidden = true; });
+document.body.append(ACTION_PANEL);
 
 /** GET, or POST JSON with the CSRF header. referrerPolicy same-origin so the browser sends this page's Origin. */
 async function api(path, body) {
@@ -173,7 +160,8 @@ function confirmRun(a, o) {
   const cancel = el('button', { type: 'button' }, 'Cancel');
   const kids = [el('h2', { id: 'confirm-title' }, a.label), el('p', {}, 'This will run:'), el('pre', { class: 'cmd' }, cmd),
     el('p', { class: 'fix' }, 'in ' + txt(o.where || (SETUP && SETUP.cwd) || '')),
-    el('p', { class: 'note' }, a.readOnlyAws ? 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.' : 'Changes setup on this machine only. No AWS calls.'),
+    el('p', { class: 'note' }, a.readOnlyAws ? 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.'
+      : a.installs ? 'Installs software from the npm registry on this machine. No AWS calls.' : 'Changes setup on this machine only. No AWS calls.'),
     el('p', { class: 'note' }, 'It runs without a terminal, so it cannot ask questions; it is stopped after ' + Math.max(1, Math.round(a.timeoutSec / 60)) + ' min.')];
   if (a.confirm) {
     const cb = el('input', { type: 'checkbox' });
@@ -201,7 +189,6 @@ async function startAction(a, o) {
   try { r = await api('/api/action', body); } catch (e) { r = { ok: false, json: { error: e.message } }; }
   if (!r.ok) { OUT.status.replaceChildren(pill('error', 'refused'), txt(r.json.error)); return; }
   showStatus(r.json);
-  ACTION_PANEL.scrollIntoView({ block: 'nearest' });
   poll();
 }
 
@@ -246,37 +233,7 @@ function machineSection(data) {
     }
     s.append(srow(pill(i.status), i.label, i.detail, ctl));
   }
-  s.append(el('p', { class: 'note' }, 'AWS credentials: see the AWS section.'));
-  return s;
-}
-
-const CW_PILL = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'skipped' };
-function reposSection(data) {
-  const s = el('section', { class: 'card wide' }, el('h2', {}, 'Repos'));
-  const recheck = el('button', { type: 'button', disabled: SNAPSHOT ? '' : null, title: SNAPSHOT ? 'Not in a static snapshot' : null }, 'Re-check status');
-  recheck.addEventListener('click', async () => { recheck.disabled = true; try { await api('/api/recheck'); } catch (e) { /* load() reports */ } await load(); });
-  s.append(el('div', { class: 'srow-ctl' }, recheck, el('span', { class: 'fix' }, 'Codewatch hooks and Security Agent setup per repo, from local files.')));
-  const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
-  if (sg) s.append(suggestionCallout(sg));
-  const ids = SETUP.repoIds || {}, cds = SETUP.repoCd || {}, cp = SETUP.copy || {};
-  const rowOf = (r) => {
-    const cw = el('div', {}, pill(CW_PILL[r.status] || 'missing', r.status === 'opted-out' ? 'opted out' : r.status + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
-      el('span', { class: 'fix' }, r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') + (r.reviewer && r.model ? ', model ' + txt(r.model) : '') : txt(r.detail)));
-    if ((r.status === 'missing' || r.status === 'warn') && ids[r.path]) cw.append(el('div', { class: 'srow-ctl' }, runButton('codewatch-repo', { repo: ids[r.path], where: r.path, label: 'Enable codewatch' })));
-    const sec = r.security || { status: 'missing' };
-    const sc = el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', sec.status === 'in-use' ? 'in use' : sec.status));
-    const cd = cds[r.path] ? cds[r.path] + ' && ' : '';
-    if (sec.status === 'missing') sc.append(copyOnly(sec.fix || cd + cp.enableSecurity, 'AWS'));
-    else sc.append(el('details', { class: 'copies' }, el('summary', {}, 'Security Agent commands (AWS, copy only)'),
-      [cp.codeReview, cp.threatModel, cp.pentest].map((c) => el('div', {}, copyButton(cd + c)))));
-    return [repoName(r), cw, sc];
-  };
-  const rows = data.overview.setup || [];
-  const shown = rows.filter((r) => !r.collapsed), hidden = rows.filter((r) => r.collapsed);
-  if (shown.length) s.append(table(['Repo', 'Codewatch', 'Security Agent'], shown.map(rowOf)));
-  else if (!hidden.length) s.append(el('p', { class: 'empty' }, 'No git repositories found under ' + txt(data.scope.root_display) + '.'));
-  if (hidden.length) s.append(el('details', { class: 'missing-group', 'data-key': 'setup-view:other' },
-    el('summary', {}, hidden.length + ' other repo' + (hidden.length === 1 ? '' : 's') + ': not set up'), table(['Repo', 'Codewatch', 'Security Agent'], hidden.map(rowOf))));
+  s.append(el('p', { class: 'note' }, 'AWS credentials: see the AWS tab.'));
   return s;
 }
 
@@ -307,13 +264,16 @@ function syncSection(data) {
 const STEP_PILL = { used: ['ok', 'used'], skipped: ['skipped', 'skipped'], 'not-set': ['info', 'not set'], 'n/a': ['skipped', 'n/a'] };
 function kv(pairs) { return el('dl', { class: 'kv' }, pairs.filter(Boolean).flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])); }
 
+/** An AWS account id as its last 4 digits; the full id is never put on the Settings page. */
+const maskAccount = (a) => { const v = txt(a); return v.length > 4 ? '••••' + v.slice(-4) : v; };
+
 function checkResult(r) {
   if (!r) return null;
   if (!r.ok) return el('div', {}, pill('error', 'refused'), ' ', txt(r.json.error));
   const j = r.json;
   if (j.ok) {
-    const m = j.matches === true ? pill('ok', 'matches the saved account') : j.matches === false ? pill('error', 'does not match saved account ' + txt(j.savedAccount)) : pill('info', 'no saved account');
-    return el('div', {}, pill('ok', 'credentials work'), kv([['Account', txt(j.account)], ['Caller', txt(j.arn)], ['Region', txt(j.region || 'not set')], ['Saved', m]]), el('p', { class: 'note' }, txt(j.note)));
+    const m = j.matches === true ? pill('ok', 'matches the saved account') : j.matches === false ? pill('error', 'does not match saved account ' + maskAccount(j.savedAccount)) : pill('info', 'no saved account');
+    return el('div', {}, pill('ok', 'credentials work'), kv([['Account', maskAccount(j.account)], ['Caller', txt(j.arn).replace(/:\\d{12}:/, (m) => ':' + maskAccount(m.slice(1, -1)) + ':')], ['Region', txt(j.region || 'not set')], ['Saved', m]]), el('p', { class: 'note' }, txt(j.note)));
   }
   return el('div', {}, pill('error', j.expired ? 'expired or invalid' : 'check failed'), ' ', el('span', {}, txt(j.error)),
     el('div', { class: 'help' }, 'Fixes:', el('ul', { class: 'help-steps' }, (j.fixes || []).map((f) => el('li', {}, /^(aws|prism-cli) /.test(f) ? copyButton(f) : txt(f))))));
@@ -332,7 +292,7 @@ function awsSection(a) {
   s.append(el('h3', {}, 'Saved aws connect'));
   if (a.saved) {
     const v = a.saved;
-    s.append(kv([['Account', el('span', {}, txt(v.account), v.alias ? el('span', { class: 'tag' }, txt(v.alias)) : null)], ['Profile', txt(v.profile) + (v.inUse ? '' : ' (not in use)')],
+    s.append(kv([['Account', el('span', { title: 'last 4 digits' }, maskAccount(v.account), v.alias ? el('span', { class: 'tag' }, txt(v.alias)) : null)], ['Profile', txt(v.profile) + (v.inUse ? '' : ' (not in use)')],
       ['Region', txt(v.region)], ['Verified', v.verifiedAt ? el('span', { title: when(v.verifiedAt) }, ago(v.verifiedAt)) : 'unknown'], ['File', txt(v.path) + ' (' + v.scope + ')'],
       ['Admin / org', 'not stored by aws connect (it prints them when it runs)']]));
   } else s.append(el('p', { class: 'empty-line' }, 'None saved. ', copyButton((SETUP.copy || {}).awsConnect)));
@@ -362,44 +322,6 @@ function awsSection(a) {
   return s;
 }
 
-/** Info (or warn) callout for the global install. */
-function suggestionCallout(sg) {
-  if (sg.style === 'warn') {
-    return el('div', { class: 'callout warn', role: 'note' },
-      el('strong', {}, sg.missing + " repos don't have codewatch."),
-      el('div', {}, 'Your global core.hooksPath is set to ', el('code', {}, txt(sg.currentHooksPath)), ', so the plain global install would refuse. Use ',
-        el('code', {}, sg.command), ': it saves that value and still runs its hooks after codewatch.'));
-  }
-  return el('div', { class: 'callout info', role: 'note' },
-    el('strong', {}, sg.missing + " repos don't have codewatch. Cover all of them at once: "), el('code', {}, sg.command),
-    el('div', { class: 'fix' }, 'Applies to every repo on this machine, including new clones. Repos can opt out with ', el('code', {}, 'git config prism.codewatch false'), '.'));
-}
-
-/** The update command. The page shows it; nothing updates by itself. */
-const UPDATE_CMD = 'npm i -g @prism-d1/cli@latest';
-
-/** Installed vs latest prism-cli, from the payload's version block (a daily npm registry check). */
-function updatesSection(v) {
-  const s = el('section', { class: 'card wide', id: 'setup-updates' }, el('h2', {}, 'Updates'));
-  if (!v) return s;
-  const state = v.update ? sevPill('medium', 'update available') : v.latest ? sevPill('ok', 'up to date') : sevPill('zero', 'not checked');
-  s.append(el('div', { class: 'srow-head' }, state, el('b', {}, 'prism-cli ' + txt(v.installed)),
-    v.latest ? el('span', { class: 'fix' }, 'latest on npm: ' + txt(v.latest) + (v.publishedAt ? ', published ' + when(v.publishedAt) : '')) : null));
-  s.append(el('p', { class: 'fix' }, v.checkedAt ? 'Checked ' + ago(v.checkedAt) + '. The dashboard asks the npm registry at most once a day; PRISM_NO_UPDATE_CHECK=1 turns it off.'
-    : 'Not checked yet. The dashboard asks the npm registry at most once a day and stays quiet when offline; PRISM_NO_UPDATE_CHECK=1 turns it off.'));
-  if (v.update) s.append(copyOnly(UPDATE_CMD, 'installs software'), el('p', { class: 'note' }, 'Then restart prism-cli dashboard.'));
-  return s;
-}
-
-async function renderSetup(data) {
-  try { const r = await api('/api/setup'); if (r.ok) SETUP = r.json; } catch (e) { /* keep the last good copy */ }
-  const root = document.getElementById('setup');
-  const openState = new Map([...root.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
-  root.replaceChildren();
-  if (!SETUP) { root.append(el('section', { class: 'card wide' }, pill('error'), ' could not load the setup data')); return; }
-  root.append(updatesSection(data.version), machineSection(data), syncSection(data), reposSection(data), awsSection(SETUP.aws || {}), ACTION_PANEL);
-  for (const d of root.querySelectorAll('details[data-key]')) { const k = d.getAttribute('data-key'); if (openState.has(k)) d.open = openState.get(k); }
-}
 // A reload while an action runs picks its output back up.
 api('/api/action/status').then((r) => { if (r.ok && r.json.state === 'running') { showStatus(r.json); poll(); } }).catch(() => {});
 `;

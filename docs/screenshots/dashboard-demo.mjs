@@ -3,7 +3,7 @@
  * A made-up machine for the local dashboard's docs screenshots and demo snapshots.
  *
  *   (cd cli && npm run build)
- *   node docs/screenshots/dashboard-demo.mjs <dir> [--update-available]
+ *   node docs/screenshots/dashboard-demo.mjs <dir> [--update-available] [--old-plugin]
  *   HOME=<dir>/home PATH=<dir>/bin:$PATH PRISM_NO_UPDATE_CHECK=1 \
  *     node cli/dist/bin/prism-cli.js dashboard --snapshot demo.html --root <dir>/home/src
  *
@@ -144,4 +144,9 @@ writeFileSync(join(bin, 'package.json'), '{"type":"commonjs"}');
 chmodSync(join(bin, 'codeburn'), 0o755);
 // gitleaks and kiro-cli on PATH, so the page has no "secret scanning is off" banner and names the reviewer.
 for (const tool of ['gitleaks', 'kiro-cli']) writeFileSync(join(bin, tool), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+// --old-plugin: a PRISM Claude Code plugin from before the harness hooks (0.2.0), for the Settings view's Agent hooks tab.
+if (process.argv.includes('--old-plugin')) {
+  mkdirSync(join(home, '.claude', 'plugins'), { recursive: true });
+  writeFileSync(join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'prism@prism-d1-velocity': [{ scope: 'user', version: '0.2.0' }] } }));
+}
 console.log(home);
