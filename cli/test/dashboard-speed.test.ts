@@ -44,7 +44,7 @@ const okPanel = (cost: number, at = '2026-11-05T10:00:00.000Z'): UsagePanel => (
 const monthFixture = () => JSON.parse(readFileSync(join(FIX, 'codeburn-export-month.json'), 'utf8'));
 
 /** The heatmap's weeks before November 2026-11-05, already collected: no export for them. */
-const PRIOR_NOV5 = { from: '2026-08-10', to: '2026-10-31', daily: [] };
+const PRIOR_NOV5 = { from: '2026-08-10', to: '2026-10-31', day: '2026-11-05', daily: [] };
 
 test('usage: one month export; today comes from its per-day rows', async () => {
   const seen: string[][] = [];

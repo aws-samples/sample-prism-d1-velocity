@@ -126,12 +126,15 @@ test('usage: the heatmap starts on a Monday 12 weeks back; the weeks before this
   };
   const u = await collectUsage({ exporter, now });
   assert.deepEqual(seen.sort(), [['--from', '2026-08-17', '--to', '2026-10-31'], ['--from', '2026-11-01', '--to', '2026-11-14']]);
-  assert.deepEqual(u.prior, { from: '2026-08-17', to: '2026-10-31', daily: [{ date: '2026-10-02', cost: 3 }] }, 'rows outside the range are dropped');
+  assert.deepEqual(u.prior, { from: '2026-08-17', to: '2026-10-31', day: '2026-11-14', daily: [{ date: '2026-10-02', cost: 3 }] }, 'rows outside the range are dropped');
 
   seen.length = 0;
   const again = await collectUsage({ exporter, now, prior: u.prior });
-  assert.deepEqual(seen, [['--from', '2026-11-01', '--to', '2026-11-14']], 'same range: the cached weeks are reused');
+  assert.deepEqual(seen, [['--from', '2026-11-01', '--to', '2026-11-14']], 'same range, same day: the cached weeks are reused');
   assert.deepEqual(again.prior, u.prior);
+  seen.length = 0;
+  await collectUsage({ exporter, now: new Date(2026, 10, 15, 12), prior: u.prior });
+  assert.equal(seen.length, 2, 'the next day the weeks are exported again, same range or not');
 
   const failing: CodeburnExport = async (a) => { if (a[1] !== '2026-11-01') throw new Error('boom'); return exportOf([]); };
   const partial = await collectUsage({ exporter: failing, now });
@@ -152,7 +155,7 @@ test('usage: codeburn strip from the month export: calls, sessions, projects, su
 
 test('usage cache: a refresh hands the cached weeks to the collector', async () => {
   const file = join(tmp('uc'), 'usage.json');
-  const prior = { from: '2026-08-17', to: '2026-10-31', daily: [{ date: '2026-10-02', cost: 3 }] };
+  const prior = { from: '2026-08-17', to: '2026-10-31', day: '2026-11-13', daily: [{ date: '2026-10-02', cost: 3 }] };
   mkdirSync(join(file, '..'), { recursive: true });
   writeFileSync(file, JSON.stringify({ schema: USAGE_CACHE_SCHEMA, savedAt: 0, day: '2026-11-13', panel: { status: 'ok', prior } }));
   let got: unknown = 'not called';
