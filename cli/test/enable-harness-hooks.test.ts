@@ -32,7 +32,7 @@ const readJ = (p: string) => JSON.parse(readFileSync(p, 'utf8'));
 const backups = (dir: string, name: string) => (existsSync(dir) ? readdirSync(dir).filter((n) => n.startsWith(`${name}.bak-`)) : []);
 const OTHER_KIRO = { name: 'lint', trigger: 'PostFileSave', action: { type: 'command', command: 'npx eslint --fix' } };
 
-test('kiro: dry run writes nothing; install writes the four hooks; a second run changes nothing', () => {
+test('kiro: dry run writes nothing; install writes the five hooks; a second run changes nothing', () => {
   const x = rig();
   assert.equal(x.run({ client: 'kiro', dryRun: true }), 0);
   assert.ok(!existsSync(kiroPath(x.repo)));
@@ -41,10 +41,12 @@ test('kiro: dry run writes nothing; install writes the four hooks; a second run 
   assert.equal(x.run({ client: 'kiro' }), 0);
   const f = readJ(kiroPath(x.repo));
   assert.equal(f.version, 'v1');
-  assert.deepEqual(f.hooks.map((h: any) => h.trigger), ['SessionStart', 'PreToolUse', 'Stop', 'SessionEnd']);
+  assert.deepEqual(f.hooks.map((h: any) => h.trigger), ['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']);
   const pre = f.hooks[1];
-  assert.equal(pre.matcher, 'shell', 'shell matches execute_bash');
-  assert.equal(pre.action.command, 'prism-cli codewatch hook --client kiro --event pre-push');
+  assert.equal(pre.matcher, '*', 'every tool opens a tool window (D6); shell calls also get the push check');
+  assert.equal(pre.action.command, 'prism-cli codewatch hook --client kiro --event pre-tool');
+  assert.equal(f.hooks[2].matcher, '*');
+  assert.equal(f.hooks[2].action.command, 'prism-cli codewatch hook --client kiro --event post-tool');
   assert.ok(f.hooks.every((h: any) => h.timeout > 0 && h.timeout <= 300), 'explicit timeouts (Kiro default is 60 s)');
   assert.ok(pre.timeout * 1000 > 270_000, 'above prism-cli\'s own 270 s budget, so Kiro never kills a push check mid-run');
   assert.match(x.text(), /--agent-engine v3/);
@@ -227,7 +229,7 @@ test('claude: the settings hooks have the same events, if rules and handlers as 
   const plugin = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'claude-plugin', 'hooks', 'hooks.json'), 'utf8')).hooks;
   const ours = claudeHooks('prism-cli') as Record<string, any>;
   const shape = (groups: any[], ev: (h: any) => string) => groups.map((g) => ({ matcher: g.matcher, hooks: g.hooks.map((h: any) => [h.if ?? null, ev(h)]) }));
-  for (const event of ['Stop', 'SubagentStop', 'PreToolUse', 'SessionEnd']) {
+  for (const event of ['Stop', 'SubagentStop', 'PreToolUse', 'PostToolUse', 'SessionEnd']) {
     assert.deepEqual(shape(ours[event], (h) => h.command.split(' ').pop()), shape(plugin[event], (h) => h.args[1]), event);
   }
   assert.ok(ours.PreToolUse[0].hooks.some((h: any) => h.if === 'Bash(*git*ref*)'), 'the ref-move guard reaches the hook');

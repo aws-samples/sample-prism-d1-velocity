@@ -28,6 +28,7 @@ import { fallbackPushBase, type PushBase } from '../pushbase.js';
 import { loadReviewRules } from '../rules.js';
 import { diffTrees, gitIn, matchesAny, parseDiff, readBlobs, revParse, objectExists, snapshotTree, touchedPaths, type ParsedDiff } from './diff.js';
 import { cleanupState, ensureHarnessDir, loadState, readCache, saveState, STATE_VERSION, writeCache, type SessionState, type Verdict } from './state.js';
+import { isTamperPath, personsChanges } from './guard.js';
 
 export const VERDICT_SCHEMA = 'prism.harness.verdict';
 export const VERDICT_VERSION = 1;
@@ -54,18 +55,7 @@ export interface PushTarget {
   unknown: string | null;
 }
 
-/** Paths whose change during a session ends the loop (section 6.2). `.prism/results/**` and
- * `.prism/harness/**` are on the design's list but never appear here: every diff and snapshot
- * excludes PRISM's own output, so an edit to them is never seen (the section 6.2 non-goal). */
-export const TAMPER_GLOBS = [
-  '.gitleaksignore', '.gitleaks.toml', '.prism/gitleaks-baseline.json',
-  '.prism/config.json', '.prism/review/rules.md',
-  '.kiro/steering/code-review.md', '.github/workflows/prism-*.yml', '.prism/gitlab-workflows/**',
-  '.claude/settings*.json', 'claude-plugin/hooks/**', '.cursor/hooks.json', '.codex/hooks.json', '.codex/config.toml', '.kiro/hooks/**',
-];
-/** Tamper globs are anchored at the repo root, unlike skip_paths. */
-const TAMPER_RES = TAMPER_GLOBS.map((g) => new RegExp(`^${g.split('**').map((p) => p.split('*').map((s) => s.replace(/[.+^${}()|[\]\\?]/g, '\\$&')).join('[^/]*')).join('.*')}$`));
-export const isTamperPath = (p: string) => TAMPER_RES.some((re) => re.test(p));
+export { isTamperPath, TAMPER_GLOBS } from './guard.js';
 
 /** Files whose content is the scanner's own configuration: never copied into the scan. */
 const SCANNER_CONFIG = new Set(['.gitleaks.toml', '.gitleaksignore', '.prism/gitleaks-baseline.json']);
@@ -415,10 +405,18 @@ function resolveDiffs(r: Run): Diffs | { unknown: string } {
  * with the base's copy instead (scannerOverride).
  */
 function integrityChecks(r: Run, d: Diffs): Integrity {
-  if (!d.state) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  const state = d.state;
+  if (!state) return { tamper: [], allowMarkers: d.diff.allowMarkers };
+  // D6: a guarded file the person changed between agent tool calls, and still holds as they left it, is theirs.
+  const persons = (paths: string[]) => {
+    const theirs = personsChanges(r.repoRoot, state.session, paths);
+    const note = `not counted as session changes: ${[...theirs].slice(0, 5).join(', ')} (changed by the person between agent tool calls)`;
+    if (theirs.size && !r.warnings.includes(note)) r.warnings.push(note);
+    return paths.filter((p) => !theirs.has(p));
+  };
   // No fork point with the session's start: judge what this run reviews, not nothing.
-  if (d.rewritten) return { tamper: touchedPaths(d.diff).filter(isTamperPath), allowMarkers: d.diff.allowMarkers };
-  const tamper = touchedPaths(d.sessionDiff).filter(isTamperPath);
+  if (d.rewritten) return { tamper: persons(touchedPaths(d.diff).filter(isTamperPath)), allowMarkers: d.diff.allowMarkers };
+  const tamper = persons(touchedPaths(d.sessionDiff).filter(isTamperPath));
   if (r.event !== 'pre-push') return { tamper, allowMarkers: d.sessionDiff.allowMarkers };
   const inPush = new Set(touchedPaths(d.diff));
   const added = new Map(d.diff.files.map((f) => [f.path, f.added]));

@@ -24,7 +24,9 @@ The plugin has four parts:
 - Claude Code 2.1.x.
 - prism-cli 1.11.0 or later on the `PATH` Claude Code sees (`npm install -g @prism-d1/cli`) for the
   harness loop and `/prism:review`; 1.10.0 is enough for everything else, and with an older prism-cli
-  the harness hooks do nothing. Node.js 22 or later, which prism-cli needs anyway. The hooks run with `node`.
+  the harness hooks do nothing. Tool-window tamper attribution (plugin 0.3.2) needs prism-cli 1.12.1;
+  an older one ignores those two hooks, and a guarded file you edit mid-session then counts as
+  Claude's. Node.js 22 or later, which prism-cli needs anyway. The hooks run with `node`.
 - For findings: the [codewatch git hooks](../USER_GUIDE.md#codewatch-local-git-hooks) in the repo
   (`prism-cli enable codewatch`). A review is recorded on each `git push`.
 
@@ -110,6 +112,7 @@ The once-per-session marker is an empty file under the plugin's data directory. 
 | `PreToolUse` on Bash, `if: "Bash(*git*push*)"` | Push gate: gitleaks, then the review. A secret (also in any pushed commit), a failed secret scan, a change to the checks or a push that does not say what it sends (`--all`, `--mirror`, several refspecs, a glob) denies the push; review findings never do, they come back to Claude as context. Also denies `--no-verify`, `-c core.hooksPath=` and `git config prism.*` or `core.hooksPath`. Every deny ends by telling Claude to tell you this hook blocked it | on |
 | `PreToolUse` on Bash, `if: "Bash(*git*config*)"`, `"Bash(*git*-c*)"`, and (0.3.1) `"Bash(*git*ref*)"`, `"Bash(*git*remote*)"`, `"Bash(*git*fetch*)"`, `"Bash(*git*pull*)"`, `"Bash(*git*branch*)"`, `"Bash(*git*tag*)"`, `"Bash(*git*checkout*)"`, `"Bash(*git*switch*)"` | The same bypass check, with no review: `git config` and `git -c` hook changes, and commands that move a remote-tracking ref or the branch's upstream (`git update-ref refs/remotes/...`, `git fetch . HEAD:refs/remotes/origin/main`, `git branch -f origin/main`, `git branch -u ...`), which the push check compares the push against | on |
 | `Stop`, `SubagentStop` | Finish gate: `fix` keeps Claude working with the findings (`decision: "block"`), at most 2 rounds | off |
+| `PreToolUse` and `PostToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|Task\|mcp__.*` (0.3.2) | Record PRISM's guarded files around each tool call, so a guarded file you edit between Claude's tool calls is yours, not session tamper (decision D6 in the design doc). Changes during a tool call or after the last one stay Claude's; secrets block whoever wrote them | always |
 | `SessionEnd` | Deletes the session's state file | always |
 
 What blocks a push: only secrets, in the changed lines or in any commit the push would send, plus a

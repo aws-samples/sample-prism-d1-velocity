@@ -3,7 +3,7 @@
 > **Status: Phase 1 implemented in 1.11.0** (engine, Claude Code adapter, `prism_review`; see
 > [Rollout](#13-rollout)). **Phase 2 implemented in 1.12.0**: the Kiro CLI V3 adapter and
 > `prism-cli enable agent-hooks` (see [Phase 2 implementation notes](#phase-2-implementation-notes)).
-> Phases for Cursor, Codex and AgentCore are still proposals. Five decisions are settled (see [Decisions](#decisions)). Where phase 1 differs from this text, see
+> Phases for Cursor, Codex and AgentCore are still proposals. Six decisions are settled (see [Decisions](#decisions)). Where phase 1 differs from this text, see
 > [Phase 1 implementation notes](#phase-1-implementation-notes). For shipped behavior see the
 > [User Guide](../USER_GUIDE.md#agent-harness-loop) and the [command reference](CLI-REFERENCE.md).
 >
@@ -23,6 +23,7 @@ Decided on 2026-11-13. The rest of this document follows them.
 | D3 | **Secrets and high findings block.** Medium and low findings are reported but do not block. `harness.block_on` defaults to `["secret", "high"]`; a team can add `"medium"`. Since D4 this applies to the finish gate only | [Section 3](#3-verdict-schema) |
 | D4 | **The push gate blocks only on secrets** (decided by the user on 2026-11-13, superseding D3 at push). The agent's `git push` is denied for a secret in the changed lines or in a commit of the pushed range, a secret scan that failed or did not finish, tamper (scanner config, `gitleaks:allow`, hook or PRISM config edits, since tamper is how a secret gets past the scan), and a push whose target the command does not name. AI review findings of any severity never deny a push: the push goes ahead, the person gets a `systemMessage` and Claude gets the findings as `additionalContext` (quoted as untrusted) for a follow-up. They never start a fix round or a `stop` at push. `harness.block_on` is the finish gate's (and direct reviews'); a value other than the default `["secret", "high"]` adds a warning at push, once per session. A push neither spends nor reads the finish gate's rounds or last verdict, and its messages carry no round count. Session state cannot deny a push on its own: a committed secret is recomputed from the pushed range, and tamper counts only paths and `gitleaks:allow` lines the push itself carries. When history was reset or rebased past the session's start commit, session changes (at push and at the finish gate) are counted from the fork point with that commit instead of the session baseline, or from the branch's upstream base when that is newer (a rebase onto a newer upstream), so upstream commits are not session work (this trusts the local remote-tracking ref, see the hostile-agent non-goal). When the start commit is gone or shares no history with HEAD, the run is reviewed against the branch's base and tamper is judged on that diff. The push range and the upstream base come from local refs (remote-tracking refs, the branch's upstream), so since 1.12.0 a command that moves them is denied like `--no-verify`: `git update-ref` on `refs/remotes/*` (or `--stdin`), a fetch or push refspec writing `refs/remotes/*`, `git symbolic-ref refs/remotes/... <target>`, `git remote rename` or a `remote.<name>.fetch` write, a branch or tag named like a remote-tracking ref (`git branch -f origin/main`), and `git branch -u` or a `branch.<name>.merge`/`.remote` write ([section 6.2](#62-tamper-rules)) | [Section 8.3](#83-per-client-wiring) |
 | D5 | **The Kiro push check fails closed, by exit 2** (decided 2026-11-13 for 1.12.0). Kiro denies a tool call only when the hook exits 2 (stderr goes to the model); a JSON `permissionDecision: "deny"` is ignored, and any other non-zero exit, a crash or a kill on timeout, lets the command run (**verified**, kiro-cli 3.3.0). So the Kiro adapter catches every error itself: an internal error on a command the tokenizer classifies as a `git push`, and hook input that is missing, not a JSON object or a shell call without a command (which cannot be told apart from a push), exit 2 with a `PRISM push check failed closed` reason. Every other shell command exits 0 after a tokenize, except the bypass commands, which exit 2 on both adapters with the same check: `--no-verify`, `core.hooksPath`, `git config prism.*`, and the ref and upstream moves in D4 (Kiro's `shell` matcher sends every command, so no extra hook entry is needed; Claude Code reaches them through `bash-guard` `if` rules). This narrows D1 for one case only: at the Kiro push gate, an error in the check is treated like a secret scan that did not finish. A reviewer failure still fails open (the AI review is not the secret check), and the finish gate never fails closed | [Phase 2 implementation notes](#phase-2-implementation-notes) |
+| D6 | **Tamper is attributed by tool window** (decided by the user on 2026-11-14, for 1.12.1). A session can last much longer than one task: Kiro IDE keeps one Kiro session per opened folder, and new chats share it. Hooks around every agent tool call (`PreToolUse` and `PostToolUse`: every tool in Kiro, `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|Task\|mcp__.*` in Claude Code, so a subagent's run and MCP tools are inside a window) record a hash of each guarded file (the tamper list, scanner config included) in `.prism/harness/<session>.guard.json`. A guarded file that changed while no agent tool ran (between `PostToolUse` n and `PreToolUse` n+1, or between `SessionStart` and the first `PreToolUse`) is the person's, and is not session tamper while it holds what they left. A change inside a window is the agent's; so is one after a `PreToolUse` with no `PostToolUse` (the window stays open until the next `PreToolUse`), one after the last `PostToolUse` before `Stop` or a push, and any change when no guard record exists. Secrets are not affected: a secret in session lines blocks whoever wrote it. Known limit: an agent that edits a guarded file from a detached background process between tool calls is taken for the person; deliberate evasion is a non-goal (section 1), and the push-time secret scan and the CI gate still apply | [1.12.1 notes](#1121-tool-window-tamper-attribution) |
 
 ## 1. Problem and goals
 
@@ -568,8 +569,10 @@ the Claude Code status line). Descriptions left out:
 { "version": "v1", "hooks": [
   { "name": "PRISM harness: session start", "trigger": "SessionStart",
     "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event session-start" }, "timeout": 15 },
-  { "name": "PRISM harness: push check", "trigger": "PreToolUse", "matcher": "shell",
-    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event pre-push" }, "timeout": 300 },
+  { "name": "PRISM harness: push check", "trigger": "PreToolUse", "matcher": "*",
+    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event pre-tool" }, "timeout": 300 },
+  { "name": "PRISM harness: tool window end", "trigger": "PostToolUse", "matcher": "*",
+    "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event post-tool" }, "timeout": 15 },
   { "name": "PRISM harness: finish check", "trigger": "Stop",
     "action": { "type": "command", "command": "prism-cli codewatch hook --client kiro --event stop" }, "timeout": 300 },
   { "name": "PRISM harness: session end", "trigger": "SessionEnd",
@@ -958,6 +961,51 @@ Where 1.11.0 differs from or settles something in the text above:
   `--no-review` hook, the status-line marker and per-commit dashboard view (section 11.2; harness
   results show in the dashboard's run trend and are skipped by the pre-push review views), and
   `allow-config` (open question 3).
+
+## 1.12.1: tool-window tamper attribution
+
+Decision D6. Found in a Kiro IDE live test: the IDE keeps one session per opened folder (a new chat
+or a window reload does not start one; closing and reopening the folder does), so "this session's
+changes" covered everything since the folder opened. When the person edited `.prism/config.json`
+mid-session, every later `Stop` answered `stop` / `tamper` and blamed the agent.
+
+- **Hooks.** Kiro: `PreToolUse` and `PostToolUse` with matcher `*` (events `pre-tool` and
+  `post-tool`; `pre-tool` also runs the push check on shell calls, and `pre-push` stays as its
+  1.12.0 name). Claude Code (plugin 0.3.2 and the `enable agent-hooks` template): a `PreToolUse`
+  and a `PostToolUse` group with matcher `Write|Edit|MultiEdit|NotebookEdit|Bash|Task|mcp__.*` (`Task` keeps a subagent's run inside one window; read and search tools stay out). Claude Code
+  runs the hooks of one event in parallel, so the `pre-push` handler records the window edge too,
+  before the engine reads it.
+- **Races and limits.** Claude Code runs parallel tool calls and subagents, so windows with a
+  `tool_use_id` are tracked per id and stay open until each closes; one that never closes stops
+  counting after 30 minutes (its changes stay the agent's). Kiro sends no id, so its windows are
+  counted: each `PostToolUse` closes one, and the window stays open until every call has closed
+  (stricter than "open until the next `PreToolUse`": a call that never posts keeps later gaps the
+  agent's for up to 30 minutes). Hook processes for parallel calls serialize on the guard record's lock, so no
+  window is lost to a concurrent write. A snapshot cut off at 500
+  guarded files attributes nothing to the person; an unreadable guarded file gets a fixed
+  fingerprint rather than looking deleted; files over 16 MB are fingerprinted by size and mtime,
+  symlinks by target. A failed record is reported on stderr and leaves changes the agent's. With
+  a prism-cli older than 1.12.1 the plugin's two window hooks do nothing. The guard record is not
+  signed, but the `pre-tool` hooks deny a tool call that writes PRISM's harness state
+  (`.prism/harness/`): a file tool naming it, or a shell command naming it that is not a plain
+  reader (`cat`, `ls`, `grep`, `jq`, ...) or that redirects. A write through an interpreter that
+  builds the path from pieces is not seen; like a hand-edited session state (section 6.2) that is
+  outside the threat model. A call Kiro's hook denies gets no `PostToolUse`, so the hook closes
+  its window itself; in Claude Code a denied Bash call's window stays open until it expires. On Kiro, `pre-tool` runs for every tool, so a payload that does not parse fails
+  closed (D5) only when its raw text could be a shell call or a push; other tools go on.
+- **What a window edge costs.** No git diff and no gitleaks: one `git rev-parse` and a sha256 of
+  each guarded file that exists (at most 500), written atomically to
+  `.prism/harness/<session>.guard.json`. A guard record that fails to load or save leaves every
+  change the agent's.
+- **What is attributed.** Only paths on the tamper list. Added `gitleaks:allow` lines in other
+  files, and edits to ordinary files, stay session work as before. A guarded file is the person's
+  only while it holds exactly what they left, and never once the agent changed it inside a window
+  this session (a later edit by the person does not hide the agent's change). Hook processes for
+  parallel tool calls take a lock on the guard record (`.lock`, 2 s wait, stale after 10 s). The finish and push checks name the files they did not count, as a warning.
+- **Tests.** The person edits `.prism/config.json` between tool calls (and before the first one):
+  no tamper. Inside a window, after a missing `PostToolUse`, between the last `PostToolUse` and
+  `Stop`, an agent edit after the person's, and with no guard record: tamper. A secret the person
+  writes between calls still blocks the finish and the push. Claude Code: the same windows.
 
 ## Phase 2 implementation notes
 

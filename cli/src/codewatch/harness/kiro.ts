@@ -19,25 +19,35 @@
  * - There is no channel to the person: what Claude Code shows as a
  *   systemMessage goes in the agent's reason and the result file.
  *
- * Events: session-start (baseline), pre-push (PreToolUse, matcher `shell`:
- * every shell command; non-pushes exit 0 after a tokenize), stop (finish gate,
- * opt-in, plus push findings), session-end (deletes the state).
+ * Events: session-start (baseline), pre-tool (PreToolUse, matcher `*`: opens a
+ * tool window for tamper attribution, D6, then the push check on shell calls;
+ * non-pushes exit 0 after a tokenize; pre-push is its 1.12.0 name), post-tool
+ * (PostToolUse, `*`: closes the window), stop (finish gate, opt-in, plus push
+ * findings), session-end (deletes the state).
  */
 import { readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
-import { agentText, bypassReason, capBytes, clip, finishGateOn, HOOK_BUDGET_MS, isGitPush, MAX_FINDING_CHARS, MAX_REASON_BYTES, noticeOnce, oneLine, parsePushTarget, personText, pushGateOn } from './claude.js';
+import { agentText, bypassReason, capBytes, clip, finishGateOn, harnessWriteReason, HOOK_BUDGET_MS, isGitPush, MAX_FINDING_CHARS, MAX_REASON_BYTES, noticeOnce, oneLine, parsePushTarget, personText, pushGateOn } from './claude.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict } from './engine.js';
+import { deleteGuard, guardEvent, recordWindow } from './guard.js';
 import { deleteState, ensureHarnessDir, harnessDir, loadState, recordBaseline, sanitizeSession } from './state.js';
 
-export const KIRO_EVENTS = ['session-start', 'pre-push', 'stop', 'session-end'] as const;
+/** pre-tool / post-tool run around every agent tool (D6); pre-push is pre-tool's older name (1.12.0 hook files). */
+export const KIRO_EVENTS = ['session-start', 'pre-tool', 'post-tool', 'pre-push', 'stop', 'session-end'] as const;
 export type KiroEvent = typeof KIRO_EVENTS[number];
 
 /** Exit code Kiro reads as "block this tool call". */
 export const KIRO_DENY_EXIT = 2;
 /** Kiro's shell tool id; the `shell` matcher selects it. */
 export const KIRO_SHELL_TOOL = 'execute_bash';
+/**
+ * Raw hook input that could be a shell call or a push (D5): an unparseable pre-tool payload that
+ * matches fails closed. Built from KIRO_SHELL_TOOL and the `shell` category, plus any `push` text,
+ * so a payload cut off before its tool name but mentioning a push is still held.
+ */
+const MAYBE_SHELL_INPUT = new RegExp(`${KIRO_SHELL_TOOL}|"shell"|push`);
 /** Last line of every push deny: who blocked it. */
 export const KIRO_DENY_TAIL = 'This was blocked by the PRISM push check: the PRISM Kiro hook (.kiro/hooks/prism-harness.json), which runs prism-cli codewatch hook. Stop and tell the user that this hook blocked the command and why; do not attribute it to anyone else.';
 /** Kiro has no message channel to the person, so the agent relays it. */
@@ -59,6 +69,7 @@ interface KiroInput {
   hook_event_name?: unknown;
   tool_name?: unknown;
   tool_input?: { command?: unknown; cwd?: unknown };
+  tool_use_id?: unknown;
 }
 
 const ok = (stderr = ''): KiroHookResult => ({ exit: 0, stdout: '', stderr });
@@ -184,6 +195,44 @@ function finishCheck(repoRoot: string, session: string | null, pushNotice: strin
 }
 
 /**
+ * Records a tool window edge for tamper attribution (D6). Uses the session's repository (payload
+ * `cwd`), not the shell call's directory. Never fails the hook: on an error nothing is recorded,
+ * which leaves every change the agent's.
+ */
+function toolWindow(input: KiroInput, edge: 'pre' | 'post'): string {
+  const session = sanitizeSession(input.session_id);
+  const dir = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
+  const top = session ? gitIn(dir, ['rev-parse', '--show-toplevel']) : null;
+  return top?.ok && top.stdout ? recordWindow(top.stdout, session, edge, input.tool_use_id) : '';
+}
+
+/**
+ * The PreToolUse check of one tool call: bypass commands and the push check on shell calls;
+ * every other tool passes. Errors on a command that is a push fail closed (D5).
+ */
+function toolCheck(input: KiroInput, deps: KiroHookDeps, env: NodeJS.ProcessEnv): KiroHookResult {
+  // Any call with a command is checked, whatever its tool id says (a renamed shell tool must not
+  // skip the check). A call without one is skipped only when it is plainly another tool.
+  if (typeof input.tool_input?.command !== 'string') {
+    const otherTool = typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell';
+    return otherTool ? ok() : failClosed('the shell call in the hook input has no command');
+  }
+  const cmd = input.tool_input.command;
+  let push: boolean;
+  try {
+    const bypass = bypassReason(cmd);
+    if (bypass) return deny(`PRISM harness: ${bypass}. Do not bypass or reconfigure the hooks.`);
+    push = isGitPush(cmd);
+  } catch (e: any) { // any: an internal error; only its message is shown
+    return failClosed(`the command could not be parsed (${e?.message || e})`);
+  }
+  if (!push) return ok();
+  try { return prePush(cmd, input, deps, env); } catch (e: any) { // any: as above
+    return failClosed(String(e?.message || e));
+  }
+}
+
+/**
  * Runs one Kiro hook event and returns the exit code and output. Never
  * throws. Non-push shell commands return exit 0 before any git call; on a
  * push every internal error is a deny (fail closed); on other events an
@@ -200,35 +249,30 @@ export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHo
     input = JSON.parse(stdin);
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('not an object');
   } catch {
-    return event === 'pre-push' ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
+    // pre-tool runs on every tool (matcher `*`), so a parse glitch must not block them all: it fails
+    // closed only when the raw input could be a shell call or a push (D5). pre-push is shell-only.
+    const shellish = MAYBE_SHELL_INPUT.test(stdin ?? '');
+    return event === 'pre-push' || (event === 'pre-tool' && shellish) ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
-  if (event === 'pre-push') {
-    // Any call with a command is checked, whatever its tool id says (a renamed shell tool must not
-    // skip the check). A call without one is skipped only when it is plainly another tool.
-    if (typeof input.tool_input?.command !== 'string') {
-      const otherTool = typeof input.tool_name === 'string' && input.tool_name !== KIRO_SHELL_TOOL && input.tool_name !== 'shell';
-      return otherTool ? ok() : failClosed('the shell call in the hook input has no command');
-    }
-    const cmd = input.tool_input.command;
-    let push: boolean;
-    try {
-      const bypass = bypassReason(cmd);
-      if (bypass) return deny(`PRISM harness: ${bypass}. Do not bypass or reconfigure the hooks.`);
-      push = isGitPush(cmd);
-    } catch (e: any) { // any: an internal error; only its message is shown
-      return failClosed(`the command could not be parsed (${e?.message || e})`);
-    }
-    if (!push) return ok();
-    try { return prePush(cmd, input, deps, env); } catch (e: any) { // any: as above
-      return failClosed(String(e?.message || e));
-    }
+  if (event === 'post-tool') return ok(toolWindow(input, 'post')); // Kiro drops this stderr on exit 0; it is for a person running the hook by hand
+  if (event === 'pre-push' || event === 'pre-tool') {
+    const w = harnessWriteReason(input.tool_name, input.tool_input);
+    if (w) return deny(`PRISM harness: ${w}. Do not edit PRISM's harness state.`);
+    toolWindow(input, 'pre');
+    const r = toolCheck(input, deps, env);
+    // A denied call never runs and gets no PostToolUse: close its window, so it does not hold later gaps open.
+    if (r.exit === KIRO_DENY_EXIT) toolWindow(input, 'post');
+    return r;
   }
   try {
     const repoRoot = event === 'stop' ? null : repoOf(input);
     const session = sanitizeSession(input.session_id);
-    if (event === 'session-start') { if (repoRoot && session) recordBaseline(repoRoot, session, 'kiro'); return ok(); }
+    if (event === 'session-start') {
+      if (repoRoot && session) { recordBaseline(repoRoot, session, 'kiro'); guardEvent(repoRoot, session, 'start'); }
+      return ok();
+    }
     if (event === 'session-end') {
-      if (repoRoot && session) { deleteState(repoRoot, session); clearPushNotice(repoRoot, session); }
+      if (repoRoot && session) { deleteState(repoRoot, session); clearPushNotice(repoRoot, session); deleteGuard(repoRoot, session); }
       return ok();
     }
     return stop(input, deps, env);

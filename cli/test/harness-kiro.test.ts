@@ -9,12 +9,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FAIL_CLOSED, KIRO_DENY_TAIL, KIRO_PERSON_NOTE, KIRO_ROUND_NOTE, runKiroHook, type KiroHookResult } from '../src/codewatch/harness/kiro.js';
-import { bypassReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { bypassReason, harnessWriteReason, runClaudeHook, UNTRUSTED_PREFIX } from '../src/codewatch/harness/claude.js';
+import { guardEvent, personsChanges, WINDOW_TTL_MS } from '../src/codewatch/harness/guard.js';
 import { loadState } from '../src/codewatch/harness/state.js';
 import { FAKE_SECRET, finding, leak, rig, type Rig } from './harness-rig.js';
 
@@ -24,7 +25,7 @@ const TSX = import.meta.resolve('tsx');
 const SESSION = 'sess_00000000-1111-4222-8333-444444444444';
 
 /** A captured Kiro payload with this rig's repo as cwd, and optional overrides. */
-function payload(event: 'SessionStart' | 'PreToolUse' | 'Stop' | 'SessionEnd', r: Rig, over: Record<string, unknown> = {}): string {
+function payload(event: 'SessionStart' | 'PreToolUse' | 'PostToolUse' | 'Stop' | 'SessionEnd', r: Rig, over: Record<string, unknown> = {}): string {
   const p = JSON.parse(readFileSync(join(HERE, 'fixtures', 'kiro-hooks', `${event}.json`), 'utf8'));
   p.cwd = r.dir;
   if (typeof over.command === 'string') { p.tool_input.command = over.command; delete over.command; }
@@ -82,7 +83,11 @@ test('kiro push gate (D4): a secret denies with exit 2, never JSON; the value ne
   noClaudeWording(x);
 
   r.leaks(null);
+  // The agent edits the scanner config through a tool (D6: inside a tool window).
+  const tool = { tool_name: 'fs_write', tool_input: { path: '.gitleaksignore' } };
+  runKiroHook('pre-tool', payload('PreToolUse', r, tool), deps(r));
   r.write('.gitleaksignore', 'everything\n');
+  runKiroHook('post-tool', payload('PostToolUse', r, tool), deps(r));
   r.commit('ignore');
   const t = runKiroHook('pre-push', payload('PreToolUse', r), deps(r));
   assert.equal(t.exit, 2, 'tamper denies');
@@ -299,4 +304,193 @@ test('ref moves are denied by both adapters with the --no-verify wording, before
   }
   assert.deepEqual(r.calls(), [], 'no gitleaks, no reviewer');
   assert.equal(runClaudeHook('bash-guard', JSON.stringify({ cwd: r.dir, tool_input: { command: 'git fetch origin' } }), { env: {} }), '');
+});
+
+// ---------------------------------------------------------------- D6: tamper attribution by tool window
+
+const CONFIG = '.prism/config.json';
+/** One agent tool call (Kiro fs_write): PreToolUse, what the tool does, PostToolUse. `post: false` drops the PostToolUse (crash, timeout). */
+function agentTool(r: Rig, act: () => void, post = true) {
+  const tool = { tool_name: 'fs_write', tool_input: { path: 'src/x.ts' } };
+  assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, tool), deps(r)).exit, 0);
+  act();
+  if (post) assert.equal(runKiroHook('post-tool', payload('PostToolUse', r, tool), deps(r)).exit, 0);
+}
+const finish = (r: Rig) => runKiroHook('stop', payload('Stop', r), deps(r, { PRISM_HARNESS_FINISH_GATE: '1' }));
+const isTamper = (x: KiroHookResult) => !!x.stdout && /tamper|PRISM, secret-scan or hook configuration/.test(JSON.parse(x.stdout).reason);
+
+test('D6: a guarded file the person edits between agent tool calls is theirs, not session tamper', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'export const a = 1;\n'));
+  r.write(CONFIG, '{ "eval": {} }\n');
+  agentTool(r, () => r.write('src/b.ts', 'export const b = 2;\n'));
+  const x = finish(r);
+  assert.equal(x.exit, 0);
+  assert.equal(x.stdout, '', 'no block: the config edit is the person\'s');
+  assert.match(x.stderr, /\.prism\/config\.json \(changed by the person between agent tool calls\)/);
+  // The person's edit before the very first tool call (after SessionStart) is theirs too.
+  const s = rig();
+  runKiroHook('session-start', payload('SessionStart', s), deps(s));
+  s.write(CONFIG, '{}\n');
+  agentTool(s, () => s.write('src/a.ts', 'x\n'));
+  assert.ok(!isTamper(finish(s)));
+});
+
+test('D6: changes inside a window, after an unclosed window, or after the last tool call are the agent\'s', () => {
+  const cases: [string, (r: Rig) => void][] = [
+    ['inside a tool window', (r) => agentTool(r, () => r.write(CONFIG, '{}\n'))],
+    ['PreToolUse with no PostToolUse', (r) => { agentTool(r, () => r.write(CONFIG, '{}\n'), false); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
+    ['between the last PostToolUse and Stop', (r) => { agentTool(r, () => r.write('src/a.ts', 'x\n')); r.write(CONFIG, '{}\n'); }],
+    ['the agent changes it again after the person', (r) => { r.write(CONFIG, '{}\n'); agentTool(r, () => r.write(CONFIG, '{ "x": 1 }\n')); }],
+    ['the person touches a file the agent changed', (r) => { agentTool(r, () => r.write(CONFIG, '{ "x": 1 }\n')); r.write(CONFIG, '{ "x": 1, "y": 2 }\n'); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
+    ['no SessionStart record', (r) => { r.write(CONFIG, '{}\n'); agentTool(r, () => r.write('src/a.ts', 'x\n')); }],
+  ];
+  for (const [name, steps] of cases) {
+    const r = rig();
+    if (name !== 'no SessionStart record') runKiroHook('session-start', payload('SessionStart', r), deps(r));
+    steps(r);
+    assert.ok(isTamper(finish(r)), name);
+  }
+});
+
+test('D6: a secret the person writes between tool calls still blocks the finish and the push', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'export const a = 1;\n'));
+  r.write('src/k.ts', `export const k = "${FAKE_SECRET}";\n`);
+  r.leaks([leak('src/k.ts', 1)]);
+  agentTool(r, () => r.write('src/b.ts', 'export const b = 2;\n'));
+  const x = finish(r);
+  assert.match(JSON.parse(x.stdout).reason, /Remove the secret at src\/k\.ts:1/);
+  r.commit('k');
+  assert.equal(runKiroHook('pre-push', payload('PreToolUse', r), deps(r)).exit, 2);
+});
+
+test('D6: a person\'s config change carried by a push is not tamper; the pre-tool path is fast and never denies', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'x\n'));
+  r.write(CONFIG, '{}\n');
+  r.commit('person config');
+  const push = runKiroHook('pre-tool', payload('PreToolUse', r), deps(r));
+  assert.equal(push.exit, 0, push.stderr);
+  const t0 = Date.now();
+  for (let i = 0; i < 20; i++) assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: 'a' } }), deps(r)).exit, 0);
+  assert.ok((Date.now() - t0) / 20 < 50, 'in-process pre-tool for a non-shell tool: hash only, no diff or gitleaks');
+  assert.equal(runKiroHook('post-tool', '{not json', deps(r)).exit, 0, 'post-tool never blocks');
+  assert.equal(runKiroHook('pre-tool', '{"tool_name":"fs_wri', deps(r)).exit, 0, 'a broken non-shell payload does not block every tool');
+  assert.equal(runKiroHook('pre-tool', '{"tool_name":"execute_bash","tool_input":{"command":"git pu', deps(r)).exit, 2, 'a broken shell payload still fails closed');
+});
+
+test('D6 (Claude Code): the same windows through pre-tool and post-tool', () => {
+  const r = rig();
+  const cin = (extra: object = {}) => JSON.stringify({ session_id: 'cc-d6', cwd: r.dir, ...extra });
+  const env = { env: { PRISM_HARNESS_FINISH_GATE: '1' }, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks } };
+  runClaudeHook('session-start', cin(), env);
+  const tool = (act: () => void) => { runClaudeHook('pre-tool', cin({ tool_name: 'Edit' }), env); act(); runClaudeHook('post-tool', cin({ tool_name: 'Edit' }), env); };
+  tool(() => r.write('src/a.ts', 'x\n'));
+  r.write(CONFIG, '{}\n');
+  tool(() => r.write('src/b.ts', 'y\n'));
+  assert.ok(!runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env).includes('tamper'), 'the person\'s edit');
+  tool(() => r.write(CONFIG, '{ "x": 1 }\n'));
+  assert.match(runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env), /tamper|hook configuration/, 'the agent\'s edit');
+});
+
+test('D6: a snapshot cut off at the file cap attributes nothing to the person', () => {
+  const r = rig();
+  for (let i = 0; i < 505; i++) r.write(`.kiro/hooks/h${i}.json`, '{}\n');
+  r.commit('many hooks');
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'x\n'));
+  r.write(CONFIG, '{}\n');
+  agentTool(r, () => r.write('src/b.ts', 'y\n'));
+  assert.ok(isTamper(finish(r)), 'fail toward the agent');
+});
+
+test('D6 (Claude Code): parallel tool calls keep the window open until each has closed; a stale one expires', () => {
+  const r = rig();
+  const cin = (extra: object = {}) => JSON.stringify({ session_id: 'cc-par', cwd: r.dir, ...extra });
+  const env = { env: { PRISM_HARNESS_FINISH_GATE: '1' }, engine: { pathEnv: r.bin, gitleaksBin: r.gitleaks } };
+  const ev = (e: 'pre-tool' | 'post-tool', id: string) => runClaudeHook(e, cin({ tool_name: 'Bash', tool_use_id: id }), env);
+  runClaudeHook('session-start', cin(), env);
+  ev('pre-tool', 'toolu_A'); ev('pre-tool', 'toolu_B'); ev('post-tool', 'toolu_A');
+  r.write(CONFIG, '{}\n'); // B still runs: the agent's
+  ev('post-tool', 'toolu_B'); ev('pre-tool', 'toolu_C'); ev('post-tool', 'toolu_C');
+  assert.match(runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env), /hook configuration/);
+
+  // A window that never closes stops counting after WINDOW_TTL_MS; what changed while it was open stays the agent's.
+  const s = rig();
+  const t0 = Date.now();
+  guardEvent(s.dir, 'cc-ttl', 'start', null, t0);
+  guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_X', t0);
+  s.write(CONFIG, '{}\n');
+  guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_Y', t0 + WINDOW_TTL_MS + 1);
+  assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 0, 'changed while X was open');
+  guardEvent(s.dir, 'cc-ttl', 'post', 'toolu_Y', t0 + WINDOW_TTL_MS + 2);
+  s.write('.gitleaksignore', 'x\n');
+  guardEvent(s.dir, 'cc-ttl', 'pre', 'toolu_Z', t0 + WINDOW_TTL_MS + 3);
+  assert.equal(personsChanges(s.dir, 'cc-ttl', ['.gitleaksignore']).size, 1, 'X expired, so the gap after Y is the person\'s');
+  assert.equal(personsChanges(s.dir, 'cc-ttl', [CONFIG]).size, 0, 'the config changed in X\'s window stays the agent\'s');
+});
+
+test('D6 (Kiro, no tool ids): overlapping calls keep the window open until both have closed', () => {
+  const r = rig();
+  const tool = { tool_name: 'fs_write', tool_input: { path: 'src/x.ts' } };
+  const ev = (e: 'pre-tool' | 'post-tool') => runKiroHook(e, payload(e === 'pre-tool' ? 'PreToolUse' : 'PostToolUse', r, tool), deps(r));
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  ev('pre-tool'); ev('pre-tool'); ev('post-tool');
+  r.write(CONFIG, '{}\n'); // the second call still runs
+  ev('post-tool'); ev('pre-tool'); ev('post-tool');
+  assert.ok(isTamper(finish(r)));
+});
+
+test('D6: writing PRISM\'s harness state is denied in both adapters; reading it is not', () => {
+  for (const [tool, input] of [
+    ['execute_bash', { command: `echo '{}' > .prism/harness/${SESSION}.guard.json` }],
+    ['execute_bash', { command: 'cat > .prism/harness/x.json' }],
+    ['execute_bash', { command: 'rm -f .prism/harness/*.guard.json' }],
+    ['execute_bash', { command: 'cd .prism && cp /tmp/g.json harness/x.json && sed -i s/a/b/ .prism/harness/x.json' }],
+    ['fs_write', { path: `.prism/harness/${SESSION}.guard.json`, content: '{}' }],
+    ['Write', { file_path: 'repo/.prism/harness/s.json', content: '{}' }],
+    ['spreadsheet_read_write', { file: '.prism/harness/s.json' }],
+  ] as const) assert.ok(harnessWriteReason(tool, input), `${tool} ${JSON.stringify(input)}`);
+  for (const [tool, input] of [
+    ['execute_bash', { command: `cat .prism/harness/${SESSION}.json` }],
+    ['execute_bash', { command: 'ls -la .prism/harness/' }],
+    ['execute_bash', { command: 'git status' }],
+    ['execute_bash', { command: 'cat .prism/harness/x.json 2>/dev/null' }],
+    ['execute_bash', { command: `jq '.rounds > 1' .prism/harness/${SESSION}.json` }],
+    ['fs_read', { path: '.prism/harness/s.json' }],
+    ['fs_write', { path: 'src/a.ts', content: 'x' }],
+  ] as const) assert.equal(harnessWriteReason(tool, input), null, `${tool} ${JSON.stringify(input)}`);
+
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  const k = runKiroHook('pre-tool', payload('PreToolUse', r, { tool_name: 'fs_write', tool_input: { path: `.prism/harness/${SESSION}.guard.json` } }), deps(r));
+  assert.equal(k.exit, 2);
+  assert.match(k.stderr, /Do not edit PRISM's harness state/);
+  const c = JSON.parse(runClaudeHook('pre-tool', JSON.stringify({ session_id: 'cc-w', cwd: r.dir, tool_name: 'Edit', tool_input: { file_path: `${r.dir}/.prism/harness/cc-w.guard.json` } }), { env: {} }));
+  assert.equal(c.hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('D6 (Kiro): a denied call closes its window, so it does not hold later gaps open', () => {
+  const r = rig();
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  assert.equal(runKiroHook('pre-tool', payload('PreToolUse', r, { command: 'git push --no-verify' }), deps(r)).exit, 2);
+  r.write(CONFIG, '{}\n');
+  agentTool(r, () => r.write('src/a.ts', 'x\n'));
+  assert.ok(!isTamper(finish(r)), 'the edit after the denied push is the person\'s');
+});
+
+test('D6: a lock left by a dead hook process is broken; a live one is waited for', () => {
+  const r = rig();
+  guardEvent(r.dir, 'lk', 'start');
+  const lock = `${join(r.dir, '.prism', 'harness', 'lk.guard.json')}.lock`;
+  writeFileSync(lock, '999999999:0'); // no such pid
+  guardEvent(r.dir, 'lk', 'pre', 'toolu_1');
+  assert.ok(!existsSync(lock), 'taken and released');
+  writeFileSync(lock, `${process.pid}:${Date.now()}`); // held by a live process (this one)
+  assert.throws(() => guardEvent(r.dir, 'lk', 'post', 'toolu_1'), /locked by another hook/);
+  assert.ok(existsSync(lock), 'a live lock is never removed');
 });
