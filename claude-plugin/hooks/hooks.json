@@ -127,7 +127,7 @@
         ]
       },
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Task|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -140,7 +140,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|Task|mcp__.*",
         "hooks": [
           {
             "type": "command",

@@ -189,8 +189,12 @@ function kiroUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
 /** The plugin's bash-guard `if` rules (claude-plugin/hooks/hooks.json): the bypass check only, never a review. */
 export const BASH_GUARD_IFS = ['Bash(*git*config*)', 'Bash(*git*-c*)', 'Bash(*git*ref*)', 'Bash(*git*remote*)', 'Bash(*git*fetch*)', 'Bash(*git*pull*)', 'Bash(*git*branch*)', 'Bash(*git*tag*)', 'Bash(*git*checkout*)', 'Bash(*git*switch*)'];
 
-/** Claude Code tools that can change a file: the tool windows of tamper attribution (D6). */
-export const WINDOW_TOOLS = 'Write|Edit|MultiEdit|NotebookEdit|Bash';
+/**
+ * Claude Code tools that can change a file: the tool windows of tamper attribution (D6). `Task`
+ * keeps a subagent's whole run inside a window; `mcp__.*` covers MCP tools that write files. Read
+ * and search tools stay out, so they cost no hook process.
+ */
+export const WINDOW_TOOLS = 'Write|Edit|MultiEdit|NotebookEdit|Bash|Task|mcp__.*';
 
 /** The plugin's harness hooks (claude-plugin/hooks/hooks.json), calling prism-cli directly instead of the plugin's script. */
 export function claudeHooks(cli: string): Record<string, unknown[]> {

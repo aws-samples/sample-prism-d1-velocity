@@ -31,7 +31,7 @@ import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
 import { agentText, bypassReason, capBytes, clip, finishGateOn, HOOK_BUDGET_MS, isGitPush, MAX_FINDING_CHARS, MAX_REASON_BYTES, noticeOnce, oneLine, parsePushTarget, personText, pushGateOn } from './claude.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict } from './engine.js';
-import { deleteGuard, guardEvent } from './guard.js';
+import { deleteGuard, guardEvent, recordWindow } from './guard.js';
 import { deleteState, ensureHarnessDir, harnessDir, loadState, recordBaseline, sanitizeSession } from './state.js';
 
 /** pre-tool / post-tool run around every agent tool (D6); pre-push is pre-tool's older name (1.12.0 hook files). */
@@ -192,13 +192,11 @@ function finishCheck(repoRoot: string, session: string | null, pushNotice: strin
  * `cwd`), not the shell call's directory. Never fails the hook: on an error nothing is recorded,
  * which leaves every change the agent's.
  */
-function toolWindow(input: KiroInput, edge: 'pre' | 'post'): void {
-  try {
-    const session = sanitizeSession(input.session_id);
-    const dir = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
-    const top = session ? gitIn(dir, ['rev-parse', '--show-toplevel']) : null;
-    if (session && top?.ok && top.stdout) guardEvent(top.stdout, session, edge);
-  } catch { /* fail toward the agent: nothing becomes the person's */ }
+function toolWindow(input: KiroInput, edge: 'pre' | 'post'): string {
+  const session = sanitizeSession(input.session_id);
+  const dir = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
+  const top = session ? gitIn(dir, ['rev-parse', '--show-toplevel']) : null;
+  return top?.ok && top.stdout ? recordWindow(top.stdout, session, edge) : '';
 }
 
 /**
@@ -220,8 +218,9 @@ export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHo
   } catch {
     return event === 'pre-push' || event === 'pre-tool' ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
-  if (event === 'pre-tool' || event === 'post-tool' || event === 'pre-push') toolWindow(input, event === 'post-tool' ? 'post' : 'pre');
-  if (event === 'post-tool') return ok();
+  const windowNote = event === 'pre-tool' || event === 'post-tool' || event === 'pre-push' ? toolWindow(input, event === 'post-tool' ? 'post' : 'pre') : '';
+  // Kiro drops hook stderr on exit 0; the note is for a person running the hook by hand.
+  if (event === 'post-tool') return ok(windowNote);
   if (event === 'pre-push' || event === 'pre-tool') {
     // Any call with a command is checked, whatever its tool id says (a renamed shell tool must not
     // skip the check). A call without one is skipped only when it is plainly another tool.

@@ -388,3 +388,14 @@ test('D6 (Claude Code): the same windows through pre-tool and post-tool', () => 
   tool(() => r.write(CONFIG, '{ "x": 1 }\n'));
   assert.match(runClaudeHook('stop', cin({ hook_event_name: 'Stop' }), env), /tamper|hook configuration/, 'the agent\'s edit');
 });
+
+test('D6: a snapshot cut off at the file cap attributes nothing to the person', () => {
+  const r = rig();
+  for (let i = 0; i < 505; i++) r.write(`.kiro/hooks/h${i}.json`, '{}\n');
+  r.commit('many hooks');
+  runKiroHook('session-start', payload('SessionStart', r), deps(r));
+  agentTool(r, () => r.write('src/a.ts', 'x\n'));
+  r.write(CONFIG, '{}\n');
+  agentTool(r, () => r.write('src/b.ts', 'y\n'));
+  assert.ok(isTamper(finish(r)), 'fail toward the agent');
+});

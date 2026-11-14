@@ -42,8 +42,10 @@ export const TAMPER_GLOBS = [
 const TAMPER_RES = TAMPER_GLOBS.map((g) => new RegExp(`^${g.split('**').map((p) => p.split('*').map((s) => s.replace(/[.+^${}()|[\]\\?]/g, '\\$&')).join('[^/]*')).join('.*')}$`));
 export const isTamperPath = (p: string) => TAMPER_RES.some((re) => re.test(p));
 
-/** Most guarded files hashed per snapshot; a repo with more (huge hook dirs) is cut off there. */
+/** Most guarded files hashed per snapshot. A snapshot cut off there attributes nothing to the person. */
 const MAX_FILES = 500;
+/** Files larger than this are fingerprinted by size and mtime instead of read, to keep every tool call fast. */
+const MAX_HASH_BYTES = 1024 * 1024;
 
 /** The directories that can hold a guarded file, and whether to walk them recursively. */
 const ROOTS: [string, boolean][] = [...new Map(TAMPER_GLOBS.map((g) => {
@@ -52,25 +54,34 @@ const ROOTS: [string, boolean][] = [...new Map(TAMPER_GLOBS.map((g) => {
   return [(k < 0 ? parts.slice(0, -1) : parts.slice(0, k)).join('/'), g.includes('**')] as [string, boolean];
 }).sort((a, b) => Number(a[1]) - Number(b[1]))).entries()];
 
-/** sha256 of every guarded file that exists, by repo-relative path. No git call: this runs around every tool. */
-export function tamperHashes(repoRoot: string): Record<string, string> {
+/**
+ * sha256 of every guarded file that exists, by repo-relative path, and whether the snapshot is
+ * complete (under MAX_FILES). No git call: this runs around every tool.
+ */
+export function tamperHashes(repoRoot: string): { hashes: Record<string, string>; complete: boolean } {
   const out: Record<string, string> = {};
   let n = 0;
+  let complete = true;
   const walk = (rel: string, deep: boolean) => {
     let names: string[];
     try { names = readdirSync(join(repoRoot, rel)); } catch { return; }
     for (const name of names) {
-      if (n >= MAX_FILES) return;
       const p = rel ? `${rel}/${name}` : name;
       let st;
       try { st = lstatSync(join(repoRoot, p)); } catch { continue; }
       if (st.isDirectory()) { if (deep) walk(p, true); continue; }
       if (!st.isFile() || !isTamperPath(p) || p in out) continue;
-      try { out[p] = createHash('sha256').update(readFileSync(join(repoRoot, p))).digest('hex'); n++; } catch { /* unreadable: absent */ }
+      if (n >= MAX_FILES) { complete = false; return; }
+      const h = createHash('sha256');
+      try {
+        if (st.size > MAX_HASH_BYTES) h.update(`size:${st.size}:mtime:${st.mtimeMs}`); else h.update(readFileSync(join(repoRoot, p)));
+        out[p] = h.digest('hex');
+        n++;
+      } catch { /* unreadable: absent */ }
     }
   };
   for (const [dir, deep] of ROOTS) walk(dir, deep);
-  return out;
+  return { hashes: out, complete };
 }
 
 export interface Guard {
@@ -108,13 +119,19 @@ function saveGuard(repoRoot: string, session: string, g: Guard): void {
 
 export type GuardEvent = 'start' | 'pre' | 'post';
 
-/** Records one hook event (see the module comment). Errors are thrown; callers ignore them, which leaves changes the agent's. */
+/**
+ * Records one hook event (see the module comment). Errors are thrown; callers report them and go
+ * on, which leaves changes the agent's. Claude Code runs a Bash call's pre-tool and pre-push hooks
+ * in parallel, so two `pre` events can race: both fold the same changes into `person`, or the later
+ * one sees the window already open and keeps that fold; either way the saved record is the same.
+ */
 export function guardEvent(repoRoot: string, session: string, event: GuardEvent): void {
-  const now = tamperHashes(repoRoot);
+  if (event === 'start' && loadGuard(repoRoot, session)) return; // a resumed session keeps its record
+  const { hashes: now, complete } = tamperHashes(repoRoot);
   const prev = event === 'start' ? null : loadGuard(repoRoot, session);
   const person = { ...(prev?.person ?? {}) };
-  if (event === 'start' && loadGuard(repoRoot, session)) return; // a resumed session keeps its record
-  if (event === 'pre' && prev && !prev.open) {
+  // A cut-off snapshot cannot tell an unhashed file from a deleted one: attribute nothing then.
+  if (event === 'pre' && prev && !prev.open && complete) {
     for (const p of new Set([...Object.keys(prev.hashes), ...Object.keys(now)])) {
       if (prev.hashes[p] !== now[p]) person[p] = now[p] ?? null;
     }
@@ -122,11 +139,19 @@ export function guardEvent(repoRoot: string, session: string, event: GuardEvent)
   saveGuard(repoRoot, session, { version: 1, open: event === 'pre', hashes: now, person });
 }
 
+/** guardEvent for a hook: never throws; returns a one-line note for stderr when nothing could be recorded. */
+export function recordWindow(repoRoot: string, session: string | null, event: GuardEvent): string {
+  if (!session) return '';
+  try { guardEvent(repoRoot, session, event); return ''; } catch (e: any) { // any: fs error, message only
+    return `PRISM harness: could not record the tool window (${String(e?.message || e).split('\n')[0].slice(0, 200)}); changes to guarded files count as the agent's.\n`;
+  }
+}
+
 /** The given guarded paths that the person changed and that still hold exactly what they left. */
 export function personsChanges(repoRoot: string, session: string, paths: string[]): Set<string> {
   const g = paths.length ? loadGuard(repoRoot, session) : null;
   if (!g) return new Set();
-  const now = tamperHashes(repoRoot);
+  const { hashes: now } = tamperHashes(repoRoot);
   return new Set(paths.filter((p) => p in g.person && (now[p] ?? null) === g.person[p]));
 }
 

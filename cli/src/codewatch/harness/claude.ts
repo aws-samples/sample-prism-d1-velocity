@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { readHarnessConfig } from '../config.js';
 import { gitIn } from './diff.js';
 import { HARNESS_CHILD_ENV, runHarnessReview, type HarnessOptions, type HarnessVerdict, type PushTarget } from './engine.js';
-import { deleteGuard, guardEvent } from './guard.js';
+import { deleteGuard, guardEvent, recordWindow } from './guard.js';
 import { deleteState, loadState, recordBaseline, sanitizeSession } from './state.js';
 
 /** pre-tool / post-tool run around every file-writing tool and Bash call (D6); they record tool windows only. */
@@ -493,7 +493,8 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
   try {
     if (event === 'pre-tool' || event === 'post-tool') {
       // Never fails the tool: on an error nothing is recorded, which leaves every change the agent's.
-      if (session) { try { guardEvent(repoRoot, session, event === 'pre-tool' ? 'pre' : 'post'); } catch { /* fail toward the agent */ } }
+      const note = recordWindow(repoRoot, session, event === 'pre-tool' ? 'pre' : 'post');
+      if (note) process.stderr.write(note);
       return '';
     }
     if (event === 'session-start') {
@@ -527,7 +528,8 @@ export function runClaudeHook(event: ClaudeEvent, stdin: string, deps: ClaudeHoo
 
     // pre-push: a git push (checked above). Claude Code runs the pre-tool hook beside this one, in
     // parallel, so fold the person's changes here too before the engine reads them (D6).
-    if (session) { try { guardEvent(repoRoot, session, 'pre'); } catch { /* fail toward the agent */ } }
+    const note = recordWindow(repoRoot, session, 'pre');
+    if (note) process.stderr.write(note);
     const v = runHarnessReview({ deadlineMs: Date.now() + HOOK_BUDGET_MS, noticeOnce: (k) => noticeOnce(session, k, env), ...deps.engine, repoRoot, session, client: 'claude', event: 'pre-push', scope: 'branch', push: parsePushTarget(cmd) ?? undefined, aiReview: pushGateOn(cfg, env) });
     const reason = () => agentText(v, { push: true, maxBytes: MAX_REASON_BYTES - Buffer.byteLength(DENY_TAIL) - 1 });
     if (v.verdict === 'fix') return deny(reason());
