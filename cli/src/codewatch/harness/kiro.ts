@@ -42,6 +42,12 @@ export type KiroEvent = typeof KIRO_EVENTS[number];
 export const KIRO_DENY_EXIT = 2;
 /** Kiro's shell tool id; the `shell` matcher selects it. */
 export const KIRO_SHELL_TOOL = 'execute_bash';
+/**
+ * Raw hook input that could be a shell call or a push (D5): an unparseable pre-tool payload that
+ * matches fails closed. Built from KIRO_SHELL_TOOL and the `shell` category, plus any `push` text,
+ * so a payload cut off before its tool name but mentioning a push is still held.
+ */
+const MAYBE_SHELL_INPUT = new RegExp(`${KIRO_SHELL_TOOL}|"shell"|push`);
 /** Last line of every push deny: who blocked it. */
 export const KIRO_DENY_TAIL = 'This was blocked by the PRISM push check: the PRISM Kiro hook (.kiro/hooks/prism-harness.json), which runs prism-cli codewatch hook. Stop and tell the user that this hook blocked the command and why; do not attribute it to anyone else.';
 /** Kiro has no message channel to the person, so the agent relays it. */
@@ -219,7 +225,7 @@ export function runKiroHook(event: KiroEvent, stdin: string | null, deps: KiroHo
   } catch {
     // pre-tool runs on every tool (matcher `*`), so a parse glitch must not block them all: it fails
     // closed only when the raw input could be a shell call or a push (D5). pre-push is shell-only.
-    const shellish = /execute_bash|"shell"|push/.test(stdin ?? '');
+    const shellish = MAYBE_SHELL_INPUT.test(stdin ?? '');
     return event === 'pre-push' || (event === 'pre-tool' && shellish) ? failClosed('the hook input from Kiro was missing or not a JSON object') : ok();
   }
   const windowNote = event === 'pre-tool' || event === 'post-tool' || event === 'pre-push' ? toolWindow(input, event === 'post-tool' ? 'post' : 'pre') : '';
