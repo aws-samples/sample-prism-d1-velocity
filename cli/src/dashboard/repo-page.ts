@@ -95,7 +95,7 @@ function repoCommits(cw) {
 }
 
 function repoSetup(repo) {
-  const st = repo.setup || {}, s = el('section', { class: 'card' }, el('h2', {}, 'Setup'));
+  const st = repo.setup || {}, s = el('section', { class: 'card' }, el('h2', {}, 'Repo settings'));
   const label = { ok: 'on', warn: 'bypassed', missing: 'off', 'opted-out': 'opted out' };
   s.append(kv([
     ['Codewatch', sevPill(st.status === 'ok' ? 'ok' : st.status === 'warn' ? 'medium' : 'zero', (label[st.status] || txt(st.status)) + (st.global ? ' (global)' : ''))],

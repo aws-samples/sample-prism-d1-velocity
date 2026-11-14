@@ -102,9 +102,10 @@ export class UpdateCheck {
     return !c || this.now() - c.checkedAt >= UPDATE_CHECK_INTERVAL_MS || this.now() < c.checkedAt;
   }
 
-  /** Asks the registry when a check is due, else answers from the cache. Never throws. */
-  get(): Promise<VersionInfo> {
-    if (!this.due()) return Promise.resolve(this.current());
+  /** Asks the registry when a check is due (or `force`, the Updates tab's Check now), else answers from the cache. Never throws. */
+  get(opts: { force?: boolean } = {}): Promise<VersionInfo> {
+    if (this.off()) return Promise.resolve(this.current());
+    if (!opts.force && !this.due()) return Promise.resolve(this.current());
     if (!this.running) {
       this.running = (async () => {
         const prev = readCache(this.d.file);

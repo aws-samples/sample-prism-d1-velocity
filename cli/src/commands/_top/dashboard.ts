@@ -11,6 +11,7 @@ import { collectUsage, emptyUsage } from '../../dashboard/usage.js';
 import { UsageCache, usageCachePath } from '../../dashboard/usage-cache.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../../dashboard/snapshot.js';
 import { ownVersion } from './version.js';
+import { findOnPath } from '../../utils/tool-check.js';
 import { UpdateCheck, updateCachePath } from '../../dashboard/update-check.js';
 import { resolve } from 'node:path';
 
@@ -27,7 +28,7 @@ export function formatTiming(t: PayloadTiming): string {
 }
 
 export default {
-  description: 'Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a Setup page that runs local setup steps. Read-only in AWS.',
+  description: 'Local web dashboard (127.0.0.1 only): codewatch results, codeburn usage, and a Settings page that runs local setup steps. Read-only in AWS.',
   options: [
     { flags: '--json', description: 'Print the dashboard data as JSON and exit (no server)' },
     { flags: '--root <dir>', description: 'Where to look for git repos, 3 levels deep (default: your home directory)' },
@@ -112,6 +113,7 @@ export default {
         execPath: process.execPath, entry: cliEntry(), cwd: process.cwd(), home: homedir(), platform: process.platform,
         repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
         systemdAvailable: () => (systemd ??= systemdUserAvailable()),
+        npmPath: () => findOnPath('npm'),
         onDone: () => payload.invalidate(),
       });
       const api = setupApi({
@@ -119,6 +121,7 @@ export default {
         repoPaths: async () => (await repos()).map((r) => r.path),
         identity: { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) },
         refresh: () => { payload.invalidate(); return payload(); },
+        checkUpdate: async () => { const v = await updates.get({ force: true }); payload.invalidate(); return v; },
       });
       // fresh=1 (the Refresh button) waits for new exports; otherwise the cache, refreshed in the background when stale.
       const getUsage = async (url: URL) => {

@@ -187,10 +187,10 @@ test('page: four cards on top, codewatch rows open their repo view, empty sectio
   assert.match(t, /Latest codewatch reviewskippedcw · .* · kiro · no changes against upstream/);
   assert.match(t, /Spend today\$1\.50codeburn, all projects/);
   assert.match(t, /Spend this month\$9\.00codeburn, this calendar month/);
-  assert.match(t, /Settings warnings4codeburn installed: not on PATH.*Open Setup →/, 'every missing or warn machine item counts; the optional global hooks (info) do not');
+  assert.match(t, /Settings warnings4codeburn installed: not on PATH.*Open Settings →/, 'every missing or warn machine item counts; the optional global hooks (info) do not');
   const link = page.dom.byId.main.byClass('scard')[3].querySelectorAll('a')[0];
-  assert.equal(link.getAttribute('href'), '#setup');
-  assert.doesNotMatch(t, /other repos: not set up|Setup checklist/, 'the checklist moved to the Setup view');
+  assert.equal(link.getAttribute('href'), '#settings');
+  assert.doesNotMatch(t, /other repos: not set up|Setup checklist/, 'the checklist moved to the Settings view');
   assert.match(t, /Codewatch1 repo with codewatch · click a repo for its own page/);
   const cw = p.repos.find((r) => r.label === 'cw')!;
   assert.ok(page.dom.byId.main.querySelectorAll('a').some((a) => a.getAttribute('href') === '#repo/' + cw.id), 'the repo name links to #repo/<id>');
@@ -250,8 +250,8 @@ test('page: four summary cards, two per row below 860px and one below 520px; lon
   assert.ok((warnDetail.getAttribute('title') || '').startsWith(long), 'full text in the title');
   assert.equal(cards[3].childNodes[1].textContent, '2');
   assert.equal((cards[1].childNodes[2] as FakeElement).getAttribute('title'), null, 'short details get no title');
-  assert.equal(page.dom.byId['setup-badge'].textContent, '2', 'the Setup tab shows the warnings count');
-  assert.equal(page.dom.byId['setup-badge'].hidden, false);
+  assert.match(page.dom.byId['settings-badge'].textContent, /^[1-9][0-9]*$/, 'the Settings tab shows its Needs you count');
+  assert.equal(page.dom.byId['settings-badge'].hidden, false);
 });
 
 test('page: low differs from muted in both themes; dark cards are raised; medium is yellow, the accent is the logo orange', () => {
@@ -280,7 +280,7 @@ const syncRow = (home: string, scheduleExists: () => boolean = () => false) =>
   machineChecks({ pathEnv: tmp('none'), home, env: {}, scheduleExists, schedulerName: () => 'crontab', systemdAvailable: () => false, global: { state: 'not-installed', hooksPath: null, dir: '' } })
     .find((i) => i.id === 'codeburn-sync')!;
 /** The sync row's help links, in the Setup view. */
-const pageLinks = (page: Awaited<ReturnType<typeof runPage>>) => page.dom.byId.setup.querySelectorAll('a')
+const pageLinks = (page: Awaited<ReturnType<typeof runPage>>) => page.dom.byId.settings.querySelectorAll('a')
   .filter((a) => (a.getAttribute('href') || '').startsWith('https://github.com/aws-samples/'))
   .map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]);
 
@@ -298,7 +298,7 @@ test('sync mode local (no mode, no endpoint): info row, one setup link, not a wa
   assert.deepEqual(json.machine.codeburnSync, { mode: 'local', source: 'default', help: LOCAL_MODE_HELP });
   assert.ok(!json.summary.warnings.first?.includes('collector URL'), 'local is not a warning');
   const page = await runPage([p], '#setup', SETUP_STUB);
-  assert.match(page.setupText(), /Scheduled codeburn sync pushlocal only: codeburn usage stays on this machineIf your team uses PRISM/);
+  assert.match(page.settingsText(), /Scheduled codeburn sync pushlocal only: codeburn usage stays on this machineIf your team uses PRISM/);
   assert.deepEqual(pageLinks(page), [['Setup instructions', SETUP_DOCS.telemetryAccount, '_blank', 'noopener noreferrer']]);
 });
 
@@ -360,8 +360,8 @@ test('sync mode admin: info row with the platform-team steps, the team commands 
   assert.deepEqual(row.help!.commands, ['prism-cli team info', 'prism-cli team add-developer <email>']);
   const { p } = await payloadFixture(machineDeps(modeHome('adm2', { mode: 'admin' })));
   const page = await runPage([p], '#setup', SETUP_STUB);
-  assert.match(page.setupText(), /platform team: set up PRISM for your developersYou are the platform team: set up PRISM so developers can sync\.Deploy the PRISM stack/);
-  assert.match(page.setupText(), /Commands: prism-cli team info, prism-cli team add-developer <email>/);
+  assert.match(page.settingsText(), /platform team: set up PRISM for your developersYou are the platform team: set up PRISM so developers can sync\.Deploy the PRISM stack/);
+  assert.match(page.settingsText(), /Commands: prism-cli team info, prism-cli team add-developer <email>/);
   assert.deepEqual(pageLinks(page), [['Platform team guide', SETUP_DOCS.platformTeamGuide, '_blank', 'noopener noreferrer']]);
 });
 

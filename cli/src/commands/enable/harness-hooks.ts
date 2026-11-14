@@ -262,8 +262,7 @@ function withHooks(json: Record<string, Json>, hooks: Record<string, Json>): Rec
 function claudeInstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
   const plugin = pluginActive(d);
   if (plugin.active) {
-    const v = plugin.version?.split('.').map(Number);
-    const old = v && v.length === 3 && v.every(Number.isFinite) && (v[0] === 0 && v[1] < PLUGIN_HOOKS_MINOR);
+    const old = pluginPredatesHooks(plugin.version);
     d.log(old
       ? `  ! The PRISM Claude Code plugin ${plugin.version} is installed. It predates the harness hooks (plugin 0.${PLUGIN_HOOKS_MINOR}.0), so update it from Claude Code's /plugin menu rather than adding settings hooks that would run twice after the update. Skipped.`
       : `  ! The PRISM Claude Code plugin (${PLUGIN_ID}${plugin.version ? ` ${plugin.version}` : ''}) is installed and already runs these hooks. Skipped, so they do not run twice.`);
@@ -293,30 +292,73 @@ function claudeUninstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
 
 // ------------------------------------------------------------ status and main
 
-function status(clients: Client[], d: AgentHooksDeps): number {
-  d.log('\n📊 Agent hooks status\n');
-  for (const c of clients) {
+export type HookRowState = State | 'unreadable' | 'no-repo';
+
+/** One client and scope of `enable agent-hooks --status`, as data (the dashboard's Agent hooks tab). */
+export interface AgentHookRow {
+  client: Client;
+  scope: 'project' | 'global';
+  state: HookRowState;
+  /** The hook file, with the home directory as ~; null outside a repo. */
+  path: string | null;
+  /** Kiro: other (non-PRISM) hooks in the same file. */
+  others: number;
+  /** Why it could not be read. */
+  error: string | null;
+}
+
+export interface AgentHookStatus {
+  rows: AgentHookRow[];
+  /** The PRISM Claude Code plugin: installed and enabled, its version, and whether it predates the harness hooks (0.3.0). */
+  plugin: { active: boolean; version: string | null; outdated: boolean };
+}
+
+/** True for a plugin version below 0.PLUGIN_HOOKS_MINOR.0. */
+export function pluginPredatesHooks(version: string | null): boolean {
+  const v = version?.split('.').map(Number);
+  return !!v && v.length === 3 && v.every(Number.isFinite) && v[0] === 0 && v[1] < PLUGIN_HOOKS_MINOR;
+}
+
+/** Installed, outdated or missing per client and scope, and the Claude plugin state. Reads files only. */
+export function agentHookStatus(d: Pick<AgentHooksDeps, 'home' | 'env' | 'repoRoot' | 'cli'>, clients: readonly Client[] = CLIENTS): AgentHookStatus {
+  const dd = d as AgentHooksDeps;
+  const rows: AgentHookRow[] = [];
+  for (const client of clients) {
     for (const global of [false, true]) {
       const o = { global };
+      const scope = global ? 'global' as const : 'project' as const;
       const cli = global ? d.cli : PORTABLE_CLI;
-      if (!global && !d.repoRoot) { d.log(`  ${c} (project): not in a git repository`); continue; }
-      let line: string;
+      if (!global && !d.repoRoot) { rows.push({ client, scope, state: 'no-repo', path: null, others: 0, error: null }); continue; }
+      const path = client === 'kiro' ? join(kiroDir(o, dd), KIRO_FILE) : claudeSettings(o, dd);
       try {
-        if (c === 'kiro') {
-          const path = join(kiroDir(o, d), KIRO_FILE);
-          const f = readObject(path);
+        const f = readObject(path);
+        if (client === 'kiro') {
           const st = kiroState(f.json, kiroHookFile(cli));
-          line = `${st.state}  ${tilde(path, d.home)}${st.others ? ` (also ${st.others} other hook(s))` : ''}`;
+          rows.push({ client, scope, state: st.state, path: tilde(path, d.home), others: st.others, error: null });
         } else {
-          const path = claudeSettings(o, d);
-          const f = readObject(path);
-          line = `${claudeState(hooksObject(f.json, path), claudeHooks(cli))}  ${tilde(path, d.home)}`;
+          rows.push({ client, scope, state: claudeState(hooksObject(f.json, path), claudeHooks(cli)), path: tilde(path, d.home), others: 0, error: null });
         }
-      } catch (e: any) { line = `unreadable: ${String(e?.message || e).split('\n')[0]}`; } // any: a read error, message only
-      d.log(`  ${c} (${global ? 'global' : 'project'}): ${line}`);
+      } catch (e: any) { // any: a read error, message only
+        rows.push({ client, scope, state: 'unreadable', path: tilde(path, d.home), others: 0, error: String(e?.message || e).split('\n')[0] });
+      }
+    }
+  }
+  const p = pluginActive(dd);
+  return { rows, plugin: { active: p.active, version: p.version, outdated: p.active && pluginPredatesHooks(p.version) } };
+}
+
+function status(clients: Client[], d: AgentHooksDeps): number {
+  d.log('\n📊 Agent hooks status\n');
+  const s = agentHookStatus(d, clients);
+  for (const c of clients) {
+    for (const r of s.rows.filter((x) => x.client === c)) {
+      const line = r.state === 'no-repo' ? 'not in a git repository'
+        : r.state === 'unreadable' ? `unreadable: ${r.error}`
+          : `${r.state}  ${r.path}${r.others ? ` (also ${r.others} other hook(s))` : ''}`;
+      d.log(`  ${c} (${r.scope}): ${line}`);
     }
     if (c === 'claude') {
-      const p = pluginActive(d);
+      const p = s.plugin;
       d.log(`  claude plugin: ${p.active ? `${PLUGIN_ID}${p.version ? ` ${p.version}` : ''} (the plugin runs the harness hooks itself from 0.${PLUGIN_HOOKS_MINOR}.0)` : 'not installed or disabled'}`);
     }
   }

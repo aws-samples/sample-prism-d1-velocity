@@ -721,7 +721,7 @@ a first install. It does not install Kiro Crew. Two steps stay with you: trust t
 to see the **PRISM** sidebar entry. `prism-cli enable kirocrew --status` shows the installed and
 bundled versions, the source folder, the API grants and the digest cron. `--uninstall` removes
 the app and keeps its data; add `--purge-data` to delete the data too. `prism-cli version` and the
-dashboard's Setup tab say when the installed app is older than the one bundled with your
+dashboard's Settings view say when the installed app is older than the one bundled with your
 prism-cli.
 
 To install from a local folder instead, for example a clone you are changing, see
@@ -1171,7 +1171,7 @@ the review runs locally at all, see [Why local code review](docs/WHY-LOCAL-CODE-
 ## Local Dashboard
 
 `prism-cli dashboard` starts a web page for one developer that shows codewatch results across your
-repos, codeburn spend, Security Agent and AWS check results, and a Setup view with the setup checklist. Run it from any directory:
+repos, codeburn spend, Security Agent and AWS check results, and a Settings view with the setup checklist. Run it from any directory:
 
 ```bash
 prism-cli dashboard
@@ -1183,32 +1183,65 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   run; the first page load exchanges it for a cookie, and requests without it are refused. Do not
   share the URL. Ctrl-C stops the server.
 - **Read-only dashboard.** The dashboard view only reads data; every fix it suggests is a command
-  for you to run. The **Setup** view (below) can run a fixed set of local setup commands for you.
-- **Read-only in AWS.** Loading the page makes no AWS calls. On the Setup view, **Check now**,
-  `aws check` and `team info` make read-only calls; nothing on the page writes to AWS.
+  for you to run. The **Settings** view (below) can run a fixed set of local setup commands for you.
+- **Read-only in AWS.** Loading the page makes no AWS calls. On the Settings view, **Check now**
+  on the AWS tab, `aws check` and `team info` make read-only calls; nothing on the page writes to AWS.
 - **Theme.** The page opens in the dark theme. The **Light / Dark / System** toggle in the header is
   saved in your browser (`localStorage`) and wins on the next load; System follows your OS setting.
 - **Update check.** The version pill in the header shows `prism-cli <version>`, or
   `Update: <installed> → <latest>` in orange when npm has a newer release; it links to the Updates
-  section of the Setup view, which shows the `npm i -g @prism-d1/cli@latest` command to copy.
+  tab of the Settings view, which can run `npm i -g @prism-d1/cli@latest` for you after a confirmation.
   The dashboard asks the npm registry (`registry.npmjs.org`) at most once a day, with a 3-second
   timeout, caches the answer in `~/.prism/cache/update-check.json` and says nothing when offline. It
   never updates anything by itself. `PRISM_NO_UPDATE_CHECK=1` turns the check off. The same
   `version` block (`installed`, `latest`, `publishedAt`, `update`, `checkedAt`) is in `--json`.
 
-### Setup View
+### Settings View
 
-The **Setup** tab lists the setup checklist with a **Run** or **Copy** button per item, in five
-sections: Updates (installed and latest prism-cli, see the update check above), This machine, Repos,
-Usage sync (codeburn) and AWS. Every Run first shows the exact
-command in a confirm dialog. Runs use this CLI's own binary with a fixed argument list, one at a
-time, without a terminal (so prompts take their no-terminal answer), with a timeout. The output
-is shown with secrets masked, and each run is logged to `~/.prism/logs/dashboard-actions.log`
-(time, action, repo name, exit code; no output and no URLs).
+![The Settings view with demo data: vertical section tabs with count badges and green dots, scores for machine checks, repos with codewatch and agent hook installs, and the Needs you list with fix commands](docs/images/settings-1.13-overview.png)
+
+The **Settings** tab (`#settings`; the old `#setup` links still work) has the setup checklist with a
+**Run** or **Copy** button per item, in section tabs down the left (across the top on a narrow
+screen). Each tab shows a count of the items that need you, or a green dot when there are none,
+and links straight to it as `#settings/<tab>`:
+
+- **Overview:** how many machine checks pass, how many repos have codewatch and how many agent hook
+  files are installed, then **Needs you**: every item to fix, with its command and a link to its
+  tab. The Settings tab in the header shows the same count. **Check now** under the tabs re-runs the
+  local checks and redraws the counts.
+- **This machine:** codeburn, gitleaks and the global codewatch hooks.
+- **Repos:** the repos with codewatch, with their reviewer and Security Agent state; the repos
+  without it are collapsed behind one item with **Enable for every repo**
+  (`enable codewatch --global`).
+- **Agent hooks:** the [agent harness loop](#agent-harness-loop) hooks for kiro and claude, for the repo
+  the dashboard started in (project) and for your user (global), from the same files
+  `prism-cli enable agent-hooks --status` reads, with **Install**, **Update** or **Remove**
+  (`enable agent-hooks --client <c> [--global] [--uninstall]`). It shows the Claude Code plugin's
+  version, with a warning below 0.3.0 (older plugins predate the harness hooks) and the commands that
+  update it, and the Kiro Crew app with a button for `prism-cli enable kirocrew`.
+- **Usage sync:** where codeburn usage goes and the sync schedule.
+- **AWS:** see below. The saved `aws connect` account is shown as its last 4 digits.
+- **Updates:** the installed and latest prism-cli, when it was published and when npm was last
+  asked; **Update prism-cli** runs `npm i -g @prism-d1/cli@latest` (after the confirm dialog);
+  **Check now** asks the npm registry again; a link to the release notes; a reminder to update the
+  Claude Code plugin and run `prism-cli enable kirocrew` after an update; and the versions of the
+  plugin, the Kiro Crew app, gitleaks and codeburn.
+
+![The Agent hooks tab with demo data: kiro and claude, project and global, with Install and Remove buttons, and a Claude Code plugin 0.2.0 flagged as needing 0.3.0 or newer](docs/images/settings-1.13-agent-hooks.png)
+
+![The Updates tab with demo data: installed 1.13.0, latest 1.13.1 with its publish time, the Update prism-cli, Check now and Release notes controls, and the components table](docs/images/settings-1.13-updates.png)
+
+Every Run first shows the exact command in a confirm dialog. The page sends only an action id; the
+server maps it to a fixed argument list for this CLI's own binary (or for npm, for the update), runs
+one at a time, without a terminal (so prompts take their no-terminal answer), with a timeout. The
+output appears in an **Action output** drawer at the bottom of the window, with secrets masked, and
+each run is logged to `~/.prism/logs/dashboard-actions.log` (time, action, repo name, exit code; no
+output and no URLs).
 
 - **Run (local only):** `enable codewatch` in a repo from the list, `enable codewatch --global`,
   `enable codeburn --local`, `--url <collector URL>` (https only), `--schedule systemd` (Linux with
-  `systemctl --user`, team mode), `--remove` (asks twice) and `--status`, and **Re-check status**.
+  `systemctl --user`, team mode), `--remove` (asks twice) and `--status`, `enable agent-hooks`,
+  `enable kirocrew --yes`, `npm i -g @prism-d1/cli@latest` (not on Windows), and **Re-check status**.
 - **Run (read-only in AWS):** `aws check`, `team info` and **Check now**.
 - **Copy only:** the gitleaks install hint, `enable security`, `team add-developer`, `aws connect`
   and the `security code-review / threat-model / pentest` commands, because they write to AWS,
@@ -1226,7 +1259,7 @@ account, caller ARN and region, whether they match the saved account, and fixes 
 are expired or invalid. On a match it updates the saved verified time, and says so. Account ids and
 ARNs appear only on the page, never in `prism-cli dashboard --json`.
 
-**Checklist.** The Setup view's This machine and Repos sections list, for this machine: codeburn installed, the scheduled sync from `enable codeburn`
+**Checklist.** The Settings view's This machine, Usage sync, AWS and Repos tabs list, for this machine: codeburn installed, the scheduled sync from `enable codeburn`
 and its last run (by sync mode: local shows "local only" as info with how to join a team; team without
 a collector URL says to ask your platform team, with Setup instructions and Platform team guide links;
 admin lists the platform-team steps and `prism-cli team` commands), gitleaks, AWS credentials, and the global codewatch hooks (optional, so "not installed" is info and
@@ -1261,7 +1294,7 @@ to scan somewhere else. The repo you started it in is listed first.
 **Summary cards.** The latest codewatch review in any repo (severity pills, or skipped / failed),
 spend today and this month, and **Settings warnings**: the checklist items that are missing or warn,
 plus repos whose own hooks bypass the global hooks (info items never count), with a link to the
-Setup view. The Setup tab shows the same count.
+Settings view.
 
 **Codewatch.** One row per repo with codewatch installed or results: the findings in the latest
 review of each branch, a **Trend** column with the last 12 pre-push reviews as stacked high / medium
@@ -1342,10 +1375,10 @@ long each stage took (scan, setup, usage, total) to stderr, with the same number
 ### Static snapshot
 
 `prism-cli dashboard --snapshot <file.html>` writes the dashboard as one self-contained HTML file and
-exits: no server, no port and no token. It has the same Dashboard and Setup tabs as the live page,
+exits: no server, no port and no token. It has the same Dashboard and Settings views as the live page,
 with the data embedded in the file, and works with or without `--root`. The page shows when it was
 generated, doesn't refresh, and makes no network request: its Content Security Policy is
-`default-src 'none'`, with the inline script and style allowed by hash. On the Setup tab the Run
+`default-src 'none'`, with the inline script and style allowed by hash. On the Settings view the Run
 buttons become Copy buttons that show the command, AWS **Check now** is turned off, and report links
 are plain text (use `prism-cli codewatch report`). The file is written with mode 0600 because it
 shows local paths and your saved AWS account, like the live page. The path is printed on stdout.

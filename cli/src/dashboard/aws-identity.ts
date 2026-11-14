@@ -1,5 +1,5 @@
 /**
- * The Setup page's AWS section: which credentials prism-cli would use and why,
+ * The Settings page's AWS tab: which credentials prism-cli would use and why,
  * with no AWS call, and the one read-only "Check now" call.
  *
  * Resolution follows the order every AWS command uses (aws/connection.ts):
