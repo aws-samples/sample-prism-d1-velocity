@@ -112,62 +112,104 @@ function errLine(r: AwsResult): string {
   return redact(line).slice(0, 300);
 }
 
-/**
- * Runs the lookup's read-only calls. Returns a failed Lookup (never throws) when
- * the region is unknown, the credentials fail, or a list call is refused.
- */
-export async function lookupSpaces(call: AwsCall, t: AwsTargetArgs, now: Date): Promise<Lookup> {
-  const at = now.toISOString();
-  if (!t.region || !REGION_RE.test(t.region)) return { ok: false, at, profile: t.profile, region: null, error: 'No AWS region is set for this repo. Set one with prism-cli aws connect, or AWS_REGION.', credentials: false };
-  const c = { ...t, timeoutMs: LOOKUP_TIMEOUT_MS };
-  const fail = (r: AwsResult, what: string, credentials = false): Lookup => ({ ok: false, at, profile: t.profile, region: t.region, error: `${what}: ${errLine(r)}`, credentials });
-  const who = await call(['sts', 'get-caller-identity'], c);
-  if (!who.ok) return fail(who, 'the credentials did not work', true);
-  const account = String(who.json?.Account || '');
-  const spaces: any[] = [];
+/** The fields read from list-agent-spaces and batch-get-agent-spaces; everything else is ignored. */
+interface SpaceSummary { agentSpaceId?: unknown; name?: unknown; createdAt?: unknown }
+interface SpaceDetail extends SpaceSummary { awsResources?: { s3Buckets?: unknown } }
+
+/** One read-only call with the lookup's target and timeout already applied. */
+type Call = (args: string[]) => Promise<AwsResult>;
+
+/** Every page of list-agent-spaces (bounded by MAX_SPACE_PAGES), or the failed call. */
+async function listSpaces(call: Call): Promise<{ spaces: SpaceSummary[] } | { failed: AwsResult }> {
+  const spaces: SpaceSummary[] = [];
   let token: string | null = null;
   for (let page = 0; page < MAX_SPACE_PAGES; page++) {
-    const r = await call(['securityagent', 'list-agent-spaces', ...(token ? ['--next-token', token] : [])], c);
-    if (!r.ok) return fail(r, 'list-agent-spaces failed', CRED_RE.test(r.raw));
-    spaces.push(...(r.json?.agentSpaceSummaries || []));
+    const r = await call(['securityagent', 'list-agent-spaces', ...(token ? ['--next-token', token] : [])]);
+    if (!r.ok) return { failed: r };
+    const list = r.json?.agentSpaceSummaries;
+    if (Array.isArray(list)) spaces.push(...list.filter((s): s is SpaceSummary => !!s && typeof s === 'object'));
     token = typeof r.json?.nextToken === 'string' && r.json.nextToken ? r.json.nextToken : null;
     if (!token) break;
   }
-  const param = async (name: string): Promise<string | null> => {
-    const r = await call(['ssm', 'get-parameter', '--name', name], c);
-    return r.ok ? (typeof r.json?.Parameter?.Value === 'string' ? r.json.Parameter.Value : null) : null;
-  };
-  const inUse = await param(PARAM_AGENT_SPACE);
-  const scanBucket = await param(PARAM_SCAN_BUCKET);
-  const ids = spaces.map((s) => String(s?.agentSpaceId || '')).filter(Boolean);
-  const details = new Map<string, any>();
+  return { spaces };
+}
+
+/** batch-get-agent-spaces in chunks. Details are a nicety (created time, bucket listed): a refused chunk leaves them unknown. */
+async function spaceDetails(call: Call, ids: string[]): Promise<Map<string, SpaceDetail>> {
+  const out = new Map<string, SpaceDetail>();
   for (let i = 0; i < ids.length; i += BATCH_IDS) {
-    const r = await call(['securityagent', 'batch-get-agent-spaces', '--agent-space-ids', ...ids.slice(i, i + BATCH_IDS)], c);
-    // Details are a nicety (created time, bucket listed): a refused batch-get leaves them unknown.
-    if (r.ok) for (const s of r.json?.agentSpaces || []) if (s?.agentSpaceId) details.set(String(s.agentSpaceId), s);
+    const r = await call(['securityagent', 'batch-get-agent-spaces', '--agent-space-ids', ...ids.slice(i, i + BATCH_IDS)]);
+    const list = r.ok ? r.json?.agentSpaces : null;
+    if (Array.isArray(list)) for (const s of list) if (s && typeof s === 'object' && s.agentSpaceId) out.set(String(s.agentSpaceId), s as SpaceDetail);
   }
-  const rows: SpaceRow[] = spaces.filter((s) => s?.agentSpaceId).map((s) => {
-    const id = String(s.agentSpaceId), d = details.get(id), name = String(s.name || d?.name || id);
-    const buckets = d && Array.isArray(d.awsResources?.s3Buckets) ? d.awsResources.s3Buckets.map((b: unknown) => String(b)) : null;
-    const created = d?.createdAt ?? s.createdAt ?? null;
-    return {
-      id, name, createdAt: created === null || created === undefined ? null : String(created),
-      inUse: id === inUse, pentest: PENTEST_SPACE_RE.test(name),
-      bucketListed: scanBucket && buckets ? listsBucket(buckets, scanBucket) : null,
-    };
-  });
-  rows.sort((a, b) => Number(b.inUse) - Number(a.inUse) || Number(a.pentest) - Number(b.pentest) || a.name.localeCompare(b.name));
+  return out;
+}
+
+/** An SSM parameter's value; null only when it does not exist. Any other failure (no ssm:GetParameter, a timeout) is returned as one. */
+async function ssmParam(call: Call, name: string): Promise<{ value: string | null } | { failed: AwsResult }> {
+  const r = await call(['ssm', 'get-parameter', '--name', name]);
+  if (r.ok) return { value: typeof r.json?.Parameter?.Value === 'string' ? r.json.Parameter.Value : null };
+  return r.errorCode === 'ParameterNotFound' || /ParameterNotFound/.test(r.raw) ? { value: null } : { failed: r };
+}
+
+function spaceRow(s: SpaceSummary, d: SpaceDetail | undefined, inUse: string | null, scanBucket: string | null): SpaceRow {
+  const id = String(s.agentSpaceId), name = String(s.name || d?.name || id);
+  const raw = d?.awsResources?.s3Buckets;
+  const buckets = Array.isArray(raw) ? raw.map((b) => String(b)) : null;
+  const created = d?.createdAt ?? s.createdAt ?? null;
   return {
-    ok: true, at, profile: t.profile, region: t.region, account4: last4(account), spaces: rows, inUse: rows.some((r) => r.inUse) ? inUse : null, scanBucket,
-    // The region passed REGION_RE (awsTargetFor), so this is fixed text plus a checked value: what enable security prints.
-    consoleUrl: `https://${t.region}.console.aws.amazon.com/securityagent/home?region=${t.region}`,
+    id, name, createdAt: created === null || created === undefined ? null : String(created),
+    inUse: id === inUse, pentest: PENTEST_SPACE_RE.test(name),
+    bucketListed: scanBucket && buckets ? listsBucket(buckets, scanBucket) : null,
   };
 }
+
+/**
+ * Runs the lookup's read-only calls. Returns a failed Lookup (never throws) when
+ * the region is unknown, the credentials fail, or a list or SSM read is refused.
+ * `account` is the full id, kept by the server for its re-check before a write;
+ * only `lookup` (with the last 4 digits) goes to the page.
+ */
+export async function lookupSpaces(awsCall: AwsCall, t: AwsTargetArgs, now: Date): Promise<{ lookup: Lookup; account: string | null }> {
+  const at = now.toISOString();
+  if (!t.region || !REGION_RE.test(t.region)) {
+    return { account: null, lookup: { ok: false, at, profile: t.profile, region: null, error: 'No AWS region is set for this repo. Set one with prism-cli aws connect, or AWS_REGION.', credentials: false } };
+  }
+  const call: Call = (args) => awsCall(args, { ...t, timeoutMs: LOOKUP_TIMEOUT_MS });
+  const fail = (r: AwsResult, what: string, credentials = CRED_RE.test(r.raw)) =>
+    ({ account: null, lookup: { ok: false as const, at, profile: t.profile, region: t.region, error: `${what}: ${errLine(r)}`, credentials } });
+  const who = await call(['sts', 'get-caller-identity']);
+  if (!who.ok) return fail(who, 'the credentials did not work', true);
+  const account = String(who.json?.Account || '');
+  const listed = await listSpaces(call);
+  if ('failed' in listed) return fail(listed.failed, 'list-agent-spaces failed');
+  const space = await ssmParam(call, PARAM_AGENT_SPACE);
+  if ('failed' in space) return fail(space.failed, `reading SSM ${PARAM_AGENT_SPACE} failed (ssm:GetParameter)`);
+  const bucket = await ssmParam(call, PARAM_SCAN_BUCKET);
+  if ('failed' in bucket) return fail(bucket.failed, `reading SSM ${PARAM_SCAN_BUCKET} failed (ssm:GetParameter)`);
+  const spaces = listed.spaces.filter((s) => s.agentSpaceId);
+  const details = await spaceDetails(call, spaces.map((s) => String(s.agentSpaceId)));
+  const rows = spaces.map((s) => spaceRow(s, details.get(String(s.agentSpaceId)), space.value, bucket.value));
+  rows.sort((a, b) => Number(b.inUse) - Number(a.inUse) || Number(a.pentest) - Number(b.pentest) || a.name.localeCompare(b.name));
+  return {
+    account,
+    lookup: {
+      ok: true, at, profile: t.profile, region: t.region, account4: last4(account), spaces: rows,
+      inUse: rows.some((r) => r.inUse) ? space.value : null, scanBucket: bucket.value,
+      // The region passed REGION_RE, so this is fixed text plus a checked value: what enable security prints.
+      consoleUrl: `https://${t.region}.console.aws.amazon.com/securityagent/home?region=${t.region}`,
+    },
+  };
+}
+
+const NEED_LOOKUP = 'Look up agent spaces first, so the dialog can name the account, region and scan bucket.';
 
 /** Good lookups per profile and region for LOOKUP_TTL_MS; the last failure is kept to show, never reused as an answer. */
 export class LookupCache {
   private good = new Map<string, Lookup & { ok: true }>();
   private bad = new Map<string, Lookup & { ok: false }>();
+  /** The full account id behind each good lookup; never sent to the page. */
+  private accounts = new Map<string, string>();
   constructor(private call: AwsCall = execAwsCall, private now: () => Date = () => new Date(), private ttlMs = LOOKUP_TTL_MS) {}
 
   /** The current good lookup for `t`, or null when there is none or it expired. */
@@ -185,10 +227,30 @@ export class LookupCache {
   async get(t: AwsTargetArgs, refresh = false): Promise<{ lookup: Lookup; cached: boolean }> {
     const f = this.fresh(t);
     if (f && !refresh) return { lookup: f, cached: true };
-    const l = await lookupSpaces(this.call, t, this.now());
-    if (l.ok) { this.good.set(targetKey(t), l); this.bad.delete(targetKey(t)); }
-    else { this.bad.set(targetKey(t), l); this.good.delete(targetKey(t)); }
+    const { lookup: l, account } = await lookupSpaces(this.call, t, this.now());
+    const k = targetKey(t);
+    if (l.ok) { this.good.set(k, l); this.accounts.set(k, account ?? ''); this.bad.delete(k); }
+    else { this.bad.set(k, l); this.good.delete(k); this.accounts.delete(k); }
     return { lookup: l, cached: false };
+  }
+
+  /**
+   * Right before an AWS-writing action: null when the credentials for `t` still
+   * resolve to the account the fresh lookup found (one sts get-caller-identity),
+   * else why not. Credentials can change after a lookup (env keys, the default
+   * chain, an SSO sign-in to another account), and the dialog named that account.
+   */
+  async verify(t: AwsTargetArgs): Promise<string | null> {
+    const k = targetKey(t), f = this.fresh(t), want = this.accounts.get(k);
+    if (!f || !want) return NEED_LOOKUP;
+    const who = await this.call(['sts', 'get-caller-identity'], { ...t, timeoutMs: LOOKUP_TIMEOUT_MS });
+    if (!who.ok) return `the credentials did not work: ${errLine(who)}`;
+    const now = String(who.json?.Account || '');
+    if (now !== want) {
+      this.good.delete(k); this.accounts.delete(k);
+      return `the credentials now point to account ${last4(now)}, not ${f.account4} from the lookup; look up agent spaces again.`;
+    }
+    return null;
   }
 }
 
@@ -202,7 +264,7 @@ export const WRITE_KIND: Partial<Record<ActionId, WriteKind>> = {
  * server holds. null (with the reason) when it cannot be named yet.
  */
 export function writeNotice(kind: WriteKind, repoName: string, l: Lookup | null): { text: string | null; reason: string | null } {
-  if (!l || !l.ok) return { text: null, reason: 'Look up agent spaces first, so the dialog can name the account, region and scan bucket.' };
+  if (!l || !l.ok) return { text: null, reason: NEED_LOOKUP };
   if (!l.inUse) return { text: null, reason: 'No agent space is set up for prism-cli in this account and region: run enable security first.' };
   if (!l.scanBucket) return { text: null, reason: `SSM ${PARAM_SCAN_BUCKET} is not set in this account and region: run enable security first.` };
   const docs = kind === 'threat model' ? ' Its scope docs at HEAD (default .kiro/specs/*/design.md and requirements.md) are uploaded too.' : '';

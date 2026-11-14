@@ -130,7 +130,12 @@ export default {
         npmPath: () => findOnPath('npm'),
         onDone: () => payload.invalidate(),
         awsArgs: (repo) => targetArgs(targetIn(repo.path)),
-        writeGate: (id, repo) => { const kind = WRITE_KIND[id]; return kind ? writeNotice(kind, repo.name, lookups.fresh(targetIn(repo.path))).reason : 'not an AWS-writing action'; },
+        // A current lookup that named the space, the bucket and the account, and the same account right now.
+        writeGate: async (id, repo) => {
+          const kind = WRITE_KIND[id], t = targetIn(repo.path);
+          if (!kind) return 'not an AWS-writing action';
+          return writeNotice(kind, repo.name, lookups.fresh(t)).reason ?? await lookups.verify(t);
+        },
       });
       const api = setupApi({
         runner, cwd: process.cwd(),

@@ -55,7 +55,7 @@ const T = { profile: 'demo', region: 'us-west-2' };
 
 test('lookup: the read-only calls, each with a 20 s timeout and the repo\'s profile and region; spaces marked', async () => {
   const { call, calls } = fakeAws();
-  const l = await lookupSpaces(call, T, new Date('2026-11-14T12:00:00Z'));
+  const l = (await lookupSpaces(call, T, new Date("2026-11-14T12:00:00Z"))).lookup;
   assert.ok(l.ok);
   assert.deepEqual(calls.map((c) => c.args.slice(0, 2).join(' ')), ['sts get-caller-identity', 'securityagent list-agent-spaces', 'ssm get-parameter', 'ssm get-parameter', 'securityagent batch-get-agent-spaces']);
   for (const c of calls) { assert.equal(c.timeoutMs, LOOKUP_TIMEOUT_MS); assert.equal(c.profile, 'demo'); assert.equal(c.region, 'us-west-2'); }
@@ -70,17 +70,34 @@ test('lookup: the read-only calls, each with a 20 s timeout and the repo\'s prof
 });
 
 test('lookup: failed credentials, a refused list, no region, and no space for prism-cli', async () => {
-  const expired = await lookupSpaces(fakeAws({ 'sts get-caller-identity': err('An error occurred (ExpiredToken) when calling GetCallerIdentity: The security token included in the request is expired') }).call, T, new Date());
+  const expired = (await lookupSpaces(fakeAws({ 'sts get-caller-identity': err('An error occurred (ExpiredToken) when calling GetCallerIdentity: The security token included in the request is expired') }).call, T, new Date())).lookup;
   assert.ok(!expired.ok && expired.credentials, 'credentials');
   assert.match(expired.ok ? '' : expired.error, /ExpiredToken|expired/);
-  const denied = await lookupSpaces(fakeAws({ 'securityagent list-agent-spaces': err('An error occurred (AccessDeniedException): not authorized to perform securityagent:ListAgentSpaces') }).call, T, new Date());
+  const denied = (await lookupSpaces(fakeAws({ 'securityagent list-agent-spaces': err('An error occurred (AccessDeniedException): not authorized to perform securityagent:ListAgentSpaces') }).call, T, new Date())).lookup;
   assert.ok(!denied.ok && !denied.credentials);
   const noRegion = fakeAws();
-  const nr = await lookupSpaces(noRegion.call, { profile: null, region: null }, new Date());
+  const nr = (await lookupSpaces(noRegion.call, { profile: null, region: null }, new Date())).lookup;
   assert.ok(!nr.ok && /No AWS region/.test(nr.error));
   assert.equal(noRegion.calls.length, 0, 'no call without a region');
-  const none = await lookupSpaces(fakeAws({ 'ssm get-parameter /prism/continuum/agent-space-id': err('An error occurred (ParameterNotFound)') }).call, T, new Date());
+  const none = (await lookupSpaces(fakeAws({ 'ssm get-parameter /prism/continuum/agent-space-id': err('An error occurred (ParameterNotFound)') }).call, T, new Date())).lookup;
   assert.ok(none.ok && none.inUse === null && none.spaces.every((s) => !s.inUse));
+  // A refused SSM read is not "not set up": it fails the lookup with its reason.
+  const ssmDenied = (await lookupSpaces(fakeAws({ 'ssm get-parameter /prism/continuum/agent-space-id': err('An error occurred (AccessDeniedException) when calling the GetParameter operation: not authorized to perform: ssm:GetParameter') }).call, T, new Date())).lookup;
+  assert.ok(!ssmDenied.ok && !ssmDenied.credentials);
+  assert.match(ssmDenied.ok ? '' : ssmDenied.error, /reading SSM \/prism\/continuum\/agent-space-id failed \(ssm:GetParameter\).*AccessDenied/);
+});
+
+test('lookup cache: verify() re-checks the account right before a write; another account drops the lookup', async () => {
+  let account = '111122223333';
+  const aws = fakeAws();
+  const call: AwsCall = async (args, t) => (args[1] === 'get-caller-identity' ? ok({ Account: account }) : aws.call(args, t));
+  const cache = new LookupCache(call);
+  assert.match((await cache.verify(T))!, /Look up agent spaces first/);
+  await cache.get(T);
+  assert.equal(await cache.verify(T), null, 'same account');
+  account = '444455556666';
+  assert.match((await cache.verify(T))!, /now point to account ••••6666, not ••••3333/);
+  assert.equal(cache.fresh(T), null, 'the stale lookup is dropped');
 });
 
 test('lookup cache: 5 minutes per profile and region; refresh forces; a failure is shown but never reused', async () => {
@@ -181,6 +198,25 @@ test('runner: a security action needs a repo id from the scan list; the cwd is t
   await until(() => !r.running);
   const bad = runnerWith([], { awsArgs: () => ['--profile', 'x; rm -rf /'] });
   assert.equal((await bad.start({ action: 'security-findings', repo: REPO.id })).status, 400, 'a resolved value that is not a profile name is refused');
+  const dash = runnerWith([], { awsArgs: () => ['--profile', '--endpoint-url=http://evil'] });
+  assert.equal((await dash.start({ action: 'security-findings', repo: REPO.id })).status, 400, 'a value that reads as a flag is refused');
+});
+
+test('runner: an async write gate holds the action lock while it checks', async () => {
+  let release!: (v: string | null) => void;
+  const calls: Spawned[] = [];
+  const r = runnerWith(calls, { writeGate: () => new Promise((res) => { release = res; }) });
+  const first = r.start({ action: 'security-code-review', repo: REPO.id, confirm: true });
+  await new Promise((res) => setTimeout(res, 5));
+  assert.equal(r.running, true, 'locked during the check');
+  assert.equal((await r.start({ action: 'security-findings', repo: REPO.id })).status, 409);
+  release('the credentials now point to account ••••6666');
+  assert.equal((await first).status, 409);
+  assert.equal(r.running, false);
+  assert.equal(calls.length, 0);
+  const thrower = runnerWith(calls, { writeGate: async () => { throw new Error('boom'); } });
+  assert.equal((await thrower.start({ action: 'security-code-review', repo: REPO.id, confirm: true })).status, 409, 'a failing check refuses');
+  assert.equal(thrower.running, false);
 });
 
 test('runner: the AWS-writing actions need confirm and a passing write gate; one action at a time', async () => {

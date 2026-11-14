@@ -177,8 +177,8 @@ export interface RunnerDeps {
   onDone?: () => void;
   /** --profile/--region for an awsTarget action in `repo`, resolved by the server. Absent: none appended. */
   awsArgs?: (repo: ScanRepo) => string[];
-  /** For a writesAws action: null to allow it, else why not (no current lookup, no space, no bucket). Absent: refused. */
-  writeGate?: (id: ActionId, repo: ScanRepo) => string | null;
+  /** For a writesAws action: null to allow it, else why not (no current lookup, no space, no bucket, another account). Absent: refused. */
+  writeGate?: (id: ActionId, repo: ScanRepo) => string | null | Promise<string | null>;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
 }
@@ -260,11 +260,18 @@ export class ActionRunner {
     if (b.confirm !== undefined && typeof b.confirm !== 'boolean') return bad('confirm must be true or false');
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
     if (def.writesAws) {
-      const why = this.d.writeGate ? this.d.writeGate(id, repo!) : 'AWS-writing actions are not enabled here';
+      if (!repo) return bad('an AWS-writing action needs a repo');
+      // Hold the lock while the gate makes its one read-only call, so nothing else starts in between.
+      this.busy = true;
+      let why: string | null;
+      try { why = this.d.writeGate ? await this.d.writeGate(id, repo) : 'AWS-writing actions are not enabled here'; }
+      catch (e) { why = `the write check failed: ${redact((e as Error).message)}`; }
+      finally { this.busy = false; }
       if (why) return bad(why, 409);
     }
     const target = def.awsTarget && repo && this.d.awsArgs ? this.d.awsArgs(repo) : [];
-    if (!target.every((a) => /^(--profile|--region|[A-Za-z0-9_.+=,@:-]{1,128})$/.test(a))) return bad('the resolved AWS profile or region is not valid');
+    // Only the two flag names, and values that cannot be read as a flag (no leading '-').
+    if (!target.every((a) => a === '--profile' || a === '--region' || /^[A-Za-z0-9_.+=,@:][A-Za-z0-9_.+=,@:-]{0,127}$/.test(a))) return bad('the resolved AWS profile or region is not valid');
 
     const args = [...def.args, ...target, ...(def.url ? [b.url as string] : [])];
     const cwd = repo ? repo.path : this.d.cwd;
