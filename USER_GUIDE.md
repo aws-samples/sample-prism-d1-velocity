@@ -1310,7 +1310,12 @@ this month's total and busiest day, bars by model, by project (Kiro Crew workspa
 cache-read tokens and the top tools. For codeburn's own breakdown run `codeburn web --period month`,
 or `codeburn month` in a terminal. The numbers come from one `codeburn export` for this calendar
 month (today is read from its per-day rows), plus one for the heatmap weeks before this month, which
-runs at most once a day because those days do not change. Both are cached in
+runs at most once a day because those days do not change. The month is drawn as soon as its export
+answers; while the earlier weeks load (about 8 seconds on a cold cache) their days show as "no data"
+with a loading pattern and the note "Loading earlier weeks from codeburn...". If that export fails
+or times out they stay "no data" and the note gives the reason; they are never drawn as $0. The
+legend shows the date range the heatmap covers. `--json` and `--snapshot` wait for the earlier
+weeks, and `usage.history` in `--json` says whether they are `ready`, `pending` or `error`. Both are cached in
 `~/.prism/cache/usage.json` (readable only by you) for 5 minutes. The page paints from local data
 first, with the spend cards showing "loading", then fills usage in. A cache older than 5 minutes is
 shown at once and refreshed in the background. A failed or missing codeburn is shown as such and

@@ -7,7 +7,7 @@ import { setupApi } from '../../dashboard/setup-api.js';
 import { repoRootOf } from '../../aws/connection.js';
 import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
 import type { DashboardPayload, PayloadTiming } from '../../dashboard/payload.js';
-import { collectUsage, emptyUsage } from '../../dashboard/usage.js';
+import { collectHistory, collectUsage, emptyUsage } from '../../dashboard/usage.js';
 import { UsageCache, usageCachePath } from '../../dashboard/usage-cache.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../../dashboard/snapshot.js';
 import { ownVersion } from './version.js';
@@ -44,7 +44,14 @@ export default {
   async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean }) {
     // stderr, so --json output stays parseable.
     if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
-    const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: (prior) => collectUsage({ prior }) });
+    // The month paints first; the earlier weeks of the heatmap (one more export, ~8 s) follow in the background.
+    const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: (prior) => collectUsage({ prior, history: 'defer' }), collectHistory: () => collectHistory() });
+    /** One-shot outputs wait for the earlier weeks, so a file never says "loading" forever. */
+    const settledUsage = async () => {
+      const r = await usageCache.get({ fresh: opts.fresh });
+      const u = r.usage.history?.status === 'pending' ? (await usageCache.settled()) ?? r.usage : r.usage;
+      return { usage: u, cacheHit: r.cacheHit, refresh: r.refresh };
+    };
     // At most one npm registry request a day (3 s timeout, silent offline); PRISM_NO_UPDATE_CHECK=1 turns it off.
     const updates = new UpdateCheck({ installed: ownVersion(), file: updateCachePath(homedir()) });
 
@@ -56,7 +63,7 @@ export default {
       try {
         const html = await buildSnapshotHtml({
           cwd: process.cwd(), home: homedir(), root: opts.root, version: ownVersion(),
-          usage: async () => { const r = await usageCache.get({ fresh: opts.fresh }); refresh = r.refresh; return r; },
+          usage: async () => { const r = await settledUsage(); refresh = r.refresh; return r; },
           versionInfo: () => updates.get(),
         });
         bytes = writeSnapshot(file, html);
@@ -72,19 +79,21 @@ export default {
         else console.error('prism dashboard: no display here (SSH session?), so it was not opened. Copy the file to your machine and open it there.');
       }
       if (refresh) await refresh;
+      await usageCache.historyRun();
       return;
     }
     if (opts.json) {
       let refresh: Promise<unknown> | null = null;
       const payload = await buildPayload({
         cwd: process.cwd(), root: opts.root,
-        usage: async () => { const r = await usageCache.get({ fresh: opts.fresh }); refresh = r.refresh; return r; },
+        usage: async () => { const r = await settledUsage(); refresh = r.refresh; return r; },
         version: () => updates.get(),
       });
       process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
       if (opts.timing) console.error(formatTiming(payload.timing));
       // A stale cache was printed; finish its background refresh so the next run gets new data.
       if (refresh) await refresh;
+      await usageCache.historyRun();
       return;
     }
     // The page's first paint never waits for codeburn: it shows the cached usage, or "loading" until /api/usage answers.
@@ -127,7 +136,11 @@ export default {
       const getUsage = async (url: URL) => {
         const r = await usageCache.get({ fresh: url.searchParams.get('fresh') === '1' });
         if (!r.cacheHit) payload.invalidate();
-        r.refresh?.then(() => payload.invalidate(), () => {});
+        // The earlier weeks land after the month: redraw when they do (the page polls while they are pending).
+        // Only when one is running: otherwise every poll would drop the cached payload.
+        const later = () => usageCache.historyRun()?.then(() => payload.invalidate(), () => {});
+        later();
+        r.refresh?.then(() => { payload.invalidate(); later(); }, () => {});
         return { usage: r.usage, cacheHit: r.cacheHit };
       };
       srv = await startServer({ port, getPayload: payload, getReport, getApi: { ...api.getApi, '/api/usage': getUsage }, postApi: api.postApi });

@@ -41,6 +41,12 @@ export interface UsagePanel {
    * a day outside it is unknown. null when that export failed; absent before 1.13.0.
    */
   prior?: PriorDays | null;
+  /**
+   * Whether `prior` is loaded: ready (or there are no earlier weeks), pending
+   * while its export runs after the month painted, error when it failed or
+   * timed out. The page draws pending and error weeks as "no data", never $0.
+   */
+  history?: UsageHistory;
   /** This month's codeburn totals beyond cost; absent before 1.13.0. */
   codeburn?: CodeburnStats;
   generated: string | null;
@@ -53,6 +59,9 @@ export interface UsagePanel {
   /** Shown as a note, never a link: codeburn web is a CLI command. */
   fullView: string;
 }
+
+/** The earlier weeks of the heatmap (`from`..`to`) and whether they are loaded; `error` is a short reason. */
+export interface UsageHistory { status: 'ready' | 'pending' | 'error'; from: string; to: string; error?: string }
 
 /** `day`: the local date it was exported, so a copy is reused for that day only (late-recorded usage shows up the next day). */
 export interface PriorDays { from: string; to: string; day: string; daily: { date: string; cost: number }[] }
@@ -142,13 +151,22 @@ export function todayFromDaily(month: any, today: string): Totals | null {
   return row ? totalsFrom(row) : { cost: 0, calls: 0, sessions: 0 };
 }
 
-export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string; prior?: PriorDays | null } = {}): Promise<UsagePanel> {
-  let exporter = opts.exporter;
-  if (!exporter) {
-    const bin = findOnPath('codeburn', opts.pathEnv);
-    if (!bin) return emptyUsage('not-installed', 'codeburn is not installed. Set it up with: prism-cli enable codeburn');
-    exporter = realCodeburnExport(bin);
-  }
+/** The given exporter, else codeburn on PATH; null when there is none. */
+function resolveExporter(opts: { exporter?: CodeburnExport; pathEnv?: string }): CodeburnExport | null {
+  if (opts.exporter) return opts.exporter;
+  const bin = findOnPath('codeburn', opts.pathEnv);
+  return bin ? realCodeburnExport(bin) : null;
+}
+
+/**
+ * history 'wait' (default): the earlier weeks' export runs alongside the month's
+ * and the panel carries both. 'defer': the panel comes back after the month
+ * export alone, with history pending unless today's copy is reused; the caller
+ * runs collectHistory and merges it in (usage-cache.ts).
+ */
+export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string; prior?: PriorDays | null; history?: 'wait' | 'defer' } = {}): Promise<UsagePanel> {
+  const exporter = resolveExporter(opts);
+  if (!exporter) return emptyUsage('not-installed', 'codeburn is not installed. Set it up with: prism-cli enable codeburn');
   const now = opts.now || new Date();
   const to = localDate(now);
   const from = `${to.slice(0, 8)}01`;
@@ -157,7 +175,10 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
   // The weeks before this month are exported at most once a day: a copy from today for the same range is reused.
   const range = priorRange(now);
   const reuse = range && opts.prior && opts.prior.from === range.from && opts.prior.to === range.to && opts.prior.day === to ? opts.prior : null;
-  const priorP = range && !reuse ? collectPrior(exporter, range, to) : Promise.resolve(reuse);
+  const defer = opts.history === 'defer';
+  const priorP: Promise<HistoryResult> = !range || reuse ? Promise.resolve(readyHistory(now, reuse))
+    : defer ? Promise.resolve({ prior: null, history: { status: 'pending', ...range } })
+      : collectPrior(exporter, range, to);
   let month: any;
   try { month = await exporter(['--from', from, '--to', to]); } catch (e) { return failed(e); }
   if (!isExport(month)) return badSchema(month);
@@ -200,7 +221,7 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
     stale: false,
     refreshError: null,
     fullView: 'codeburn web',
-    prior: await priorP,
+    ...(await priorP),
     codeburn: codeburnStats(month),
   };
   if (panel.today!.calls === 0 && panel.month!.calls === 0) {
@@ -223,19 +244,48 @@ export function priorRange(now: Date): { from: string; to: string } | null {
   return from <= to ? { from, to } : null;
 }
 
-/** Spend per day in `range`; null when the export fails (the page then shows those days as unknown). */
-async function collectPrior(exporter: CodeburnExport, range: { from: string; to: string }, day: string): Promise<PriorDays | null> {
+/** The earlier weeks and their state, as merged into a panel. */
+export interface HistoryResult { prior: PriorDays | null; history: UsageHistory }
+
+/** History for a panel that needs no export: the reused copy, or no earlier weeks at all. */
+function readyHistory(now: Date, reuse: PriorDays | null): HistoryResult {
+  const range = priorRange(now) ?? { from: heatmapStart(now), to: heatmapStart(now) };
+  return { prior: reuse, history: { status: 'ready', ...range } };
+}
+
+/** Longest failure reason shown under the heatmap. */
+const MAX_REASON = 120;
+
+/** A failure as a short reason for the page: one line, no export output. */
+export function shortReason(e: any): string {
+  if (e?.killed || e?.signal) return `codeburn did not answer within ${EXPORT_TIMEOUT_MS / 1000} s`;
+  return String(e?.message || e).split('\n')[0].slice(0, MAX_REASON);
+}
+
+/** Spend per day in `range`; on a failure, history is error with its reason (the page shows those days as unknown, never zero). */
+async function collectPrior(exporter: CodeburnExport, range: { from: string; to: string }, day: string): Promise<HistoryResult> {
+  const fail = (error: string): HistoryResult => ({ prior: null, history: { status: 'error', ...range, error } });
   try {
     const j = await exporter(['--from', range.from, '--to', range.to]);
-    if (!isExport(j) || !Array.isArray(j?.periods?.[0]?.daily)) return null;
+    if (!isExport(j) || !Array.isArray(j?.periods?.[0]?.daily)) return fail('unrecognised codeburn export');
     const daily = (j.periods[0].daily as any[])
       .filter((r) => typeof r?.Date === 'string' && r.Date >= range.from && r.Date <= range.to)
       .map((r) => ({ date: r.Date as string, cost: num(r['Cost (USD)']) }))
       .sort((a, b) => a.date.localeCompare(b.date));
-    return { ...range, day, daily };
-  } catch {
-    return null;
+    return { prior: { ...range, day, daily }, history: { status: 'ready', ...range } };
+  } catch (e) {
+    return fail(shortReason(e));
   }
+}
+
+/** The earlier weeks' export on its own: what a deferred panel (collectUsage history 'defer') is missing. */
+export async function collectHistory(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string } = {}): Promise<HistoryResult> {
+  const now = opts.now || new Date();
+  const range = priorRange(now);
+  if (!range) return readyHistory(now, null);
+  const exporter = resolveExporter(opts);
+  if (!exporter) return { prior: null, history: { status: 'error', ...range, error: 'codeburn is not installed' } };
+  return collectPrior(exporter, range, localDate(now));
 }
 
 /** Calls, sessions, projects, tokens, activity and tools from the month export (codeburn.export.v2). */

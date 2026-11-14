@@ -86,6 +86,11 @@ svg.bars { display:block; } .chart svg.bars { width:100%; }
 .heat { display:grid; grid-template-rows:repeat(7, 13px); grid-auto-flow:column; grid-auto-columns:13px; gap:3px; }
 .heat i { border-radius:3px; background:var(--heat0); }
 .heat i.nd { background:transparent; box-shadow:inset 0 0 0 1px var(--line); }
+.heat i.nd.pending { background:repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 4px); }
+@keyframes prism-pending { from { opacity:.45; } to { opacity:1; } }
+@media (prefers-reduced-motion: no-preference) { .heat i.nd.pending { animation:prism-pending 1.2s ease-in-out infinite alternate; } }
+.heat-legend .range { margin-left:10px; }
+.heat-note { font-size:11px; color:var(--muted); margin-top:6px; max-width:240px; overflow-wrap:anywhere; }
 .heat i.l1 { background:var(--heat1); } .heat i.l2 { background:var(--heat2); } .heat i.l3 { background:var(--heat3); } .heat i.l4 { background:var(--heat4); }
 .heat-legend { display:flex; gap:3px; align-items:center; font-size:11px; color:var(--muted); margin-top:8px; flex-wrap:wrap; }
 .heat-legend i { width:11px; height:11px; border-radius:3px; display:inline-block; background:var(--heat0); }
@@ -355,16 +360,23 @@ function heatmap(u) {
   for (const r of (pr && pr.daily) || []) cost.set(r.date, r.cost);
   for (const r of u.daily || []) cost.set(r.date, r.cost);
   const known = (k) => k >= u.month.from || (pr && k >= pr.from && k <= pr.to);
+  // The earlier weeks' export: pending draws its days as loading "no data", error as plain "no data" -- never as $0.
+  const h = u.history || null;
+  const pending = !!h && h.status === 'pending';
   const max = Math.max(0, ...cost.values());
   const grid = el('div', { class: 'heat', role: 'img', 'aria-label': 'spend per day, last ' + HEAT_WEEKS + ' weeks' });
   for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
     const k = isoDay(d), c = cost.get(k);
-    if (!known(k)) { grid.append(el('i', { class: 'nd', title: k + ': no data' })); continue; }
+    if (!known(k)) { grid.append(el('i', { class: pending ? 'nd pending' : 'nd', title: k + (pending ? ': loading' : ': no data') })); continue; }
     // Levels 1..HEAT_LEVELS split (0, max] evenly; the busiest day is the top level.
     const lvl = !c ? 0 : Math.min(HEAT_LEVELS, Math.ceil((c / max) * HEAT_LEVELS));
     grid.append(el('i', { class: lvl ? 'l' + lvl : '', title: k + ': ' + (c ? money(c, u.currency) : 'no usage') }));
   }
-  return el('div', {}, grid, el('div', { class: 'heat-legend' }, 'less ', el('i'), el('i', { class: 'l1' }), el('i', { class: 'l2' }), el('i', { class: 'l3' }), el('i', { class: 'l4' }), ' more', el('i', { class: 'nd' }), ' no data'));
+  const note = pending ? 'Loading earlier weeks from codeburn...' : h && h.status === 'error' ? 'Earlier weeks unavailable: ' + txt(h.error || 'the export failed') : '';
+  return el('div', {}, grid,
+    el('div', { class: 'heat-legend' }, 'less ', el('i'), el('i', { class: 'l1' }), el('i', { class: 'l2' }), el('i', { class: 'l3' }), el('i', { class: 'l4' }), ' more', el('i', { class: 'nd' }), ' no data',
+      el('span', { class: 'range' }, isoDay(start) + ' to ' + txt(u.month.to))),
+    el('p', { class: 'heat-note', role: 'status', 'aria-live': 'polite', hidden: note ? null : '' }, note));
 }
 
 function codeburnStrip(cb) {
@@ -554,6 +566,10 @@ function versionPill(v) {
 /** Auto-refresh period while the tab is visible; paused while hidden. */
 const AUTO_REFRESH_MS = 60000;
 let lastLoad = 0, loading = false;
+/** While the heatmap's earlier weeks load: poll this often, at most this many times (past the export's 60 s timeout). */
+const HISTORY_POLL_MS = 3000, HISTORY_POLL_MAX = 40;
+let historyPolls = 0, historyTimer = null;
+const historyPending = () => !!(LAST && LAST.usage && LAST.usage.history && LAST.usage.history.status === 'pending');
 
 /**
  * Two stages: /api/data (local checks, with cached usage or "loading") paints
@@ -570,8 +586,15 @@ async function load(fresh) {
     let u;
     try { u = await getJson('/api/usage' + (fresh ? '?fresh=1' : '')); } catch (e) { return; }
     const was = data.usage || {};
-    if (u && u.usage && (u.usage.updatedAt !== was.updatedAt || u.usage.status !== was.status)) await render();
-  } finally { loading = false; lastLoad = Date.now(); }
+    const hist = (x) => JSON.stringify((x && x.history) || null);
+    if (u && u.usage && (u.usage.updatedAt !== was.updatedAt || u.usage.status !== was.status || hist(u.usage) !== hist(was))) await render();
+  } finally {
+    loading = false; lastLoad = Date.now();
+    // One poll chain at a time, whichever load (refresh, auto-refresh, poll) found the weeks pending.
+    clearTimeout(historyTimer);
+    if (!SNAPSHOT && historyPending() && historyPolls < HISTORY_POLL_MAX) { historyPolls++; historyTimer = setTimeout(() => load(false), HISTORY_POLL_MS); }
+    else if (!historyPending()) historyPolls = 0;
+  }
 }
 
 async function getJson(path) {
