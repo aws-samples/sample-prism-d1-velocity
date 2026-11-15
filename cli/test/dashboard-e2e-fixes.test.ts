@@ -172,4 +172,5 @@ test('narrow layout CSS (B2, B3, B8): one-column grids may shrink below their ta
   assert.match(html, /\.setup-layout \{ grid-template-columns:minmax\(0,1fr\); \}/, 'Settings panes');
   assert.match(html, /\.srow-ctl code \{ min-width:0; overflow-wrap:anywhere; \}/, 'Security Agent repo path');
   assert.match(html, /td code\.path \{ display:inline-block; min-width:16ch; \}/, 'Agent hooks file paths wrap at 16 characters, not 3');
+  assert.match(html, /\.srow-ctl select \{ max-width:100%; min-width:0; \}/, 'Settings › AWS: a long profile name does not widen the page');
 });

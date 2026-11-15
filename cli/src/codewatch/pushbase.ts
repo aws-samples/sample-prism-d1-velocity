@@ -26,12 +26,15 @@ function g(repoRoot: string, args: string[], input?: string): string | null {
 export interface PushBase {
   /** A commit, or the empty tree when nothing of the history is on a remote. */
   base: string;
-  /** What the base is, for logs and the result file (`origin/main`, `commits on no remote`). */
+  /** What the base is, for logs and the result file (`origin/main`, NO_REMOTE_LABEL). */
   label: string;
   emptyTree: boolean;
   /** A warning to show, or null. */
   note: string | null;
 }
+
+/** The base label when the branch has no upstream yet and only its commits that are on no remote are reviewed. */
+export const NO_REMOTE_LABEL = 'commits not on any remote';
 
 /** The empty tree object of this repository's hash format. */
 export function emptyTree(repoRoot: string): string | null {
@@ -77,8 +80,8 @@ export function fallbackPushBase(repoRoot: string, opts: { remote?: string | nul
     if (boundary.length) {
       const base = boundary.length > 1 ? g(repoRoot, ['merge-base', '--octopus', ...boundary]) ?? boundary[0] : boundary[0];
       return {
-        base, label: 'commits on no remote', emptyTree: false,
-        note: `no upstream or remote branch to compare with; reviewing the ${lines.length - boundary.length} commit(s) that are on no remote`,
+        base, label: NO_REMOTE_LABEL, emptyTree: false,
+        note: `no upstream yet and no remote branch to compare with; reviewing the ${lines.length - boundary.length} commit(s) not on any remote`,
       };
     }
   }
