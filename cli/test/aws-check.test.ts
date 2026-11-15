@@ -147,7 +147,8 @@ test('awsCheck: read-only notice first, identity header, result saved with per-s
   assert.equal(r.aws_check!.region, REGION);
   assert.deepEqual(r.aws_check!.section_counts, { baseline: { pass: 0, fail: 7, indeterminate: 0 }, 'startup-advisor': { pass: 0, fail: 0, indeterminate: 1 } });
   assert.equal(r.aws_check!.fail_by_severity.HIGH, 3);
-  assert.match(value.path!, new RegExp(`/\\.prism/results/aws-${ACCOUNT}-${REGION}-\\d{8}T\\d+Z-aws-check\\.json$`));
+  assert.match(value.path!, /\/\.prism\/results\/aws-\d{8}T\d+Z-[0-9a-f]{6}-aws-check\.json$/);
+  assert.equal(value.path!.includes(ACCOUNT), false, 'no account id in the file name');
   assert.equal(r.aws_check!.profile_source, 'aws connect, user');
 });
 

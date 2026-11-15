@@ -30,7 +30,7 @@ test('aws panel: latest result per account across repos and home, newest account
   writeResult(home, check('111111111111', '2026-11-07T10:00:00.000Z', [fail('baseline.guardduty', 'HIGH')], 'eu-west-1'));
   writeResult(a, check('222222222222', '2026-11-05T10:00:00.000Z', []));
   const p = collectAws([a, home, a]);
-  assert.deepEqual(p.accounts.map((r) => [r.account, r.region]), [['111111111111', 'eu-west-1'], ['222222222222', 'us-west-2']]);
+  assert.deepEqual(p.accounts.map((r) => [r.account, r.region]), [['••••1111', 'eu-west-1'], ['••••2222', 'us-west-2']], 'the full account id never leaves the server');
   assert.equal(p.accounts[0].top_failures[0].id, 'baseline.guardduty');
   assert.equal(p.accounts[0].profile_source, 'aws connect, user');
   assert.equal(p.hint, 'prism-cli aws check');

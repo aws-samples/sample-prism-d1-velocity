@@ -1,0 +1,7 @@
+#!/bin/sh
+# First on PATH for every npm test run (test/aws-guard.ts): a test that shells out to `aws`
+# without withFakeAws() reaches this, never the real AWS CLI. It fails like a CLI with no
+# credentials, and says why on stderr.
+echo "" >&2
+echo "Unable to locate credentials. (prism-cli tests: the real aws CLI is blocked; use withFakeAws)" >&2
+exit 253

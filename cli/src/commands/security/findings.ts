@@ -5,7 +5,7 @@ import { securityPentestFindings, type PentestOptions } from '../../security/pen
 import { REVIEW_TARGET_OPTIONS, reviewDeps, type ReviewHooks } from './code-review.js';
 
 export default {
-  description: 'List the findings of this repo\'s latest AWS Security Agent code review (or, with --pentest, its penetration test) and cache them for the dashboard (read-only)',
+  description: 'List the findings of this repo\'s latest AWS Security Agent code review (or, with --pentest, its penetration test) and cache them for the dashboard (read-only). Exits 2 while the job is still running',
   options: [
     ...REVIEW_TARGET_OPTIONS,
     { flags: '--job <id>', description: 'A specific code review job (default: the latest for this repo)' },

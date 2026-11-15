@@ -7,10 +7,11 @@
 import { aws, clause, type AwsTarget } from '../utils/aws.js';
 import { parseFailOn, renderReport, type Finding } from '../utils/audit.js';
 import type { RunResult } from '../utils/exec.js';
-import { makeResult, writeResult, type AwsCheckInfo, type PrismResult } from '../codewatch/results.js';
+import { makeResult, newRunId, writeResult, type AwsCheckInfo, type PrismResult } from '../codewatch/results.js';
 import { NO_REGION_MESSAGE, printIdentity, resolveRegion, type Resolved, type SecurityOptions } from '../security/setup.js';
 import { repoRootOf } from './connection.js';
 import { breaching, countFindings, failBySeverity, securityContext, selectSections, type CheckContext } from './check.js';
+import { explainIndeterminate } from './reason.js';
 
 export const CHECK_NOTICE = 'Read-only (aws check): every AWS call is a describe, get or list; nothing in AWS is changed. The result is saved to .prism/results/.';
 
@@ -72,8 +73,9 @@ export function awsCheck(input: CheckOptions, d: CheckRunDeps): CheckOutcome {
 
   const started = d.now().toISOString();
   const ctx: CheckContext = { target, account, region, home: d.home, security };
-  const findings: Finding[] = sections.flatMap((s) => s.run(ctx));
+  const findings: Finding[] = sections.flatMap((s) => s.run(ctx)).map((f) => explainIndeterminate(f));
   const info: AwsCheckInfo = {
+    run_id: newRunId(started),
     account, alias, region, profile: input.profile ?? null, profile_source: input.profileSource ?? null,
     sections: sections.map((s) => s.name),
     section_counts: Object.fromEntries(sections.map((s) => [s.name, countFindings(findings.filter((f) => f.category === s.name))])),

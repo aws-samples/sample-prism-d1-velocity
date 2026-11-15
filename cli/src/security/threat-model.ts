@@ -20,7 +20,7 @@
 import { realpathSync, statSync } from 'node:fs';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { makeResult, readResultEntries, writeResult, type Finding, type PrismResult, type ResultEntry, type Severity } from '../codewatch/results.js';
-import { explainAwsError, redact } from './errors.js';
+import { explainAwsError, EXIT_PENDING, redact } from './errors.js';
 import {
   begin, checkedRoot, DETAILS_BATCH, needRepo, NOT_SET_UP, paged, parseLevel, parseTimeout, PARAM_SCAN_BUCKET, pollUntilDone, repoRelative,
   serviceSeconds, shortText, TERMINAL, upload, type Poller, type ReviewDeps, type Snapshot,
@@ -613,7 +613,7 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
     say(`Waiting for the job (up to ${timeout} min; Ctrl-C stops waiting, the job keeps running)...`);
     const out = await pollUntilDone(ctx, tmPoller(space, job.threatModelJobId), job, timeout);
     if (out.kind === 'interrupted') { say(''); say(`Stopped waiting. ${threatsHint(job.threatModelJobId)}`); return 130; }
-    if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (job ${job.threatModelJobId} is ${out.job.status}). ${threatsHint(job.threatModelJobId)}`); return 2; }
+    if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (job ${job.threatModelJobId} is ${out.job.status}). ${threatsHint(job.threatModelJobId)}`); return EXIT_PENDING; }
 
     const wallS = Math.round((deps.now().getTime() - startedAt) / 1000);
     const svc = serviceSeconds(out.job);
@@ -670,10 +670,10 @@ export async function securityThreats(input: ThreatsOptions, deps: ReviewDeps): 
     if (pending) say(`${pending.result.status === 'pending' ? 'Pending: ' : 'Recorded:'}    recorded by threat-model at ${pending.result.started_at} (commit ${(pending.result.commit || '').slice(0, 12)})`);
     say(`Job:         ${job.threatModelJobId} (${job.status}${job.createdAt ? `, started ${job.createdAt}` : ''})`);
     if (!TERMINAL.has(job.status)) {
-      if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return 2; }
+      if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return EXIT_PENDING; }
       const out = await pollUntilDone(ctx, tmPoller(space, job.threatModelJobId), job, timeout);
       if (out.kind === 'interrupted') { say(''); say(`Stopped waiting. ${threatsHint(job.threatModelJobId)}`); return 130; }
-      if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (still ${out.job.status}). ${threatsHint(job.threatModelJobId)}`); return 2; }
+      if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (still ${out.job.status}). ${threatsHint(job.threatModelJobId)}`); return EXIT_PENDING; }
       job = out.job;
     }
     const base = {

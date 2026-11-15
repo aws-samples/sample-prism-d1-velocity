@@ -33,10 +33,13 @@
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
+import { EXIT_PENDING } from '../security/errors.js';
+import { maskHome, redact } from '../utils/redact.js';
+import { tildeHome } from './payload.js';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
   | 'codeburn-remove' | 'codeburn-status' | 'team-info'
@@ -79,6 +82,8 @@ export interface ActionDef {
   inHome?: true;
   /** With confirm: the checkbox text in the page's dialog. */
   confirmLabel?: string;
+  /** The exit code that means "the job has no verdict yet" (EXIT_PENDING): shown as still running, not as a failure. */
+  pendingExit?: number;
   timeoutMs: number;
 }
 
@@ -128,9 +133,9 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'security-status': { label: 'Security Agent status (read-only)', args: ['enable', 'security', '--status'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN },
   'security-dry-run': { label: 'Security Agent setup plan (dry run)', args: ['enable', 'security', '--dry-run'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 10 * MIN,
     note: 'Runs cdk synth and cdk diff on this machine. The first run installs the CDK app\'s npm packages into prism-cli\'s own infra folder.' },
-  'security-findings': { label: 'Fetch code review findings', args: ['security', 'findings'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
-  'security-threats': { label: 'Fetch threat model threats', args: ['security', 'threats'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the threats to .prism/results/ in the repo.' },
-  'security-pentest-findings': { label: 'Fetch pentest findings', args: ['security', 'findings', '--pentest'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
+  'security-findings': { label: 'Fetch code review findings', args: ['security', 'findings'], repo: true, awsTarget: true, readOnlyAws: true, pendingExit: EXIT_PENDING, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
+  'security-threats': { label: 'Fetch threat model threats', args: ['security', 'threats'], repo: true, awsTarget: true, readOnlyAws: true, pendingExit: EXIT_PENDING, timeoutMs: 3 * MIN, note: 'Saves the threats to .prism/results/ in the repo.' },
+  'security-pentest-findings': { label: 'Fetch pentest findings', args: ['security', 'findings', '--pentest'], repo: true, awsTarget: true, readOnlyAws: true, pendingExit: EXIT_PENDING, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
   'security-code-review': { label: 'Start a code review of this branch', args: ['security', 'code-review', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-code-review-full': { label: 'Start a code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-threat-model': { label: 'Start a threat model', args: ['security', 'threat-model', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
@@ -158,23 +163,9 @@ export function repoId(path: string): string {
   return createHash('sha256').update(path).digest('hex').slice(0, 16);
 }
 
-const ANSI_RE = /\u001b\[[0-9;?]*[A-Za-z]/g;
+export { redact };
 
-/**
- * Masks secrets in command output: AWS key ids, key=value secrets, bearer
- * tokens, JWTs, URL userinfo and token-like query parameters.
- * shortcut: pattern-based, so an unusual secret format can slip through; add its pattern when one is seen.
- */
-export function redact(s: string): string {
-  return s
-    .replace(ANSI_RE, '')
-    .replace(/\b(?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16}\b/g, '[REDACTED]')
-    .replace(/\b((?:aws_)?(?:secret_access_key|session_token|security_token|secret|password|passwd|api[_-]?key|access_token|refresh_token|id_token|client_secret)["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi, '$1[REDACTED]')
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 [REDACTED]')
-    .replace(/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '[REDACTED]')
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[REDACTED]@')
-    .replace(/([?&#](?:token|access_token|id_token|code|signature|sig|key|x-amz-[a-z-]+)=)[^&\s#"']+/gi, '$1[REDACTED]');
-}
+const realHome = (h: string) => { try { return h ? realpathSync(h) : h; } catch { return h; } };
 
 /** This CLI's own entry script: dist/bin/prism-cli.js beside dist/src/dashboard/. */
 export function cliEntry(): string {
@@ -210,7 +201,16 @@ export interface RunnerDeps {
   connectionArgs?: () => string[] | null;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
+  /** After the child exits, how long to keep reading output a process it started may still write (default EXIT_GRACE_MS). */
+  exitGraceMs?: number;
 }
+
+/**
+ * 'close' waits for every stdio pipe to close, so a process the command left behind holding its
+ * stdout/stderr would keep the action "running" (and the lock taken) forever. The run ends this
+ * long after the child's own 'exit' instead, and the pipes are dropped.
+ */
+export const EXIT_GRACE_MS = 2000;
 
 export interface ApiResult { status: number; json: unknown }
 
@@ -223,6 +223,8 @@ export interface ActionStatus {
   cwd?: string;
   output?: string;
   exitCode?: number | null;
+  /** When done: ok (exit 0), pending (the action's pendingExit: the job is still running), else failed. */
+  outcome?: 'ok' | 'pending' | 'failed';
   timedOut?: boolean;
   startedAt?: string;
   finishedAt?: string | null;
@@ -353,20 +355,33 @@ export class ActionRunner {
     }, def.timeoutMs);
     timer.unref();
     let settled = false;
+    let lingering: NodeJS.Timeout | undefined;
     const done = (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (killer) clearTimeout(killer);
+      if (lingering) clearTimeout(lingering);
       this.finish(st, st.timedOut ? 124 : code ?? 1);
     };
     child.on('error', (e) => { add(`could not start: ${e.message}\n`); done(1); });
     child.on('close', (code) => done(code));
+    child.on('exit', (code) => {
+      lingering = setTimeout(() => {
+        if (settled) return;
+        add('\n[the command exited, but a process it started still holds its output; stopped reading]\n');
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        done(code);
+      }, this.d.exitGraceMs ?? EXIT_GRACE_MS);
+      lingering.unref();
+    });
     return { status: 202, json: this.status() };
   }
 
   private finish(st: ActionStatus & { buf: string }, code: number) {
     st.exitCode = code;
+    st.outcome = code === 0 ? 'ok' : !st.timedOut && code === ACTIONS[st.action!].pendingExit ? 'pending' : 'failed';
     st.state = 'done';
     st.finishedAt = (this.d.now ?? (() => new Date()))().toISOString();
     this.busy = false;
@@ -390,6 +405,10 @@ export class ActionRunner {
     const c = this.cur;
     if (!c) return { state: 'idle' };
     const { buf, ...rest } = c;
-    return { ...rest, output: redact(buf) };
+    // The home directory leaves as ~ (repo paths, result paths), as on the rest of the page.
+    // Both spellings of a symlinked home (/home/x -> /local/home/x): repo paths come back resolved.
+    const homes = [...new Set([this.d.home, realHome(this.d.home)])];
+    const mask = (t: string) => homes.reduce((x, h) => maskHome(x, h), t);
+    return { ...rest, ...(rest.cwd ? { cwd: homes.reduce((x, h) => tildeHome(x, h), rest.cwd) } : {}), output: mask(redact(buf)) };
   }
 }

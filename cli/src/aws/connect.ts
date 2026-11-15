@@ -7,10 +7,11 @@ import { existsSync } from 'node:fs';
 import { clause, type AwsResult } from '../utils/aws.js';
 import type { RunResult } from '../utils/exec.js';
 import { ensureMarkerIgnored } from '../security/marker.js';
+import { redact } from '../utils/redact.js';
 import {
-  accountChangeWarning, applyConnection, clearConnectionFile, connectionLabel, ENV_CREDENTIAL_VARS, loadConnection,
+  accountChangeWarning, applyConnection, clearConnectionFile, connectionLabel, ENV_CREDENTIAL_VARS, last4, loadConnection,
   PROFILE_RE, readConnectionFile, REGION_RE, REPO_CONNECTION_PATH, repoConnectionPath, repoRootOf, userConnectionPath,
-  writeConnectionFile, type AwsConnection, type SavedConnection,
+  writeConnectionFile, type AwsConnection, type ConnectionScope, type SavedConnection,
 } from './connection.js';
 
 export interface ConnectOptions {
@@ -20,7 +21,49 @@ export interface ConnectOptions {
   repo?: boolean;
   status?: boolean;
   clear?: boolean;
+  /** One JSON object (ConnectReport) on stdout; the human lines go to stderr. Never prompts. */
+  json?: boolean;
 }
+
+export const CONNECT_SCHEMA = 'prism.aws-connect.v1';
+
+/** A saved connection as --json prints it: the account as its last 4 digits, no credentials. */
+export interface ConnectionJson {
+  profile: string;
+  region: string;
+  /** Last 4 digits only, e.g. ••••3333. */
+  account: string;
+  alias: string | null;
+  verifiedAt: string;
+  scope: ConnectionScope;
+}
+
+/** `aws connect --json` output (schema prism.aws-connect.v1). Fields are only ever added. */
+export interface ConnectReport {
+  schema: typeof CONNECT_SCHEMA;
+  action: 'connect' | 'status' | 'clear';
+  ok: boolean;
+  /** When ok is false: the Error line, without "Error: ". */
+  error?: string;
+  /** connect: what was saved. status: the connection that applies. clear: null. */
+  connection: ConnectionJson | null;
+  /** connect only. */
+  access?: AccessLevel['level'];
+  org?: OrgRole['kind'];
+  /** status only: whether the saved profile is used for credentials (false when an env credential wins). */
+  inUse?: boolean;
+  /** status only: the env var that wins over the saved profile, or null. */
+  envOverride?: string | null;
+  /** status only: the STS check of the saved profile. */
+  validation?: { ok: boolean; accountMatches: boolean | null; error: string | null };
+  /** clear only. */
+  removed?: boolean;
+  scope?: ConnectionScope;
+}
+
+const connectionJson = (c: AwsConnection, scope: ConnectionScope): ConnectionJson => ({
+  profile: c.profile, region: c.region, account: last4(c.account), alias: c.alias, verifiedAt: c.verifiedAt, scope,
+});
 
 export interface ConnectDeps {
   /** A read-only `aws <args>` call as `profile` in `region` (JSON output). */
@@ -34,6 +77,8 @@ export interface ConnectDeps {
   isTTY: boolean;
   ask(question: string): Promise<string>;
   log(line?: string): void;
+  /** stderr: where the human lines go under --json (default: dropped). */
+  err?(line?: string): void;
   now(): Date;
 }
 
@@ -148,14 +193,16 @@ function repoRoot(d: ConnectDeps): string | null {
 }
 
 /** `--clear`: removes the user file, or the repo file with --repo. */
-function clear(o: ConnectOptions, d: ConnectDeps): number {
+function clear(o: ConnectOptions, d: ConnectDeps, report: ConnectReport | null): number {
   let path: string;
   if (o.repo) {
     const root = repoRoot(d);
     if (!root) { d.log('Error: --repo needs to run inside a git repository.'); return 1; }
     path = repoConnectionPath(root);
   } else path = userConnectionPath(d.home);
-  d.log(clearConnectionFile(path) ? `Removed ${path}. Nothing in AWS was changed.` : `Nothing to clear: ${path} does not exist.`);
+  const removed = clearConnectionFile(path);
+  if (report) Object.assign(report, { removed, scope: o.repo ? 'repo' : 'user' });
+  d.log(removed ? `Removed ${path}. Nothing in AWS was changed.` : `Nothing to clear: ${path} does not exist.`);
   return 0;
 }
 
@@ -166,7 +213,7 @@ function describeFile(label: string, path: string, d: ConnectDeps): void {
 }
 
 /** `--status`: what is saved, which file applies, and whether it still validates. */
-function status(d: ConnectDeps): number {
+function status(d: ConnectDeps, report: ConnectReport | null): number {
   const root = repoRoot(d);
   d.log('Saved AWS connection:');
   describeFile('user', userConnectionPath(d.home), d);
@@ -175,27 +222,64 @@ function status(d: ConnectDeps): number {
   const saved = loadConnection(d.home, root);
   if (!saved) { d.log(''); d.log('No saved connection: AWS commands use the default credential chain. Save one with: prism-cli aws connect'); return 0; }
   const applied = applyConnection({}, saved, d.env);
+  const envVar = ENV_CREDENTIAL_VARS.find((k) => d.env[k]) ?? null;
+  if (report) Object.assign(report, { connection: connectionJson(saved, saved.scope), inUse: !!applied.profileSource, envOverride: applied.profileSource ? null : envVar });
   d.log('');
   if (applied.profileSource) d.log(`In use: profile ${saved.profile}, region ${saved.region} (${connectionLabel(saved)}, ${saved.path})`);
   else {
-    const v = ENV_CREDENTIAL_VARS.find((k) => d.env[k]);
-    d.log(`Not in use for credentials: ${v} is set, and the environment wins over the saved connection${applied.connection ? ` (the saved region ${saved.region} still applies)` : ''}.`);
+    d.log(`Not in use for credentials: ${envVar} is set, and the environment wins over the saved connection${applied.connection ? ` (the saved region ${saved.region} still applies)` : ''}.`);
   }
   if (d.env.AWS_REGION || d.env.AWS_DEFAULT_REGION) d.log(`Region note: ${d.env.AWS_REGION ? 'AWS_REGION' : 'AWS_DEFAULT_REGION'} is set and wins over the saved region.`);
   const id = callerIdentity(d, saved.profile, saved.region);
-  if ('error' in id) { d.log(`Validation: FAILED for profile ${saved.profile}: ${id.error}. ${fixHint(saved.profile, id.error, 'Sign in again (e.g. aws sso login --profile <p>) or re-run prism-cli aws connect.')}`); return 1; }
+  if ('error' in id) {
+    if (report) Object.assign(report, { validation: { ok: false, accountMatches: null, error: id.error }, error: id.error });
+    d.log(`Validation: FAILED for profile ${saved.profile}: ${id.error}. ${fixHint(saved.profile, id.error, 'Sign in again (e.g. aws sso login --profile <p>) or re-run prism-cli aws connect.')}`);
+    return 1;
+  }
   const w = accountChangeWarning(saved, id.account);
+  if (report) {
+    report.validation = { ok: !w, accountMatches: !w, error: null };
+    if (w) report.error = `profile ${saved.profile} now resolves to account ${last4(id.account)}, not ${last4(saved.account)} as saved; re-run prism-cli aws connect.`;
+  }
   d.log(w ?? `Validation: ok, profile ${saved.profile} is account ${id.account} as saved (caller ${id.arn}).`);
   return w ? 1 : 0;
 }
 
-/** Runs `aws connect`. Returns the exit code. */
+/**
+ * Runs `aws connect`. Returns the exit code. With --json the human lines go
+ * to stderr (deps.err), nothing prompts, and stdout gets one ConnectReport.
+ */
 export async function awsConnect(o: ConnectOptions, d: ConnectDeps): Promise<number> {
+  if (!o.json) return connect(o, d, null);
+  const report: ConnectReport = { schema: CONNECT_SCHEMA, action: o.clear ? 'clear' : o.status ? 'status' : 'connect', ok: false, connection: null };
+  let error = '';
+  const quiet: ConnectDeps = {
+    ...d, isTTY: false,
+    log: (l = '') => { if (l.startsWith('Error: ')) error = l.slice('Error: '.length); d.err?.(l); },
+  };
+  let code: number;
+  // A throw (a failed connection-file write) still ends in one JSON object, so --json callers always get one.
+  try { code = await connect(o, quiet, report); } catch (e) {
+    code = 1;
+    report.connection = null;
+    error = (e as Error).message || String(e);
+    quiet.log(`Error: ${error}`);
+  }
+  report.ok = code === 0;
+  if (!report.ok && !report.error && error) report.error = error;
+  // The dashboard's redact(): every 12-digit number (an account id, in an ARN too) as its last 4, no secrets.
+  if (report.error) report.error = redact(report.error).split('\n')[0];
+  if (report.validation?.error) report.validation.error = redact(report.validation.error).split('\n')[0];
+  d.log(JSON.stringify(report, null, 2));
+  return code;
+}
+
+async function connect(o: ConnectOptions, d: ConnectDeps, report: ConnectReport | null): Promise<number> {
   if (o.status && o.clear) { d.log('Error: --status and --clear cannot be combined.'); return 1; }
-  if (o.clear) return clear(o, d);
+  if (o.clear) return clear(o, d, report);
   d.log(CONNECT_NOTICE);
   d.log('');
-  if (o.status) return status(d);
+  if (o.status) return status(d, report);
 
   const root = repoRoot(d);
   if (o.repo && !root) { d.log('Error: --repo needs to run inside a git repository.'); return 1; }
@@ -240,6 +324,7 @@ export async function awsConnect(o: ConnectOptions, d: ConnectDeps): Promise<num
     if (excluded) d.log(`Added ${REPO_CONNECTION_PATH} to ${excluded} so git ignores it in this clone.`);
   }
   writeConnectionFile(path, conn);
+  if (report) Object.assign(report, { connection: connectionJson(conn, o.repo ? 'repo' : 'user'), access: access.level, org: org.kind });
   d.log('');
   d.log(`Saved ${path} (profile name, region, account and alias; no credentials).`);
   d.log(`AWS commands now default to profile ${profile} in ${region}${o.repo ? ' in this repo' : ''}. --profile/--region and AWS_PROFILE/AWS_REGION still win.`);

@@ -182,7 +182,7 @@ test('recommend: reads the latest result for the account and region, makes no AW
 test('recommend: the aws connect account is the default; --json and --markdown', () => {
   const repo = gitRepo();
   const path = saveCheck(repo, [f('prism-setup.ci-oidc-role', 'FAIL'), f('baseline.budget', 'INDETERMINATE', 'MEDIUM', 'Could not check (AccessDeniedException).')]);
-  assert.match(path, new RegExp(`/aws-${ACCOUNT}-${REGION}-\\d{8}T\\d+Z-aws-check\\.json$`), 'account checks are named by account and region, not commit');
+  assert.match(path, /\/aws-\d{8}T\d+Z-aws-check\.json$/, 'account checks are named by time, not commit, and carry no account id');
   const conn = { profile: 'p', region: REGION, account: ACCOUNT, alias: null, verifiedAt: '', scope: 'user' as const, path: '' };
   const h = checkDeps({ cwd: repo });
   assert.equal(awsRecommend({ connection: conn, json: true, markdown: true }, h.deps), 0);

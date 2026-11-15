@@ -5,11 +5,12 @@
  */
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { severityRank, type Finding, type Severity } from '../utils/audit.js';
+import { severityRank, type Finding, type IndeterminateReason, type Severity } from '../utils/audit.js';
 import { readResultEntries, RESULTS_DIR, type PrismResult, type ResultEntry } from '../codewatch/results.js';
 import { resolveRegion } from '../security/setup.js';
 import { SECTIONS } from './check.js';
 import { ADVICE, GROUPS, type Effort } from './advice.js';
+import { NO_REPORT_STEP, reasonAdvice, reasonOf } from './reason.js';
 import { awsCheck, resultsRoot, type CheckOptions, type CheckRunDeps } from './run-check.js';
 
 export const RECOMMEND_NOTICE = 'No AWS calls (aws recommend): it reads the latest aws check result in .prism/results/. Nothing in AWS is changed.';
@@ -22,8 +23,8 @@ export interface RecommendOptions extends Pick<CheckOptions, 'profile' | 'region
   markdown?: boolean;
 }
 
-/** Why an INDETERMINATE check could not run, as far as its detail tells. */
-export type IndeterminateCause = 'access-denied' | 'no-credential-report' | 'prerequisite' | 'not-integrated' | 'other';
+/** Why an INDETERMINATE check could not run (reason.ts). */
+export type IndeterminateCause = IndeterminateReason;
 
 export interface Recommendation {
   /** fix: one or more FAILs. access: one or more INDETERMINATE checks (could not check). */
@@ -52,17 +53,11 @@ export interface AdviceContext { account?: string; region?: string }
 const fill = (text: string, c: AdviceContext): string =>
   text.replace(/<region>/g, c.region || '<region>').replace(/<account>/g, c.account || '<account>');
 
-const DENIED = /AccessDenied|UnauthorizedOperation|AuthorizationError|not authorized|Unauthorized/i;
-export const NO_REPORT_STEP = 'No credential report exists yet. Run `prism-cli bedrock-protection scan-account` once (it generates one, which is a write) or `aws iam generate-credential-report`, then re-run aws check.';
+export { NO_REPORT_STEP };
 
-/** Only an access-denied detail means "grant"; a missing report or a missing prerequisite says what to do first. */
+/** The stored reason (aws check 1.16+), else what the detail tells. Only access-denied means "grant". */
 export function indeterminateCause(f: Finding): IndeterminateCause {
-  const a = ADVICE[f.id];
-  if (a?.indeterminate) return 'not-integrated';
-  if (/ReportNotPresent/.test(f.detail)) return 'no-credential-report';
-  if (DENIED.test(f.detail)) return 'access-denied';
-  if (a?.prerequisite) return 'prerequisite';
-  return 'other';
+  return reasonOf(f);
 }
 
 type Rankable = Pick<Recommendation, 'severity' | 'effort' | 'id'>;
@@ -114,7 +109,13 @@ function accessItem(f: Finding, numbers: Map<string, number>, c: AdviceContext):
   else if (cause === 'no-credential-report') { title = 'Create an IAM credential report'; step = NO_REPORT_STEP; }
   else if (cause === 'access-denied') {
     title = `Grant read access to check: ${f.title}`;
-    step = a?.needs?.length ? `Grant ${a.needs.join(', ')} (read-only), then re-run prism-cli aws check.` : 'Grant read access for this check, then re-run prism-cli aws check.';
+    step = reasonAdvice(cause, f.id, f.needs?.length ? f.needs : a?.needs);
+  } else if (cause === 'not-available') {
+    title = `Not enabled here: ${f.title}`;
+    step = reasonAdvice(cause, f.id);
+  } else if (cause === 'throttled') {
+    title = `Throttled, re-run: ${f.title}`;
+    step = reasonAdvice(cause, f.id);
   } else if (cause === 'prerequisite') {
     const n = numbers.get(a!.prerequisite!);
     title = `Checked after another fix: ${f.title}`;
@@ -136,7 +137,7 @@ function mergeAccess(items: Recommendation[]): Recommendation[] {
     else out.set(x.steps[0], { ...x, covers: [...x.covers] });
   }
   for (const x of out.values()) {
-    if (x.covers.length > 1 && (x.cause === 'access-denied' || x.cause === 'other')) x.title = `${x.title.split(': ')[0]}: ${x.covers.map((v) => v.title).join('; ')}`;
+    if (x.covers.length > 1 && (x.cause === 'access-denied' || x.cause === 'not-available' || x.cause === 'throttled' || x.cause === 'other')) x.title = `${x.title.split(': ')[0]}: ${x.covers.map((v) => v.title).join('; ')}`;
   }
   return [...out.values()];
 }

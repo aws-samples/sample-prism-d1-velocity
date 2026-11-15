@@ -21,6 +21,7 @@ export function connectDeps(): ConnectDeps {
       rl.question(q, (a) => { rl.close(); done(a); });
     }),
     log: (line = '') => console.log(line),
+    err: (line = '') => console.error(line),
     now: () => new Date(),
   };
 }
@@ -35,6 +36,7 @@ export default {
     { flags: '--repo', description: 'Save (or clear) a per-repo override in .prism/aws.local.json instead of ~/.prism/aws.json' },
     { flags: '--status', description: 'Show what is saved, where it comes from, and whether it still validates' },
     { flags: '--clear', description: 'Remove the saved connection (the user file, or the repo file with --repo)' },
+    { flags: '--json', description: 'Print one JSON object (schema prism.aws-connect.v1: profile, region, account as its last 4 digits, alias, verifiedAt, scope) instead of the report; never prompts' },
   ],
   async action(opts: ConnectOptions, hooks: ConnectHooks = {}) {
     await runGuarded(() => awsConnect(

@@ -4,12 +4,14 @@
  */
 import { readResults, type PrismResult } from '../codewatch/results.js';
 import { severityRank, type Severity } from '../utils/audit.js';
+import { last4 } from '../aws/connection.js';
 
 export const MAX_TOP_FAILURES = 5;
 export const AWS_CHECK_HINT = 'prism-cli aws check';
 export const AWS_RECOMMEND_HINT = 'prism-cli aws recommend';
 
 export interface AwsAccountRow {
+  /** The last 4 digits only (••••3333): the full id never leaves the server. */
   account: string;
   alias: string | null;
   region: string;
@@ -41,7 +43,7 @@ export function collectAws(roots: string[], read: (root: string) => PrismResult[
     const fails = (c.checks || []).filter((f) => f.status === 'FAIL')
       .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || a.id.localeCompare(b.id));
     return {
-      account: c.account, alias: c.alias, region: c.region, profile: c.profile, profile_source: c.profile_source,
+      account: last4(c.account), alias: c.alias, region: c.region, profile: c.profile, profile_source: c.profile_source,
       checked_at: r.started_at, counts: c.counts, fail_by_severity: c.fail_by_severity,
       top_failures: fails.slice(0, MAX_TOP_FAILURES).map((f) => ({ id: f.id, title: f.title, severity: f.severity, section: f.category })),
       more: Math.max(0, fails.length - MAX_TOP_FAILURES),

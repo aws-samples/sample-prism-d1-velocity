@@ -9,8 +9,9 @@
  *
  * The baseline is the oldest full run for the account and region until the
  * user marks another; marks live in ~/.prism/accountguard.json (0600). Result
- * file names carry the full account id, so runs reach the page as opaque ids
- * (sha256 of the result's path) and account ids as their last 4 digits.
+ * files written before 1.16.0 carry the full account id in their names, so
+ * runs reach the page as opaque ids (sha256 of the result's path) and account
+ * ids as their last 4 digits (also inside check text).
  */
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -21,6 +22,7 @@ import { SECTIONS } from '../aws/check.js';
 import { buildRecommendations, indeterminateCause, RETIRED_IDS, skippedSections, type IndeterminateCause, type SectionAdvice } from '../aws/recommend.js';
 import { readJson, writePrivateJson } from '../utils/private-json.js';
 import { ACTIONS, displayCommand, type ApiResult } from './actions.js';
+import { redact } from '../utils/redact.js';
 import { tildeHome } from './payload.js';
 
 export const BASELINE_SCHEMA = 'prism.accountguard.v1';
@@ -129,12 +131,16 @@ export async function accountGuardView(d: AccountGuardDeps): Promise<AccountGuar
   if (!runs.length) return { ...empty, connection, commands };
   const L = runs[0], info = L.result.aws_check!;
   const b = baselineRun(d.home, runs, c.account, c.region)!;
-  const checks = (info.checks || []).map((f) => ({ ...f, cause: f.status === 'INDETERMINATE' ? indeterminateCause(f) : null }));
+  // Some details and fixes spell out the account id (s3control --account-id ...): the connected one becomes the
+  // placeholder, then redact() masks any other 12-digit id (a cross-account principal) and secrets.
+  const scrub = (s: string | undefined) => (s === undefined ? s : redact(c.account ? s.split(c.account).join('<account>') : s));
+  const latestChecks = (info.checks || []).map((f) => ({ ...f, detail: scrub(f.detail)!, remediation: scrub(f.remediation) }));
+  const checks = latestChecks.map((f) => ({ ...f, cause: f.status === 'INDETERMINATE' ? indeterminateCause(f) : null }));
   return {
     connection, sections, commands,
     latest: { run: L.key, started_at: L.result.started_at, profile: info.profile, counts: info.counts, fail_by_severity: info.fail_by_severity, checks },
     // aws recommend's own ranking; the account stays a placeholder in the fix text, as the page never shows the full id.
-    recommendations: buildRecommendations(info.checks || [], { account: '<account>', region: info.region }),
+    recommendations: buildRecommendations(latestChecks, { account: '<account>', region: info.region }),
     baseline: { run: b.run.key, started_at: b.run.result.started_at, how: b.how },
     diff: b.run.key === L.key ? null : diffChecks(b.run.result.aws_check!.checks || [], info.checks || []),
     runs: runs.map((r) => ({ run: r.key, started_at: r.result.started_at, counts: r.result.aws_check!.counts })),

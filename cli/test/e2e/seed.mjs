@@ -10,9 +10,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const CLI = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const { makeResult, writeResult } = await import(CLI + '/dist/src/codewatch/results.js');
+const { compactTimestamp, makeResult, newRunId, writeResult } = await import(CLI + '/dist/src/codewatch/results.js');
 const { writeConnectionFile } = await import(CLI + '/dist/src/aws/connection.js');
 const { SECTIONS } = await import(CLI + '/dist/src/aws/check.js');
+const { explainIndeterminate } = await import(CLI + '/dist/src/aws/reason.js');
 
 const [home, scenario = 'full'] = process.argv.slice(2);
 if (!home) throw new Error('usage: seed.mjs <home> <scenario>');
@@ -47,6 +48,8 @@ const f = (severity, category, rule, file, line, message) => ({ severity, catego
 
 if (scenario === 'full' || scenario === 'partial') {
   const shop = repo('src/demo-shop', 5);
+  // An origin remote, so the security commands can name the repo (security findings, from the Security Agent page).
+  git(shop.dir, 'remote', 'add', 'origin', 'https://github.com/example/demo-shop.git');
   const pay = repo('src/payments-api', 3);
   review(shop, shop.shas[4], ago(2 * H), [
     f('high', 'security', 'sql-injection', 'src/orders.ts', 42, 'Order id is concatenated into a SQL string; use a parameterized query.'),
@@ -85,18 +88,23 @@ if (scenario === 'full' || scenario === 'partial') {
     writeConnectionFile(join(home, '.prism', 'aws.json'), { profile: 'prism-demo', region: REGION, account: ACCOUNT, alias: 'demo-dev', verifiedAt: ago(25 * 60e3) });
     const demo = JSON.parse(readFileSync(new URL('./aws-demo-checks.json', import.meta.url), 'utf8'));
     const strip = (cs) => cs.map(({ cause, ...x }) => x);
-    const save = (checks, at) => {
+    const save = (checks, at, oldName) => {
       const count = (s) => checks.filter((x) => x.status === s).length;
-      writeResult(home, makeResult({ kind: 'aws-check', hook: 'manual', status: 'findings', tool: 'prism-cli', started_at: at, finished_at: at, aws_check: {
+      const r = makeResult({ kind: 'aws-check', hook: 'manual', status: 'findings', tool: 'prism-cli', started_at: at, finished_at: at, aws_check: {
+        ...(oldName ? {} : { run_id: newRunId(at) }),
         account: ACCOUNT, alias: 'demo-dev', region: REGION, profile: 'prism-demo', profile_source: 'aws connect, user', sections: SECTIONS.map((s) => s.name), section_counts: {},
         counts: { pass: count('PASS'), fail: count('FAIL'), indeterminate: count('INDETERMINATE') },
         fail_by_severity: Object.fromEntries(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].map((s) => [s, checks.filter((x) => x.status === 'FAIL' && x.severity === s).length])), checks,
-      } }));
+      } });
+      // The baseline is written as aws check before 1.16.0 wrote it: account id in the file name, no reason per check.
+      writeResult(home, r, oldName ? `aws-${ACCOUNT}-${REGION}-${compactTimestamp(at)}-aws-check` : undefined);
     };
     const now = strip(demo.latest.checks);
     const flip = { 'baseline.s3-account-bpa': 'FAIL', 'baseline.cloudtrail-multiregion': 'FAIL', 'bedrock.model-invocation-logging': 'PASS' };
-    save(now.map((x) => (flip[x.id] ? { ...x, status: flip[x.id], detail: 'At the baseline run.' } : x)), ago(9 * D));
-    save(now, ago(2 * H));
+    save(now.map((x) => (flip[x.id] ? { ...x, status: flip[x.id], detail: 'At the baseline run.' } : x)), ago(9 * D), true);
+    // The latest run as 1.16.0 writes it: a reason per INDETERMINATE check, including a throttled and a not-enabled one.
+    const latest = { 'bedrock.anomaly-monitor': 'Could not list anomaly monitors (ThrottlingException).', 'bedrock.provisioned-throughput': 'Could not list provisioned throughput in us-west-2 (OptInRequired).' };
+    save(now.map((x) => explainIndeterminate(latest[x.id] ? { ...x, status: 'INDETERMINATE', detail: latest[x.id] } : x)), ago(2 * H));
   }
 }
 // The dashboard starts in this directory (the "current repo" for full/partial).

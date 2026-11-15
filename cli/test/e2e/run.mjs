@@ -544,6 +544,11 @@ try {
     await page.goto(srv.base + '/#security'); await sleep(900);
     out.pickerOptions = await page.$$eval('#sa-repo option', (o) => o.map((x) => x.textContent));
     out.securityText = await mainText();
+    // 1.16.0: AccountGuard says why each check could not run; no full account id in the APIs or the page.
+    out.apiJson = await page.evaluate(() => Promise.all(['/api/data', '/api/accountguard', '/api/setup'].map((u) => fetch(u).then((r) => r.text()))).then((x) => x.join('\n')));
+    await page.goto(srv.base + '/#accountguard'); await sleep(900);
+    out.accountguardText = await mainText();
+    await page.screenshot({ path: join(SHOTS, 'fixes-accountguard-reasons.png'), fullPage: true });
     await page.goto(srv.base + '/#settings/updates'); await sleep(900);
     out.updates = await page.evaluate(() => {
       const b = [...document.querySelectorAll('#settings button')].filter((x) => x.offsetParent && x.textContent.trim() === 'Check now').pop();
@@ -560,6 +565,73 @@ try {
       await c2.page.screenshot({ path: join(SHOTS, `fixes-${name}.png`), fullPage: true });
       await c2.ctx.close();
     }
+  }
+  // ---------- 10. a fetch while the Security Agent job is still running (FAKE_AWS=in-progress) ----------
+  if (want('pending')) {
+    const out = { steps: [] };
+    R.suites.pending = out;
+    const srv = await live('pending', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    await page.goto(srv.base + '/#security'); await sleep(900);
+    const btn = page.locator('#security button:visible', { hasText: /^Fetch findings$/ }).first();
+    out.found = await btn.count();
+    if (out.found) {
+      await btn.click(); await sleep(300);
+      await page.click('dialog.confirm button:not(:has-text("Cancel"))');
+      const t0 = Date.now();
+      let d;
+      for (;;) {
+        d = await page.evaluate(() => { const s = document.querySelector('#action-drawer .srow-head'); const p = s?.querySelector('.pill'); return { status: s?.innerText.replace(/\s+/g, ' ') || '', pillClass: p?.className || '', pillText: p?.textContent || '', out: document.querySelector('#action-drawer pre')?.innerText || '' }; });
+        if (d.status && !/^(running|starting)/.test(d.pillText)) break;
+        if (Date.now() - t0 > 60000) { d.hung = true; break; }
+        await sleep(400);
+      }
+      out.drawer = d;
+      await sleep(1500);
+      out.row = await page.evaluate(() => { const tr = [...document.querySelectorAll('#security tr')].find((x) => /Code review/.test(x.innerText)); return tr ? tr.innerText.replace(/\s+/g, ' ') : ''; });
+      await page.screenshot({ path: join(SHOTS, 'pending-fetch-findings.png'), fullPage: true });
+    }
+    out.home = srv.home;
+    await ctx.close();
+  }
+  // ---------- 11. a second action starts once the first is done (no stuck "another action is running") ----------
+  if (want('rerun')) {
+    const out = { steps: [] };
+    R.suites.rerun = out;
+    const srv = await live('rerun', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const posts = [];
+    page.on('response', async (r) => { if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/action') posts.push({ status: r.status(), body: (await r.text().catch(() => '')).slice(0, 200) }); });
+    const pill = () => page.evaluate(() => document.querySelector('#action-drawer .srow-head .pill')?.textContent || '');
+    const runOne = async (label) => {
+      await page.goto(srv.base + '/#security'); await sleep(900);
+      const b = page.locator('#security button:visible', { hasText: new RegExp('^' + label + '$') }).first();
+      const step = { label, found: await b.count() };
+      if (step.found) {
+        step.enabled = await b.isEnabled();
+        await b.click(); await sleep(300);
+        await page.click('dialog.confirm button:not(:has-text("Cancel"))');
+        const t0 = Date.now();
+        for (;;) { const p = await pill(); if (p && !/^(running|starting)/.test(p)) { step.pill = p; break; } if (Date.now() - t0 > 60000) { step.hung = true; break; } await sleep(400); }
+        step.post = posts[posts.length - 1];
+        step.serverState = await page.evaluate(() => fetch('/api/action/status').then((r) => r.json()).then((j) => j.state));
+      }
+      out.steps.push(step);
+    };
+    await runOne('Fetch findings');
+    await runOne('Fetch threats');
+    await runOne('Fetch findings');
+    // Right after the third run is done, a direct start must answer 202 too.
+    const csrf = await page.evaluate(() => document.querySelector('meta[name="prism-csrf"]')?.content || '');
+    out.direct = await page.evaluate(async (csrf) => {
+      const data = await fetch('/api/data').then((r) => r.json());
+      const repo = data.repos.find((r) => r.current);
+      const r = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json', 'x-prism-csrf': csrf }, body: JSON.stringify({ action: 'security-threats', repo: repo.id }) });
+      return { status: r.status, body: (await r.text()).slice(0, 200) };
+    }, csrf);
+    await ctx.close();
   }
 } catch (e) {
   R.fatal = String(e.stack || e);
@@ -643,6 +715,21 @@ function verdicts(R) {
     add('snapshot', 'the snapshot is written and draws every route', S.snapshot.exit === 0 && S.snapshot.routes.length >= 8 && !S.snapshot.layout320?.hscroll, JSON.stringify({ exit: S.snapshot.exit, stderr: S.snapshot.stderr }));
     add('snapshot-copy-only', 'nothing runs from the snapshot (Run buttons are Copy)', !live.length, live.join('; '));
   }
+  if (S.rerun) {
+    const st = S.rerun.steps || [];
+    add('rerun', 'after an action is done, the next one starts (202, not 409), its button enabled, three in a row',
+      st.length === 3 && st.every((x) => x.found && x.enabled && !x.hung && x.post?.status === 202 && x.serverState === 'done') && S.rerun.direct?.status === 202,
+      JSON.stringify(st.map((x) => [x.label, x.enabled, x.pill, x.post?.status, x.serverState])) + ' direct ' + S.rerun.direct?.status);
+    add('rerun-mask', 'the start answer shows the repo path under ~, not the home directory', st.every((x) => !/"cwd":"\//.test(x.post?.body || '')), st.map((x) => (x.post?.body || '').slice(140, 220)).join(' | '));
+  }
+  if (S.pending) {
+    const d = S.pending.drawer || {};
+    add('pending', 'Fetch findings on a running job: amber "still running" pill with a hint, not a red exit pill', S.pending.found && !d.hung && /s-warn/.test(d.pillClass) && !/s-error/.test(d.pillClass)
+      && /still running \(exit 2\)/.test(d.pillText) && /Check back later, or run the same command with --wait/.test(d.status) && /still IN_PROGRESS/.test(d.out), JSON.stringify(d).slice(0, 400));
+    add('pending-row', 'the code review row still reads "running" after the fetch', /running/i.test(S.pending.row || ''), S.pending.row);
+    const leak = (d.out || '').match(/\b\d{12}\b|demo-session/g) || [];
+    add('pending-mask', 'the drawer shows ••••3333, the role name only, and no home path', !leak.length && /••••3333/.test(d.out || '') && /assumed-role\/PrismDemoReadOnly\/…/.test(d.out || '') && !(d.out || '').includes(S.pending.home), leak.join(', ') || (d.out || '').slice(0, 300));
+  }
   if (S.fixes) {
     const F = S.fixes;
     add('B1', 'repo page: the running review reads "running", never "no findings"', /running/.test(F.repoSecurity) && !/no findings/.test(F.repoSecurity), F.repoSecurity);
@@ -651,6 +738,10 @@ function verdicts(R) {
     add('B7', 'footer and Codewatch card name the same counts', /with codewatch hooks installed/.test(F.meta) && /with hooks installed/.test(F.codewatchCard), F.meta + ' | ' + F.codewatchCard);
     const ids = (F.repoText + F.settingsReposText + F.securityText).match(/\b\d{12}\b/g);
     add('B9', 'no full 12-digit account id on the repo, Settings › Repos or Security Agent pages', !ids, (ids || []).join(', '));
+    const apiIds = ((F.apiJson || '') + (F.accountguardText || '')).match(/\b\d{12}\b/g);
+    add('G3', 'no full 12-digit account id in /api/data, /api/accountguard, /api/setup or on AccountGuard', F.apiJson && !apiIds, (apiIds || ['no API text']).join(', '));
+    const ag = F.accountguardText || '';
+    add('G1', 'AccountGuard names why each check could not run (throttled, not enabled, access denied)', /throttled/.test(ag) && /not enabled here/.test(ag) && /access denied/.test(ag) && /nothing to grant/.test(ag), ag.slice(0, 400));
     add('B10', 'update check off: Check now disabled and the reason shown', F.updates.disabled && /The update check is off/.test(F.updates.text) && /off \(PRISM_NO_UPDATE_CHECK=1\)/.test(F.updates.pillTitle), JSON.stringify(F.updates).slice(0, 300));
     for (const k of ['cb-month', 'cb-history']) {
       // The failure lines only: the rest of the page shows repo paths on purpose.

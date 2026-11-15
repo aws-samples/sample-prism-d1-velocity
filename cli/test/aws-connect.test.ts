@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -209,5 +209,112 @@ test('access level: policies when readable, else the name, else unknown', () => 
 test('aws connect is registered as `prism-cli aws connect` with its flags', async () => {
   const mod = await import('../src/commands/aws/connect.js');
   const flags = mod.default.options.map((o: { flags: string }) => o.flags.split(' ')[0]);
-  assert.deepEqual(flags, ['--profile', '--region', '--repo', '--status', '--clear']);
+  assert.deepEqual(flags, ['--profile', '--region', '--repo', '--status', '--clear', '--json']);
+});
+
+// ---------------------------------------------------------------- --json (1.16.0)
+
+/** --json: stdout (log) holds exactly one JSON object; the human lines went to err. */
+function jsonRun(h: ReturnType<typeof harness>, errs: string[]) {
+  h.deps.err = (l = '') => errs.push(l);
+  return () => {
+    assert.equal(h.lines.length, 1, 'stdout is one JSON object');
+    const text = h.lines[0];
+    assert.ok(!/\b\d{12}\b/.test(text), 'no full account id: ' + text);
+    assert.ok(!/arn:aws:[^\s"]*::\d{12}:/.test(text), 'no caller ARN with its account id');
+    assert.ok(!/AKIA|ASIA|SecretAccessKey|SessionToken|aws_secret_access_key|aws_session_token/i.test(text), 'no key material');
+    return JSON.parse(text);
+  };
+}
+
+test('connect --json: the documented shape, account as its last 4 digits, human lines on stderr', async () => {
+  const h = harness(); const errs: string[] = [];
+  const read = jsonRun(h, errs);
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', json: true }, h.deps), 0);
+  assert.deepEqual(read(), {
+    schema: 'prism.aws-connect.v1', action: 'connect', ok: true,
+    connection: { profile: 'prism-sa-test', region: 'us-west-2', account: '••••9012', alias: 'sandbox', verifiedAt: '2026-11-07T12:00:00.000Z', scope: 'user' },
+    access: 'read-only', org: 'unknown',
+  });
+  assert.match(errs[0], /^Read-only \(aws connect\)/);
+  assert.ok(existsSync(userConnectionPath(h.home)), 'still saves');
+});
+
+test('connect --json: a failure is ok:false with the error, and never prompts', async () => {
+  const h = harness({ tty: true, answers: ['1'], table: { 'sts get-caller-identity': err('ExpiredToken') } }); const errs: string[] = [];
+  const read = jsonRun(h, errs);
+  assert.equal(await awsConnect({ json: true }, h.deps), 1);
+  const j = read();
+  assert.equal(j.ok, false);
+  assert.match(j.error, /no --profile given and there is no terminal/);
+  assert.equal(j.connection, null);
+  const h2 = harness({ table: { 'sts get-caller-identity': err('ExpiredToken') } });
+  const read2 = jsonRun(h2, []);
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', json: true }, h2.deps), 1);
+  assert.match(read2().error, /^profile prism-sa-test does not validate: ExpiredToken/);
+});
+
+test('connect --status --json: connection, inUse, envOverride and validation', async () => {
+  const h = harness(); const read = jsonRun(h, []);
+  writeConnectionFile(userConnectionPath(h.home), { profile: 'prism-sa-test', region: 'us-west-2', account: ACCOUNT, alias: 'sandbox', verifiedAt: '2026-11-07T12:00:00.000Z' });
+  assert.equal(await awsConnect({ status: true, json: true }, h.deps), 0);
+  assert.deepEqual(read(), {
+    schema: 'prism.aws-connect.v1', action: 'status', ok: true,
+    connection: { profile: 'prism-sa-test', region: 'us-west-2', account: '••••9012', alias: 'sandbox', verifiedAt: '2026-11-07T12:00:00.000Z', scope: 'user' },
+    inUse: true, envOverride: null, validation: { ok: true, accountMatches: true, error: null },
+  });
+  // An env credential wins; the account now differs.
+  const h2 = harness({ env: { AWS_ACCESS_KEY_ID: 'x' }, table: { 'sts get-caller-identity': ok({ Account: '444455556666', Arn: 'arn:aws:sts::444455556666:assumed-role/R/x' }) } });
+  const read2 = jsonRun(h2, []);
+  writeConnectionFile(userConnectionPath(h2.home), { profile: 'prism-sa-test', region: 'us-west-2', account: ACCOUNT, alias: null, verifiedAt: '' });
+  assert.equal(await awsConnect({ status: true, json: true }, h2.deps), 1);
+  const j = read2();
+  assert.equal(j.inUse, false);
+  assert.equal(j.envOverride, 'AWS_ACCESS_KEY_ID');
+  assert.deepEqual(j.validation, { ok: false, accountMatches: false, error: null });
+  assert.match(j.error, /now resolves to account ••••6666, not ••••9012/);
+  // Nothing saved.
+  const h3 = harness(); const read3 = jsonRun(h3, []);
+  assert.equal(await awsConnect({ status: true, json: true }, h3.deps), 0);
+  assert.deepEqual(read3(), { schema: 'prism.aws-connect.v1', action: 'status', ok: true, connection: null });
+});
+
+test('connect --clear --json: removed and scope', async () => {
+  const h = harness(); const read = jsonRun(h, []);
+  writeConnectionFile(userConnectionPath(h.home), { profile: 'prism-sa-test', region: 'us-west-2', account: ACCOUNT, alias: null, verifiedAt: '' });
+  assert.equal(await awsConnect({ clear: true, json: true }, h.deps), 0);
+  assert.deepEqual(read(), { schema: 'prism.aws-connect.v1', action: 'clear', ok: true, connection: null, removed: true, scope: 'user' });
+  assert.equal(h.calls.length, 0, 'no AWS call');
+});
+
+test('connect --json: a failed connection-file write still prints one JSON object with the error, exit 1', async () => {
+  const h = harness(); const errs: string[] = [];
+  // ~/.prism is a file, so writing ~/.prism/aws.json fails.
+  writeFileSync(join(h.home, '.prism'), 'not a directory');
+  const read = jsonRun(h, errs);
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', json: true }, h.deps), 1);
+  const j = read();
+  assert.equal(j.ok, false);
+  assert.equal(j.action, 'connect');
+  assert.equal(j.connection, null);
+  assert.match(j.error, /ENOTDIR|EEXIST|not a directory/i);
+  assert.ok(errs.some((l) => l.startsWith('Error: ')), 'the Error line goes to stderr');
+});
+
+test('connect --json: the error field is masked like the dashboard drawer (no 12-digit id, no session name)', async () => {
+  const msg = 'An error occurred (AccessDenied) when calling the GetCallerIdentity operation: User: arn:aws:sts::444455556666:assumed-role/Dev/someone@example.com is not authorized';
+  const h = harness({ table: { 'sts get-caller-identity': { ok: false, json: null, errorCode: '', raw: msg } } });
+  const read = jsonRun(h, []);
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', json: true }, h.deps), 1);
+  const j = read();
+  assert.match(j.error, /arn:aws:sts::••••6666:assumed-role\/Dev\/…/);
+  assert.ok(!j.error.includes('someone@example.com'));
+  // --status: the same in validation.error.
+  const h2 = harness({ table: { 'sts get-caller-identity': { ok: false, json: null, errorCode: '', raw: msg } } });
+  const read2 = jsonRun(h2, []);
+  writeConnectionFile(userConnectionPath(h2.home), { profile: 'prism-sa-test', region: 'us-west-2', account: ACCOUNT, alias: null, verifiedAt: '' });
+  assert.equal(await awsConnect({ status: true, json: true }, h2.deps), 1);
+  const j2 = read2();
+  assert.match(j2.validation.error, /••••6666/);
+  assert.match(j2.error, /••••6666/);
 });

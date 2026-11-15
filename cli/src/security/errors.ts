@@ -8,6 +8,14 @@
  * credential that ends up in an error string is never echoed.
  */
 
+/**
+ * Exit code of `security findings`, `security threats`, `security findings --pentest`
+ * (and a `--wait` that times out): the job has no verdict yet. Nothing failed; check back
+ * later or use --wait. Usage and AWS errors exit 1, Ctrl-C 130. The dashboard reads this
+ * as "still running", not as a failure.
+ */
+export const EXIT_PENDING = 2;
+
 /** First AWS CLI release with the Security Agent code review commands (matches the CI eval gate's check). */
 export const MIN_AWS_CLI = [2, 36] as const;
 export const MIN_AWS_CLI_TEXT = `v${MIN_AWS_CLI.join('.')}`;

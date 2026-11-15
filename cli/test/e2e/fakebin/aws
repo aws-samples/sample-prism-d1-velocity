@@ -1,12 +1,22 @@
 #!/bin/sh
 # Fake AWS CLI for the dashboard e2e run: it never contacts AWS. Every call is logged to
 # $HOME/aws-calls.log and answers like the real CLI with no credentials configured.
+# FAKE_AWS=in-progress: answers as the seeded demo account (AWS's example id 111122223333) whose
+# Security Agent code review job-demo-2 is still IN_PROGRESS, so security findings exits 2.
 echo "$*" >> "$HOME/aws-calls.log"
 case "$1" in
-  --version) echo "aws-cli/2.0.0-fake Python/3 Linux"; exit 0 ;;
+  --version) echo "aws-cli/2.36.0-fake Python/3 Linux"; exit 0 ;;
   configure)
     if [ "$2" = "list-profiles" ]; then sed -n 's/^\[profile \(.*\)\]$/\1/p; s/^\[default\]$/default/p' "$HOME/.aws/config"; exit 0; fi ;;
 esac
+if [ "$FAKE_AWS" = "in-progress" ]; then
+  case "$1 $2" in
+    "sts get-caller-identity") echo '{"Account":"111122223333","Arn":"arn:aws:sts::111122223333:assumed-role/PrismDemoReadOnly/demo-session"}'; exit 0 ;;
+    "iam list-account-aliases") echo '{"AccountAliases":["demo-dev"]}'; exit 0 ;;
+    "ssm get-parameter") echo "" >&2; echo "An error occurred (ParameterNotFound) when calling the GetParameter operation: " >&2; exit 254 ;;
+    "securityagent batch-get-code-review-jobs") echo '{"codeReviewJobs":[{"codeReviewJobId":"job-demo-2","status":"IN_PROGRESS","createdAt":"2026-11-15T10:00:00Z"}]}'; exit 0 ;;
+  esac
+fi
 echo "" >&2
 echo "Unable to locate credentials. You can configure credentials by running \"aws configure\"." >&2
 exit 253
