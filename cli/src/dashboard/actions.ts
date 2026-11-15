@@ -10,8 +10,11 @@
  *     by a shell;
  *   - the request names an action id and nothing else free-form: a repo is an
  *     id resolved against the dashboard's own scan list (never a client path),
- *     and the only text input is a collector URL for team mode, validated as
- *     https with a hostname, no userinfo, at most 2048 characters;
+ *     the only text input is a collector URL for team mode, validated as
+ *     https with a hostname, no userinfo, at most 2048 characters, and
+ *     aws-connect's profile and region must each be one of the names the
+ *     server lists itself (awsChoices: section names of ~/.aws/config and
+ *     ~/.aws/credentials, read fresh; the fixed region list);
  *   - one action at a time, each with a timeout;
  *   - output is redacted before it leaves the server, and every run is
  *     appended to ~/.prism/logs/dashboard-actions.log (time, id, repo name,
@@ -24,16 +27,20 @@
  *     account, region and scan bucket. Every other AWS-writing command
  *     (enable security, security pentest) stays copy-only on the page;
  *   - AWS actions get --profile and --region from the server's own
- *     resolution for that repo (awsArgs), never from the request.
+ *     resolution for that repo (awsArgs), or from the connected account
+ *     (connectionArgs, AccountGuard), never from the request; aws-connect is
+ *     the one exception above.
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
-  | 'codeburn-remove' | 'codeburn-status' | 'aws-check' | 'team-info'
+  | 'codeburn-remove' | 'codeburn-status' | 'team-info'
+  | 'aws-connect' | 'aws-connect-status' | 'aws-disconnect' | 'accountguard-check' | 'accountguard-recommend'
   | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
   | 'agent-hooks-kiro-remove' | 'agent-hooks-kiro-global-remove' | 'agent-hooks-claude-remove' | 'agent-hooks-claude-global-remove'
   | 'kirocrew-app' | 'update-cli'
@@ -64,6 +71,14 @@ export interface ActionDef {
   writesAws?: true;
   /** One line the confirm dialog adds (what else the run does on this machine). */
   note?: string;
+  /** Takes `profile` and `region` from the request, each checked against the server's own lists (RunnerDeps.awsChoices). */
+  choose?: true;
+  /** Appends --profile/--region of the connected account (RunnerDeps.connectionArgs); refused when none is connected. */
+  connected?: true;
+  /** Runs in the home directory, so account-level results land in ~/.prism/results/. */
+  inHome?: true;
+  /** With confirm: the checkbox text in the page's dialog. */
+  confirmLabel?: string;
   timeoutMs: number;
 }
 
@@ -84,10 +99,20 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'codeburn-systemd': { label: 'Schedule with a systemd user timer', args: ['enable', 'codeburn', '--schedule', 'systemd'], systemd: true, timeoutMs: 5 * MIN },
   // codeburn sync setup opens a browser to sign in, so this one gets longer.
   'codeburn-team': { label: "Sync to my team's PRISM", args: ['enable', 'codeburn', '--url'], url: true, timeoutMs: 10 * MIN },
-  'codeburn-remove': { label: 'Remove the sync schedule', args: ['enable', 'codeburn', '--remove'], confirm: true, timeoutMs: 2 * MIN },
+  'codeburn-remove': { label: 'Remove the sync schedule', args: ['enable', 'codeburn', '--remove'], confirm: true, confirmLabel: 'Yes, remove the scheduled codeburn sync push from this machine', timeoutMs: 2 * MIN },
   'codeburn-status': { label: 'codeburn status', args: ['enable', 'codeburn', '--status'], timeoutMs: MIN },
-  'aws-check': { label: 'AWS account check (read-only)', args: ['aws', 'check'], readOnlyAws: true, timeoutMs: 10 * MIN },
   'team-info': { label: 'Team stack info (read-only)', args: ['team', 'info'], readOnlyAws: true, timeoutMs: 2 * MIN },
+  // Settings › AWS: prism-cli aws connect. Read-only in AWS; writes only ~/.prism/aws.json (no credentials).
+  'aws-connect': { label: 'Connect the AWS account', args: ['aws', 'connect'], choose: true, readOnlyAws: true, timeoutMs: 2 * MIN,
+    note: 'It checks the profile with sts get-caller-identity and reads the account alias, Organizations and the attached IAM policies, then saves the profile name, region, account id and alias in ~/.prism/aws.json. No credentials are stored.' },
+  'aws-connect-status': { label: 'Show the saved AWS connection', args: ['aws', 'connect', '--status'], readOnlyAws: true, timeoutMs: MIN },
+  'aws-disconnect': { label: 'Disconnect the AWS account', args: ['aws', 'connect', '--clear'], confirm: true, confirmLabel: 'Yes, remove the saved AWS connection from this machine', timeoutMs: MIN,
+    note: 'Removes ~/.prism/aws.json. Nothing in AWS is changed; AWS commands then use the default credential chain.' },
+  // AccountGuard: the connected account, from ~, so the results land in ~/.prism/results/.
+  'accountguard-check': { label: 'Run aws check', args: ['aws', 'check'], connected: true, inHome: true, readOnlyAws: true, timeoutMs: 10 * MIN,
+    note: 'Every call is a describe, get or list across IAM, Budgets, Cost Explorer, CloudWatch, GuardDuty, Security Hub, CloudTrail, S3, EC2, CloudFormation, SSM and Bedrock. The result is saved to ~/.prism/results/.' },
+  'accountguard-recommend': { label: 'Run aws recommend', args: ['aws', 'recommend'], connected: true, inHome: true, timeoutMs: MIN,
+    note: 'No AWS call: it reads the latest aws check result and prints the ranked fixes (the list on this page).' },
   'agent-hooks-kiro': hooks('kiro', false, false),
   'agent-hooks-kiro-global': hooks('kiro', true, false),
   'agent-hooks-claude': hooks('claude', false, false),
@@ -179,6 +204,10 @@ export interface RunnerDeps {
   awsArgs?: (repo: ScanRepo) => string[];
   /** For a writesAws action: null to allow it, else why not (no current lookup, no space, no bucket, another account). Absent: refused. */
   writeGate?: (id: ActionId, repo: ScanRepo) => string | null | Promise<string | null>;
+  /** For aws-connect: the profile names and regions the server lists itself, read fresh on each call. Absent: aws-connect is refused. */
+  awsChoices?: () => { profiles: string[]; regions: string[] };
+  /** For AccountGuard: --profile/--region of the connected account, or null when none is connected. */
+  connectionArgs?: () => string[] | null;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
 }
@@ -200,7 +229,9 @@ export interface ActionStatus {
 }
 
 const MAX_OUTPUT = 256 * 1024;
-const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm']);
+const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region']);
+/** A value the CLI accepts as a profile or region name (aws/connection.ts) that cannot be read as a flag. */
+const argValue = (v: string, re: RegExp) => re.test(v) && !v.startsWith('-');
 
 /** The command as shown on the page: `prism-cli <args>`, or `npm <args>`. Arguments are fixed words or the validated https URL. */
 export function displayCommand(args: readonly string[], program: ActionDef['program'] = undefined): string {
@@ -256,6 +287,15 @@ export class ActionRunner {
       const e = collectorUrlError(b.url);
       if (e) return bad(`collector URL: ${e}`);
     } else if (b.url !== undefined) return bad('this action does not take a URL');
+    // aws-connect: a profile and a region, each one of the names the server lists itself right now. Nothing else is accepted.
+    let chosen: string[] = [];
+    if (def.choose) {
+      const lists = this.d.awsChoices?.();
+      if (!lists) return bad('choosing a profile is not available here');
+      if (typeof b.profile !== 'string' || !lists.profiles.includes(b.profile) || !argValue(b.profile, PROFILE_RE)) return bad('profile must be one of the profiles listed on the page');
+      if (typeof b.region !== 'string' || !lists.regions.includes(b.region) || !argValue(b.region, REGION_RE)) return bad('region must be one of the regions listed on the page');
+      chosen = ['--profile', b.profile, '--region', b.region];
+    } else if (b.profile !== undefined || b.region !== undefined) return bad('this action does not take a profile or region');
     if (def.confirm && b.confirm !== true) return bad('this action needs confirm: true');
     if (b.confirm !== undefined && typeof b.confirm !== 'boolean') return bad('confirm must be true or false');
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
@@ -269,12 +309,14 @@ export class ActionRunner {
       finally { this.busy = false; }
       if (why) return bad(why, 409);
     }
-    const target = def.awsTarget && repo && this.d.awsArgs ? this.d.awsArgs(repo) : [];
+    const connection = def.connected ? this.d.connectionArgs?.() ?? null : [];
+    if (!connection) return bad('no AWS account is connected: connect one in Settings › AWS', 409);
+    const target = [...(def.awsTarget && repo && this.d.awsArgs ? this.d.awsArgs(repo) : []), ...connection];
     // Only the two flag names, and values that cannot be read as a flag (no leading '-').
-    if (!target.every((a) => a === '--profile' || a === '--region' || /^[A-Za-z0-9_.+=,@:][A-Za-z0-9_.+=,@:-]{0,127}$/.test(a))) return bad('the resolved AWS profile or region is not valid');
+    if (![...target, ...chosen].every((a) => a === '--profile' || a === '--region' || argValue(a, PROFILE_RE))) return bad('the resolved AWS profile or region is not valid');
 
-    const args = [...def.args, ...target, ...(def.url ? [b.url as string] : [])];
-    const cwd = repo ? repo.path : this.d.cwd;
+    const args = [...def.args, ...chosen, ...target, ...(def.url ? [b.url as string] : [])];
+    const cwd = repo ? repo.path : def.inHome ? this.d.home : this.d.cwd;
     const now = this.d.now ?? (() => new Date());
     this.busy = true;
     const runId = ++this.seq;

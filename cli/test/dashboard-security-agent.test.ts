@@ -348,7 +348,7 @@ const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, labe
 const buttons = (root: FakeElement) => root.querySelectorAll('button');
 const btn = (root: FakeElement, label: string) => buttons(root).find((b) => b.textContent === label);
 
-test('page: Dashboard | Security Agent | Settings; #security opens the page on the current repo; #security/<id> on that repo', async () => {
+test('page: Dashboard | Security Agent | AccountGuard | Settings; #security opens the page on the current repo; #security/<id> on that repo', async () => {
   const p = await pagePayload();
   const [a, b] = p.repos;
   const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, null, 0) });
@@ -366,7 +366,7 @@ test('page: Dashboard | Security Agent | Settings; #security opens the page on t
   page.go('');
   assert.equal(sec.hidden, true);
   const { renderPage } = await import('../src/dashboard/page.js');
-  assert.match(renderPage('N'), /<a href="#">Dashboard<\/a>|data-view="dashboard">Dashboard<\/a><a href="#security" data-view="security">Security Agent <span class="badge warn" id="security-badge" hidden><\/span><\/a><a href="#settings" data-view="settings">Settings/);
+  assert.match(renderPage('N'), /<a href="#">Dashboard<\/a>|data-view="dashboard">Dashboard<\/a><a href="#security" data-view="security">Security Agent <span class="badge warn" id="security-badge" hidden><\/span><\/a><a href="#accountguard" data-view="accountguard">AccountGuard <span class="badge warn" id="accountguard-badge" hidden><\/span><\/a><a href="#settings" data-view="settings">Settings/);
 });
 
 test('page: no AWS call on load; the lookup runs on a click only, for the picked repo', async () => {
@@ -450,7 +450,7 @@ test('Settings > AWS points to the Security Agent page; the Dashboard\'s securit
   const p = await pagePayload();
   const settings = await runPage([p], '#settings/aws', { ...SETUP, aws: { steps: [], warnings: [] } });
   const aws = settings.dom.byId.settings.all().find((e) => e.getAttribute('data-pane') === 'aws')!;
-  assert.match(aws.textContent, /^AWSSecurity Agent moved to its own page: Security Agent →/);
+  assert.match(aws.textContent, /Account checks moved to AccountGuard → · Security Agent has its own page →/);
   assert.ok(aws.querySelectorAll('a').some((a) => a.getAttribute('href') === '#security'));
   assert.doesNotMatch(aws.textContent, /Security Agent runs/, 'the copy-only Security Agent rows moved to the page');
   const q = JSON.parse(JSON.stringify(p)) as DashboardPayload;

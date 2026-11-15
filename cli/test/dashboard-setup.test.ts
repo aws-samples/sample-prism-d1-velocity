@@ -15,7 +15,7 @@ import vm from 'node:vm';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
 import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, redact, repoId, type ActionId, type SpawnFn } from '../src/dashboard/actions.js';
 import { setupApi } from '../src/dashboard/setup-api.js';
-import { checkNow, classifyProfile, iniKeys, resolveAwsIdentity, STATIC_DEFAULT_WARNING, NO_CREDENTIALS_WARNING } from '../src/dashboard/aws-identity.js';
+import { classifyProfile, iniKeys, resolveAwsIdentity, STATIC_DEFAULT_WARNING, NO_CREDENTIALS_WARNING } from '../src/dashboard/aws-identity.js';
 import { readConnectionFile, writeConnectionFile, loadConnection } from '../src/aws/connection.js';
 import { renderPage } from '../src/dashboard/page.js';
 import { THEME_BOOT, THEME_SCRIPT } from '../src/dashboard/setup-page.js';
@@ -78,7 +78,6 @@ async function withSetupServer(fn: (h: {
   const api = setupApi({
     runner: r, cwd: '/work', repoPaths: async () => [REPO_A], refresh: async () => ({}),
     identity: { env: {}, home, repoRoot: null, readText: () => null },
-    checkAws: () => ({ ok: false, json: null, errorCode: '', raw: 'unused' }),
   });
   const srv = await startServer({ getPayload: async () => ({}), ...api });
   const cookie = `${cookieName(srv.port)}=${srv.token}`;
@@ -196,8 +195,12 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'codeburn-team': { args: ['enable', 'codeburn', '--url', 'https://collector.example.com/otel?x=1'], cwd: '/work', body: { url: 'https://collector.example.com/otel?x=1' } },
     'codeburn-remove': { args: ['enable', 'codeburn', '--remove'], cwd: '/work', body: { confirm: true } },
     'codeburn-status': { args: ['enable', 'codeburn', '--status'], cwd: '/work' },
-    'aws-check': { args: ['aws', 'check'], cwd: '/work' },
     'team-info': { args: ['team', 'info'], cwd: '/work' },
+    'aws-connect': { args: ['aws', 'connect', '--profile', 'demo', '--region', 'us-west-2'], cwd: '/work', body: { profile: 'demo', region: 'us-west-2' } },
+    'aws-connect-status': { args: ['aws', 'connect', '--status'], cwd: '/work' },
+    'aws-disconnect': { args: ['aws', 'connect', '--clear'], cwd: '/work', body: { confirm: true } },
+    'accountguard-check': { args: ['aws', 'check', '--profile', 'demo', '--region', 'us-west-2'], cwd: 'HOME' },
+    'accountguard-recommend': { args: ['aws', 'recommend', '--profile', 'demo', '--region', 'us-west-2'], cwd: 'HOME' },
     'agent-hooks-kiro': hooks('kiro', false, false), 'agent-hooks-kiro-global': hooks('kiro', true, false),
     'agent-hooks-claude': hooks('claude', false, false), 'agent-hooks-claude-global': hooks('claude', true, false),
     'agent-hooks-kiro-remove': hooks('kiro', false, true), 'agent-hooks-kiro-global-remove': hooks('kiro', true, true),
@@ -216,14 +219,16 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
   };
   for (const [id, e] of Object.entries(expected) as [ActionId, typeof expected[ActionId]][]) {
     const calls: Spawned[] = [];
-    const r = runner(calls, { awsArgs: () => ['--profile', 'dev', '--region', 'us-west-2'], writeGate: () => null });
+    const home = tmp('ah');
+    const r = runner(calls, { home, awsArgs: () => ['--profile', 'dev', '--region', 'us-west-2'], writeGate: () => null,
+      awsChoices: () => ({ profiles: ['demo'], regions: ['us-west-2'] }), connectionArgs: () => ['--profile', 'demo', '--region', 'us-west-2'] });
     const res = await r.start({ action: id, ...e.body });
     assert.equal(res.status, 202, id);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].file, e.npm ? '/usr/bin/npm' : '/usr/bin/node', id);
     assert.deepEqual(calls[0].args, e.npm ? e.args : ['/opt/prism/dist/bin/prism-cli.js', ...e.args], id);
     assert.equal(calls[0].opts.shell, false, id);
-    assert.equal(calls[0].opts.cwd, e.cwd, id);
+    assert.equal(calls[0].opts.cwd, e.cwd === 'HOME' ? home : e.cwd, id);
     assert.deepEqual(calls[0].opts.stdio, ['ignore', 'pipe', 'pipe'], `${id}: stdin closed`);
     await until(() => !r.running);
   }
@@ -231,7 +236,7 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
   for (const [id, a] of Object.entries(ACTIONS)) {
     const line = a.args.join(' ');
     if (a.writesAws) { assert.match(line, /^security (code-review( --full)?|threat-model) --no-wait$/, id); assert.equal(a.confirm, true, id); continue; }
-    assert.ok(!/^(security (code-review|threat-model|pentest)|team add-developer|aws connect)/.test(line), line);
+    assert.ok(!/^(security (code-review|threat-model|pentest)|team add-developer)/.test(line), line);
     assert.ok(!/^enable security( |$)/.test(line) || /--(status|dry-run)$/.test(line), line);
   }
 });
@@ -368,78 +373,6 @@ test('AWS section: env, saved aws connect profile (repo over user) and no creden
   const none = resolveAwsIdentity({ env: {}, home: tmp('empty'), repoRoot: null });
   assert.equal(none.credentialType, 'none');
   assert.ok(none.warnings.includes(NO_CREDENTIALS_WARNING));
-});
-
-// ---------------------------------------------------------------- Check now
-
-function checkSetup(account: string | null, error?: string) {
-  const home = awsHome('[profile cp]\ncredential_process = x\nregion = us-east-2\n', null);
-  const path = join(home, '.prism', 'aws.json');
-  writeConnectionFile(path, { profile: 'cp', region: 'us-east-2', account: '111122223333', alias: null, verifiedAt: '2026-11-01T00:00:00.000Z' });
-  const calls: [string[], string, string][] = [];
-  const awsFn = (args: string[], profile: string, region: string): AwsResult => {
-    calls.push([args, profile, region]);
-    return error ? { ok: false, json: null, errorCode: error, raw: '' } : { ok: true, json: { Account: account, Arn: `arn:aws:sts::${account}:assumed-role/Dev/me` }, errorCode: '', raw: '' };
-  };
-  const identity = resolveAwsIdentity({ env: {}, home, repoRoot: null });
-  const run = () => checkNow({ identity, saved: loadConnection(home, null), aws: awsFn, now: () => new Date('2026-11-11T10:00:00.000Z'), redact });
-  return { run, calls, path };
-}
-
-test('Check now: success and match updates the saved verified time', () => {
-  const t = checkSetup('111122223333');
-  const r = t.run();
-  assert.equal(r.ok, true);
-  if (!r.ok) return;
-  assert.deepEqual([r.account, r.matches, r.updated, r.region], ['111122223333', true, true, 'us-east-2']);
-  assert.deepEqual(t.calls, [[['sts', 'get-caller-identity'], 'cp', 'us-east-2']], 'one read-only call');
-  assert.equal(readConnectionFile(t.path)!.verifiedAt, '2026-11-11T10:00:00.000Z');
-  assert.match(r.note, /updated the verified time in ~\/\.prism\/aws\.json/);
-});
-
-test('Check now: a different account is reported and the saved file is not changed', () => {
-  const t = checkSetup('999988887777');
-  const r = t.run();
-  assert.ok(r.ok && r.matches === false && !r.updated);
-  if (r.ok) assert.match(r.note, /Does not match the saved account 111122223333/);
-  assert.equal(readConnectionFile(t.path)!.verifiedAt, '2026-11-01T00:00:00.000Z');
-});
-
-test('Check now: expired credentials give a clear message and fixes', () => {
-  const t = checkSetup(null, 'ExpiredTokenException');
-  const r = t.run();
-  assert.equal(r.ok, false);
-  if (r.ok) return;
-  assert.equal(r.expired, true);
-  assert.equal(r.error, 'ExpiredTokenException');
-  assert.ok(r.fixes.some((f) => /credential_process/.test(f)));
-  assert.ok(r.fixes.includes('prism-cli aws connect'));
-  assert.equal(readConnectionFile(t.path)!.verifiedAt, '2026-11-01T00:00:00.000Z');
-});
-
-test('Check now goes through the POST gates and the action lock', async () => {
-  const calls: Spawned[] = [];
-  const r = runner(calls, { spawn: fakeSpawn(calls, false) });
-  let awsCalls = 0;
-  const api = setupApi({
-    runner: r, cwd: '/work', repoPaths: async () => [], refresh: async () => ({}),
-    identity: { env: {}, home: tmp('cn'), repoRoot: null, readText: () => null },
-    checkAws: () => { awsCalls++; return { ok: true, json: { Account: '111122223333', Arn: 'arn:aws:iam::111122223333:user/me' }, errorCode: '', raw: '' }; },
-  });
-  const srv = await startServer({ getPayload: async () => ({}), ...api });
-  try {
-    const h = { Cookie: `${cookieName(srv.port)}=${srv.token}`, Origin: `http://127.0.0.1:${srv.port}`, 'X-Prism-CSRF': srv.csrf, 'Content-Type': 'application/json' };
-    assert.equal((await call(srv.port, 'POST', '/api/check-now', { ...h, 'X-Prism-CSRF': '' }, '{}')).status, 403);
-    assert.equal((await call(srv.port, 'GET', '/api/check-now', { Cookie: h.Cookie })).status, 405);
-    assert.equal((await call(srv.port, 'POST', '/api/check-now', h, '{"profile":"x"}')).status, 400, 'no inputs');
-    const ok = await call(srv.port, 'POST', '/api/check-now', h, '{}');
-    assert.equal(ok.status, 200);
-    assert.equal(JSON.parse(ok.body).account, '111122223333');
-    await r.start({ action: 'codeburn-status' });
-    assert.equal((await call(srv.port, 'POST', '/api/check-now', h, '{}')).status, 409, 'locked while an action runs');
-    assert.equal(awsCalls, 1);
-    calls[0].child.emit('close', 0);
-  } finally { await srv.close(); }
 });
 
 // ---------------------------------------------------------------- theme

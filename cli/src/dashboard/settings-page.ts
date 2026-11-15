@@ -49,7 +49,7 @@ function settingsRoute() {
   if (!m) return null;
   return SETTINGS_TABS.some(([t]) => t === m[1]) ? m[1] : 'overview';
 }
-function currentView() { return settingsRoute() ? 'settings' : securityRoute() ? 'security' : repoRoute() ? 'repo' : 'dashboard'; }
+function currentView() { return settingsRoute() ? 'settings' : securityRoute() ? 'security' : agRoute() ? 'accountguard' : repoRoute() ? 'repo' : 'dashboard'; }
 function showView() {
   const v = currentView();
   document.getElementById('main').hidden = v !== 'dashboard';
@@ -57,8 +57,11 @@ function showView() {
   document.getElementById('settings').hidden = v !== 'settings';
   const sec = document.getElementById('security');
   if (sec) sec.hidden = v !== 'security';
+  const ag = document.getElementById('accountguard');
+  if (ag) ag.hidden = v !== 'accountguard';
   if (v === 'repo') renderRepo(repoRoute());
   if (v === 'security') drawSecurity();
+  if (v === 'accountguard') drawAccountGuard();
   if (v === 'settings') selectTab(settingsRoute());
   for (const a of document.querySelectorAll('[data-view]')) {
     if (a.getAttribute('data-view') === (v === 'repo' ? 'dashboard' : v)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -248,7 +251,7 @@ async function renderSetup(data) {
   root.replaceChildren();
   if (!SETUP) { root.append(el('section', { class: 'card' }, pill('error'), ' could not load the settings data')); return; }
   const machine = { ...data, machine: { ...data.machine, setup: (data.machine.setup || []).filter((i) => i.id !== 'kirocrew-app') } };
-  const panes = { overview: overviewPane(data, items), machine: [machineSection(machine)], repos: reposPane(data), agents: agentsPane(data), sync: [syncSection(data)], aws: [awsSection(SETUP.aws || {})], updates: updatesPane(data) };
+  const panes = { overview: overviewPane(data, items), machine: [machineSection(machine)], repos: reposPane(data), agents: agentsPane(data), sync: [syncSection(data)], aws: awsSection(SETUP.aws || {}), updates: updatesPane(data) };
   const nav = el('nav', { class: 'stabs', role: 'tablist', 'aria-label': 'Settings sections' });
   const box = el('div', { class: 'spanes' });
   for (const [id, label] of SETTINGS_TABS) {

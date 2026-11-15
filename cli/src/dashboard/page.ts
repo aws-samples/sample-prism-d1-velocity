@@ -2,7 +2,7 @@
  * The dashboard's single-page app: one self-contained HTML document with
  * inline CSS and JS (nonce-gated by the CSP), no CDN and no network fetch
  * other than its own GET routes (/api/data, then /api/usage), so it works offline.
- * Views are hash routes: # (dashboard), #security[/<repo-id>], #settings[/<tab>] (#setup is an alias), #repo/<id>.
+ * Views are hash routes: # (dashboard), #security[/<repo-id>], #accountguard, #settings[/<tab>] (#setup is an alias), #repo/<id>.
  *
  * Every value from the payload is placed with textContent or a DOM attribute;
  * innerHTML is never used for data.
@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { SETUP_SCRIPT, SETUP_STYLE, THEME_BOOT, THEME_SCRIPT } from './setup-page.js';
 import { SETTINGS_SCRIPT, SETTINGS_STYLE } from './settings-page.js';
 import { SECURITY_SCRIPT, SECURITY_STYLE } from './security-page.js';
+import { ACCOUNTGUARD_SCRIPT, ACCOUNTGUARD_STYLE } from './accountguard-page.js';
 import { REPO_SCRIPT } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
 
@@ -127,6 +128,7 @@ details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--mut
 ${SETUP_STYLE}
 ${SETTINGS_STYLE}
 ${SECURITY_STYLE}
+${ACCOUNTGUARD_STYLE}
 `;
 
 const SCRIPT = `
@@ -537,27 +539,19 @@ function securityPentestRows(s, sec) {
 
 const AUDIT_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
-/** The latest aws check per account. Local results only. */
+/** The latest aws check per account, one line each (the detail is on AccountGuard). Local results only. */
 function awsPanel(aws) {
   const rows = (aws && aws.accounts) || [];
-  if (!rows.length) return moreItem('AWS account checks', el('code', {}, (aws && aws.hint) || 'prism-cli aws check'), ' (read-only)');
+  if (!rows.length) return moreItem('AWS account checks', el('code', {}, (aws && aws.hint) || 'prism-cli aws check'), ' (read-only), or run it from ', el('a', { href: '#accountguard', class: 'rlink' }, 'AccountGuard'));
   const s = el('section', { class: 'card', id: 'aws' }, el('h2', {}, 'AWS account', el('span', { class: 'sub' }, 'latest aws check')));
   for (const a of rows) {
-    const b = el('div', { class: 'sec-repo' });
-    b.append(el('div', { class: 'sec-head' }, el('b', {}, txt(a.account)), a.alias ? el('span', { class: 'tag' }, txt(a.alias)) : null));
-    b.append(el('div', { class: 'fix' }, txt(a.region) + ' · ' + when(a.checked_at) + (a.profile ? ' · profile ' + txt(a.profile) + (a.profile_source ? ' (' + txt(a.profile_source) + ')' : '') : '')));
-    const c = a.counts || {}, pills = el('div', { class: 'sec-pills' });
-    pills.append(sevPill('ok', (c.pass || 0) + ' pass'));
-    if (c.fail) pills.append(sevPill('blocked', c.fail + ' fail'));
-    if (c.indeterminate) pills.append(sevPill('zero', c.indeterminate + ' not checked'));
-    for (const k of AUDIT_SEVERITIES) if ((a.fail_by_severity || {})[k]) pills.append(sevPill(k, a.fail_by_severity[k] + ' ' + k.toLowerCase()));
-    b.append(pills);
-    if ((a.top_failures || []).length) b.append(findingsList(a.top_failures.map((f) => ({ ...f, level: f.severity })), (f) => el('div', { class: 'fix' }, txt(f.section))));
-    if (a.more) b.append(el('p', { class: 'note' }, a.more + ' more'));
-    if (c.indeterminate) b.append(el('p', { class: 'note' }, 'Checks that could not run are not passes.'));
-    s.append(b);
+    const c = a.counts || {}, f = a.fail_by_severity || {};
+    const pills = el('span', { class: 'pills' }, ...AUDIT_SEVERITIES.filter((k) => f[k]).map((k) => sevPill(k, f[k] + ' ' + k.toLowerCase())),
+      sevPill('ok', (c.pass || 0) + ' pass'), c.indeterminate ? sevPill('zero', c.indeterminate + ' could not check') : null);
+    s.append(el('div', { class: 'aws-line sec-repo' },
+      el('span', {}, el('b', {}, maskAccount(a.account)), a.alias ? el('span', { class: 'tag' }, txt(a.alias)) : null, el('span', { class: 'fix' }, ' · ' + txt(a.region) + ' · checked ' + ago(a.checked_at))),
+      pills, el('a', { href: '#accountguard', class: 'rlink' }, 'Open AccountGuard →')));
   }
-  s.append(el('p', { class: 'note' }, 'Ranked fixes: run ', el('code', {}, (aws && aws.recommend_hint) || 'prism-cli aws recommend'), '.'));
   return s;
 }
 
@@ -660,6 +654,7 @@ async function render() {
   if (r) renderRepo(r);
   await renderSetup(data);
   await renderSecurity();
+  await renderAccountGuard();
   for (const d of document.querySelectorAll('details[data-key]')) {
     const k = d.getAttribute('data-key');
     if (openState.has(k)) d.open = openState.get(k);
@@ -668,6 +663,7 @@ async function render() {
 }
 ${SETUP_SCRIPT}
 ${SECURITY_SCRIPT}
+${ACCOUNTGUARD_SCRIPT}
 ${SETTINGS_SCRIPT}
 ${THEME_SCRIPT}
 if (SNAPSHOT) {
@@ -701,14 +697,14 @@ function shell(live: boolean): { head: string; header: string } {
   const head = m.icon ? `<link rel="icon" type="image/png" href="${m.icon}">` : '';
   const logo = m.logo ? `<img class="logo" src="${m.logo}" width="36" height="36" alt="">` : '';
   const header = `<header><h1>${logo}PRISM dashboard</h1>
-<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#security" data-view="security">Security Agent <span class="badge warn" id="security-badge" hidden></span></a><a href="#settings" data-view="settings">Settings <span class="badge warn" id="settings-badge" hidden></span></a></nav>
+<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#security" data-view="security">Security Agent <span class="badge warn" id="security-badge" hidden></span></a><a href="#accountguard" data-view="accountguard">AccountGuard <span class="badge warn" id="accountguard-badge" hidden></span></a><a href="#settings" data-view="settings">Settings <span class="badge warn" id="settings-badge" hidden></span></a></nav>
 <span class="spacer"></span>
 <div class="tools"><span id="ver"></span>${live ? '<button id="refresh" type="button">Refresh</button>' : ''}
 <div class="theme" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div></header>`;
   return { head, header };
 }
 
-const VIEWS = '<main id="main"></main>\n<main id="repo" hidden></main>\n<main id="security" hidden></main>\n<main id="settings" hidden></main>\n<p class="note meta" id="meta"></p>';
+const VIEWS = '<main id="main"></main>\n<main id="repo" hidden></main>\n<main id="security" hidden></main>\n<main id="accountguard" hidden></main>\n<main id="settings" hidden></main>\n<p class="note meta" id="meta"></p>';
 
 export function renderPage(nonce: string, csrf = ''): string {
   // The nonce and the CSRF token are base64/base64url generated server-side; nothing user-derived is interpolated here.

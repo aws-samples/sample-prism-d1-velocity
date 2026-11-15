@@ -1,6 +1,7 @@
 /**
  * The Settings page's AWS tab: which credentials prism-cli would use and why,
- * with no AWS call, and the one read-only "Check now" call.
+ * and the profile and region choices for Connect (prism-cli aws connect), all
+ * with no AWS call.
  *
  * Resolution follows the order every AWS command uses (aws/connection.ts):
  * flags (none here), env credentials, .prism/aws.local.json, ~/.prism/aws.json,
@@ -10,9 +11,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { aws } from '../utils/aws.js';
-import { callerIdentity } from '../aws/connect.js';
-import { applyConnection, connectionLabel, loadConnection, REGION_RE, writeConnectionFile, type SavedConnection } from '../aws/connection.js';
+import { applyConnection, connectionLabel, loadConnection, PROFILE_RE, REGION_RE } from '../aws/connection.js';
 import { resolveRegion } from '../security/setup.js';
 import { tildeHome } from './payload.js';
 
@@ -201,66 +200,43 @@ export function resolveAwsIdentity(d: IdentityDeps): AwsIdentityView {
   };
 }
 
-export type CheckNowResult =
-  | { ok: true; account: string; arn: string; region: string | null; profile: string | null; savedAccount: string | null; matches: boolean | null; updated: boolean; note: string }
-  | { ok: false; expired: boolean; error: string; profile: string | null; region: string | null; fixes: string[] };
+/**
+ * The regions Settings › AWS offers: a fixed list of commercial regions. Any
+ * region a profile has configured is added (profileChoices). No AWS call.
+ */
+export const REGIONS = [
+  'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2', 'ca-central-1', 'sa-east-1',
+  'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1', 'eu-north-1', 'eu-south-1',
+  'ap-south-1', 'ap-northeast-1', 'ap-northeast-2', 'ap-northeast-3', 'ap-southeast-1', 'ap-southeast-2',
+] as const;
 
-export interface CheckNowDeps {
-  identity: AwsIdentityView;
-  /** The saved connection behind identity.saved (with its real path), or null. */
-  saved: SavedConnection | null;
-  /** Same shape as aws connect's deps.aws: one read-only `aws <args>` call. */
-  aws(args: string[], profile: string, region: string): ReturnType<typeof aws>;
-  now(): Date;
-  write?: typeof writeConnectionFile;
-  redact(s: string): string;
-}
-
-const EXPIRED_RE = /expired|ExpiredToken|InvalidClientTokenId|UnrecognizedClient|RequestExpired|SignatureDoesNotMatch|AuthFailure|Unable to locate credentials|NoCredentialProviders|refresh|sso|credential_process|custom-process/i;
-
-/** The fixes to suggest for a failed check, by credential type. */
-export function checkFixes(v: AwsIdentityView): string[] {
-  const p = v.profile && v.profile !== 'default' ? ` --profile ${v.profile}` : '';
-  const out: string[] = [];
-  if (v.credentialType === 'credential_process') out.push('Sign in again with the tool your credential_process runs, then Check now again');
-  if (v.credentialType === 'sso') out.push(`aws sso login${p}`);
-  if (v.credentialType === 'static-credentials-file' || v.warnings.includes(STATIC_DEFAULT_WARNING)) out.push('Remove or rotate the stale static keys in ~/.aws/credentials');
-  if (v.credentialType === 'none') out.push(`aws configure sso${p}`);
-  out.push('prism-cli aws connect');
-  return out;
-}
-
-/** The default `aws` call for Check now: aws connect's call, with the region optional and a timeout. */
-export const CHECK_NOW_TIMEOUT_MS = 30_000;
-export function checkNowAws(args: string[], profile: string, region: string) {
-  return aws(region ? [...args, '--region', region] : args, { profile: profile || undefined, env: { AWS_PAGER: '' }, timeoutMs: CHECK_NOW_TIMEOUT_MS });
+export interface ProfileChoice {
+  name: string;
+  /** The profile's configured region, when it has one (the only value read from the files). */
+  region: string | null;
+  /** Which file has the section: the config file, the credentials file, or both. */
+  from: 'config' | 'credentials' | 'both';
 }
 
 /**
- * One read-only `sts get-caller-identity`, through aws connect's callerIdentity.
- * On a match with the saved connection (same profile and region), the saved
- * file's verifiedAt is refreshed; nothing else is written.
+ * The profiles the Connect picker offers and the server accepts: the section
+ * names of ~/.aws/config (`[default]`, `[profile x]`) and ~/.aws/credentials
+ * (`[x]`), the same files `aws configure list-profiles` reads (AWS_CONFIG_FILE
+ * and AWS_SHARED_CREDENTIALS_FILE honoured). iniKeys() drops every value as it
+ * reads, except a region that looks like one, so no key material is kept or
+ * returned. Names that are not valid profile names are left out. Read fresh on
+ * every call. No AWS call.
  */
-export function checkNow(d: CheckNowDeps): CheckNowResult {
-  const v = d.identity;
-  // --profile only for a saved aws connect profile; env and the default chain are left to the AWS CLI, as every AWS command does.
-  const profile = d.saved && v.saved?.inUse ? d.saved.profile : '';
-  const region = v.region?.value ?? '';
-  const id = callerIdentity({ aws: d.aws }, profile, region);
-  if ('error' in id) {
-    const error = d.redact(id.error);
-    return { ok: false, expired: EXPIRED_RE.test(error), error, profile: v.profile, region: region || null, fixes: checkFixes(v) };
-  }
-  const s = d.saved;
-  const matches = s ? s.account === id.account : null;
-  let updated = false, note: string;
-  if (!s) note = 'No saved aws connect connection; nothing was written. Save one with prism-cli aws connect.';
-  else if (!matches) note = `Does not match the saved account ${s.account}. The saved file was not changed; check the profile, then re-run prism-cli aws connect${s.scope === 'repo' ? ' --repo' : ''}.`;
-  else if (s.profile !== v.profile || s.region !== region) note = `Matches the saved account, but the check used ${v.profile ? `profile ${v.profile}` : v.source} in ${region || 'no region'}, not the saved pair; the saved file was not changed.`;
-  else {
-    (d.write ?? writeConnectionFile)(s.path, { profile: s.profile, region: s.region, account: s.account, alias: s.alias, verifiedAt: d.now().toISOString() });
-    updated = true;
-    note = `Matches the saved account; updated the verified time in ${v.saved?.path ?? s.path}.`;
-  }
-  return { ok: true, account: id.account, arn: id.arn, region: region || null, profile: v.profile, savedAccount: s?.account ?? null, matches, updated, note };
+export function profileChoices(d: Pick<IdentityDeps, 'env' | 'home' | 'readText'>): { profiles: ProfileChoice[]; regions: string[] } {
+  const read = d.readText ?? readTextFile;
+  const config = iniKeys(read(d.env.AWS_CONFIG_FILE || join(d.home, '.aws', 'config')) ?? '', 'config');
+  const creds = iniKeys(read(d.env.AWS_SHARED_CREDENTIALS_FILE || join(d.home, '.aws', 'credentials')) ?? '', 'credentials');
+  const names = [...new Set([...config.keys(), ...creds.keys()])].filter((n) => PROFILE_RE.test(n)).sort((a, b) => a.localeCompare(b));
+  const profiles = names.map((name): ProfileChoice => ({
+    name,
+    region: config.get(name)?.region ?? creds.get(name)?.region ?? null,
+    from: config.has(name) && creds.has(name) ? 'both' : config.has(name) ? 'config' : 'credentials',
+  }));
+  const regions = [...new Set<string>([...REGIONS, ...profiles.map((p) => p.region).filter((r): r is string => !!r && REGION_RE.test(r))])];
+  return { profiles, regions };
 }
