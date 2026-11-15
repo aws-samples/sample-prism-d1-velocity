@@ -28,6 +28,7 @@ import { basename } from 'node:path';
 import type { AwsResult } from '../utils/aws.js';
 import { last4, PROFILE_RE, REGION_RE } from '../aws/connection.js';
 import { loadSetup, type ResolvedSetup } from '../security/config.js';
+import { run } from '../utils/exec.js';
 import { listsBucket, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET } from '../security/setup.js';
 import { ACTIONS, displayCommand, redact, type ActionId, type ApiResult, type ScanRepo } from './actions.js';
 import { resolveAwsIdentity, type AwsIdentityView, type IdentityDeps } from './aws-identity.js';
@@ -287,10 +288,10 @@ export const identityIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: str
 
 /**
  * The setup record the security commands use in `repoPath` (null: the machine
- * setup only). shortcut: does not ask git whether a repo override is tracked
- * (the CLI then ignores it); add a git check if committed overrides show up.
+ * setup only). A repo override git tracks is ignored here too, as in the CLI, so
+ * a committed file never picks the region the Run actions get.
  */
-export const setupIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): ResolvedSetup | null => loadSetup(d.identity.home, repoPath);
+export const setupIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): ResolvedSetup | null => loadSetup(d.identity.home, repoPath, (a) => run('git', a));
 
 /** --profile/--region for the security commands in `repoPath`: the identity there, with the setup record's region, as the CLI resolves it. */
 export function securityTargetIn(d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): AwsTargetArgs {

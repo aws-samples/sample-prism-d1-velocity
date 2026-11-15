@@ -13,7 +13,7 @@
  * setup record picks the region and is a fallback when SSM has no value.
  * Like ~/.prism/aws.json, the account is kept in the file and shown masked.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { RunResult } from '../utils/exec.js';
 import { last4, REGION_RE } from '../aws/connection.js';
@@ -75,8 +75,12 @@ export function writeMachineSetup(home: string, m: Omit<MachineSetup, 'setupAt'>
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
   const body: MachineSetup = { agentSpaceId: m.agentSpaceId, applicationId: m.applicationId, region: m.region, account: m.account, setupAt: now.toISOString() };
-  writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n', { mode: 0o600 });
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n', { mode: 0o600 });
+    renameSync(tmp, path);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
   return { path, wrote: true };
 }
 

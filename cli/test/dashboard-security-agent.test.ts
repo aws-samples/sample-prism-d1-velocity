@@ -254,6 +254,22 @@ function saDeps(home: string, repos: (ScanRepo & { current: boolean })[], aws = 
   return { repos: async () => repos, identity: { env: { AWS_PROFILE: 'demo', AWS_REGION: 'us-west-2' }, home }, cache: new LookupCache(aws.call), exclusive: (fn) => r.exclusive(fn), aws };
 }
 
+test('GET /api/security-agent: a repo override git tracks is ignored, as in the CLI; the machine setup applies', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const home = tmp('home'), path = join(home, 'src', 'tracked');
+  mkdirSync(join(path, '.prism'), { recursive: true });
+  const g = (...a: string[]) => execFileSync('git', ['-C', path, ...a], { stdio: 'ignore', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' } });
+  g('init', '-q');
+  writeFileSync(join(path, '.prism', 'security.local.json'), JSON.stringify({ agentSpaceId: 'as-c', applicationId: 'a', codeReviewId: 'cr-c', region: 'eu-west-1', account: '111122223333', setupAt: '2026-11-02T00:00:00Z' }));
+  g('add', '-f', '.prism/security.local.json'); g('commit', '-q', '-m', 'committed override');
+  mkdirSync(join(home, '.prism'), { recursive: true });
+  writeFileSync(join(home, '.prism', 'security.json'), JSON.stringify({ agentSpaceId: 'as-1', applicationId: 'app-1', region: 'us-west-2', account: '111122223333', setupAt: '2026-11-01T00:00:00Z' }));
+  const d = saDeps(home, [{ id: repoId(path), name: 'tracked', path, current: true }]);
+  const r = (await securityAgentView(d)).repos[0];
+  assert.equal(r.setup?.source, 'machine');
+  assert.equal(r.target.region, 'us-west-2', 'the committed file does not pick the region');
+});
+
 test('GET /api/security-agent makes no AWS call: identity, setup record, commands and notices per repo', async () => {
   const home = tmp('home'), path = join(home, 'src', 'demo');
   mkdirSync(join(path, '.prism'), { recursive: true });
