@@ -19,10 +19,11 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { makeResult, readResultEntries, writeResult, type Finding, type PrismResult, type ResultEntry, type Severity } from '../codewatch/results.js';
 import { explainAwsError, EXIT_PENDING, redact } from './errors.js';
+import { homeOf, loadSetup, overrideTracked, setupLabel, SETUP_HINT } from './config.js';
 import { MARKER_PATH, readLocalMarker } from './marker.js';
 import { repoZipKey, SSM_PREFIX } from './repo.js';
 import {
-  Abort, call, getParam, md5, preflight, printIdentity, resolveRegion, resolveRepo, NO_REGION_MESSAGE,
+  Abort, call, calls, getParam, md5, preflight, printIdentity, resolveRegion, resolveRepo, NO_REGION_MESSAGE, PARAM_SERVICE_ROLE, SERVICE_ROLE_NAME,
   type Ctx, type Deps, type Identity, type RepoCtx, type Resolved, type SecurityOptions,
 } from './setup.js';
 
@@ -120,41 +121,86 @@ export interface ReviewFinding {
 
 export const NOT_SET_UP = 'run prism-cli enable security first';
 
+/** findings (and anything else that only reads) when this repo has no code review yet. */
+export const noReviewYet = (repoId: string) => `No Security Agent code review for ${repoId} yet: prism-cli security code-review creates it on its first run in this repo.`;
+
 /**
  * Agent space and code review for this repo. The SSM parameters (written by
- * `enable security` and the CI gate, in the account itself) are the source of
- * truth: a file in the repo can be committed by anyone, so it must never
- * choose where a developer's code is uploaded and reviewed.
+ * `enable security`, `security code-review` and the CI gate, in the account
+ * itself) are the source of truth: a file in the repo can be committed by
+ * anyone, so it must never choose where a developer's code is uploaded and reviewed.
  *
  * - The legacy `security` block in the committable `.prism/config.json` is
- *   never read here.
- * - `.prism/security.local.json` is only a fallback when SSM has no value,
- *   only when git does not track it, and only for this account and region.
- * - When SSM and the marker disagree, SSM wins and the difference is shown.
+ *   never read here, and a repo override git tracks is ignored (config.ts).
+ * - The setup record the command loaded (repo override, else machine setup)
+ *   is only a fallback when SSM has no value, and only for this account and
+ *   region. Only a repo override names a code review.
+ * - When SSM and the record disagree, SSM wins and the difference is shown.
+ *
+ * codeReviewId is null when the agent space is set up but this repo has no
+ * code review yet; code-review then creates one (createCodeReview).
  */
-export function resolveSetup(ctx: Ctx, id: Identity, repo: RepoCtx): Setup {
+export function lookupSetup(ctx: Ctx, id: Identity, repo: RepoCtx): { agentSpaceId: string; codeReviewId: string | null; source: string } {
   const space = getParam(ctx, PARAM_AGENT_SPACE);
   const review = getParam(ctx, repo.param);
-  let local = readLocalMarker(repo.root);
-  if (local && ctx.deps.git(['-C', repo.root, 'ls-files', '--error-unmatch', MARKER_PATH]).ok) {
+  if (readLocalMarker(repo.root) && overrideTracked(repo.root, ctx.deps.git)) {
     ctx.deps.log(`Warning: ignoring ${MARKER_PATH} because git tracks it; a committed file cannot choose the code review.`);
-    local = null;
   }
-  if (local && (local.account !== id.account || local.region !== ctx.opts.region)) local = null;
+  let rec = ctx.opts.securitySetup ?? null;
+  if (rec && (rec.account !== id.account || rec.region !== ctx.opts.region)) rec = null;
   if (space && review) {
-    if (local && (local.agentSpaceId !== space || local.codeReviewId !== review)) {
-      ctx.deps.log(`Warning: ${MARKER_PATH} names agent space ${local.agentSpaceId} and code review ${local.codeReviewId}, but SSM says ${space} and ${review}; using SSM. Re-run prism-cli enable security to refresh the marker.`);
+    if (rec && (rec.agentSpaceId !== space || (rec.codeReviewId && rec.codeReviewId !== review))) {
+      ctx.deps.log(`Warning: ${rec.file} names agent space ${rec.agentSpaceId}${rec.codeReviewId ? ` and code review ${rec.codeReviewId}` : ''}, but SSM says ${space} and ${review}; using SSM. Re-run prism-cli enable security${rec.source === 'repo' ? ' --repo' : ''} to refresh it.`);
     }
     return { agentSpaceId: space, codeReviewId: review, source: `SSM ${repo.param}` };
   }
-  if (local) {
-    ctx.deps.log(`Note: SSM has no ${space ? repo.param : PARAM_AGENT_SPACE}; using the IDs from the local marker ${MARKER_PATH}.`);
-    return { agentSpaceId: local.agentSpaceId, codeReviewId: local.codeReviewId, source: `local marker ${MARKER_PATH}` };
+  if (rec?.codeReviewId) {
+    ctx.deps.log(`Note: SSM has no ${space ? repo.param : PARAM_AGENT_SPACE}; using the IDs from the ${setupLabel(rec)}.`);
+    return { agentSpaceId: rec.agentSpaceId, codeReviewId: rec.codeReviewId, source: setupLabel(rec) };
   }
-  throw new Abort(`No Security Agent code review for ${repo.id} in account ${id.account}, region ${ctx.opts.region}: ${NOT_SET_UP}.`);
+  if (!space && rec) ctx.deps.log(`Note: SSM has no ${PARAM_AGENT_SPACE}; using agent space ${rec.agentSpaceId} from the ${setupLabel(rec)}.`);
+  const agentSpaceId = space ?? rec?.agentSpaceId;
+  if (!agentSpaceId) throw new Abort(`No Security Agent agent space in account ${id.account}, region ${ctx.opts.region} (SSM ${PARAM_AGENT_SPACE} is not set): ${NOT_SET_UP}.`);
+  return { agentSpaceId, codeReviewId: review, source: review ? `SSM ${repo.param}` : 'none yet' };
 }
 
-export function begin(input: SecurityOptions, deps: Deps, readOnly: boolean, say: (l?: string) => void): Ctx | null {
+/** The setup for a command that needs an existing code review (findings). */
+export function resolveSetup(ctx: Ctx, id: Identity, repo: RepoCtx): Setup {
+  const s = lookupSetup(ctx, id, repo);
+  if (!s.codeReviewId) throw new Abort(noReviewYet(repo.id));
+  return { agentSpaceId: s.agentSpaceId, codeReviewId: s.codeReviewId, source: s.source };
+}
+
+/**
+ * This repo's code review, made on its first `security code-review` run here,
+ * the way the CI eval gate makes it: titled `<repo-slug>-ci-diff-scan`, with the
+ * repo snapshot just uploaded as its source, and its id put in SSM
+ * code-review-id/<repo-slug> (not overwritten). One with that title is reused.
+ */
+export function createCodeReview(ctx: Ctx, id: Identity, agentSpaceId: string, repo: RepoCtx, bucket: string): string {
+  const say = ctx.deps.log;
+  const reviews: any[] = call(ctx, ['securityagent', 'list-code-reviews', '--agent-space-id', agentSpaceId]).json?.codeReviewSummaries || [];
+  let crId = String(reviews.find((r) => r?.title === repo.title)?.codeReviewId || '');
+  if (crId) say(`Code review: ${crId} ("${repo.title}") already exists; reusing it`);
+  else {
+    const role = getParam(ctx, PARAM_SERVICE_ROLE) || `arn:aws:iam::${id.account}:role/${SERVICE_ROLE_NAME}`;
+    crId = String(call(ctx, calls.createCodeReview(agentSpaceId, repo.title, role, bucket, repo.zipKey)).json?.codeReviewId || '');
+    if (!crId) throw new Abort('create-code-review returned no codeReviewId.');
+    say(`Code review: created ${crId} ("${repo.title}"), the first run in this repo`);
+  }
+  call(ctx, calls.putParameter(repo.param, crId, false));
+  say(`Set ${repo.param} = ${crId} (the CI eval gate reads it too)`);
+  return crId;
+}
+
+/**
+ * Loads the setup record (repo override in `root`, else the machine setup)
+ * and resolves the region. Without --region and without a record it stops
+ * with the one-line setup hint, before any AWS call.
+ */
+export function begin(input: SecurityOptions, deps: Deps, readOnly: boolean, say: (l?: string) => void, root: string | null = null): Ctx | null {
+  if (input.securitySetup === undefined) input = { ...input, securitySetup: loadSetup(homeOf(deps.env), root, deps.git) };
+  if (!input.region && !input.securitySetup) { say(`Error: ${SETUP_HINT}`); return null; }
   const r = resolveRegion(input, deps);
   if (!r) { say(`Error: ${NO_REGION_MESSAGE}`); return null; }
   const opts: Resolved = { ...input, region: r.region, regionSource: r.source };
@@ -634,7 +680,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
   if (!root) return 1;
   say(CODE_REVIEW_NOTICE);
   say('');
-  const ctx = begin(input, deps, false, say);
+  const ctx = begin(input, deps, false, say, root);
   if (!ctx) return 1;
   try {
     const failOn = parseLevel('--fail-on', input.failOn);
@@ -642,9 +688,9 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     const id = preflight(ctx);
     printIdentity(ctx, id);
     const repo = needRepo(ctx, root);
-    const setup = resolveSetup(ctx, id, repo);
+    const found = lookupSetup(ctx, id, repo);
     say(`Repo:        ${repo.id}`);
-    say(`Code review: ${setup.codeReviewId} (from ${setup.source})`);
+    say(found.codeReviewId ? `Code review: ${found.codeReviewId} (from ${found.source})` : 'Code review: none yet for this repo; created after the upload (first run here)');
     const bucket = getParam(ctx, PARAM_SCAN_BUCKET);
     if (!bucket) throw new Abort(`SSM ${PARAM_SCAN_BUCKET} is not set in this account and region: ${NOT_SET_UP}.`);
 
@@ -659,6 +705,9 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
       ? `Review context: updated ${ctxUri} to HEAD ${s.tip.slice(0, 12)}`
       : `Review context: ${ctxUri} is already HEAD ${s.tip.slice(0, 12)}; upload skipped`);
     if (s.diff) say(upload(ctx, bucket, s.diff) ? `Uploaded s3://${bucket}/${s.diff.key}` : `s3://${bucket}/${s.diff.key} is already up to date; upload skipped`);
+    const setup: Setup = found.codeReviewId
+      ? { agentSpaceId: found.agentSpaceId, codeReviewId: found.codeReviewId, source: found.source }
+      : { agentSpaceId: found.agentSpaceId, codeReviewId: createCodeReview(ctx, id, found.agentSpaceId, repo, bucket), source: `SSM ${repo.param}` };
 
     const startedAt = deps.now().getTime();
     const start = call(ctx, [
@@ -712,7 +761,7 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
   if (!root) return 1;
   say('Read-only (security findings): nothing in AWS will be changed; results are cached to .prism/results/.');
   say('');
-  const ctx = begin(input, deps, true, say);
+  const ctx = begin(input, deps, true, say, root);
   if (!ctx) return 1;
   try {
     const min = parseLevel('--severity', input.severity);

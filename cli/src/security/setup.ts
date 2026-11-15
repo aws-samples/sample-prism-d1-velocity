@@ -10,8 +10,10 @@
  * - is idempotent: existing agent space, application, code review, S3 object
  *   and SSM parameter are reused, and drift is shown before it is changed;
  * - --status is a read-only report;
- * - writes the per-repo code review where the CI eval gate looks for it
- *   (/prism/continuum/code-review-id/<repo-slug>), which the old command did not.
+ * - is set up once per machine: the account-wide resources, then
+ *   ~/.prism/security.json (config.ts), from any directory. The per-repo code
+ *   review is opt-in (--repo): `security code-review` and the CI eval gate
+ *   create it on their first run in a repo, so no repo needs its own enable.
  *
  * Every AWS call goes through deps.aws, so tests run it against a fake.
  */
@@ -25,6 +27,7 @@ import { cliVersionOk, CREDENTIALS_HINT, explainAwsError, MIN_AWS_CLI_TEXT, NO_C
 import { ensureMarkerIgnored, MARKER_PATH, readSecurityMarkerWithSource, writeSecurityMarker } from './marker.js';
 import { codeReviewParam, codeReviewTitle, repoIdFromRemote, repoSlug, repoZipKey, SSM_PREFIX } from './repo.js';
 import { accountChangeWarning, connectionLabel, type SavedConnection } from '../aws/connection.js';
+import { describeSetup, homeOf, loadSetup, setupAccountWarning, setupLabel, SETUP_HINT, USER_SECURITY_PATH, writeMachineSetup, type ResolvedSetup } from './config.js';
 
 /** Hosts Security Agent when deployed with enableSecurityAgent=true (the original layout). */
 export const PIPELINE_STACK = 'PrismD1MetricsPipeline';
@@ -46,14 +49,24 @@ export interface SecurityOptions {
   yes?: boolean;
   dryRun?: boolean;
   status?: boolean;
-  /** host/owner/name, overriding the origin remote. */
-  repo?: string;
+  /**
+   * enable security: true (bare --repo) or host/owner/name also sets up this
+   * repo's code review and writes the repo override. Other commands: the repo
+   * id (host/owner/name), overriding the origin remote.
+   */
+  repo?: string | boolean;
   /** Extra `cdk -c key=value` pairs, for stacks deployed with non-default context. */
   context?: string[];
   /** Set by connectionDefaults (src/aws/connection.ts): where `profile` came from. */
   profileSource?: string;
   /** Set by connectionDefaults: the saved `aws connect` connection whose region applies. */
   connection?: SavedConnection;
+  /**
+   * The Security Agent setup record that applies (config.ts): set by the
+   * commands before the region is resolved. undefined: not looked up (aws
+   * check, team); null: looked up, none found.
+   */
+  securitySetup?: ResolvedSetup | null;
 }
 
 /** Where CDK runs: the account from STS and the resolved region (CDK_DEFAULT_*). */
@@ -192,13 +205,16 @@ function identity(ctx: Ctx): Identity {
 const accountLabel = (id: Identity) => `${id.account}${id.alias ? ` (${id.alias})` : ' (no account alias)'}`;
 
 /**
- * The region, resolved in the AWS CLI's order: --region, AWS_REGION,
+ * The region: --region, then the Security Agent setup record when the
+ * command loaded one (repo override, else machine setup), then the AWS CLI's order: AWS_REGION,
  * AWS_DEFAULT_REGION, then the saved `aws connect` region (only with its own
  * profile), then the profile's configured region (the --profile profile, else
  * AWS_PROFILE, else default). Null when none is set.
  */
 export function resolveRegion(opts: SecurityOptions, deps: Pick<Deps, 'env' | 'configRegion'>): { region: string; source: string } | null {
   if (opts.region) return { region: opts.region, source: '--region' };
+  // The Security Agent resources live in the region they were set up in, so the setup record comes next.
+  if (opts.securitySetup) return { region: opts.securitySetup.region, source: setupLabel(opts.securitySetup) };
   for (const k of ['AWS_REGION', 'AWS_DEFAULT_REGION']) {
     const v = deps.env[k]?.trim();
     if (v) return { region: v, source: k };
@@ -235,7 +251,12 @@ export function printIdentity(ctx: Ctx, id: Identity): void {
   deps.log(`Credentials: ${credentialSource(opts, deps.env)}`);
   const w = accountChangeWarning(opts.connection, id.account);
   if (w) deps.log(w);
+  const s = setupAccountWarning(opts.securitySetup, id.account);
+  if (s) deps.log(s);
 }
+
+/** Not part of the machine setup; what enable security prints for the per-repo items without --repo. */
+export const REPO_NOT_REQUESTED = 'per repo, not part of the machine setup: security code-review creates it on its first run in a repo (so does the CI eval gate); add --repo to set it up now';
 
 export interface RepoCtx { root: string; id: string; slug: string; title: string; param: string; zipKey: string }
 
@@ -250,7 +271,7 @@ export function resolveRepo(opts: SecurityOptions, deps: Deps, root?: string): R
   const top = root ? { ok: true, stdout: root, stderr: '' } : deps.git(['rev-parse', '--show-toplevel']);
   if (!top.ok) return { error: 'not inside a git repository, so the per-repo code review is skipped (run from the repo to set it up)' };
   let id: string | null;
-  if (opts.repo) {
+  if (typeof opts.repo === 'string') {
     if (!/^[A-Za-z0-9.-]+(\/[A-Za-z0-9._-]+)+$/.test(opts.repo)) return { error: `--repo must look like github.com/owner/name, got "${opts.repo}"` };
     id = opts.repo;
   } else {
@@ -603,6 +624,13 @@ export async function enableSecurity(input: SecurityOptions, deps: Deps): Promis
   else for (const l of DEPLOY_NOTICE) deps.log(l);
   deps.log('');
 
+  const perRepo = !!input.repo;
+  if (input.securitySetup === undefined) {
+    // The machine setup gives the same result from any directory; a repo override counts only with --repo, and in --status.
+    const top = input.status || perRepo ? deps.git(['rev-parse', '--show-toplevel']) : null;
+    const root = top?.ok && top.stdout ? top.stdout.trim() : null;
+    input = { ...input, securitySetup: loadSetup(homeOf(deps.env), root, deps.git) };
+  }
   const r = resolveRegion(input, deps);
   if (!r) { deps.log(`Error: ${NO_REGION_MESSAGE}`); return 1; }
   const opts: Resolved = { ...input, region: r.region, regionSource: r.source };
@@ -611,8 +639,10 @@ export async function enableSecurity(input: SecurityOptions, deps: Deps): Promis
     if (opts.status) return securityStatus(ctx);
     const id = preflight(ctx);
     printIdentity(ctx, id);
-    const repo = resolveRepo(opts, deps);
-    deps.log('error' in repo ? `Repo:        ${repo.error}` : `Repo:        ${repo.id} (code review slug ${repo.slug})`);
+    deps.log(`Setup:       ${opts.securitySetup ? describeSetup(opts.securitySetup) : `none on this machine yet; this run writes ${USER_SECURITY_PATH}`}`);
+    const repo: RepoCtx | { error: string } = perRepo ? resolveRepo(opts, deps) : { error: REPO_NOT_REQUESTED };
+    if (perRepo && 'error' in repo) throw new Abort(repo.error);
+    deps.log('error' in repo ? 'Repo:        none needed (machine setup); add --repo to also set up this repo\'s code review' : `Repo:        ${repo.id} (code review slug ${repo.slug}, --repo)`);
     // Probe the securityagent commands before the slow synth, so an old CLI fails fast.
     const spaces: any[] = call(ctx, ['securityagent', 'list-agent-spaces']).json?.agentSpaceSummaries || [];
 
@@ -670,19 +700,30 @@ export async function enableSecurity(input: SecurityOptions, deps: Deps): Promis
 
 function finish(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, space: string | null, applicationId: string, codeReviewId: string | null): number {
   const { deps, opts } = ctx;
+  if (space) {
+    const home = homeOf(deps.env);
+    if (!home) deps.log(`Could not save ${USER_SECURITY_PATH}: no home directory (HOME is not set).`);
+    else {
+      const w = writeMachineSetup(home, { agentSpaceId: space, applicationId, region: opts.region, account: id.account }, deps.now());
+      deps.log(w.wrote
+        ? `Wrote ${USER_SECURITY_PATH}: the machine setup every repo on this machine uses (ids, account and region; no secrets).`
+        : `${USER_SECURITY_PATH} is already current.`);
+    }
+  }
   if (!('error' in repo) && codeReviewId && space) {
     // Ignored first, so the file is never shown as untracked.
     const excluded = ensureMarkerIgnored(repo.root, deps.git);
     if (excluded) deps.log(`Added ${MARKER_PATH} to ${excluded} so git ignores it in this clone.`);
     const w = writeSecurityMarker(repo.root, { agentSpaceId: space, applicationId, codeReviewId, region: opts.region, account: id.account }, deps.now());
     deps.log(w.wrote || w.migrated
-      ? `Wrote ${w.path} (ids, account and region; no secrets; local only, not committed)`
-      : `${w.path} is already current (local only, not committed)`);
+      ? `Wrote ${MARKER_PATH}, the repo override (ids, account and region; no secrets; local only, not committed)`
+      : `${MARKER_PATH} is already current (repo override; local only, not committed)`);
     if (w.migrated) deps.log(`Moved the security block out of .prism/config.json into ${MARKER_PATH}; the rest of config.json is unchanged.`);
   }
   deps.log('');
   deps.log(`Security Agent web console: https://${opts.region}.console.aws.amazon.com/securityagent/home?region=${opts.region} (choose "Admin access").`);
   if (!('error' in repo)) deps.log(`The CI eval gate reads ${repo.param}; check everything with: prism-cli enable security --status`);
+  else deps.log('Each repo gets its code review on its first prism-cli security code-review (or CI eval gate run); no per-repo setup is needed. Check with: prism-cli enable security --status');
   return 0;
 }
 
@@ -731,6 +772,15 @@ export function collectSecurityStatus(ctx: Ctx): { rows: StatusRow[]; code: numb
   add('ok', 'Credentials', `account ${accountLabel(id)}, caller ${id.arn || 'unknown'}`);
   const changed = accountChangeWarning(opts.connection, id.account);
   if (changed) add('warn', 'Saved connection', changed.replace(/^Warning: /, ''));
+  // Only when the command looked the setup up (enable security --status); aws check does not.
+  const setup = opts.securitySetup;
+  if (setup !== undefined) {
+    if (!setup) add('missing', 'Setup', SETUP_HINT);
+    else {
+      const other = setupAccountWarning(setup, id.account);
+      add(other ? 'warn' : 'ok', 'Setup', other ? `${describeSetup(setup)}; ${other.replace(/^Warning: /, '')}` : `${describeSetup(setup)}, in use here`);
+    }
+  }
   const repo = resolveRepo(opts, deps);
   try {
     const pipe = readStack(ctx, PIPELINE_STACK);
@@ -783,16 +833,16 @@ export function collectSecurityStatus(ctx: Ctx): { rows: StatusRow[]; code: numb
       const v = getParam(ctx, repo.param);
       const reviews: any[] = space ? call(ctx, ['securityagent', 'list-code-reviews', '--agent-space-id', space.agentSpaceId]).json?.codeReviewSummaries || [] : [];
       const found = v ? reviews.find((r) => r.codeReviewId === v) : undefined;
-      if (!v) add('missing', 'Code review', `${repo.param} not set (the CI gate creates one on its first run, or run prism-cli enable security)`);
+      if (!v) add('missing', 'Code review', `${repo.param} not set: prism-cli security code-review creates it on its first run here (so does the CI eval gate), or run prism-cli enable security --repo`);
       else add(found ? 'ok' : 'warn', 'Code review', found ? `${v} ("${found.title}") from ${repo.param}` : `${repo.param} = ${v}, but no such code review in the agent space`);
       const legacy = getParam(ctx, LEGACY_PARAM_CODE_REVIEW);
       if (legacy) add('warn', 'Legacy SSM', `${LEGACY_PARAM_CODE_REVIEW} = ${legacy} (written by the old securityagent setup; nothing reads it)`);
       const ci = ciWorkflowStep(repo.root);
       add(ci.mark, 'CI workflow step', ci.detail);
       const ms = readSecurityMarkerWithSource(repo.root);
-      if (!ms) add('missing', 'Local marker', `no ${MARKER_PATH}`);
-      else if (ms.source === 'local') add('ok', 'Local marker', `${MARKER_PATH} (code review ${ms.marker.codeReviewId}, set up ${ms.marker.setupAt || 'unknown'})`);
-      else add('warn', 'Local marker', `legacy security block in .prism/config.json (code review ${ms.marker.codeReviewId}); the next prism-cli enable security moves it to ${MARKER_PATH}`);
+      if (!ms) add(setup ? 'ok' : 'unknown', 'Repo override', `none: this repo ${setup ? 'uses' : 'would use'} the machine setup ${USER_SECURITY_PATH}`);
+      else if (ms.source === 'local') add('ok', 'Repo override', `${MARKER_PATH} (code review ${ms.marker.codeReviewId}, set up ${ms.marker.setupAt || 'unknown'}); it takes precedence over the machine setup in this repo`);
+      else add('warn', 'Repo override', `legacy security block in .prism/config.json (code review ${ms.marker.codeReviewId}); prism-cli enable security --repo moves it to ${MARKER_PATH}`);
     }
   } catch (e) {
     if (!(e instanceof Abort)) throw e;

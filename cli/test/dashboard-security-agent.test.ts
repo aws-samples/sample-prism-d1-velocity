@@ -254,7 +254,7 @@ function saDeps(home: string, repos: (ScanRepo & { current: boolean })[], aws = 
   return { repos: async () => repos, identity: { env: { AWS_PROFILE: 'demo', AWS_REGION: 'us-west-2' }, home }, cache: new LookupCache(aws.call), exclusive: (fn) => r.exclusive(fn), aws };
 }
 
-test('GET /api/security-agent makes no AWS call: identity, marker, commands and notices per repo', async () => {
+test('GET /api/security-agent makes no AWS call: identity, setup record, commands and notices per repo', async () => {
   const home = tmp('home'), path = join(home, 'src', 'demo');
   mkdirSync(join(path, '.prism'), { recursive: true });
   writeFileSync(join(path, '.prism', 'security.local.json'), JSON.stringify({ agentSpaceId: 'as-1', applicationId: 'app-1', codeReviewId: 'cr-1', region: 'us-west-2', account: '111122223333', setupAt: '2026-11-02T00:00:00Z' }));
@@ -264,7 +264,10 @@ test('GET /api/security-agent makes no AWS call: identity, marker, commands and 
   const r = v.repos[0];
   assert.equal(r.path, '~/src/demo');
   assert.deepEqual([r.target.profile, r.target.region, r.target.source], ['demo', 'us-west-2', 'AWS_PROFILE']);
-  assert.deepEqual(r.marker, { agentSpaceId: 'as-1', codeReviewId: 'cr-1', account4: '••••3333', region: 'us-west-2', setupAt: '2026-11-02T00:00:00Z' });
+  assert.deepEqual(r.setup, { source: 'repo', file: '.prism/security.local.json', codeReviewId: 'cr-1', account4: '••••3333', region: 'us-west-2', setupAt: '2026-11-02T00:00:00Z' });
+  assert.equal(v.machine, null);
+  assert.equal(v.setupCommand, 'prism-cli enable security --profile demo --region us-west-2', 'once per machine: no cd');
+  assert.equal((r.copy as Record<string, string>).enableSecurity, undefined);
   assert.equal(r.commands['security-status'], 'cd ~/src/demo && prism-cli enable security --status --profile demo --region us-west-2');
   assert.equal(r.copy.pentest, 'cd ~/src/demo && prism-cli security pentest --profile demo --region us-west-2');
   assert.equal(r.notices['security-code-review'].text, null, 'no lookup yet');
@@ -328,19 +331,22 @@ const row = (path: string, over: Record<string, unknown> = {}) => ({
   counts: {}, findings: [], truncated: false, reason: null, pending: false, stale: false, threats: [], more: 0, scope_docs: [], overview: '', commit: null, target_host: 'app.internal', teardown_failed: null, ...over,
 });
 
-function saAnswer(p: DashboardPayload, lookup: Lookup | null, current = 0) {
+function saAnswer(p: DashboardPayload, lookup: Lookup | null, current = 0, machine = true) {
   return {
     ttlSec: 300,
     repos: p.repos.map((r, i) => ({
-      id: r.id, name: r.name, path: '~/' + r.name, current: i === current, marker: null,
-      target: { profile: 'demo', region: 'us-west-2', source: 'aws connect, user', credentialLabel: 'IAM Identity Center (SSO)' },
+      id: r.id, name: r.name, path: '~/' + r.name, current: i === current, setup: i === 0 ? MACHINE_VIEW : null,
+      target: { profile: 'demo', region: 'us-west-2', source: 'aws connect, user', credentialLabel: 'IAM Identity Center (SSO)', regionFrom: i === 0 ? 'machine' : null },
       commands: Object.fromEntries(SECURITY_ACTIONS.map((id) => [id, `cd ~/${r.name} && prism-cli ${ACTIONS[id].args.join(' ')} --profile demo --region us-west-2`])),
-      copy: { enableSecurity: `cd ~/${r.name} && prism-cli enable security`, pentest: 'p', pentestDryRun: 'pd', pentestStatus: 'ps' },
+      copy: { pentest: 'p', pentestDryRun: 'pd', pentestStatus: 'ps' },
       notices: Object.fromEntries(Object.entries(WRITE_KIND).map(([id, kind]) => [id, writeNotice(kind!, r.name, lookup)])),
       lookup,
     })),
+    machine: machine ? MACHINE_VIEW : null,
+    setupCommand: 'prism-cli enable security --profile demo --region us-west-2',
   };
 }
+const MACHINE_VIEW = { source: 'machine', file: '~/.prism/security.json', codeReviewId: null, account4: '••••3333', region: 'us-west-2', setupAt: '2026-11-01T00:00:00Z' };
 const GOOD: Lookup = { ok: true, at: '2026-11-14T12:00:00Z', profile: 'demo', region: 'us-west-2', account4: '••••3333', inUse: 'as-1', scanBucket: 'prism-scan-demo', consoleUrl: 'https://us-west-2.console.aws.amazon.com/securityagent/home?region=us-west-2',
   spaces: [{ id: 'as-1', name: 'prism-d1-security', createdAt: null, inUse: true, pentest: false, bucketListed: true }, { id: 'as-2', name: 'pentest-demo', createdAt: null, inUse: false, pentest: true, bucketListed: null }] };
 const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, label: ACTIONS[id].label, command: 'prism-cli ' + ACTIONS[id].args.join(' '), repo: true, url: false, confirm: !!ACTIONS[id].confirm, readOnlyAws: !!ACTIONS[id].readOnlyAws, writesAws: !!ACTIONS[id].writesAws, note: ACTIONS[id].note ?? null, installs: false, timeoutSec: 180, available: true })) };
@@ -411,7 +417,35 @@ test('page: copy-only for enable security and every pentest command; Run for the
   for (const l of ['Fetch findings', 'Fetch threats', 'Fetch pentest findings', 'Start code review', 'Start full review', 'Start threat model', 'Run status check', 'Dry run']) assert.ok(labels.includes(l), l);
   assert.ok(!labels.some((l) => /pentest/i.test(l) && !/Fetch/.test(l)), 'no Run for pentest');
   const t = page.dom.byId.security.textContent;
-  assert.match(t, /cd ~\/\S+ && prism-cli enable securityCopy/);
+  assert.match(t, /prism-cli enable security --profile demo --region us-west-2Copy/);
+  assert.doesNotMatch(t, /cd \S+ && prism-cli enable security/, 'enable security is once per machine: no cd');
+});
+
+test('page: one machine-wide setup card; each repo says whether it uses the machine setup or a repo override', async () => {
+  const p = await pagePayload();
+  const set = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
+  const t = set.dom.byId.security.textContent;
+  assert.match(t, /Set up Security Agent on this machine/);
+  assert.doesNotMatch(t, /Set up Security Agent in /);
+  assert.match(t, /Uses the machine setup \(~\/\.prism\/security\.json\): account ••••3333 \/ us-west-2/);
+  assert.match(t, /uses machine setup · from this repo's \.prism\/results/);
+  assert.match(t, /Which setup \S+ uses \(uses machine setup\)/);
+  assert.match(t, /us-west-2 \(machine setup\)/);
+  assert.doesNotMatch(t, /has not run in this repo|no \.prism\/security\.local\.json/);
+
+  const a = saAnswer(p, GOOD);
+  a.repos[0].setup = { ...MACHINE_VIEW, source: 'repo', file: '.prism/security.local.json', codeReviewId: 'cr-1' } as typeof MACHINE_VIEW & { codeReviewId: string };
+  const over = await runPage([p], '#security', SETUP, { '/api/security-agent': a });
+  assert.match(over.dom.byId.security.textContent, /Repo override: \.prism\/security\.local\.json \(code review cr-1, account ••••3333 \/ us-west-2/);
+  assert.match(over.dom.byId.security.textContent, /repo override · from this repo's/);
+
+  const none = saAnswer(p, GOOD, 0, false); none.repos[0].setup = null;
+  const fresh = await runPage([p], '#security', SETUP, { '/api/security-agent': none });
+  const ft = fresh.dom.byId.security.textContent;
+  assert.match(ft, /Not set up on this machine yet \(no ~\/\.prism\/security\.json\): run enable security once, from any directory\./);
+  assert.match(ft, /Security Agent is not set up on this machine yet\. Run enable security once, from any directory/);
+  const open = fresh.dom.byId.security.querySelectorAll('details[data-key]').map((d: FakeElement) => d.getAttribute('data-key'));
+  assert.ok(!open.includes('security:setup'), 'not set up: the setup card is open, not folded');
 });
 
 test('nav badge: failed credentials, no space after a lookup, high latest results, pending reviews and threat models; not a running pentest', async () => {
@@ -441,7 +475,7 @@ test('nav badge: failed credentials, no space after a lookup, high latest result
 test('page: no space for prism-cli shows the set-up flow first; failed credentials show the sign-in callout', async () => {
   const p = await pagePayload();
   const nospace = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, { ...GOOD, inUse: null }) });
-  assert.match(nospace.dom.byId.security.textContent, /Set up Security Agentwith prism-cli enable security/);
+  assert.match(nospace.dom.byId.security.textContent, /Set up Security Agent on this machineonce, with prism-cli enable security/);
   const creds = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, { ok: false, at: '', profile: 'demo', region: 'us-west-2', error: 'the credentials did not work: ExpiredToken', credentials: true }) });
   assert.match(creds.dom.byId.security.textContent, /The AWS credentials did not work\./);
 });

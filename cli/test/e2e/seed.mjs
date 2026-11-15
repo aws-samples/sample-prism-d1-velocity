@@ -2,7 +2,8 @@
 // the account id is AWS's documentation example (111122223333) and every path is under the throwaway HOME.
 // usage: node seed.mjs <home> <scenario>   scenario: full | partial | empty
 //   full:    4 repos (one duplicate name), codewatch reviews + secret scans, Security Agent
-//            code review + threat model, aws connect + two aws check runs, ~/.aws/config (names only)
+//            code review + threat model, aws connect + two aws check runs, ~/.aws/config (names only),
+//            the machine setup ~/.prism/security.json, and demo-shop's repo override .prism/security.local.json
 //   partial: 2 repos, one review, no security results, no aws connection, no ~/.aws
 //   empty:   no repos, no results, no ~/.aws
 import { execFileSync } from 'node:child_process';
@@ -86,6 +87,8 @@ if (scenario === 'full' || scenario === 'partial') {
     // aws connect + two aws check runs (baseline 9 days ago, latest 2 h ago).
     const ACCOUNT = '111122223333', REGION = 'us-west-2';
     writeConnectionFile(join(home, '.prism', 'aws.json'), { profile: 'prism-demo', region: REGION, account: ACCOUNT, alias: 'demo-dev', verifiedAt: ago(25 * 60e3) });
+    // enable security, once per machine (1.17): every repo uses it; demo-shop keeps its older repo override.
+    writeFileSync(join(home, '.prism', 'security.json'), JSON.stringify({ agentSpaceId: 'as-0demo0000000001', applicationId: 'app-demo', region: REGION, account: ACCOUNT, setupAt: ago(12 * D) }, null, 2) + '\n', { mode: 0o600 });
     const demo = JSON.parse(readFileSync(new URL('./aws-demo-checks.json', import.meta.url), 'utf8'));
     const strip = (cs) => cs.map(({ cause, ...x }) => x);
     const save = (checks, at, oldName) => {

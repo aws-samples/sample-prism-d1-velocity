@@ -130,14 +130,14 @@ function overviewPane(data, items) {
 
 const CW_PILL = { ok: 'ok', warn: 'warn', missing: 'missing', 'opted-out': 'skipped' };
 function repoRowCells(r) {
-  const ids = SETUP.repoIds || {}, cds = SETUP.repoCd || {}, cp = SETUP.copy || {};
+  const ids = SETUP.repoIds || {}, cp = SETUP.copy || {};
   const cw = el('div', {}, pill(CW_PILL[r.status] || 'missing', r.status === 'opted-out' ? 'opted out' : r.status + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
     el('span', { class: 'fix' }, r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') + (r.reviewer && r.model ? ', model ' + txt(r.model) : '') : txt(r.detail)));
   if ((r.status === 'missing' || r.status === 'warn') && ids[r.path]) cw.append(el('div', { class: 'srow-ctl' }, runButton('codewatch-repo', { repo: ids[r.path], where: r.path, label: 'Enable codewatch' })));
   const sec = r.security || { status: 'missing' };
-  const sc = el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', sec.status === 'in-use' ? 'in use' : sec.status));
-  const cd = cds[r.path] ? cds[r.path] + ' && ' : '';
-  if (sec.status === 'missing') sc.append(copyOnly(sec.fix || cd + cp.enableSecurity, 'AWS'));
+  const sc = el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', sec.status === 'in-use' ? 'in use' : sec.source === 'machine' ? 'machine setup' : sec.source === 'repo' ? 'repo override' : sec.status));
+  // enable security is once per machine, from any directory: no cd.
+  if (sec.status === 'missing') sc.append(copyOnly(sec.fix || cp.enableSecurity, 'AWS'));
   if (ids[r.path]) sc.append(el('div', {}, el('a', { href: '#security/' + ids[r.path], class: 'rlink' }, 'Open in Security Agent →')));
   return [repoName(r), cw, sc];
 }

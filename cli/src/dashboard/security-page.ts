@@ -133,12 +133,22 @@ function saPicker(repo) {
     sel.append(o);
   }
   sel.addEventListener('change', () => { SA_PICK = sel.value; location.hash = '#security/' + sel.value; });
-  const m = repo.marker;
   return saCard('Target repo', 'every command on this page runs in this repo, as if you ran it there',
     el('div', { class: 'srow-ctl' }, el('label', { for: 'sa-repo' }, 'Repo'), sel, el('code', { class: 'path' }, txt(repo.path))),
-    el('p', { class: 'fix' }, m ? 'enable security ran here: code review ' + txt(m.codeReviewId) + ', account ' + txt(m.account4) + ' / ' + txt(m.region) + (m.setupAt ? ', set up ' + when(m.setupAt) : '') + ' (.prism/security.local.json).'
-      : 'enable security has not run in this repo (no .prism/security.local.json).'));
+    el('p', { class: 'fix' }, saSetupLine(repo.setup)));
 }
+
+/** Which setup record the commands use in a repo: its repo override, else the machine setup. */
+function saSetupLine(s) {
+  if (!s) return 'Not set up on this machine yet (no ~/.prism/security.json): run enable security once, from any directory.';
+  const where = 'account ' + txt(s.account4) + ' / ' + txt(s.region) + (s.setupAt ? ', set up ' + when(s.setupAt) : '');
+  return s.source === 'repo'
+    ? 'Repo override: .prism/security.local.json (' + (s.codeReviewId ? 'code review ' + txt(s.codeReviewId) + ', ' : '') + where + '). It takes precedence over the machine setup in this repo.'
+    : 'Uses the machine setup (~/.prism/security.json): ' + where + '.';
+}
+
+/** The short form for a card subtitle. */
+const saSetupTag = (s) => (!s ? 'not set up on this machine' : s.source === 'repo' ? 'repo override' : 'uses machine setup');
 
 /** One result line: its pills and when, or "none saved". */
 function saResultCell(x, levels) {
@@ -150,7 +160,7 @@ function saResultCell(x, levels) {
 function saResultsCard(repo) {
   const r = saResults(repo);
   const row = (label, x, levels, id, btn) => el('tr', {}, el('td', {}, el('b', {}, label)), el('td', {}, saResultCell(x, levels)), el('td', {}, saRun(id, repo, btn)));
-  return saCard('Results for ' + txt(repo.name), 'from this repo\\'s .prism/results; no AWS call to show them',
+  return saCard('Results for ' + txt(repo.name), saSetupTag(repo.setup) + ' · from this repo\\'s .prism/results; no AWS call to show them',
     table(['Result', 'Latest', 'Refresh (read-only)'], [
       row('Code review', r.review, RISKS, 'security-findings', 'Fetch findings'),
       row('Threat model', r.threat, THREAT_LEVELS, 'security-threats', 'Fetch threats'),
@@ -171,14 +181,15 @@ function saStartCard(repo) {
       item('Pentest status', 'Refreshes the job and tears the environment down once it has finished. Copy only.', copyOnly(txt(c.pentestStatus), 'AWS write'))));
 }
 
+/** One card for the whole machine: enable security runs once, from any directory, so its command has no cd. */
 function saSetupCard(repo, why, open) {
   const body = [el('p', {}, why), el('ol', { class: 'steps' },
     el('li', {}, el('b', {}, 'See the plan. '), 'Every read runs and nothing is changed: the account, the stack it would use, the resource diff and the exact calls.', el('div', { class: 'srow-ctl' }, saRun('security-dry-run', repo, 'Dry run'))),
-    el('li', {}, el('b', {}, 'Set it up in a terminal. '), 'Deploys only the PrismD1SecurityAgent stack (agent space prism-d1-security, an IAM service role, an encrypted S3 scan bucket, SSM parameters), then the application and this repo\\'s code review. It shows the diff and asks before any change.',
-      copyOnly(txt((repo.copy || {}).enableSecurity), 'AWS write')),
+    el('li', {}, el('b', {}, 'Set it up once, in a terminal, from any directory. '), 'Deploys only the PrismD1SecurityAgent stack (agent space prism-d1-security, an IAM service role, an encrypted S3 scan bucket, SSM parameters), then the application, and saves ~/.prism/security.json. Every repo on this machine uses it: a repo gets its code review on its first code review run. It shows the diff and asks before any change.',
+      copyOnly(txt(SA.setupCommand), 'AWS write')),
     el('li', {}, el('b', {}, 'Check it. '), el('div', { class: 'srow-ctl' }, saRun('security-status', repo, 'Run status check'))))];
-  if (open) return saCard('Set up Security Agent', 'with prism-cli enable security, in ' + txt(repo.name), ...body);
-  return el('details', { class: 'card', 'data-key': 'security:setup' }, el('summary', {}, 'Set up Security Agent in ' + txt(repo.name)), ...body);
+  if (open) return saCard('Set up Security Agent on this machine', 'once, with prism-cli enable security', ...body);
+  return el('details', { class: 'card', 'data-key': 'security:setup' }, el('summary', {}, 'Set up Security Agent on this machine'), ...body);
 }
 
 function saAccountCard(repo) {
@@ -186,7 +197,7 @@ function saAccountCard(repo) {
   const cred = credsFailed(l) ? pill('error', 'check failed') : l && l.ok ? pill('ok', 'account ' + txt(l.account4)) : pill('info', 'not checked');
   return saCard('Account and region', 'what prism-cli resolves in this repo',
     kv([['Profile', t.profile ? el('code', {}, txt(t.profile)) : el('span', { class: 'fix' }, 'none (the AWS CLI chain)')],
-      ['Chosen by', txt(t.source)], ['Region', t.region ? txt(t.region) : el('span', { class: 's-missing' }, 'not set')],
+      ['Chosen by', txt(t.source)], ['Region', t.region ? txt(t.region) + (t.regionFrom === 'repo' ? ' (repo override)' : t.regionFrom === 'machine' ? ' (machine setup)' : '') : el('span', { class: 's-missing' }, 'not set')],
       ['Credentials', el('span', {}, cred, ' ', el('a', { href: '#settings/aws' }, 'Settings › AWS →'))]]),
     el('p', { class: 'fix' }, 'prism-cli has no flag to pick an agent space: the commands use the space this account and region are set up with. To use another, change the profile or region (prism-cli aws connect).'));
 }
@@ -225,14 +236,14 @@ function saSpacesCard(repo) {
 function saHealthCard(repo) {
   return saCard('Setup health', 'enable security --status',
     el('div', { class: 'srow-ctl' }, saRun('security-status', repo, 'Run status check')),
-    el('p', { class: 'fix' }, 'Stack, agent space, application, SSM parameters, scan bucket, this repo\\'s code review, the CI step and the local marker. Read-only; the report opens in the Action output drawer.'));
+    el('p', { class: 'fix' }, 'Which setup ' + txt(repo.name) + ' uses (' + saSetupTag(repo.setup) + '), then the stack, agent space, application, SSM parameters, scan bucket, this repo\\'s code review and the CI step. Read-only; the report opens in the Action output drawer.'));
 }
 
 function saWhichCard() {
   const r = (cmd, how, writes) => el('li', {}, el('code', {}, cmd), ' ', writes ? sevPill('medium', 'writes to AWS') : sevPill('ok', 'read-only'), el('div', { class: 'fix' }, how));
   return el('details', { class: 'card', 'data-key': 'security:which' }, el('summary', {}, 'Which command uses which space'),
     el('ul', { class: 'salist' },
-      r('security code-review', 'the space in SSM agent-space-id, the code review in code-review-id/<repo>; the local marker only as a fallback', true),
+      r('security code-review', 'the space in SSM agent-space-id, the code review in code-review-id/<repo> (created on its first run in a repo); the setup record only as a fallback', true),
       r('security findings', 'the same as code-review', false),
       r('security threat-model', 'the space in SSM agent-space-id', true),
       r('security threats', 'the space in SSM agent-space-id', false),
@@ -264,7 +275,8 @@ function drawSecurity() {
   const left = [saPicker(repo)], right = [saAccountCard(repo), saSpacesCard(repo)];
   if (credsFailed(l)) root.append(el('div', { class: 'callout warn', role: 'note' }, el('strong', {}, 'The AWS credentials did not work. '), 'Sign in again, then look up agent spaces or fetch results. ', el('a', { href: '#settings/aws' }, 'Open Settings › AWS →')));
   if (noSpace) left.push(saSetupCard(repo, 'This account has no agent space set up for prism-cli in ' + txt(l.region) + ' (SSM /prism/continuum/agent-space-id is not set). enable security creates its own, prism-d1-security, and leaves any others alone.', true), saResultsCard(repo));
-  else { left.push(saResultsCard(repo), saStartCard(repo), saSetupCard(repo, 'Not set up in this account and region yet? enable security deploys the Security Agent resources for PRISM.', false)); right.push(saHealthCard(repo)); }
+  else if (!SA.machine && !repo.setup) { left.push(saSetupCard(repo, 'Security Agent is not set up on this machine yet. Run enable security once, from any directory; every repo then uses it.', true), saResultsCard(repo), saStartCard(repo)); right.push(saHealthCard(repo)); }
+  else { left.push(saResultsCard(repo), saStartCard(repo), saSetupCard(repo, 'Set up already? Re-running enable security is safe: it shows what would change and asks first.', false)); right.push(saHealthCard(repo)); }
   right.push(saWhichCard());
   root.append(el('div', { class: 'sa-grid' }, el('div', { class: 'sa-col' }, ...left), el('div', { class: 'sa-col' }, ...right)));
   for (const d of root.querySelectorAll('details[data-key]')) { const k = d.getAttribute('data-key'); if (openState.has(k)) d.open = openState.get(k); }

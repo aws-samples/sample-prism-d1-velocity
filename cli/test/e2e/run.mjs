@@ -633,6 +633,43 @@ try {
     }, csrf);
     await ctx.close();
   }
+  // ---------- 12. enable security once per machine (1.17): the page and the CLI read the same setup ----------
+  if (want('machine')) {
+    const out = {};
+    R.suites.machine = out;
+    const srv = await live('machine', 'full', { PRISM_NO_UPDATE_CHECK: '1' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+    out.setupCommand = sa.setupCommand;
+    out.repos = sa.repos.map((r) => ({ name: r.name, setup: r.setup && r.setup.source, region: r.target.region }));
+    const texts = {};
+    for (const r of sa.repos) {
+      const k = r.setup ? r.setup.source : 'none';
+      if (texts[k]) continue;
+      await page.goto(srv.base + '/#security/' + r.id); await sleep(900);
+      texts[k] = await page.innerText('#security');
+    }
+    out.texts = texts;
+    await page.screenshot({ path: join(SHOTS, 'machine-security-page.png'), fullPage: true });
+    await ctx.close();
+    // The CLI, with the fake aws first on PATH: --status names the source; from outside a repo, the machine setup.
+    const home = srv.home;
+    const callLog = (h) => join(h, 'aws-calls.log');
+    const cli = (h, cwd, args, env = {}) => {
+      rmSync(callLog(h), { force: true });
+      const sp = spawnSync(process.execPath, [ENTRY, ...args], { cwd, encoding: 'utf8', timeout: 120000, env: demoEnv(h, { PRISM_NO_UPDATE_CHECK: '1', ...env }) });
+      const calls = existsSync(callLog(h)) ? readFileSync(callLog(h), 'utf8').trim().split('\n').filter(Boolean) : [];
+      return { code: sp.status, out: (sp.stdout || '') + (sp.stderr || ''), calls };
+    };
+    out.whichAws = spawnSync('sh', ['-c', 'command -v aws'], { encoding: 'utf8', env: demoEnv(home) }).stdout.trim();
+    out.statusOutside = cli(home, home, ['enable', 'security', '--status'], { FAKE_AWS: 'in-progress' });
+    out.statusShop = cli(home, readFileSync(join(home, '.start-dir'), 'utf8').trim(), ['enable', 'security', '--status'], { FAKE_AWS: 'in-progress' });
+    // No setup at all: the security commands stop with the hint and make no AWS call.
+    const bare = seed('machine-none', 'partial');
+    out.noSetup = cli(bare, readFileSync(join(bare, '.start-dir'), 'utf8').trim(), ['security', 'findings']);
+    out.home = home;
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -729,6 +766,26 @@ function verdicts(R) {
     add('pending-row', 'the code review row still reads "running" after the fetch', /running/i.test(S.pending.row || ''), S.pending.row);
     const leak = (d.out || '').match(/\b\d{12}\b|demo-session/g) || [];
     add('pending-mask', 'the drawer shows ••••3333, the role name only, and no home path', !leak.length && /••••3333/.test(d.out || '') && /assumed-role\/PrismDemoReadOnly\/…/.test(d.out || '') && !(d.out || '').includes(S.pending.home), leak.join(', ') || (d.out || '').slice(0, 300));
+  }
+  if (S.machine) {
+    const M = S.machine;
+    const t = M.texts || {};
+    const both = (t.machine || '') + (t.repo || '');
+    add('M1', 'one machine-wide setup card; enable security is copied with no cd', /^prism-cli enable security( |$)/.test(M.setupCommand || '') && /Set up Security Agent on this machine/.test(t.machine || '') && !/cd \S+ && prism-cli enable security/.test(both), (M.setupCommand || '') + ' | ' + (t.machine || '').slice(0, 300));
+    add('M2', 'each repo says "uses the machine setup" or "repo override", never "has not run in this repo"', M.repos.some((r) => r.setup === 'repo') && M.repos.some((r) => r.setup === 'machine')
+      && /Uses the machine setup \(~\/\.prism\/security\.json\): account ••••3333 \/ us-west-2/.test(t.machine || '') && /Repo override: \.prism\/security\.local\.json/.test(t.repo || '')
+      && !/has not run in this repo/.test(both), JSON.stringify(M.repos));
+    const so = M.statusOutside || {}, ss = M.statusShop || {}, n = M.noSetup || {};
+    const all = [...(so.calls || []), ...(ss.calls || [])];
+    add('M3', 'the CLI used the fake aws from the demo HOME, and made only read calls', (M.whichAws || '').startsWith(M.home) && /\/aws$/.test(M.whichAws || '')
+      && all.every((c) => READ_ONLY_AWS.test(c) || /^cloudformation describe-stacks/.test(c)), M.whichAws + ' | ' + all.filter((c) => !READ_ONLY_AWS.test(c)).join('; '));
+    add('M4', 'enable security --status outside any repo names the machine setup, masked', /\[ok\] Setup: machine setup ~\/\.prism\/security\.json \(account ••••3333, region us-west-2/.test(so.out || '') && !/Repo override/.test(so.out || ''), (so.out || '').slice(0, 500));
+    add('M5', 'in a repo with an old repo-only setup, --status names the repo override', /\[ok\] Setup: repo override \.prism\/security\.local\.json/.test(ss.out || ''), (ss.out || '').slice(0, 500));
+    add('M6', 'no setup on the machine: security findings prints the one-line hint and makes no AWS call', n.code === 1 && /Security Agent is not set up on this machine: run prism-cli enable security \(once, from any directory\)\./.test(n.out || '') && !(n.calls || []).length, (n.out || '').slice(0, 300) + ' | calls: ' + (n.calls || []).join('; '));
+    // The terminal's Account line shows the full id on purpose (as before); the Setup rows and the page never do.
+    const setupRows = [so.out, ss.out].join('\n').split('\n').filter((l) => /Setup:|Repo override:/.test(l)).join('\n');
+    const leak = (setupRows + (n.out || '') + both).match(/\b\d{12}\b/g);
+    add('M7', 'no full account id in the Setup rows, the hint or the page', setupRows && !leak, (leak || ['no Setup rows']).join(', '));
   }
   if (S.fixes) {
     const F = S.fixes;

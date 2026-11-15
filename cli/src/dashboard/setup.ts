@@ -16,6 +16,7 @@ import { realpathSync } from 'node:fs';
 import { modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer, REVIEWER_IDS, type ReviewerId } from '../codewatch/reviewers/index.js';
 import { readSecurityMarker } from '../security/marker.js';
+import { readMachineSetup } from '../security/config.js';
 import { last4 } from '../aws/connection.js';
 import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
 import { ENABLE_KIROCREW_CMD, kirocrewAppState, type KirocrewAppState } from '../utils/kirocrew.js';
@@ -375,11 +376,14 @@ export function codewatchSetupFrom(repo: string, facts: GitFacts, g: GlobalStatu
 
 export interface SecuritySetup {
   /**
-   * ok: `prism-cli enable security` finished here (.prism/security.local.json, or a legacy .prism/config.json block).
-   * in-use: no marker, but saved Security Agent results (code review, threat model or pentest) are in .prism/results/.
+   * ok: a setup record applies here: the repo override (.prism/security.local.json,
+   *   or a legacy .prism/config.json block), else the machine setup (~/.prism/security.json).
+   * in-use: no record, but saved Security Agent results (code review, threat model or pentest) are in .prism/results/.
    * missing: neither.
    */
   status: 'ok' | 'in-use' | 'missing';
+  /** Which record: the repo override, the machine setup, or none. */
+  source: 'repo' | 'machine' | null;
   detail: string;
   /** Empty when ok. */
   fix: string;
@@ -390,24 +394,24 @@ export const SECURITY_RESULT_KINDS: [PrismResult['kind'], string][] = [
   ['security-review', 'code review'], ['security-threat-model', 'threat model'], ['security-pentest', 'pentest'],
 ];
 
-export function enableSecurityFix(repo: string): string {
-  return `cd ${shellPath(repo)} && prism-cli enable security`;
-}
+/** Once per machine, from any directory: no `cd`. */
+export const ENABLE_SECURITY_FIX = 'prism-cli enable security';
 
 /**
- * Security Agent per repo, from the marker `enable security` writes
- * (.prism/security.local.json, else a legacy block in .prism/config.json). Local
- * evidence only: the dashboard makes no AWS calls, so this says the setup ran
- * here, not that the AWS resources still exist (`enable security --status` checks those).
+ * Security Agent per repo: the repo override (.prism/security.local.json, else
+ * a legacy block in .prism/config.json), else the machine setup in
+ * `home`/.prism/security.json ('' reads none). Local evidence only: the
+ * dashboard makes no AWS calls, so this says a setup was recorded, not that the
+ * AWS resources still exist (`enable security --status` checks those).
  */
-export function securitySetup(repo: string, results: PrismResult[] = []): SecuritySetup {
+export function securitySetup(repo: string, results: PrismResult[] = [], home = ''): SecuritySetup {
   const m = readSecurityMarker(repo);
-  if (!m) {
-    // Saved results prove the Security Agent was used for this repo (from another checkout, or before the marker existed).
-    const kinds = SECURITY_RESULT_KINDS.filter(([k]) => results.some((r) => r.kind === k)).map(([, label]) => label);
-    if (kinds.length) return { status: 'in-use', detail: `in use (${kinds.join(', ')} results found; no local marker)`, fix: '' };
-    return { status: 'missing', detail: 'not set up', fix: enableSecurityFix(repo) };
-  }
-  const when = m.setupAt ? `, set up ${m.setupAt.slice(0, 10)}` : '';
-  return { status: 'ok', detail: `code review ${m.codeReviewId} in account ${last4(m.account)} (${m.region})${when}`, fix: '' };
+  const when = (at: string) => (at ? `, set up ${at.slice(0, 10)}` : '');
+  if (m) return { status: 'ok', source: 'repo', detail: `repo override: code review ${m.codeReviewId} in account ${last4(m.account)} (${m.region})${when(m.setupAt)}`, fix: '' };
+  const u = readMachineSetup(home);
+  if (u) return { status: 'ok', source: 'machine', detail: `uses the machine setup: account ${last4(u.account)} (${u.region})${when(u.setupAt)}`, fix: '' };
+  // Saved results prove the Security Agent was used for this repo (from another machine, or before the setup records existed).
+  const kinds = SECURITY_RESULT_KINDS.filter(([k]) => results.some((r) => r.kind === k)).map(([, label]) => label);
+  if (kinds.length) return { status: 'in-use', source: null, detail: `in use (${kinds.join(', ')} results found; not set up on this machine)`, fix: ENABLE_SECURITY_FIX };
+  return { status: 'missing', source: null, detail: 'not set up on this machine', fix: ENABLE_SECURITY_FIX };
 }

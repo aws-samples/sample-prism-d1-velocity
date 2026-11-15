@@ -539,7 +539,7 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
   }
   say(THREAT_MODEL_NOTICE);
   say('');
-  const ctx = begin(input, deps, false, say);
+  const ctx = begin(input, deps, false, say, root);
   if (!ctx) return 1;
   try {
     const failOn = parseLevel('--fail-on', input.failOn);
@@ -637,7 +637,7 @@ export async function securityThreats(input: ThreatsOptions, deps: ReviewDeps): 
   if (!root) return 1;
   say('Read-only (security threats): nothing in AWS will be changed; results are cached to .prism/results/.');
   say('');
-  const ctx = begin(input, deps, true, say);
+  const ctx = begin(input, deps, true, say, root);
   if (!ctx) return 1;
   try {
     const min = parseLevel('--severity', input.severity);

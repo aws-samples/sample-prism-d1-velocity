@@ -12,6 +12,7 @@ import {
 import { collectSecurity, latestSecurityReview } from '../src/dashboard/security.js';
 import { collectCodewatch } from '../src/dashboard/codewatch.js';
 import { MARKER_PATH } from '../src/security/marker.js';
+import { SETUP_HINT, userSecurityPath } from '../src/security/config.js';
 import { writeResult, type PrismResult } from '../src/codewatch/results.js';
 import { renderPage } from '../src/dashboard/page.js';
 
@@ -44,6 +45,8 @@ interface State {
   failReason?: string;
   /** Raw CLI errors returned by the next batch-get-code-review-jobs calls, before any status. */
   pollErrors?: string[];
+  /** Code reviews in the agent space (list-code-reviews). */
+  reviews?: { codeReviewId: string; title: string }[];
 }
 
 function state(o: Partial<State> = {}): State {
@@ -64,7 +67,7 @@ interface H {
   gitCalls: string[][]; repo: string; out: () => string; writes: () => string[]; cleanup: () => void; results: () => any[];
 }
 
-function harness(s: State, o: { tracked?: boolean; sandbox?: boolean; cwd?: (repo: string) => string; tty?: boolean; marker?: boolean; upstream?: boolean; patch?: string; interruptOnSleep?: number } = {}): H {
+function harness(s: State, o: { tracked?: boolean; sandbox?: boolean; cwd?: (repo: string) => string; tty?: boolean; marker?: boolean; upstream?: boolean; patch?: string; interruptOnSleep?: number; env?: NodeJS.ProcessEnv } = {}): H {
   const repo = mkdtempSync(join(tmpdir(), 'prism-scr-repo-'));
   if (o.marker !== false) {
     mkdirSync(join(repo, '.prism'), { recursive: true });
@@ -103,11 +106,14 @@ function harness(s: State, o: { tracked?: boolean; sandbox?: boolean; cwd?: (rep
           return ok({ findings: ids.map((id) => ({ findingId: id, description: `Details of ${id}. More text.`, codeLocations: [{ filePath: `${o.sandbox ? '/tmp/opt/source_code/code_sc-ab12cd/' : ''}src/${id}.ts`, lineStart: 7 }] })) });
         }
         case 'securityagent list-code-review-jobs-for-code-review': return ok({ codeReviewJobSummaries: s.jobs });
+        case 'securityagent list-code-reviews': return ok({ codeReviewSummaries: s.reviews ?? [] });
+        case 'securityagent create-code-review': { const id = 'cr-new'; (s.reviews ??= []).push({ codeReviewId: id, title: arg(a, '--title') }); return ok({ codeReviewId: id }); }
+        case 'ssm put-parameter': s.params[arg(a, '--name')] = arg(a, '--value'); return ok({});
         default: return fail('', `fake aws: unexpected ${a.join(' ')}`);
       }
     },
     configRegion: () => null,
-    env: {},
+    env: o.env ?? {},
     awsVersion: () => 'aws-cli/2.36.19 Python/3.14',
     cdk: { synth: () => { throw new Error('no cdk here'); }, diff: () => { throw new Error('no cdk'); }, deploy: () => { throw new Error('no cdk'); } },
     git(a) {
@@ -387,7 +393,7 @@ test('missing setup: no marker and no SSM says to run enable security first', as
   const h = harness(s, { marker: false });
   try {
     assert.equal(await securityCodeReview(cr(), h.deps), 1);
-    assert.match(h.out(), /Error: No Security Agent code review for github\.com\/acme\/widgets in account 111122223333, region us-west-2: run prism-cli enable security first\./);
+    assert.match(h.out(), /Error: No Security Agent agent space in account 111122223333, region us-west-2 \(SSM \/prism\/continuum\/agent-space-id is not set\): run prism-cli enable security first\./);
     assert.deepEqual(h.writes(), []);
   } finally { h.cleanup(); }
 });
@@ -580,10 +586,10 @@ test('the legacy security block in .prism/config.json is never used', async () =
   mkdirSync(join(h.repo, '.prism'), { recursive: true });
   writeFileSync(join(h.repo, '.prism/config.json'), JSON.stringify({ security: { agentSpaceId: 'as-evil', applicationId: 'a', codeReviewId: 'cr-evil', region: REGION, account: ACCOUNT, setupAt: 'x' } }));
   try {
-    assert.equal(await securityCodeReview(cr(), h.deps), 1);
-    assert.match(h.out(), /run prism-cli enable security first/);
+    // No code review for this repo yet: code-review makes one in the space SSM names, never the block's.
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
     assert.ok(!h.calls.flat().some((a) => /evil/.test(a)));
-    assert.deepEqual(h.writes(), []);
+    assert.equal(arg(h.calls.find((c) => c[1] === 'create-code-review')!, '--agent-space-id'), 'as-1');
   } finally { h.cleanup(); }
 });
 
@@ -591,10 +597,9 @@ test('a marker git tracks is ignored, even with SSM empty', async () => {
   const s = state(); delete s.params[REVIEW_PARAM];
   const h = harness(s, { tracked: true });
   try {
-    assert.equal(await securityCodeReview(cr(), h.deps), 1);
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
     assert.match(h.out(), /Warning: ignoring \.prism\/security\.local\.json because git tracks it/);
-    assert.match(h.out(), /run prism-cli enable security first/);
-    assert.deepEqual(h.writes(), []);
+    assert.equal(arg(h.calls.find((c) => c[1] === 'start-code-review-job')!, '--code-review-id'), 'cr-new', 'not the tracked file\'s cr-1');
   } finally { h.cleanup(); }
 });
 
@@ -615,8 +620,8 @@ test('an untracked marker is the fallback when SSM has no code review, and says 
   marker(h.repo, { codeReviewId: 'cr-local' });
   try {
     assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0);
-    assert.match(h.out(), /Note: SSM has no \/prism\/continuum\/code-review-id\/github\.com-acme-widgets; using the IDs from the local marker \.prism\/security\.local\.json\./);
-    assert.match(h.out(), /Code review: cr-local \(from local marker/);
+    assert.match(h.out(), /Note: SSM has no \/prism\/continuum\/code-review-id\/github\.com-acme-widgets; using the IDs from the repo override \.prism\/security\.local\.json\./);
+    assert.match(h.out(), /Code review: cr-local \(from repo override/);
     assert.equal(arg(h.calls.find((c) => c[1] === 'start-code-review-job')!, '--code-review-id'), 'cr-local');
   } finally { h.cleanup(); }
 });
@@ -833,3 +838,104 @@ test('dashboard: a pending repo shows review running with its start time, stale?
   assert.match(panel, /'started ' \+ when\(r\.started_at\)/);
   assert.match(panel, /sec\.pending_hint/);
 });
+
+// --------------------------------------------------------------- machine setup and the lazy per-repo code review
+
+function withHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  const home = mkdtempSync(join(tmpdir(), 'prism-scr-home-'));
+  return fn(home).finally(() => rmSync(home, { recursive: true, force: true }));
+}
+function machine(home: string, over: Record<string, string> = {}) {
+  mkdirSync(join(home, '.prism'), { recursive: true });
+  writeFileSync(userSecurityPath(home), JSON.stringify({ agentSpaceId: 'as-1', applicationId: 'app-1', region: REGION, account: ACCOUNT, setupAt: '2026-11-01T00:00:00Z', ...over }));
+}
+
+test('nothing set up and no --region: the one-line hint, and no AWS call at all', async () => {
+  const h = harness(state(), { marker: false });
+  try {
+    assert.equal(await securityCodeReview({}, h.deps), 1);
+    assert.ok(h.out().includes(`Error: ${SETUP_HINT}`), h.out());
+    assert.deepEqual(h.calls, []);
+    assert.equal(await securityFindings({}, h.deps), 1);
+    assert.deepEqual(h.calls, []);
+  } finally { h.cleanup(); }
+});
+
+test('machine setup only: code-review takes its region, creates this repo\'s code review on the first run, and reuses it after', () => withHome(async (home) => {
+  machine(home);
+  const s = state(); delete s.params[REVIEW_PARAM];
+  const h = harness(s, { marker: false, env: { HOME: home, AWS_REGION: 'eu-west-1' } });
+  try {
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    const out = h.out();
+    assert.match(out, /Region:      us-west-2 \(machine setup ~\/\.prism\/security\.json\)/);
+    assert.match(out, /Code review: none yet for this repo; created after the upload \(first run here\)/);
+    assert.match(out, /Code review: created cr-new \("github-com-acme-widgets-ci-diff-scan"\), the first run in this repo/);
+    const create = h.calls.find((c) => c[1] === 'create-code-review')!;
+    assert.equal(arg(create, '--service-role'), `arn:aws:iam::${ACCOUNT}:role/prism-d1-security-agent-prism-d1-security`);
+    assert.equal(JSON.parse(arg(create, '--assets')).sourceCode[0].s3Location, `s3://${BUCKET}/repo/${SLUG}/latest.zip`);
+    // The upload of the code review's source comes first, then the review, its SSM pointer (no overwrite) and the job.
+    assert.deepEqual(h.writes().filter((w) => w !== 's3api put-object'), ['securityagent create-code-review', 'ssm put-parameter', 'securityagent start-code-review-job']);
+    assert.ok(!h.calls.find((c) => c[1] === 'put-parameter')!.includes('--overwrite'));
+    assert.equal(s.params[REVIEW_PARAM], 'cr-new');
+    h.calls.length = 0;
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    assert.ok(!h.calls.some((c) => c[1] === 'create-code-review'), 'second run: from SSM');
+    assert.match(h.out(), /Code review: cr-new \(from SSM/);
+  } finally { h.cleanup(); }
+}));
+
+test('lazy creation reuses a code review with the CI title instead of making a second one', () => withHome(async (home) => {
+  machine(home);
+  const s = state({ reviews: [{ codeReviewId: 'cr-ci', title: 'github-com-acme-widgets-ci-diff-scan' }] }); delete s.params[REVIEW_PARAM];
+  const h = harness(s, { marker: false, env: { HOME: home } });
+  try {
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    assert.ok(!h.calls.some((c) => c[1] === 'create-code-review'));
+    assert.equal(s.params[REVIEW_PARAM], 'cr-ci');
+    assert.match(h.out(), /Code review: cr-ci \("github-com-acme-widgets-ci-diff-scan"\) already exists; reusing it/);
+  } finally { h.cleanup(); }
+}));
+
+test('findings before the first code review: says code-review creates it, writes nothing', () => withHome(async (home) => {
+  machine(home);
+  const s = state(); delete s.params[REVIEW_PARAM];
+  const h = harness(s, { marker: false, env: { HOME: home } });
+  try {
+    assert.equal(await securityFindings({}, h.deps), 1);
+    assert.match(h.out(), /Error: No Security Agent code review for github\.com\/acme\/widgets yet: prism-cli security code-review creates it on its first run in this repo\./);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+}));
+
+test('an old repo-only setup keeps working with no machine file and no --region', async () => {
+  const h = harness(state());
+  try {
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    assert.match(h.out(), /Region:      us-west-2 \(repo override \.prism\/security\.local\.json\)/);
+    assert.match(h.out(), /Code review: cr-1 \(from SSM/);
+  } finally { h.cleanup(); }
+});
+
+test('the repo override wins over the machine setup; --region wins over both', () => withHome(async (home) => {
+  machine(home, { region: 'eu-west-1' });
+  const h = harness(state(), { env: { HOME: home } });
+  try {
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    assert.match(h.out(), /Region:      us-west-2 \(repo override/);
+    assert.equal(await securityCodeReview({ wait: false, region: 'ap-south-1' }, h.deps), 0);
+    assert.match(h.out(), /Region:      ap-south-1 \(--region\)/);
+  } finally { h.cleanup(); }
+}));
+
+test('a machine setup for another account is warned about, and its ids are not used', () => withHome(async (home) => {
+  machine(home, { account: '999988887777', agentSpaceId: 'as-other' });
+  const s = state(); delete s.params['/prism/continuum/agent-space-id'];
+  const h = harness(s, { marker: false, env: { HOME: home } });
+  try {
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 1);
+    assert.match(h.out(), /Warning: the machine setup ~\/\.prism\/security\.json is for account ••••7777, but the credentials resolve to account ••••3333/);
+    assert.ok(!h.calls.flat().includes('as-other'));
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+}));
