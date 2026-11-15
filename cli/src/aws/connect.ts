@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { clause, type AwsResult } from '../utils/aws.js';
 import type { RunResult } from '../utils/exec.js';
 import { ensureMarkerIgnored } from '../security/marker.js';
-import { redact } from '../dashboard/actions.js';
+import { redact } from '../utils/redact.js';
 import {
   accountChangeWarning, applyConnection, clearConnectionFile, connectionLabel, ENV_CREDENTIAL_VARS, last4, loadConnection,
   PROFILE_RE, readConnectionFile, REGION_RE, REPO_CONNECTION_PATH, repoConnectionPath, repoRootOf, userConnectionPath,

@@ -22,6 +22,7 @@ import { SECTIONS } from '../aws/check.js';
 import { buildRecommendations, indeterminateCause, RETIRED_IDS, skippedSections, type IndeterminateCause, type SectionAdvice } from '../aws/recommend.js';
 import { readJson, writePrivateJson } from '../utils/private-json.js';
 import { ACTIONS, displayCommand, type ApiResult } from './actions.js';
+import { redact } from '../utils/redact.js';
 import { tildeHome } from './payload.js';
 
 export const BASELINE_SCHEMA = 'prism.accountguard.v1';
@@ -130,8 +131,9 @@ export async function accountGuardView(d: AccountGuardDeps): Promise<AccountGuar
   if (!runs.length) return { ...empty, connection, commands };
   const L = runs[0], info = L.result.aws_check!;
   const b = baselineRun(d.home, runs, c.account, c.region)!;
-  // Some details and fixes spell out the account id (s3control --account-id ...); the page gets the placeholder.
-  const scrub = (s: string | undefined) => (s === undefined || !c.account ? s : s.split(c.account).join('<account>'));
+  // Some details and fixes spell out the account id (s3control --account-id ...): the connected one becomes the
+  // placeholder, then redact() masks any other 12-digit id (a cross-account principal) and secrets.
+  const scrub = (s: string | undefined) => (s === undefined ? s : redact(c.account ? s.split(c.account).join('<account>') : s));
   const latestChecks = (info.checks || []).map((f) => ({ ...f, detail: scrub(f.detail)!, remediation: scrub(f.remediation) }));
   const checks = latestChecks.map((f) => ({ ...f, cause: f.status === 'INDETERMINATE' ? indeterminateCause(f) : null }));
   return {

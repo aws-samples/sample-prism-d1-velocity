@@ -22,6 +22,7 @@ import { writeConnectionFile } from '../src/aws/connection.js';
 import { accountGuardView, type AccountGuardDeps } from '../src/dashboard/accountguard.js';
 import { collectAws } from '../src/dashboard/aws.js';
 import { redact } from '../src/dashboard/actions.js';
+import { maskHome } from '../src/utils/redact.js';
 import type { Resolved } from '../src/security/setup.js';
 import { withFakeAws, type AwsStub } from './helpers.js';
 import { captureConsole, checkDeps, gitRepo, homeWithCodeburn, IDENTITY } from './aws-fixtures.js';
@@ -224,4 +225,33 @@ test('classify: an access-denied message wins over "not enabled for" wording; sw
     'UnauthorizedOperation: not available in this region for this user',
   ]) assert.equal(classifyAwsError(t), 'access-denied', t);
   assert.equal(classifyAwsError('An error occurred (AccessDeniedException) when calling the GetAnomalyMonitors operation: User not enabled for cost explorer access'), 'not-available');
+});
+
+test('AccountGuard: another account id and a cross-account role ARN in check text are masked too', async () => {
+  const home = tmp('home2');
+  writeConnectionFile(join(home, '.prism', 'aws.json'), { profile: 'demo', region: REGION, account: ACCOUNT, alias: 'demo', verifiedAt: '2026-11-14T10:00:00.000Z' });
+  const OTHER = '444455556666';
+  const fail: Finding = {
+    id: 'baseline.s3-account-bpa', category: 'baseline', title: 'S3', status: 'FAIL', severity: 'HIGH',
+    detail: `Bucket policy grants arn:aws:iam::${OTHER}:role/CrossAccountReader and arn:aws:sts::${OTHER}:assumed-role/Ops/someone@example.com in ${ACCOUNT}.`,
+    remediation: `Remove the grant to ${OTHER}, then run aws s3control put-public-access-block --account-id ${ACCOUNT}.`,
+  };
+  writeResult(home, result('2026-11-14T09:00:00.000Z', { run_id: '20261114T090000000Z-0a1b2d', checks: [fail] }));
+  const d: AccountGuardDeps = { home, repoRoot: null, roots: async () => [home], exclusive: async (fn) => ({ status: 200, json: await fn() }) };
+  const json = JSON.stringify(await accountGuardView(d));
+  assert.ok(!/\b\d{12}\b/.test(json), 'no 12-digit id of any account');
+  assert.ok(!json.includes('someone@example.com'), 'no session name');
+  assert.match(json, /arn:aws:iam::••••6666:role\/CrossAccountReader/);
+  assert.match(json, /--account-id <account>/, 'the connected account stays the placeholder');
+});
+
+test('maskHome: home at a path, at the end of a line, before punctuation; a longer sibling path is kept', () => {
+  const h = '/home/demo';
+  assert.equal(maskHome(`${h}/src/x.json`, h), '~/src/x.json');
+  assert.equal(maskHome(`cwd: ${h}\nnext`, h), 'cwd: ~\nnext');
+  assert.equal(maskHome(`in ${h}.`, h), 'in ~.');
+  assert.equal(maskHome(`"${h}", (${h})`, h), '"~", (~)');
+  assert.equal(maskHome(`${h}`, h), '~');
+  assert.equal(maskHome(`${h}2/x and ${h}-old`, h), `${h}2/x and ${h}-old`);
+  assert.equal(maskHome('a.b', ''), 'a.b');
 });
