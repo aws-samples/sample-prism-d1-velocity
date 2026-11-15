@@ -25,7 +25,7 @@ ul.steps2 { margin:6px 0; padding-left:18px; font-size:13px; } ul.steps2 li { ma
 
 export const ACCOUNTGUARD_SCRIPT = `
 /** The last GET /api/accountguard answer (null until loaded, or when the route is missing). */
-let AG = null, AG_LOADED = false;
+let AG = null, AG_LOADED = false, AG_ERROR = '';
 const agRoute = () => location.hash === '#accountguard';
 const AG_CAUSE = {
   'access-denied': ['access denied', 'medium'],
@@ -170,7 +170,8 @@ function agNever() {
 
 /** Fetches GET /api/accountguard (no AWS call), then draws the page and the nav badge. Runs on every load, whatever the view. */
 async function renderAccountGuard() {
-  if (!SNAPSHOT) { try { const r = await api('/api/accountguard'); if (r.ok) AG = r.json; } catch (e) { /* keep the last good copy */ } }
+  // A failed refresh keeps the last good copy and says so.
+  if (!SNAPSHOT) { try { const r = await api('/api/accountguard'); if (r.ok) { AG = r.json; AG_ERROR = ''; } else AG_ERROR = txt(r.json.error); } catch (e) { AG_ERROR = txt(e.message); } }
   AG_LOADED = true;
   drawAccountGuard();
 }
@@ -190,6 +191,7 @@ function drawAccountGuard() {
       el('div', { class: 'srow-ctl' }, el('a', { href: '#settings/aws', class: 'rlink' }, 'Open Settings › AWS →'))));
     return;
   }
+  if (AG_ERROR) root.append(el('div', { class: 'callout warn', role: 'status' }, 'Could not refresh AccountGuard (' + AG_ERROR + '); showing the last data.'));
   for (const x of agTop()) root.append(x);
   if (!AG.latest) { root.append(agNever()); return; }
   root.append(el('div', { class: 'sa-grid' }, el('div', { class: 'sa-col' }, ...agAreas()), el('div', { class: 'sa-col' }, agFixes(), agChanges(), agRuns())));

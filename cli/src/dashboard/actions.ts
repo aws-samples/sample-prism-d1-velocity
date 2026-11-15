@@ -36,6 +36,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
   | 'codeburn-remove' | 'codeburn-status' | 'team-info'
@@ -229,9 +230,8 @@ export interface ActionStatus {
 
 const MAX_OUTPUT = 256 * 1024;
 const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region']);
-/** The CLI's own name rules (aws/connection.ts PROFILE_RE, REGION_RE), checked on top of the list membership. */
-const PROFILE_NAME = /^[A-Za-z0-9_.+=,@:][A-Za-z0-9_.+=,@:-]{0,127}$/;
-const REGION_NAME = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/;
+/** A value the CLI accepts as a profile or region name (aws/connection.ts) that cannot be read as a flag. */
+const argValue = (v: string, re: RegExp) => re.test(v) && !v.startsWith('-');
 
 /** The command as shown on the page: `prism-cli <args>`, or `npm <args>`. Arguments are fixed words or the validated https URL. */
 export function displayCommand(args: readonly string[], program: ActionDef['program'] = undefined): string {
@@ -292,8 +292,8 @@ export class ActionRunner {
     if (def.choose) {
       const lists = this.d.awsChoices?.();
       if (!lists) return bad('choosing a profile is not available here');
-      if (typeof b.profile !== 'string' || !lists.profiles.includes(b.profile) || !PROFILE_NAME.test(b.profile)) return bad('profile must be one of the profiles listed on the page');
-      if (typeof b.region !== 'string' || !lists.regions.includes(b.region) || !REGION_NAME.test(b.region)) return bad('region must be one of the regions listed on the page');
+      if (typeof b.profile !== 'string' || !lists.profiles.includes(b.profile) || !argValue(b.profile, PROFILE_RE)) return bad('profile must be one of the profiles listed on the page');
+      if (typeof b.region !== 'string' || !lists.regions.includes(b.region) || !argValue(b.region, REGION_RE)) return bad('region must be one of the regions listed on the page');
       chosen = ['--profile', b.profile, '--region', b.region];
     } else if (b.profile !== undefined || b.region !== undefined) return bad('this action does not take a profile or region');
     if (def.confirm && b.confirm !== true) return bad('this action needs confirm: true');
@@ -309,14 +309,11 @@ export class ActionRunner {
       finally { this.busy = false; }
       if (why) return bad(why, 409);
     }
-    const target = def.awsTarget && repo && this.d.awsArgs ? this.d.awsArgs(repo) : [];
-    if (def.connected) {
-      const c = this.d.connectionArgs?.() ?? null;
-      if (!c) return bad('no AWS account is connected: connect one in Settings › AWS', 409);
-      target.push(...c);
-    }
+    const connection = def.connected ? this.d.connectionArgs?.() ?? null : [];
+    if (!connection) return bad('no AWS account is connected: connect one in Settings › AWS', 409);
+    const target = [...(def.awsTarget && repo && this.d.awsArgs ? this.d.awsArgs(repo) : []), ...connection];
     // Only the two flag names, and values that cannot be read as a flag (no leading '-').
-    if (![...target, ...chosen].every((a) => a === '--profile' || a === '--region' || /^[A-Za-z0-9_.+=,@:][A-Za-z0-9_.+=,@:-]{0,127}$/.test(a))) return bad('the resolved AWS profile or region is not valid');
+    if (![...target, ...chosen].every((a) => a === '--profile' || a === '--region' || argValue(a, PROFILE_RE))) return bad('the resolved AWS profile or region is not valid');
 
     const args = [...def.args, ...chosen, ...target, ...(def.url ? [b.url as string] : [])];
     const cwd = repo ? repo.path : def.inHome ? this.d.home : this.d.cwd;
