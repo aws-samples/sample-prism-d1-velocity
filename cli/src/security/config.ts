@@ -117,3 +117,13 @@ export function setupAccountWarning(s: ResolvedSetup | null | undefined, account
   return `Warning: the ${setupLabel(s)} is for account ${last4(s.account)}, but the credentials resolve to account ${last4(account)}. `
     + `Run prism-cli enable security${s.source === 'repo' ? ' --repo' : ''} with these credentials to set this account up.`;
 }
+
+/**
+ * What would change if `enable security` wrote the machine setup for this
+ * account and region, or null when there is no machine setup yet or it is the
+ * same account and region (a re-run, which stays idempotent).
+ */
+export function machineSetupChange(m: MachineSetup | null, account: string, region: string): string | null {
+  if (!m || (m.account === account && m.region === region)) return null;
+  return `The machine setup ${USER_SECURITY_PATH} is account ${last4(m.account)}, region ${m.region}; this run resolves to account ${last4(account)}, region ${region}.`;
+}

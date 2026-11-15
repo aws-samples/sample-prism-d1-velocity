@@ -84,6 +84,7 @@ interface State {
   objects: Record<string, string>; // key -> ETag (md5)
   roles?: string[];                // IAM role names that exist (default: the service role)
   deny?: string;                   // CLI command that returns AccessDenied
+  reviewPageSize?: number;         // list-code-reviews pages this many per call (NextToken = next index)
 }
 
 /** State after a complete setup: nothing left to do. */
@@ -139,7 +140,11 @@ function fakeAws(state: State, log: string[][], regions: string[]) {
       case 'securityagent get-application': return res({ json: state.apps.find((a) => a.applicationId === arg(args, '--application-id')) });
       case 'securityagent create-application': { const id = `app-new-${next++}`; state.apps.push({ applicationId: id, roleArn: null }); return res({ json: { applicationId: id } }); }
       case 'securityagent update-application': { const a = state.apps.find((x) => x.applicationId === arg(args, '--application-id'))!; a.roleArn = arg(args, '--role-arn'); return res({}); }
-      case 'securityagent list-code-reviews': return res({ json: { codeReviewSummaries: state.reviews } });
+      case 'securityagent list-code-reviews': {
+        if (!state.reviewPageSize) return res({ json: { codeReviewSummaries: state.reviews } });
+        const start = args.includes('--starting-token') ? Number(arg(args, '--starting-token')) : 0, end = start + state.reviewPageSize;
+        return res({ json: { codeReviewSummaries: state.reviews.slice(start, end), ...(end < state.reviews.length ? { NextToken: String(end) } : {}) } });
+      }
       case 'securityagent create-code-review': { const id = `cr-new-${next++}`; state.reviews.push({ codeReviewId: id, title: arg(args, '--title') }); return res({ json: { codeReviewId: id } }); }
       case 's3api head-object': {
         const e = state.objects[arg(args, '--key')];
@@ -1106,4 +1111,76 @@ test('loadSetup: a repo override git tracks is ignored; a broken machine file re
     assert.equal(loadSetup('', null), null, 'no home: none, never the real one');
     assert.equal(USER_SECURITY_PATH, '~/.prism/security.json');
   } finally { rmSync(repo, { recursive: true, force: true }); }
+}));
+
+// ---------------------------------------------------------------------------
+// list-code-reviews is paged; a machine setup is never rewritten for another account or region by accident.
+// ---------------------------------------------------------------------------
+test('--repo pages through list-code-reviews: the CI-titled review on page 2 is reused, not duplicated', () => withHome(async (home) => {
+  const s = fullySetUp(); delete s.params[PARAM];
+  s.reviews = [{ codeReviewId: 'cr-x', title: 'other-a' }, { codeReviewId: 'cr-y', title: 'other-b' }, { codeReviewId: 'cr-1', title: codeReviewTitle(SLUG) }];
+  s.reviewPageSize = 2;
+  const h = harness(s, { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 0);
+    assert.ok(!h.writes().includes('securityagent create-code-review'), h.writes().join(', '));
+    assert.equal(s.params[PARAM], 'cr-1');
+    const lists = h.calls.filter((c) => c[1] === 'list-code-reviews');
+    assert.ok(lists.some((c) => c.includes('--starting-token')), 'asked for page 2');
+  } finally { h.cleanup(); }
+}));
+
+test('another region than the machine setup: stops before any change, says why and how', () => withHome(async (home) => {
+  writeMachine(home);
+  const before = readFileSync(userSecurityPath(home), 'utf8');
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true, region: 'eu-west-1' }), h.deps), 1);
+    assert.deepEqual(h.writes(), []);
+    assert.equal(h.deploys.length, 0);
+    assert.match(h.out(), /Error: The machine setup ~\/\.prism\/security\.json is account ••••3333, region us-west-2; this run resolves to account ••••3333, region eu-west-1\. Writing it would change the Security Agent default for every repo on this machine\. Run it in a repo with --repo to set up an override for that repo only, or pass --replace to change the machine default\. Nothing was changed\./);
+    assert.equal(readFileSync(userSecurityPath(home), 'utf8'), before);
+  } finally { h.cleanup(); }
+}));
+
+test('another account than the machine setup: stops before any change too', () => withHome(async (home) => {
+  writeMachine(home, { account: '999988887777' });
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true }), h.deps), 1);
+    assert.deepEqual(h.writes(), []);
+    assert.match(h.out(), /is account ••••7777, region us-west-2; this run resolves to account ••••3333, region us-west-2\./);
+  } finally { h.cleanup(); }
+}));
+
+test('--dry-run with another region: says the real run would stop, and still shows the plan', () => withHome(async (home) => {
+  writeMachine(home);
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ dryRun: true, region: 'eu-west-1' }), h.deps), 0);
+    assert.match(h.out(), /Note: The machine setup .* region eu-west-1\. The real run stops here, before any change\./);
+    assert.match(h.out(), /Dry run: nothing was changed\./);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+}));
+
+test('--replace changes the machine default to the new region', () => withHome(async (home) => {
+  writeMachine(home);
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true, region: 'eu-west-1', replace: true }), h.deps), 0);
+    assert.equal(readMachineSetup(home)!.region, 'eu-west-1');
+  } finally { h.cleanup(); }
+}));
+
+test('--repo in another region: this repo gets the override, the machine default stays', () => withHome(async (home) => {
+  writeMachine(home);
+  const before = readFileSync(userSecurityPath(home), 'utf8');
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true, region: 'eu-west-1', repo: true }), h.deps), 0);
+    assert.equal(readFileSync(userSecurityPath(home), 'utf8'), before);
+    assert.equal(JSON.parse(readFileSync(join(h.repo, MARKER_PATH), 'utf8')).region, 'eu-west-1');
+    assert.match(h.out(), /Kept ~\/\.prism\/security\.json as it was: --repo sets up this repo only \(pass --replace to change the machine default\)\./);
+  } finally { h.cleanup(); }
 }));

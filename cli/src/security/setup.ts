@@ -27,7 +27,7 @@ import { cliVersionOk, CREDENTIALS_HINT, explainAwsError, MIN_AWS_CLI_TEXT, NO_C
 import { ensureMarkerIgnored, MARKER_PATH, readSecurityMarkerWithSource, writeSecurityMarker } from './marker.js';
 import { codeReviewParam, codeReviewTitle, repoIdFromRemote, repoSlug, repoZipKey, SSM_PREFIX } from './repo.js';
 import { accountChangeWarning, connectionLabel, type SavedConnection } from '../aws/connection.js';
-import { describeSetup, homeOf, loadSetup, setupAccountWarning, setupLabel, SETUP_HINT, USER_SECURITY_PATH, writeMachineSetup, type ResolvedSetup } from './config.js';
+import { describeSetup, homeOf, loadSetup, machineSetupChange, readMachineSetup, setupAccountWarning, setupLabel, SETUP_HINT, USER_SECURITY_PATH, writeMachineSetup, type ResolvedSetup } from './config.js';
 
 /** Hosts Security Agent when deployed with enableSecurityAgent=true (the original layout). */
 export const PIPELINE_STACK = 'PrismD1MetricsPipeline';
@@ -55,6 +55,8 @@ export interface SecurityOptions {
    * id (host/owner/name), overriding the origin remote.
    */
   repo?: string | boolean;
+  /** enable security: change the machine setup (~/.prism/security.json) to this run's account and region. */
+  replace?: boolean;
   /** Extra `cdk -c key=value` pairs, for stacks deployed with non-default context. */
   context?: string[];
   /** Set by connectionDefaults (src/aws/connection.ts): where `profile` came from. */
@@ -154,6 +156,30 @@ export function call(ctx: Ctx, args: string[], expected: string[] = []): AwsResu
 export function getParam(ctx: Ctx, name: string): string | null {
   const r = call(ctx, ['ssm', 'get-parameter', '--name', name], ['ParameterNotFound']);
   return r.ok ? (r.json?.Parameter?.Value ?? null) : null;
+}
+
+/** Results per `--max-items` page. */
+export const LIST_PAGE = 100;
+
+/** Every page of `--max-items` results, following NextToken (the CLI's) or nextToken (the API's). */
+export function paged(ctx: Ctx, args: string[], key: string): any[] {
+  const out: any[] = [];
+  let token: string | undefined;
+  for (let page = 0; page < 1000; page++) {
+    const r = call(ctx, [...args, '--max-items', String(LIST_PAGE), ...(token ? ['--starting-token', token] : [])]);
+    out.push(...(r.json?.[key] || []));
+    token = r.json?.NextToken || r.json?.nextToken || undefined;
+    if (!token) return out;
+  }
+  throw new Abort(`${args[1]} returned more than 1000 pages; stopping.`);
+}
+
+/**
+ * Every code review in the agent space, all pages: a review with the CI title
+ * on a later page must be found, or a second one would be created.
+ */
+export function listCodeReviews(ctx: Ctx, agentSpaceId: string): any[] {
+  return paged(ctx, ['securityagent', 'list-code-reviews', '--agent-space-id', agentSpaceId], 'codeReviewSummaries');
 }
 
 /**
@@ -493,7 +519,7 @@ function planService(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, 
 
   // Code review for this repo: the SSM pointer if it is still valid, else one with the CI title.
   svc.ssmValue = getParam(ctx, repo.param);
-  const reviews: any[] = call(ctx, ['securityagent', 'list-code-reviews', '--agent-space-id', space.agentSpaceId]).json?.codeReviewSummaries || [];
+  const reviews = listCodeReviews(ctx, space.agentSpaceId);
   const bySsm = svc.ssmValue ? reviews.find((r) => r.codeReviewId === svc.ssmValue) : undefined;
   const byTitle = reviews.find((r) => r.title === repo.title);
   if (bySsm) svc.review = { id: bySsm.codeReviewId, title: bySsm.title, source: 'ssm' };
@@ -640,6 +666,13 @@ export async function enableSecurity(input: SecurityOptions, deps: Deps): Promis
     const id = preflight(ctx);
     printIdentity(ctx, id);
     deps.log(`Setup:       ${opts.securitySetup ? describeSetup(opts.securitySetup) : `none on this machine yet; this run writes ${USER_SECURITY_PATH}`}`);
+    // A machine setup for another account or region is every repo's default: never rewritten silently.
+    const moved = machineSetupChange(readMachineSetup(homeOf(deps.env)), id.account, opts.region);
+    if (moved && !opts.replace && !perRepo) {
+      const how = 'Run it in a repo with --repo to set up an override for that repo only, or pass --replace to change the machine default.';
+      if (!opts.dryRun) throw new Abort(`${moved} Writing it would change the Security Agent default for every repo on this machine. ${how} Nothing was changed.`);
+      deps.log(`Note: ${moved} The real run stops here, before any change. ${how}`);
+    }
     const repo: RepoCtx | { error: string } = perRepo ? resolveRepo(opts, deps) : { error: REPO_NOT_REQUESTED };
     if (perRepo && 'error' in repo) throw new Abort(repo.error);
     deps.log('error' in repo ? 'Repo:        none needed (machine setup); add --repo to also set up this repo\'s code review' : `Repo:        ${repo.id} (code review slug ${repo.slug}, --repo)`);
@@ -702,7 +735,9 @@ function finish(ctx: Ctx, id: Identity, repo: RepoCtx | { error: string }, space
   const { deps, opts } = ctx;
   if (space) {
     const home = homeOf(deps.env);
+    const kept = home ? machineSetupChange(readMachineSetup(home), id.account, opts.region) : null;
     if (!home) deps.log(`Could not save ${USER_SECURITY_PATH}: no home directory (HOME is not set).`);
+    else if (kept && !opts.replace) deps.log(`Kept ${USER_SECURITY_PATH} as it was: --repo sets up this repo only (pass --replace to change the machine default).`);
     else {
       const w = writeMachineSetup(home, { agentSpaceId: space, applicationId, region: opts.region, account: id.account }, deps.now());
       deps.log(w.wrote
@@ -831,7 +866,7 @@ export function collectSecurityStatus(ctx: Ctx): { rows: StatusRow[]; code: numb
     if ('error' in repo) add('unknown', 'Code review', repo.error);
     else {
       const v = getParam(ctx, repo.param);
-      const reviews: any[] = space ? call(ctx, ['securityagent', 'list-code-reviews', '--agent-space-id', space.agentSpaceId]).json?.codeReviewSummaries || [] : [];
+      const reviews: any[] = space ? listCodeReviews(ctx, space.agentSpaceId) : [];
       const found = v ? reviews.find((r) => r.codeReviewId === v) : undefined;
       if (!v) add('missing', 'Code review', `${repo.param} not set: prism-cli security code-review creates it on its first run here (so does the CI eval gate), or run prism-cli enable security --repo`);
       else add(found ? 'ok' : 'warn', 'Code review', found ? `${v} ("${found.title}") from ${repo.param}` : `${repo.param} = ${v}, but no such code review in the agent space`);
