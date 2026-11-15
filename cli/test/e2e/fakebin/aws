@@ -1,0 +1,12 @@
+#!/bin/sh
+# Fake AWS CLI for the dashboard e2e run: it never contacts AWS. Every call is logged to
+# $HOME/aws-calls.log and answers like the real CLI with no credentials configured.
+echo "$*" >> "$HOME/aws-calls.log"
+case "$1" in
+  --version) echo "aws-cli/2.0.0-fake Python/3 Linux"; exit 0 ;;
+  configure)
+    if [ "$2" = "list-profiles" ]; then sed -n 's/^\[profile \(.*\)\]$/\1/p; s/^\[default\]$/default/p' "$HOME/.aws/config"; exit 0; fi ;;
+esac
+echo "" >&2
+echo "Unable to locate credentials. You can configure credentials by running \"aws configure\"." >&2
+exit 253

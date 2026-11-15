@@ -4,7 +4,7 @@
  * stores no credentials (see connection.ts for the files and precedence).
  */
 import { existsSync } from 'node:fs';
-import type { AwsResult } from '../utils/aws.js';
+import { clause, type AwsResult } from '../utils/aws.js';
 import type { RunResult } from '../utils/exec.js';
 import { ensureMarkerIgnored } from '../security/marker.js';
 import {
@@ -214,7 +214,7 @@ export async function awsConnect(o: ConnectOptions, d: ConnectDeps): Promise<num
 
   const id = callerIdentity(d, profile, region);
   if ('error' in id) {
-    d.log(`Error: profile ${profile} does not validate: ${id.error}. ${fixHint(profile, id.error, 'Sign in (e.g. aws sso login --profile <p>) and re-run.')} Nothing was saved.`);
+    d.log(`Error: profile ${profile} does not validate: ${clause(id.error)}. ${fixHint(profile, id.error, 'Sign in (e.g. aws sso login --profile <p>) and re-run.')} Nothing was saved.`);
     return 1;
   }
   const alias = accountAlias(d, profile, region);

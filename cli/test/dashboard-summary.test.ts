@@ -191,7 +191,7 @@ test('page: four cards on top, codewatch rows open their repo view, empty sectio
   const link = page.dom.byId.main.byClass('scard')[3].querySelectorAll('a')[0];
   assert.equal(link.getAttribute('href'), '#settings');
   assert.doesNotMatch(t, /other repos: not set up|Setup checklist/, 'the checklist moved to the Settings view');
-  assert.match(t, /Codewatch1 repo with codewatch · click a repo for its own page/);
+  assert.match(t, /Codewatch1 repo with codewatch results or hooks · 0 with hooks installed · click a repo for its own page/);
   const cw = p.repos.find((r) => r.label === 'cw')!;
   assert.ok(page.dom.byId.main.querySelectorAll('a').some((a) => a.getAttribute('href') === '#repo/' + cw.id), 'the repo name links to #repo/<id>');
   assert.match(t, /Get more from PRISMSecurity Agent: prism-cli enable security, then prism-cli security code-reviewAWS account checks: prism-cli aws check \(read-only\)/);
@@ -263,8 +263,8 @@ test('page: low differs from muted in both themes; dark cards are raised; medium
   const v = (block: string, name: string) => new RegExp(`--${name}:([^;]+);`).exec(block)![1];
   for (const b of [light, dark]) assert.notEqual(v(b, 'low'), v(b, 'muted'), 'low differs from muted');
   assert.notEqual(v(dark, 'raised'), v(dark, 'card'));
-  assert.deepEqual([v(dark, 'medium'), v(light, 'medium')], ['#e3c341', '#a68a00']);
-  assert.deepEqual([v(dark, 'accent'), v(light, 'accent')], ['#f59a2a', '#b85c00']);
+  assert.deepEqual([v(dark, 'medium'), v(light, 'medium')], ['#e3c341', '#7d6600']);
+  assert.deepEqual([v(dark, 'accent'), v(light, 'accent')], ['#f59a2a', '#a35200']);
   for (const b of [light, dark]) for (const k of ['accent-soft', 'heat0', 'heat1', 'heat2', 'heat3', 'heat4']) assert.ok(v(b, k));
 });
 
@@ -369,4 +369,21 @@ test('setup warnings count every missing or warn item in the checklist, never ok
   const it = (id: string, status: CheckItem['status']): CheckItem => ({ id, label: id, status, detail: 'd', fix: status === 'ok' || status === 'info' ? '' : 'f' });
   const machine = [it('a', 'missing'), it('b', 'info'), it('c', 'warn'), it('d', 'missing'), it('e', 'missing'), it('f', 'ok'), it('g', 'missing')];
   assert.deepEqual(buildSummary([], emptyUsage('ok', ''), machine).warnings, { count: 5, first: 'a: d' });
+});
+
+test('page: light theme text colours keep 4.5:1 on every light surface (WCAG AA)', () => {
+  const html = renderPage('N');
+  const light = /:root\[data-theme="light"\] \{[^}]*\}/.exec(html)![0];
+  const v = (name: string) => new RegExp(`--${name}:(#[0-9a-f]{3,6});`).exec(light)![1];
+  const lum = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a: string, b: string) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const card = v('card') === '#fff' ? '#ffffff' : v('card');
+  for (const fg of ['text', 'muted', 'accent', 'warn', 'medium', 'high', 'ok', 'bad']) {
+    for (const bg of [card, v('bg'), v('raised')]) assert.ok(ratio(v(fg), bg) >= 4.5, `--${fg} on ${bg}: ${ratio(v(fg), bg).toFixed(2)}`);
+  }
+  // The active nav tab and the update pill draw the accent on --accent-soft.
+  assert.ok(ratio(v('accent'), v('accent-soft')) >= 4.5, `accent on accent-soft: ${ratio(v('accent'), v('accent-soft')).toFixed(2)}`);
 });

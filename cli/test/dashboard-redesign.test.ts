@@ -89,7 +89,7 @@ test('update check: the registry body is read with a running byte count and cut 
 test('update check: PRISM_NO_UPDATE_CHECK=1 turns it off; same or older latest is no update; a clock moved back is due', async () => {
   const off = updates({ env: { PRISM_NO_UPDATE_CHECK: '1' } });
   assert.equal(off.check.due(), false);
-  assert.deepEqual(await off.check.get(), { installed: '1.13.0', latest: null, publishedAt: null, update: false, checkedAt: null });
+  assert.deepEqual(await off.check.get(), { installed: '1.13.0', latest: null, publishedAt: null, update: false, checkedAt: null, off: true });
   assert.equal(off.calls(), 0, 'never asks npm');
   assert.equal(existsSync(off.file), false, 'writes nothing');
 

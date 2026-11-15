@@ -30,6 +30,8 @@ export interface VersionInfo {
   update: boolean;
   /** When the registry was last asked (ISO), whether or not it answered; null when never. */
   checkedAt: string | null;
+  /** PRISM_NO_UPDATE_CHECK=1: the check is turned off, so the page disables Check now and says why. */
+  off?: boolean;
 }
 
 export function updateCachePath(home: string): string {
@@ -113,7 +115,7 @@ export class UpdateCheck {
 
   /** The cached answer; never touches the network. Turned off: installed version only. */
   current(): VersionInfo {
-    return info(this.d.installed, this.off() ? null : readCache(this.d.file));
+    return this.off() ? { ...info(this.d.installed, null), off: true } : info(this.d.installed, readCache(this.d.file));
   }
 
   /** True when a check is due: on, and no attempt in the last day. */

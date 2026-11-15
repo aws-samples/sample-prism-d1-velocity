@@ -23,7 +23,7 @@
 import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import type { AwsResult } from '../utils/aws.js';
-import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
+import { last4, PROFILE_RE, REGION_RE } from '../aws/connection.js';
 import { readSecurityMarker } from '../security/marker.js';
 import { listsBucket, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET } from '../security/setup.js';
 import { ACTIONS, displayCommand, redact, type ActionId, type ApiResult, type ScanRepo } from './actions.js';
@@ -64,7 +64,6 @@ export function awsTargetFor(identity: AwsIdentityView): AwsTargetArgs {
 
 export const targetArgs = (t: AwsTargetArgs): string[] => [...(t.profile ? ['--profile', t.profile] : []), ...(t.region ? ['--region', t.region] : [])];
 const targetKey = (t: AwsTargetArgs) => `${t.profile ?? ''}|${t.region ?? ''}`;
-export const last4 = (account: string) => (account.length > 4 ? '••••' + account.slice(-4) : account);
 
 export interface SpaceRow {
   id: string;

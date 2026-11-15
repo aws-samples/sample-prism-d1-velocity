@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import type { Finding, Severity } from '../utils/audit.js';
 import { readResultEntries, RESULTS_DIR, type PrismResult, type ResultEntry } from '../codewatch/results.js';
-import { loadConnection, type SavedConnection } from '../aws/connection.js';
+import { last4, loadConnection, type SavedConnection } from '../aws/connection.js';
 import { SECTIONS } from '../aws/check.js';
 import { buildRecommendations, indeterminateCause, RETIRED_IDS, skippedSections, type IndeterminateCause, type SectionAdvice } from '../aws/recommend.js';
 import { readJson, writePrivateJson } from '../utils/private-json.js';
@@ -25,7 +25,6 @@ import { tildeHome } from './payload.js';
 
 export const BASELINE_SCHEMA = 'prism.accountguard.v1';
 export const baselinePath = (home: string) => join(home, '.prism', 'accountguard.json');
-const masked = (account: string) => (account.length > 4 ? '••••' + account.slice(-4) : account);
 const runKey = (root: string, id: string) => createHash('sha256').update(resolve(root, RESULTS_DIR, id)).digest('hex').slice(0, 16);
 const targetKey = (account: string, region: string) => `${account}/${region}`;
 
@@ -123,7 +122,7 @@ export async function accountGuardView(d: AccountGuardDeps): Promise<AccountGuar
   const c = connectionOf(d);
   const empty: AccountGuardView = { connection: null, sections, latest: null, recommendations: [], baseline: null, diff: null, runs: [], badge: 0, commands: null };
   if (!c) return empty;
-  const connection = { profile: c.profile, region: c.region, account4: masked(c.account), alias: c.alias, verifiedAt: c.verifiedAt, scope: c.scope, path: tildeHome(c.path, d.home) };
+  const connection = { profile: c.profile, region: c.region, account4: last4(c.account), alias: c.alias, verifiedAt: c.verifiedAt, scope: c.scope, path: tildeHome(c.path, d.home) };
   const flags = ['--profile', c.profile, '--region', c.region];
   const commands = { check: 'cd ~ && ' + displayCommand([...ACTIONS['accountguard-check'].args, ...flags]), recommend: 'cd ~ && ' + displayCommand([...ACTIONS['accountguard-recommend'].args, ...flags]) };
   const runs = runsFor(await d.roots(), c.account, c.region, d.read);

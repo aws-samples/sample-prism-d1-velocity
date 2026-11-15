@@ -31,7 +31,14 @@ export interface SecurityRepoRow {
   pending: boolean;
   /** Pending for longer than PENDING_STALE_MS: the job most likely finished and nobody fetched it. */
   stale: boolean;
+  /**
+   * A newer job that is still pending while this row shows the last completed
+   * one, so its findings stay on the page; null when there is none.
+   */
+  running: RunningJob | null;
 }
+
+export interface RunningJob { job_id: string; scope: string; started_at: string; stale: boolean }
 
 /** A pentest runs for hours, so its pending record goes stale later than a review's. */
 export const PENTEST_PENDING_STALE_MS = 6 * 60 * 60 * 1000;
@@ -154,7 +161,14 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
   const pentests: SecurityPentestRow[] = [];
   for (const repo of repos) {
     const all = read(repo.path);
-    const r = latestSecurityReview(all);
+    const latest = latestSecurityReview(all);
+    // A pending newest job does not hide the last completed review: show that one, and the running job beside it.
+    const done = latest?.status === 'pending' ? latestSecurityReview(all.filter((x) => x.status !== 'pending' && x.security?.job_id !== latest.security!.job_id)) : null;
+    const r = done ?? latest;
+    const running: RunningJob | null = done && latest ? {
+      job_id: latest.security!.job_id, scope: latest.security!.scope, started_at: latest.started_at,
+      stale: now.getTime() - Date.parse(latest.started_at) > PENDING_STALE_MS,
+    } : null;
     if (r && r.security) {
       const findings = [...(r.findings || [])]
         .sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0) || a.file.localeCompare(b.file))
@@ -166,6 +180,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         findings: findings.slice(0, MAX_PANEL_FINDINGS), truncated: findings.length > MAX_PANEL_FINDINGS, reason: r.reason ?? null,
         pending: r.status === 'pending',
         stale: r.status === 'pending' && now.getTime() - Date.parse(r.started_at) > PENDING_STALE_MS,
+        running,
       });
     }
     const p = latestPentest(all);
@@ -185,7 +200,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
       });
     }
   }
-  rows.sort((a, b) => Number(b.current) - Number(a.current) || b.started_at.localeCompare(a.started_at));
+  rows.sort((a, b) => Number(b.current) - Number(a.current) || (b.running?.started_at ?? b.started_at).localeCompare(a.running?.started_at ?? a.started_at));
   const tms: ThreatModelRow[] = [];
   for (const repo of repos) {
     const r = latestThreatModel(read(repo.path));

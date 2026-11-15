@@ -16,6 +16,7 @@ import { realpathSync } from 'node:fs';
 import { modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY } from '../codewatch/config.js';
 import { detectReviewers, resolveReviewer, REVIEWER_IDS, type ReviewerId } from '../codewatch/reviewers/index.js';
 import { readSecurityMarker } from '../security/marker.js';
+import { last4 } from '../aws/connection.js';
 import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
 import { ENABLE_KIROCREW_CMD, kirocrewAppState, type KirocrewAppState } from '../utils/kirocrew.js';
 import { appOutdated } from '../commands/_top/version.js';
@@ -408,5 +409,5 @@ export function securitySetup(repo: string, results: PrismResult[] = []): Securi
     return { status: 'missing', detail: 'not set up', fix: enableSecurityFix(repo) };
   }
   const when = m.setupAt ? `, set up ${m.setupAt.slice(0, 10)}` : '';
-  return { status: 'ok', detail: `code review ${m.codeReviewId} in account ${m.account} (${m.region})${when}`, fix: '' };
+  return { status: 'ok', detail: `code review ${m.codeReviewId} in account ${last4(m.account)} (${m.region})${when}`, fix: '' };
 }

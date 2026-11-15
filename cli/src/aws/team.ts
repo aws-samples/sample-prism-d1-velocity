@@ -12,7 +12,7 @@
  * Same AWS resolution as the other AWS commands (aws connect precedence,
  * --profile / --region), through the AWS CLI with an argv array (no shell).
  */
-import { aws, type AwsResult, type AwsTarget } from '../utils/aws.js';
+import { aws, clause, type AwsResult, type AwsTarget } from '../utils/aws.js';
 import { NO_REGION_MESSAGE, credentialSource, resolveRegion, PIPELINE_STACK, type SecurityOptions } from '../security/setup.js';
 import { accountChangeWarning } from './connection.js';
 import { SETUP_DOCS } from '../utils/sync-mode.js';
@@ -64,7 +64,7 @@ function resolveTarget(o: TeamOptions, d: TeamDeps, say: (l?: string) => void): 
   const who = aws(['sts', 'get-caller-identity'], target);
   const account = who.ok ? String(who.json?.Account || '') : '';
   if (!account) {
-    say(`Error: cannot resolve the AWS identity: ${lastLine(who)}. Sign in (e.g. aws sso login), pass --profile, or run prism-cli aws connect.`);
+    say(`Error: cannot resolve the AWS identity: ${clause(lastLine(who))}. Sign in (e.g. aws sso login), pass --profile, or run prism-cli aws connect.`);
     return null;
   }
   say(`Account:     ${account}`);

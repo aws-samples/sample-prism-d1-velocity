@@ -131,6 +131,9 @@ export function resolveAccount(target?: AwsTarget): string | null {
   return null;
 }
 
+/** An AWS CLI message as a clause to continue a sentence: trailing periods dropped (the CLI's own text ends with one). */
+export const clause = (s: string): string => s.trim().replace(/\.+$/, '');
+
 export function daysSince(iso: string): number | null {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return null;

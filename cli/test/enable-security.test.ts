@@ -545,7 +545,7 @@ test('dashboard Security Agent row comes from the marker', () => {
     assert.deepEqual(securitySetup(repo), { status: 'missing', detail: 'not set up', fix: `cd ${repo} && prism-cli enable security` });
     mkdirSync(join(repo, '.prism'));
     writeFileSync(join(repo, '.prism/config.json'), JSON.stringify({ security: { agentSpaceId: 'as-1', applicationId: 'app-1', codeReviewId: 'cr-1', region: 'us-west-2', account: ACCOUNT, setupAt: '2026-11-06T05:00:00.000Z' } }));
-    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ${ACCOUNT} (us-west-2), set up 2026-11-06`, fix: '' });
+    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-06`, fix: '' });
     writeFileSync(join(repo, '.prism/config.json'), JSON.stringify({ security: { agentSpaceId: 'as-1' } }));
     assert.equal(securitySetup(repo).status, 'missing', 'an incomplete marker does not count');
   } finally { rmSync(repo, { recursive: true, force: true }); }
@@ -834,7 +834,7 @@ test('dashboard Security Agent row reads the new file', () => {
   try {
     mkdirSync(join(repo, '.prism'));
     writeFileSync(join(repo, MARKER_PATH), JSON.stringify(LEGACY));
-    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ${ACCOUNT} (us-west-2), set up 2026-11-06`, fix: '' });
+    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-06`, fix: '' });
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 

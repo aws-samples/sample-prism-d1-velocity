@@ -17,8 +17,8 @@ import { ACCOUNTGUARD_SCRIPT, ACCOUNTGUARD_STYLE } from './accountguard-page.js'
 import { REPO_SCRIPT } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
 
-/** Colour tokens. Dark is the default; Light, and System on a light OS, switch to the light set. */
-const LIGHT_VARS = '--bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#6b6b73; --line:#e3e3e8; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --high:#cf222e; --medium:#a68a00; --low:#3d6fa8; --accent:#b85c00; --accent-soft:#fdebd3; --raised:#f2f3f5; --heat0:#ebedf0; --heat1:#fbd9a8; --heat2:#f5b062; --heat3:#e88810; --heat4:#b85c00;';
+/** Colour tokens. Dark is the default; Light, and System on a light OS, switch to the light set. Light text colours keep at least 4.5:1 on --card, --bg, --raised and --accent-soft. */
+const LIGHT_VARS = '--bg:#f7f7f8; --card:#fff; --text:#1d1d1f; --muted:#6b6b73; --line:#e3e3e8; --ok:#1a7f37; --warn:#8a5c00; --bad:#cf222e; --high:#cf222e; --medium:#7d6600; --low:#3d6fa8; --accent:#a35200; --accent-soft:#fdebd3; --raised:#f2f3f5; --heat0:#ebedf0; --heat1:#fbd9a8; --heat2:#f5b062; --heat3:#e88810; --heat4:#b85c00;';
 const DARK_VARS = '--bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --high:#f85149; --medium:#e3c341; --low:#a5d6ff; --accent:#f59a2a; --accent-soft:#3a2410; --raised:#21262d; --heat0:#21262d; --heat1:#4a2c0e; --heat2:#8a4f12; --heat3:#d07a14; --heat4:#ffa53d;';
 
 const STYLE = `
@@ -51,7 +51,7 @@ table { width:100%; border-collapse:collapse; font-size:13px; }
 th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
 td { padding:10px; border-bottom:1px solid var(--line); vertical-align:middle; overflow-wrap:break-word; }
 tr:last-child td { border-bottom:0; }
-td.num, th.num { text-align:right; } td.msg { min-width:280px; } td code { white-space:normal; overflow-wrap:anywhere; }
+td.num, th.num { text-align:right; } td.msg { min-width:280px; } td code { white-space:normal; overflow-wrap:anywhere; } td code.path { display:inline-block; min-width:16ch; }
 tr.click { cursor:pointer; } tr.click:hover td, tr.click:focus-within td { background:var(--raised); }
 .repo-cell a { color:var(--text); font-weight:600; } .repo-cell small { display:block; color:var(--muted); font-weight:400; font-size:12px; overflow-wrap:anywhere; }
 /* Severity pills, the same everywhere: colour and shape (high triangle, medium diamond, low dot, ok dot, blocked square, zero muted). */
@@ -111,13 +111,13 @@ svg.bars { display:block; } .chart svg.bars { width:100%; }
 .crumbs { font-size:13px; color:var(--muted); margin-bottom:8px; }
 .repo-head { display:flex; align-items:baseline; gap:8px 12px; flex-wrap:wrap; margin-bottom:18px; } .repo-head h2 { font-size:22px; margin:0; } .repo-head .muted { overflow-wrap:anywhere; }
 .grid2 { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:18px; }
-@media (max-width: 860px) { .grid2 { grid-template-columns:1fr; } }
+@media (max-width: 860px) { .grid2 { grid-template-columns:minmax(0,1fr); } }
 .sec-repo { border-top:1px solid var(--line); padding:10px 0; } .sec-repo:first-of-type { border-top:none; padding-top:0; } .sec-head { display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; overflow-wrap:anywhere; }
 .sec-pills { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; } ul.sec-findings { list-style:none; margin:4px 0 0; padding:0; } ul.sec-findings li { padding:8px 0; border-top:1px solid var(--line); font-size:13px; overflow-wrap:anywhere; } ul.sec-findings li:first-child { border-top:none; } .sec-title { font-weight:600; } ul.sec-findings code { white-space:normal; overflow-wrap:anywhere; }
 .crow { display:grid; grid-template-columns: 6.5em minmax(10em,2.2fr) minmax(5em,0.8fr) 10.5em 7.5em minmax(11em,1.6fr); gap:8px; padding:8px 6px; border-bottom:1px solid var(--line); align-items:start; font-size:13px; overflow-wrap:anywhere; }
 .chead { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.05em; } summary.crow { cursor:pointer; list-style:none; } summary.crow::-webkit-details-marker { display:none; } details.cdetails[open] > summary.crow { background:var(--raised); } details.cdetails > .tablewrap { padding:4px 0 8px 18px; }
-@media (max-width: 760px) { .crow { grid-template-columns: 1fr 1fr; } .chead { display:none; } }
 .grid2 .crow { grid-template-columns: 6em minmax(8em,2fr) minmax(4em,0.8fr) 9em 7em minmax(9em,1.4fr); }
+@media (max-width: 760px) { .crow, .grid2 .crow { grid-template-columns: minmax(0,1fr) minmax(0,1fr); } .chead { display:none; } }
 a.rlink { color:var(--accent); }
 details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--muted); font-weight:600; }
 .help { font-size:12px; margin-top:4px; overflow-wrap:anywhere; } .help-links { margin-top:2px; } .help-steps { margin:4px 0; padding-left:18px; } .help code { white-space:normal; overflow-wrap:anywhere; }
@@ -316,7 +316,7 @@ function codewatchPanel(data) {
     return moreItem('Codewatch', sg ? el('code', {}, sg.command) : el('code', {}, 'prism-cli enable codewatch'));
   }
   const s = el('section', { class: 'card', id: 'codewatch' }, el('h2', {}, 'Codewatch',
-    el('span', { class: 'sub' }, rows.length + ' repo' + (rows.length === 1 ? '' : 's') + ' with codewatch · click a repo for its own page')));
+    el('span', { class: 'sub' }, rows.length + ' repo' + (rows.length === 1 ? '' : 's') + ' with codewatch results or hooks · ' + data.overview.counts.codewatch + ' with hooks installed · click a repo for its own page')));
   if (banner) s.append(banner);
   if (!rows.length) {
     s.append(el('p', { class: 'empty' }, "Codewatch isn't enabled in any repo yet. Run ", el('code', {}, 'prism-cli enable codewatch'), ' inside a repo.'));
@@ -446,6 +446,16 @@ const riskPills = (counts, levels, none) => {
 /** Started, or finished, and the job's scope line. */
 const jobLine = (r, extra) => (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + extra + ' · job ' + txt(r.job_id).slice(0, 12);
 
+/** A cached result's pills: running (pending), the job's failure, else its counts. */
+const resultPills = (x, levels, none) => x.pending ? [sevPill('medium', 'running'), x.stale ? sevPill('zero', 'stale?') : null].filter(Boolean)
+  : x.status === 'error' ? [sevPill('blocked', txt(x.job_status).toLowerCase())] : riskPills(x.counts, levels, none);
+
+const SCOPE_TEXT = { diff: 'branch diff', full: 'whole repo' };
+/** A newer code review still running while the last completed one is shown (security.ts running); null when there is none. */
+const runningNote = (r, hint) => r && r.running ? el('p', { class: 'note' }, sevPill('medium', 'new review running'), r.running.stale ? sevPill('zero', 'stale?') : null,
+  ' started ' + when(r.running.started_at) + ' · ' + txt(SCOPE_TEXT[r.running.scope] || 'scope unknown') + ' · job ' + txt(r.running.job_id).slice(0, 12)
+  + '. Shown: the last completed review' + (hint ? '; fetch the new one with ' : '.'), hint ? el('code', {}, hint) : null, hint ? '.' : null) : null;
+
 /** A pending job: the page only knows it was started, not whether it has finished since. */
 function pendingBlock(b, label, stale, staleText, hint) {
   b.append(el('div', { class: 'sec-pills' }, sevPill('medium', label), stale ? sevPill('zero', 'stale?') : null),
@@ -471,7 +481,9 @@ function codeReviewBlock(r, sec) {
   b.append(secHead(r));
   b.append(el('div', { class: 'fix' }, jobLine(r, r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched')));
   if (r.pending) return pendingBlock(b, 'review running', r.stale, 'Started over 2 h ago and not fetched yet; it has most likely finished. ', (sec && sec.pending_hint) || 'prism-cli security findings');
-  b.append(el('div', { class: 'sec-pills' }, ...(r.status === 'error' ? [sevPill('blocked', txt(r.job_status).toLowerCase())] : riskPills(r.counts, RISKS, 'no findings'))));
+  b.append(el('div', { class: 'sec-pills' }, ...resultPills(r, RISKS, 'no findings')));
+  const note = runningNote(r, (sec && sec.pending_hint) || 'prism-cli security findings');
+  if (note) b.append(note);
   if (r.reason) b.append(el('p', { class: 'note' }, txt(r.reason)));
   if (r.status === 'error' && !r.findings.length) b.append(el('p', { class: 'empty' }, 'The job did not complete.'));
   if (r.findings.length) b.append(findingsList(r.findings.map((f) => ({ ...f, level: f.risk_level })), (f) => el('div', { class: 'fix' }, el('code', {}, f.file ? f.file + (f.line ? ':' + f.line : '') : 'no location'), f.cwe ? ' · ' + txt(f.cwe) : '')));
@@ -561,7 +573,7 @@ function versionPill(v) {
   if (!box || !v) return;
   const checked = v.checkedAt ? 'checked ' + when(v.checkedAt) : 'not checked yet';
   const a = el('a', { href: '#settings/updates', class: 'verpill' + (v.update ? ' up' : ''),
-    title: v.update ? 'prism-cli ' + v.latest + ' is on npm (' + checked + '). Click for the update command.' : v.latest ? 'latest on npm: ' + v.latest + ' (' + checked + ')' : 'update check: ' + checked },
+    title: v.update ? 'prism-cli ' + v.latest + ' is on npm (' + checked + '). Click for the update command.' : v.latest ? 'latest on npm: ' + v.latest + ' (' + checked + ')' : v.off ? 'update check: off (PRISM_NO_UPDATE_CHECK=1)' : 'update check: ' + checked },
     v.update ? 'Update: ' + v.installed + ' → ' + v.latest : 'prism-cli ' + v.installed);
   box.replaceChildren(a);
 }
@@ -647,7 +659,7 @@ async function render() {
   }
   PREV = CUR;
   const c = data.overview.counts;
-  meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch' + (data.scope.truncated ? ' (scan capped)' : '')
+  meta.textContent = c.repos + ' repos under ' + txt(data.scope.root_display) + ' · ' + c.codewatch + ' with codewatch hooks installed' + (data.scope.truncated ? ' (scan capped)' : '')
     + (SNAPSHOT ? ' · data from ' + when(data.generated_at) + ' · static snapshot, does not refresh'
       : ' · updated ' + when(data.generated_at) + (changed.size ? ' · ' + changed.size + ' value' + (changed.size === 1 ? '' : 's') + ' changed (outlined)' : '') + ' · refreshes every minute while visible');
   const r = repoRoute();
