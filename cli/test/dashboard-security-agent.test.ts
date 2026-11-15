@@ -9,14 +9,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
 import { ACTIONS, ActionRunner, repoId, type ActionId, type ScanRepo } from '../src/dashboard/actions.js';
 import {
   awsTargetFor, commandLine, execAwsCall, identityIn, LOOKUP_TIMEOUT_MS, LookupCache, lookupSpaces, SECURITY_ACTIONS,
-  securityAgentLookup, securityAgentView, targetArgs, WRITE_KIND, writeNotice, type AwsCall, type Lookup, type SecurityAgentDeps,
+  securityAgentGate, securityAgentLookup, securityAgentView, targetArgs, WRITE_KIND, writeNotice, type AwsCall, type Lookup, type SecurityAgentDeps,
 } from '../src/dashboard/security-agent.js';
 import { setupApi } from '../src/dashboard/setup-api.js';
 import type { Gate, GateState } from '../src/dashboard/security-gate.js';
@@ -438,21 +438,39 @@ test('gate step 1 and 2: Settings › AWS link, enable security copy-only with n
   assert.equal(posts(conn).length, 0, 'no lookup before steps 1 and 2 pass');
 
   const cmd = 'prism-cli enable security --profile demo --region us-west-2';
-  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, null, 0, false, gate('setup', { copy: { setup: cmd } })) });
+  let light: Gate = gate('setup', { copy: { setup: cmd } });
+  const gateUrl = '/api/security-agent/gate?repo=' + p.repos[0].id;
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': () => saAnswer(p, null, 0, false, light), [gateUrl]: () => ({ repo: p.repos[0].id, gate: light }) });
   const sec = page.dom.byId.security;
   assert.match(sec.textContent, new RegExp(cmd.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&') + 'Copy'));
   assert.doesNotMatch(sec.textContent, /cd \S+ && prism-cli enable security/, 'once per machine: no cd');
   assert.equal(btn(sec, 'Run'), undefined, 'enable security never runs from the page');
   const gets = () => page.requests.filter((r) => r.url === '/api/security-agent').length;
+  const lights = () => page.requests.filter((r) => r.url === gateUrl).length;
   assert.equal(page.pendingTimers().length, 1, 'one 10 s re-check held');
   assert.equal(page.pendingTimers()[0].ms, 10000);
+  await page.reload();
+  assert.equal(page.pendingTimers().length, 1, 'a redraw keeps the pending re-check instead of pushing it back');
   const before = gets();
   await page.fireTimers();
-  assert.equal(gets(), before + 1, 'the re-check reads GET /api/security-agent (no AWS call)');
-  assert.equal(posts(page).length, 0);
-  btn(sec, 'I ran it, check again')!.listeners.click();
+  assert.deepEqual([lights(), gets()], [1, before], 'the re-check is the light gate endpoint for the picked repo, not the full answer');
+  assert.equal(page.pendingTimers().length, 1, 'and it waits again');
+  (page.dom.document as { visibilityState: string }).visibilityState = 'hidden';
+  await page.fireTimers();
+  assert.equal(lights(), 1, 'a hidden tab fetches nothing');
+  assert.equal(page.pendingTimers().length, 1, 'it only waits');
+  (page.dom.document as { visibilityState: string }).visibilityState = 'visible';
+  btn(page.dom.byId.security, 'I ran it, check again')!.listeners.click();
   await page.settle();
-  assert.equal(gets(), before + 2);
+  assert.deepEqual([lights(), gets()], [2, before]);
+  assert.equal(posts(page).length, 0);
+  // The step passes: then, and only then, the full answer.
+  light = gate('checking');
+  await page.fireTimers();
+  await page.settle();
+  assert.equal(lights(), 3);
+  assert.equal(posts(page).length, 1, 'past step 2: the full answer, then step 3 starts its lookup');
+  assert.equal(gets(), before + 2, 'one full answer for the step, one after the lookup');
 
   const m = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, null, 0, true, gate('mismatch', { copy: { repo: 'cd ~/demo-shop && prism-cli enable security --repo --profile demo --region us-west-2', replace: 'prism-cli enable security --replace --profile demo --region us-west-2' } })) });
   const mt = m.dom.byId.security.textContent;
@@ -656,4 +674,37 @@ test('Settings > AWS points to the Security Agent page; the Dashboard\'s securit
   const dash = await runPage([q]);
   const link = dash.dom.byId.main.querySelectorAll('a').find((a) => a.textContent === 'View findings →');
   assert.equal(link?.getAttribute('href'), '#security/run/' + q.repos[1].id + '/abc123456789-20261115T120000000Z-manual-security-review');
+});
+
+test('GET /api/security-agent/gate: one known repo, local files only: no git process, no repo scan', { skip: process.platform === 'win32' && 'a /bin/sh recorder git' }, async () => {
+  const { chmodSync } = await import('node:fs');
+  const home = tmp('home'), path = join(home, 'src', 'demo');
+  mkdirSync(join(path, '.prism'), { recursive: true });
+  const d = saDeps(home, [{ id: repoId(path), name: 'demo', path, current: true }]);
+  let scans = 0;
+  const repos = d.repos;
+  d.repos = async () => { scans++; return repos(); };
+  // Every git the dashboard spawns resolves through PATH: a recorder git first on it.
+  const bin = tmp('bin'), mark = join(bin, 'git-calls');
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$*" >> '${mark}'\nexit 1\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  const saved = process.env.PATH;
+  process.env.PATH = bin + (saved ? ':' + saved : '');
+  try {
+    assert.equal(securityAgentGate(d, repoId(path)), null, 'before a full answer the id is not known');
+    await securityAgentView(d);
+    assert.ok(existsSync(mark), 'the full answer runs git (rev-parse, ls-files): the recorder works');
+    rmSync(mark);
+    const n = scans;
+    const g = securityAgentGate(d, repoId(path));
+    assert.equal(g?.gate.state, 'profile');
+    assert.equal(existsSync(mark), false, 'the re-check spawned no git process');
+    assert.equal(scans, n, 'and listed no repos');
+    assert.equal(d.aws.calls.length, 0, 'and made no AWS call');
+    assert.equal(securityAgentGate(d, 'ffffffffffffffff'), null);
+    assert.equal(securityAgentGate(d, '../x'), null);
+  } finally { process.env.PATH = saved; }
+  const api = setupApi({ runner: runnerWith([]), cwd: home, repoPaths: async () => [], identity: { env: {}, home, repoRoot: null }, refresh: async () => ({}), securityAgent: d } as never);
+  assert.equal(((await api.getApi['/api/security-agent/gate'](new URL('http://x/api/security-agent/gate?repo=' + repoId(path)))) as { gate: { state: string } }).gate.state, 'profile');
+  assert.equal(((await api.getApi['/api/security-agent/gate'](new URL('http://x/api/security-agent/gate?repo=nope'))) as { status: number }).status, 404);
 });

@@ -833,6 +833,14 @@ try {
         o.lookupsAfterCheckAgain = calls(srv.home).filter((c) => /^securityagent list-agent-spaces/.test(c)).length;
       }
       if (name === 'setup') {
+        // While the card waits, its 10 s re-check is the light gate endpoint, never the full answer (which scans every repo).
+        // A full answer comes only with a page load (/api/data: the heatmap's polls, the minute refresh).
+        const seen = [];
+        const onReq = (q) => { const u = new URL(q.url()); if (/^\/api\/(security-agent|data$)/.test(u.pathname)) seen.push(u.pathname); };
+        desk.page.on('request', onReq);
+        await sleep(11500);
+        desk.page.off('request', onReq);
+        o.pollRequests = seen;
         // Run enable security elsewhere: the card notices the new file within ~10 s, with no click and no AWS call before it.
         o.callsWhileSetup = calls(srv.home).filter((c) => !/^(--version|configure )/.test(c));
         writeFileSync(join(srv.home, '.prism', 'security.json'), machineSetup('111122223333', 'us-west-2'));
@@ -1046,9 +1054,13 @@ function verdicts(R) {
       && /Open Settings › AWS/.test(st('connect').desk?.text || ''), (st('profile').desk?.text || '').slice(0, 200) + ' | ' + (st('envprofile').desk?.text || '').slice(0, 300));
     add('GATE5', 'step 3 runs once by itself: loads, refreshes and a second tab reuse the kept answer; Check again runs it again',
       st('ready').lookupsAfterLoads === 1 && st('ready').lookupsAfterCheckAgain === 2, JSON.stringify([st('ready').lookupsAfterLoads, st('ready').lookupsAfterCheckAgain]));
-    add('GATE6', 'step 2: enable security copy-only, no AWS call while waiting, and the card re-checks by itself once the setup file appears',
+    add('GATE6', 'step 2: enable security copy-only, no AWS call while waiting, the 10 s re-check uses only the light gate endpoint, and the card moves on once the setup file appears',
       /prism-cli enable security --profile prism-demo --region us-west-2/.test(st('setup').desk?.text || '') && !/cd \S+ && prism-cli enable security --profile/.test(st('setup').desk?.text || '')
-      && !(st('setup').callsWhileSetup || []).length && st('setup').recheck?.state && st('setup').recheck.state !== 'setup', JSON.stringify(st('setup').recheck) + ' calls ' + (st('setup').callsWhileSetup || []).join('; '));
+      && !(st('setup').callsWhileSetup || []).length && st('setup').recheck?.state && st('setup').recheck.state !== 'setup'
+      && (st('setup').pollRequests || []).includes('/api/security-agent/gate')
+      // (+1: a load whose /api/data went out just before the window opened)
+      && st('setup').pollRequests.filter((p) => p === '/api/security-agent').length <= st('setup').pollRequests.filter((p) => p === '/api/data').length + 1,
+      JSON.stringify(st('setup').recheck) + ' polls ' + JSON.stringify(st('setup').pollRequests) + ' calls ' + (st('setup').callsWhileSetup || []).join('; '));
     add('GATE7', 'step 3 cards: aws sso login --profile, the denied action, enable security for a missing space, mismatch with --repo and --replace',
       /aws sso login --profile prism-demo/.test(st('sso').desk?.text || '') && /securityagent:ListAgentSpaces/.test(st('denied').desk?.text || '')
       && /prism-cli enable security --profile prism-demo --region us-west-2/.test(st('nospace').desk?.text || '')

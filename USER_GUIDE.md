@@ -1393,8 +1393,10 @@ buttons appear only once all three pass.
    refused and the read permissions the check needs, and a missing agent space shows
    `enable security` to run again.
 
-Steps 1 and 2 read local files only, and their card checks again every 10 seconds while it is open,
-so it moves on by itself once you have run the command. A repo override is shown as information on
+Steps 1 and 2 read local files only, and their card checks again every 10 seconds while it is open
+and the tab is visible, so it moves on by itself once you have run the command. That re-check reads
+only what the two steps need, for the picked repo (the AWS and `aws connect` files, `AWS_PROFILE`
+and the setup records): no git and no scan of your other repos, which happens once the step passes. A repo override is shown as information on
 the ready page, and a repo's code review is created by its first code review run, so neither is a
 step.
 
