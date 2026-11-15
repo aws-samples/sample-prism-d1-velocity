@@ -37,6 +37,8 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
+import { EXIT_PENDING } from '../security/errors.js';
+import { tildeHome } from './payload.js';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
   | 'codeburn-remove' | 'codeburn-status' | 'team-info'
@@ -79,6 +81,8 @@ export interface ActionDef {
   inHome?: true;
   /** With confirm: the checkbox text in the page's dialog. */
   confirmLabel?: string;
+  /** The exit code that means "the job has no verdict yet" (EXIT_PENDING): shown as still running, not as a failure. */
+  pendingExit?: number;
   timeoutMs: number;
 }
 
@@ -128,9 +132,9 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'security-status': { label: 'Security Agent status (read-only)', args: ['enable', 'security', '--status'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN },
   'security-dry-run': { label: 'Security Agent setup plan (dry run)', args: ['enable', 'security', '--dry-run'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 10 * MIN,
     note: 'Runs cdk synth and cdk diff on this machine. The first run installs the CDK app\'s npm packages into prism-cli\'s own infra folder.' },
-  'security-findings': { label: 'Fetch code review findings', args: ['security', 'findings'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
-  'security-threats': { label: 'Fetch threat model threats', args: ['security', 'threats'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the threats to .prism/results/ in the repo.' },
-  'security-pentest-findings': { label: 'Fetch pentest findings', args: ['security', 'findings', '--pentest'], repo: true, awsTarget: true, readOnlyAws: true, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
+  'security-findings': { label: 'Fetch code review findings', args: ['security', 'findings'], repo: true, awsTarget: true, readOnlyAws: true, pendingExit: EXIT_PENDING, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
+  'security-threats': { label: 'Fetch threat model threats', args: ['security', 'threats'], repo: true, awsTarget: true, readOnlyAws: true, pendingExit: EXIT_PENDING, timeoutMs: 3 * MIN, note: 'Saves the threats to .prism/results/ in the repo.' },
+  'security-pentest-findings': { label: 'Fetch pentest findings', args: ['security', 'findings', '--pentest'], repo: true, awsTarget: true, readOnlyAws: true, pendingExit: EXIT_PENDING, timeoutMs: 3 * MIN, note: 'Saves the findings to .prism/results/ in the repo.' },
   'security-code-review': { label: 'Start a code review of this branch', args: ['security', 'code-review', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-code-review-full': { label: 'Start a code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-threat-model': { label: 'Start a threat model', args: ['security', 'threat-model', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
@@ -170,6 +174,8 @@ export function redact(s: string): string {
     .replace(ANSI_RE, '')
     // A 12-digit AWS account id (aws check, aws connect and ARNs print it) leaves as its last 4 digits, as the pages show it.
     .replace(/\b\d{12}\b/g, (m) => '••••' + m.slice(-4))
+    // An assumed-role ARN keeps its role name; the session name (often a user name or email) is dropped.
+    .replace(/(:assumed-role\/[\w+=,.@-]+)\/[^\s"',)]+/g, '$1/…')
     .replace(/\b(?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16}\b/g, '[REDACTED]')
     .replace(/\b((?:aws_)?(?:secret_access_key|session_token|security_token|secret|password|passwd|api[_-]?key|access_token|refresh_token|id_token|client_secret)["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi, '$1[REDACTED]')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 [REDACTED]')
@@ -225,6 +231,8 @@ export interface ActionStatus {
   cwd?: string;
   output?: string;
   exitCode?: number | null;
+  /** When done: ok (exit 0), pending (the action's pendingExit: the job is still running), else failed. */
+  outcome?: 'ok' | 'pending' | 'failed';
   timedOut?: boolean;
   startedAt?: string;
   finishedAt?: string | null;
@@ -369,6 +377,7 @@ export class ActionRunner {
 
   private finish(st: ActionStatus & { buf: string }, code: number) {
     st.exitCode = code;
+    st.outcome = code === 0 ? 'ok' : !st.timedOut && code === ACTIONS[st.action!].pendingExit ? 'pending' : 'failed';
     st.state = 'done';
     st.finishedAt = (this.d.now ?? (() => new Date()))().toISOString();
     this.busy = false;
@@ -392,6 +401,8 @@ export class ActionRunner {
     const c = this.cur;
     if (!c) return { state: 'idle' };
     const { buf, ...rest } = c;
-    return { ...rest, output: redact(buf) };
+    // The home directory leaves as ~ (repo paths, result paths), as on the rest of the page.
+    const home = (t: string) => (this.d.home ? t.split(this.d.home + '/').join('~/') : t);
+    return { ...rest, ...(rest.cwd ? { cwd: tildeHome(rest.cwd, this.d.home) } : {}), output: home(redact(buf)) };
   }
 }

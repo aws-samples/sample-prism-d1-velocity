@@ -18,7 +18,7 @@
 import { realpathSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { makeResult, readResultEntries, writeResult, type Finding, type PrismResult, type ResultEntry, type Severity } from '../codewatch/results.js';
-import { explainAwsError, redact } from './errors.js';
+import { explainAwsError, EXIT_PENDING, redact } from './errors.js';
 import { MARKER_PATH, readLocalMarker } from './marker.js';
 import { repoZipKey, SSM_PREFIX } from './repo.js';
 import {
@@ -688,7 +688,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     say(`Waiting for the job (up to ${timeout} min; Ctrl-C stops waiting, the job keeps running)...`);
     const out = await pollJob(ctx, setup, job, timeout);
     if (out.kind === 'interrupted') { say(''); say(`Stopped waiting. ${fetchLaterHint(job.codeReviewJobId)}`); return 130; }
-    if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (job ${job.codeReviewJobId} is ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return 2; }
+    if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (job ${job.codeReviewJobId} is ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return EXIT_PENDING; }
 
     const wallS = Math.round((deps.now().getTime() - startedAt) / 1000);
     const svc = serviceSeconds(out.job);
@@ -746,10 +746,10 @@ export async function securityFindings(input: FindingsOptions, deps: ReviewDeps)
     if (pending) say(`${pending.result.status === 'pending' ? 'Pending: ' : 'Recorded:'}    recorded by code-review at ${pending.result.started_at} (${scopeText(pending.result)})`);
     say(`Job:         ${job.codeReviewJobId} (${job.status}${job.createdAt ? `, started ${job.createdAt}` : ''})`);
     if (!TERMINAL.has(job.status)) {
-      if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return 2; }
+      if (!input.wait) { say(`The job is still ${job.status}. Re-run with --wait to wait for it, or check back later.`); return EXIT_PENDING; }
       const out = await pollJob(ctx, setup, job, timeout);
       if (out.kind === 'interrupted') { say(''); say(`Stopped waiting. ${fetchLaterHint(job.codeReviewJobId)}`); return 130; }
-      if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (still ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return 2; }
+      if (out.kind === 'timeout') { say(`Timed out after ${timeout} min (still ${out.job.status}). ${fetchLaterHint(job.codeReviewJobId)}`); return EXIT_PENDING; }
       job = out.job;
     }
     const base = { setup, job, region: ctx.opts.region, account: id.account, now: deps.now(), ...(pending ? fromPending(pending.result) : { scope: 'unknown' as const }) };

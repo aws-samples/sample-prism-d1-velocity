@@ -48,6 +48,8 @@ const f = (severity, category, rule, file, line, message) => ({ severity, catego
 
 if (scenario === 'full' || scenario === 'partial') {
   const shop = repo('src/demo-shop', 5);
+  // An origin remote, so the security commands can name the repo (security findings, from the Security Agent page).
+  git(shop.dir, 'remote', 'add', 'origin', 'https://github.com/example/demo-shop.git');
   const pay = repo('src/payments-api', 3);
   review(shop, shop.shas[4], ago(2 * H), [
     f('high', 'security', 'sql-injection', 'src/orders.ts', 42, 'Order id is concatenated into a SQL string; use a parameterized query.'),

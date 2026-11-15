@@ -1242,7 +1242,9 @@ and links straight to it as `#settings/<tab>`:
 Every Run first shows the exact command in a confirm dialog. The page sends only an action id; the
 server maps it to a fixed argument list for this CLI's own binary (or for npm, for the update), runs
 one at a time, without a terminal (so prompts take their no-terminal answer), with a timeout. The
-output appears in an **Action output** drawer at the bottom of the window, with secrets masked, and
+output appears in an **Action output** drawer at the bottom of the window, with secrets masked (and
+account ids as their last 4 digits, an assumed-role ARN as its role name, the home directory as
+`~`), and
 each run is logged to `~/.prism/logs/dashboard-actions.log` (time, action, repo name, exit code; no
 output and no URLs).
 
@@ -1395,7 +1397,10 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   failed, no agent space for prism-cli (only after a lookup), a HIGH or CRITICAL latest result, and a
   pending code review or threat model job. A running pentest is not counted.
 
-Output goes to the same **Action output** drawer as the Settings view, and each run is logged to
+Output goes to the same **Action output** drawer as the Settings view. **Fetch findings**, **Fetch
+threats** and **Fetch pentest findings** on a job that is still running exit 2; the drawer shows an
+amber **still running (exit 2)** pill and "check back later, or run the same command with --wait",
+not a red failure, and the results row keeps reading "running". Each run is logged to
 `~/.prism/logs/dashboard-actions.log`. IAM permissions the page uses, besides what each command
 needs (see [Security Scans from Your Machine](#security-scans-from-your-machine)):
 `sts:GetCallerIdentity`, `securityagent:ListAgentSpaces`, `securityagent:BatchGetAgentSpaces` and
@@ -1801,6 +1806,12 @@ scope and commits. Only when nothing is pending does it ask the API for the late
 scope `unknown`). `--job <id>` fetches that job, and completes its pending result if there is
 one. `--severity <level>` hides lower levels. A job still running exits 2 with a note; `--wait`
 waits for it with the same poller.
+
+**Exit codes** of `security findings`, `security findings --pentest` and `security threats`: `0`
+fetched (or nothing to fetch), `2` the job has no verdict yet (still running, or a `--wait` that
+timed out; nothing failed, check back later), `1` an error (a bad flag, AWS access, a failed job),
+`130` Ctrl-C. Exit 2 is used for nothing else in these commands, so scripts can treat it as "not
+finished yet".
 
 Both work on one repository: run them from its top level, or pass `--path <repo>`. A subdirectory
 is refused (the message names the top level), and so is a directory that is not a repository; they

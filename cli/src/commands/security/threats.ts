@@ -5,7 +5,7 @@ import { DEFAULT_TM_TIMEOUT_MIN, securityThreats, type ThreatsOptions } from '..
 import { REVIEW_TARGET_OPTIONS, reviewDeps, type ReviewHooks } from './code-review.js';
 
 export default {
-  description: 'List the threats of this repo\'s pending or latest (or --job) AWS Security Agent threat model and cache them for the dashboard (read-only)',
+  description: 'List the threats of this repo\'s pending or latest (or --job) AWS Security Agent threat model and cache them for the dashboard (read-only). Exits 2 while the job is still running',
   options: [
     ...REVIEW_TARGET_OPTIONS,
     { flags: '--job <id>', description: 'A specific threat model job (default: the pending one, else the latest for this repo)' },

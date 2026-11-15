@@ -566,6 +566,35 @@ try {
       await c2.ctx.close();
     }
   }
+  // ---------- 10. a fetch while the Security Agent job is still running (FAKE_AWS=in-progress) ----------
+  if (want('pending')) {
+    const out = { steps: [] };
+    R.suites.pending = out;
+    const srv = await live('pending', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    await page.goto(srv.base + '/#security'); await sleep(900);
+    const btn = page.locator('#security button:visible', { hasText: /^Fetch findings$/ }).first();
+    out.found = await btn.count();
+    if (out.found) {
+      await btn.click(); await sleep(300);
+      await page.click('dialog.confirm button:not(:has-text("Cancel"))');
+      const t0 = Date.now();
+      let d;
+      for (;;) {
+        d = await page.evaluate(() => { const s = document.querySelector('#action-drawer .srow-head'); const p = s?.querySelector('.pill'); return { status: s?.innerText.replace(/\s+/g, ' ') || '', pillClass: p?.className || '', pillText: p?.textContent || '', out: document.querySelector('#action-drawer pre')?.innerText || '' }; });
+        if (d.status && !/^(running|starting)/.test(d.pillText)) break;
+        if (Date.now() - t0 > 60000) { d.hung = true; break; }
+        await sleep(400);
+      }
+      out.drawer = d;
+      await sleep(1500);
+      out.row = await page.evaluate(() => { const tr = [...document.querySelectorAll('#security tr')].find((x) => /Code review/.test(x.innerText)); return tr ? tr.innerText.replace(/\s+/g, ' ') : ''; });
+      await page.screenshot({ path: join(SHOTS, 'pending-fetch-findings.png'), fullPage: true });
+    }
+    out.home = srv.home;
+    await ctx.close();
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -647,6 +676,14 @@ function verdicts(R) {
     const live = (S.snapshot.routes || []).flatMap((r) => r.buttons.filter((b) => /^(Run|Re-verify|Disconnect|Upload|Start)/.test(b)).map((b) => r.route + ' ' + b));
     add('snapshot', 'the snapshot is written and draws every route', S.snapshot.exit === 0 && S.snapshot.routes.length >= 8 && !S.snapshot.layout320?.hscroll, JSON.stringify({ exit: S.snapshot.exit, stderr: S.snapshot.stderr }));
     add('snapshot-copy-only', 'nothing runs from the snapshot (Run buttons are Copy)', !live.length, live.join('; '));
+  }
+  if (S.pending) {
+    const d = S.pending.drawer || {};
+    add('pending', 'Fetch findings on a running job: amber "still running" pill with a hint, not a red exit pill', S.pending.found && !d.hung && /s-warn/.test(d.pillClass) && !/s-error/.test(d.pillClass)
+      && /still running \(exit 2\)/.test(d.pillText) && /Check back later, or run the same command with --wait/.test(d.status) && /still IN_PROGRESS/.test(d.out), JSON.stringify(d).slice(0, 400));
+    add('pending-row', 'the code review row still reads "running" after the fetch', /running/i.test(S.pending.row || ''), S.pending.row);
+    const leak = (d.out || '').match(/\b\d{12}\b|demo-session/g) || [];
+    add('pending-mask', 'the drawer shows ••••3333, the role name only, and no home path', !leak.length && /••••3333/.test(d.out || '') && /assumed-role\/PrismDemoReadOnly\/…/.test(d.out || '') && !(d.out || '').includes(S.pending.home), leak.join(', ') || (d.out || '').slice(0, 300));
   }
   if (S.fixes) {
     const F = S.fixes;
