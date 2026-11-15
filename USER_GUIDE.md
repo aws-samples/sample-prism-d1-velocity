@@ -1352,7 +1352,7 @@ suggests covering them all with `prism-cli enable codewatch --global` (see
 
 ### Security Agent Page
 
-![The Security Agent page with demo data: the target repo picker and the results for demo-shop with Fetch buttons and Start code review, full review and threat model buttons on the left; the account and region, three agent spaces with the one prism-cli uses marked, and setup health on the right](assets/images/prism-cli/dashboard-security-agent-dark.png)
+![The Security Agent page with demo data: the Security runs table with Type, Repo and Status filters across the top (two code reviews and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
 
 **Security Agent** in the header (`#security`, or `#security/<repo-id>` for one repo) runs the
 existing [Security Agent commands](#security-scans-from-your-machine) in a repo you pick, as if you
@@ -1380,11 +1380,35 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   never kept. Each space is marked **used by prism-cli** (the one SSM names), **temporary pentest
   space** (made by `security pentest` for one run) or **not used by prism-cli**, with whether it lists
   the scan bucket. The account shows as its last 4 digits.
+- **Security runs.** At the top: every run in every repo, in the same table as the Dashboard's
+  card, with Type, Repo and Status filters. It shows 25 rows, and **Show 25 more** adds the next 25.
 - **Results.** The repo's latest code review, threat model and pentest from its `.prism/results/`
   (the card's subtitle says `uses machine setup` or `repo override`),
   with **Fetch findings** (`security findings`), **Fetch threats** (`security threats`) and **Fetch
   pentest findings** (`security findings --pentest`). These are read-only in AWS and save to
-  `.prism/results/`.
+  `.prism/results/`. A finished run's row reads **Complete. View findings →**; a running one stays
+  amber with no link.
+- **A run's page** (`#security/run/<repo-id>/<run-id>`; the run id is its result file's name). It shows:
+  - a header with the type, repo, branch and commit, scope or target, account (last 4 digits),
+    region, start time, duration, status, and the job id with **Copy**;
+  - the counts by severity, then every finding, most severe first, with a severity filter. Open a
+    finding for its full description. A threat model also shows its recommendation and evidence.
+    Code reviews and pentests show `No remediation provided by this run type.`: Security Agent
+    returns no remediation text for them;
+  - the result file (shown with `~`) and the same run's `prism-cli security findings` (or `security
+    threats`) command with **Copy**.
+
+  ![A code review's page with demo data: the header (demo-shop, main, the whole repo at HEAD, account ••••3333 / us-west-2, 14 min, job job-demo-2 with Copy), 1 critical and 1 low by severity, the findings with the severity filter and the first one open with its full description and "No remediation provided by this run type.", and the result file and CLI command with Copy](assets/images/prism-cli/dashboard-security-run-dark.png)
+
+  There is no direct link to the run in the Security Agent console yet. Open the Security Agent web
+  application and find the job id. An unknown or deleted run id shows **Run not found** with a link
+  back. The page reads one local result file through `GET /api/security-run`, which takes only the
+  repo id and the run id and matches both against the dashboard's own repo list. Finding text, which
+  comes from AWS and from code, is shown as text.
+- **Action output.** When a fetch or start action saves a finished run, the drawer ends with
+  **Complete. View findings →** (or **Failed. View details →**), linking to the run's page. The
+  dashboard takes the run from the result file the command wrote, not from its output. A job that
+  is still running shows the amber `still running` state and no link.
 - **Start new work.** **Start code review** (`security code-review --no-wait`), **Start full review**
   (`--full --no-wait`) and **Start threat model** (`security threat-model --no-wait`) are enabled after
   a lookup has found the agent space and scan bucket. Their dialog says what happens, for example
@@ -1427,7 +1451,7 @@ to scan somewhere else. The repo you started it in is listed first.
 
 ### Dashboard View
 
-![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, and the Get more from PRISM strip](assets/images/prism-cli/dashboard-main-dark.png)
+![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, the Security runs card with four runs (one running with an amber marker, one failed with a red marker, severity chips with greyed zeros) and See all 4 runs, and the AWS account line](assets/images/prism-cli/dashboard-main-dark.png)
 
 **Summary cards.** The latest codewatch review in any repo (severity pills, or skipped / failed),
 spend today and this month, and **Settings warnings**: the checklist items that are missing or warn,
@@ -1459,21 +1483,24 @@ first, with the spend cards showing "loading", then fills usage in. A cache olde
 shown at once and refreshed in the background. A failed or missing codeburn is shown as such and
 never cached.
 
-**Security findings.** The latest AWS Security Agent code review per repo, from the results
-`prism-cli security code-review` and `security findings` cache in `.prism/results/`: the job time, the
-scope (branch diff, whole repo, or fetched later), counts by risk level, and the findings with their
-file, line and CWE. A job that was started but not fetched yet shows `review running`, the time it
-started and the `prism-cli security findings` command. After 2 hours it is also marked `stale?`:
-the page cannot tell whether the job has finished since. With none cached, it points to `prism-cli
-security code-review`. The page reads only those files; it makes no AWS calls. Each repo links to
-the [Security Agent page](#security-agent-page) for that repo, where you can fetch or start jobs.
+**Security runs.** The latest 5 Security Agent runs (code reviews, threat models and pentests) in
+every repo, newest first, read from each repo's `.prism/results/`; loading them makes no AWS call.
+Each row shows:
 
-Below the code reviews, under **Threat models**, the panel shows the latest threat model per repo
-from the results `prism-cli security threat-model` and `security threats` cache. Each entry shows
-the commit, the number of scope docs (or "source only"), severity counts, the first paragraph of
-the system overview and the top 5 threats with their STRIDE categories. A job that was started but
-not fetched yet shows `threat model running` and the `prism-cli security threats` command. After
-2 hours it is also marked `stale?`.
+| Column | What it shows |
+|---|---|
+| Type | Code review, Threat model or Pentest, with an icon |
+| Repo | The repo, its branch and commit |
+| Status | **complete**, **running** (amber), **failed** (red) or **no verdict yet**. A running or failed row also has an amber or red bar on its left edge. A run still pending after 2 hours (6 for a pentest) reads **no verdict yet**: it has most likely finished, but nobody fetched it |
+| Started | When it started, and how long it took (or how long it has been running) |
+| Summary | Four severity chips (critical, high, medium, low; a zero is greyed out) and the top finding's title, or `No findings`; a failed run shows its reason |
+| Link | **View findings →** to the run's page; a running run has no link yet |
+
+**See all N runs →** opens the full table on the [Security Agent page](#security-agent-page). On a
+phone the rows stack (type and status on the first line, then repo, time, chips and the link):
+[390 px screenshot](assets/images/prism-cli/dashboard-security-runs-390-dark.png). With
+no run saved yet, the Get more strip points to `prism-cli enable security` and `prism-cli security
+code-review` instead.
 
 **AWS account.** One line per AWS account with a cached `prism-cli aws check` result (from every
 repo's `.prism/results/` and `~/.prism/results/`): the account's last 4 digits, region, when it ran,
@@ -1499,8 +1526,9 @@ pre-push reviews by severity; the newest 10 reviews with their report links and 
 commits with their secret scan and review status (a row with findings expands to list them; each
 finding is placed on the commit that introduced the line with `git blame` at the reviewed tip, or
 marked "in push of <tip>" when blame cannot place it); the repo's codewatch setup and fix; its
-Security Agent setup and latest cached code review and threat model; and the open findings.
-Sections with nothing to show are left out.
+Security Agent setup and latest cached code review and threat model; the open findings; and, at
+the bottom, the **Security runs** table filtered to this repo (Type and Status filters, the first 10
+rows, **Show 25 more**). Sections with nothing to show are left out.
 
 ### Scan Report Pages
 

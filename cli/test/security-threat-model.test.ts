@@ -627,7 +627,6 @@ test('dashboard: threat-model rows (pending, done) beside code reviews; codewatc
 
     assert.equal(collectCodewatch(repo).totalRuns, 0);
     const html = renderPage('NONCE');
-    assert.match(html, /Threat models/);
-    assert.match(html, /threat model running/);
+    assert.match(html, /'threat-model': 'Threat model'/);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

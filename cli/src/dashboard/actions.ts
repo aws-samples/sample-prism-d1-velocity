@@ -40,6 +40,7 @@ import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
 import { EXIT_PENDING } from '../security/errors.js';
 import { maskHome, redact } from '../utils/redact.js';
 import { tildeHome } from './payload.js';
+import { runWrittenSince, type RunStatus } from './security-runs.js';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
   | 'codeburn-remove' | 'codeburn-status' | 'team-info'
@@ -228,7 +229,16 @@ export interface ActionStatus {
   timedOut?: boolean;
   startedAt?: string;
   finishedAt?: string | null;
+  /**
+   * A Security Agent action that saved a run: the repo id, the run id (its
+   * result file) and the run's status, for the drawer's "View findings" link.
+   * Read from the file the command wrote, never from its output.
+   */
+  result?: { repo: string; run: string; status: RunStatus } | null;
 }
+
+/** Actions that write a Security Agent result file in their repo. */
+const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model']);
 
 const MAX_OUTPUT = 256 * 1024;
 const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region']);
@@ -362,7 +372,7 @@ export class ActionRunner {
       clearTimeout(timer);
       if (killer) clearTimeout(killer);
       if (lingering) clearTimeout(lingering);
-      this.finish(st, st.timedOut ? 124 : code ?? 1);
+      this.finish(st, st.timedOut ? 124 : code ?? 1, repo && RESULT_ACTIONS.has(id) ? repo : null);
     };
     child.on('error', (e) => { add(`could not start: ${e.message}\n`); done(1); });
     child.on('close', (code) => done(code));
@@ -379,8 +389,14 @@ export class ActionRunner {
     return { status: 202, json: this.status() };
   }
 
-  private finish(st: ActionStatus & { buf: string }, code: number) {
+  private finish(st: ActionStatus & { buf: string }, code: number, wrote: ScanRepo | null = null) {
     st.exitCode = code;
+    if (wrote) {
+      try {
+        const r = runWrittenSince(wrote.path, Date.parse(st.startedAt!), (this.d.now ?? (() => new Date()))());
+        st.result = r ? { repo: wrote.id, ...r } : null;
+      } catch { st.result = null; }
+    }
     st.outcome = code === 0 ? 'ok' : !st.timedOut && code === ACTIONS[st.action!].pendingExit ? 'pending' : 'failed';
     st.state = 'done';
     st.finishedAt = (this.d.now ?? (() => new Date()))().toISOString();

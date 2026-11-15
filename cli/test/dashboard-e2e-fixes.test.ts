@@ -90,10 +90,8 @@ test('dashboard and repo page (B4): the last completed review keeps its findings
   const running = { job_id: 'job-new-123456789', scope: 'full', started_at: '2026-11-14T11:30:00Z', stale: false };
   const q = withSecurity(p, [secRow(p.repos[0].path, { running })]);
   const page = await runPage([q]);
-  const t = page.text();
-  assert.match(t, /1 critical/);
-  assert.match(t, /Hard-coded key/);
-  assert.match(t, /new review running started .* · whole repo · job job-new-1234\. Shown: the last completed review; fetch the new one with prism-cli security findings\./);
+  // 1.18.0: the Dashboard lists runs (security-runs.ts); a run's findings are a drill-down, not a list on the Dashboard.
+  assert.doesNotMatch(page.text(), /Hard-coded key/);
   page.go('#repo/' + p.repos[0].id);
   assert.match(page.dom.byId.repo.textContent, /Code review1 critical.*new review running/);
 });

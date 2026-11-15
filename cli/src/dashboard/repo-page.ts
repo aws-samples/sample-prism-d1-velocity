@@ -152,6 +152,6 @@ function renderRepo(id) {
   const right = [repoSetup(repo), repoSecurity(repo), repoFindings(cw)].filter(Boolean);
   root.replaceChildren(el('div', { class: 'crumbs' }, el('a', { href: '#' }, 'Dashboard'), ' / ', labelOf(repo)), head,
     cw.hasResults ? repoCards(repo, row) : el('p', { class: 'empty' }, 'No codewatch results yet. Run ', el('code', {}, (repo.setup && repo.setup.fix) || 'prism-cli enable codewatch'), ', then commit and push.'),
-    el('div', { class: 'grid2' }, el('div', {}, ...left), el('div', {}, ...right)));
+    el('div', { class: 'grid2' }, el('div', {}, ...left), el('div', {}, ...right)), repoRunsCard(repo.id));
 }
 `;

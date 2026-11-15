@@ -436,6 +436,7 @@ export function toResult(o: ResultBase & {
   const findings: Finding[] = sortFindings(o.findings).map((f) => ({
     severity: toSeverity(f.riskLevel), category: 'security', rule: f.cwe || f.riskType || f.title,
     file: f.file, line: f.line, message: f.description ? `${f.title}: ${shortText(f.description)}` : f.title,
+    ...(f.description ? { description: redact(f.description) } : {}),
     risk_level: f.riskLevel, title: f.title, cwe: f.cwe, finding_id: f.findingId, raw_file: f.rawFile,
   }));
   return makeResult({

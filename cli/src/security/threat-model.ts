@@ -447,12 +447,13 @@ export function pendingThreatModel(o: TmBase & { job: TmJob; startedAt: string }
   });
 }
 
-export function toThreatModelResult(o: TmBase & { job: TmJob; threats: ThreatRow[]; now: Date }): PrismResult {
+export function toThreatModelResult(o: TmBase & { job: TmJob; threats: ThreatRow[]; now: Date; wallS?: number | null }): PrismResult {
   const ok = o.job.status === 'COMPLETED';
   const counts = countBySeverity(o.threats);
   const findings: Finding[] = sortThreats(o.threats).map((t) => ({
     severity: toSeverity(t.severity), category: 'security', rule: t.stride.join(',') || 'threat',
     file: t.evidence[0] || '', line: null, message: t.statement ? `${t.title}: ${shortText(t.statement)}` : t.title,
+    ...(t.statement ? { description: redact(t.statement) } : {}),
     risk_level: t.severity, title: t.title, threat_id: t.threatId, stride: t.stride,
     recommendation: redact(t.recommendation), evidence: t.evidence,
   }));
@@ -470,6 +471,7 @@ export function toThreatModelResult(o: TmBase & { job: TmJob; threats: ThreatRow
       job_status: o.job.status, counts, stride_counts: countByStride(o.threats), scope_docs: o.scopeDocs,
       system_overview: o.job.systemOverview ? redact(o.job.systemOverview) : null,
       service_created_at: o.job.createdAt ?? null, service_updated_at: o.job.updatedAt ?? null,
+      service_duration_s: serviceSeconds(o.job), wall_s: o.wallS ?? null,
     },
   });
 }
@@ -618,7 +620,7 @@ export async function securityThreatModel(input: ThreatModelOptions, deps: Revie
     const wallS = Math.round((deps.now().getTime() - startedAt) / 1000);
     const svc = serviceSeconds(out.job);
     say(`Finished in ${wallS}s here${svc !== null ? `; the service reports ${svc}s from job creation to its last update` : ''}.`);
-    const base = { ...kept, job: out.job, now: deps.now() };
+    const base = { ...kept, job: out.job, now: deps.now(), wallS };
     if (out.job.status !== 'COMPLETED') return saveFailed(ctx, !!input.json, toThreatModelResult({ ...base, threats: [] }), out.job, repo, space, pendingId);
     const threats = fetchThreats(ctx, space, out.job.threatModelJobId, repo.root);
     finishThreats(ctx, !!input.json, toThreatModelResult({ ...base, threats }), threats, repo, out.job, undefined, pendingId, tinyDocs);

@@ -463,7 +463,7 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['agentHooks', 'aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'suggestions', 'summary', 'timing', 'usage', 'version']);
+  assert.deepEqual(Object.keys(p).sort(), ['agentHooks', 'aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'security_runs', 'suggestions', 'summary', 'timing', 'usage', 'version']);
   assert.deepEqual(Object.keys(p.timing).sort(), ['cacheHit', 'scan', 'setup', 'total', 'usage']);
   assert.equal(p.timing.cacheHit, false);
   assert.deepEqual(p.aws.accounts, [], 'no aws check results in the fixtures');
@@ -618,18 +618,12 @@ test('page uses textContent for data and loads nothing from the network', () => 
   assert.match(html, /title: p\.path/);
 });
 
-test('the Security findings panel: compact blocks and wrapping rows, no wide table; hidden when empty', () => {
+test('the Security runs card replaces the long findings list; the Get more item stays for no runs', () => {
   const html = renderPage('NONCE');
-  const panel = html.slice(html.indexOf('function codeReviewBlock('), html.indexOf('const THREAT_LEVELS'));
-  assert.ok(panel.length > 0);
-  assert.match(panel, /el\('section', \{ class: 'card', id: 'security-findings' \}, el\('h2', \{\}, 'Security findings'/);
-  assert.doesNotMatch(panel, /table\(/, 'no table');
-  assert.match(html, /riskPills\(r\.counts, RISKS, 'no findings'\)/, 'all-zero state');
-  assert.match(html, /levels\.filter\(\(k\) => \(\(counts \|\| \{\}\)\[k\] \|\| 0\) > 0\)/, 'zero counts hidden');
-  assert.match(panel, /showing the first/, 'cap note kept');
-  assert.match(panel, /return moreItem\('Security Agent'/, 'empty: an item in the Get more strip, not a card');
-  assert.match(html, /ul\.sec-findings li \{[^}]*overflow-wrap:anywhere/, 'rows wrap');
-  assert.match(html, /\[summaryCards\(data\.summary\), codewatchPanel\(data\), spendPanel\(data\.usage\), securityPanel\(data\.security\), awsPanel\(data\.aws\)\]/);
+  assert.match(html, /\(data\.security_runs \|\| \[\]\)\.length \? securityRunsCard\(\) : securityPanel\(data\.security\)/);
+  assert.match(html, /return moreItem\('Security Agent'/, 'empty: an item in the Get more strip, not a card');
+  assert.ok(!html.includes("id: 'security-findings'"), 'the old Security findings card is gone');
+  assert.match(html, /@media \(max-width: 700px\) \{\n  table\.runs thead \{ display:none; \}/, 'rows stack on a phone');
 });
 
 test('parsePort validates --port', () => {

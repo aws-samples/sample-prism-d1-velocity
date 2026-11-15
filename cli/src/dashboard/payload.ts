@@ -8,7 +8,7 @@ import { discoverRepos, repoLabels, type DiscoverOptions } from './repos.js';
 import { codewatchSetup, GLOBAL_FORCE_CMD, type GitRunner, GLOBAL_INSTALL_CMD, machineChecks, SECURITY_RESULT_KINDS, securitySetup, type CheckItem, type CodewatchSetup, type MachineDeps, type SecuritySetup } from './setup.js';
 import { buildSummary, type DashboardSummary } from './summary.js';
 import { effectiveMode, type CheckHelp, type SyncMode, type SyncModeSource } from '../utils/sync-mode.js';
-import { readResults } from '../codewatch/results.js';
+import { readResultEntries } from '../codewatch/results.js';
 import { globalStatus, type GlobalStatus } from '../codewatch/globalHooks.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { homedir } from 'node:os';
@@ -22,6 +22,7 @@ export function tildeHome(p: string, home: string): string {
 import { collectUsage, spendByRepo, type CodeburnExport, type RepoSpend, type UsagePanel } from './usage.js';
 import { versionCachePath } from './usage-cache.js';
 import { collectSecurity, type SecurityPanel } from './security.js';
+import { collectSecurityRuns, type SecurityRunRow } from './security-runs.js';
 import { collectAws, type AwsPanel } from './aws.js';
 import { repoId } from './actions.js';
 import type { VersionInfo } from './update-check.js';
@@ -162,6 +163,8 @@ export interface DashboardPayload {
   usage: UsagePanel;
   /** Cached Security Agent code review results (security-review), per repo. */
   security: SecurityPanel;
+  /** Every code review, threat model and pentest in every repo, newest first (security-runs.ts). */
+  security_runs: SecurityRunRow[];
   /** The latest cached aws check result per AWS account (repos and ~). */
   aws: AwsPanel;
   /** The one-glance summary shown at the top of the page (buildSummary). */
@@ -247,7 +250,9 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   const machineSetup = machineChecks({ pathEnv: opts.pathEnv, global: g, versionCache: versionCachePath(opts.machineDeps?.home || opts.home || homedir()), ...opts.machineDeps });
   const labels = repoLabels(d.repos.map((r) => r.path));
   // Read each repo's results once; the Security panel below reuses them.
-  const results = new Map(d.repos.map((r) => [r.path, readResults(r.path)]));
+  // One read per repo: the entries keep their ids, which the security runs use as run ids.
+  const entries = new Map(d.repos.map((r) => [r.path, readResultEntries(r.path)]));
+  const results = new Map([...entries].map(([p, es]) => [p, es.map((e) => e.result)]));
   const codewatchByRepo = new Map(d.repos.map((r) => [r.path, collectCodewatch(r.path, opts.trendRuns, gitleaksAvailable)]));
   const setups = await setupsP;
   const setupMs = Date.now() - tScan;
@@ -307,7 +312,8 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     },
     suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),
     usage,
-    security: collectSecurity(repos, (p) => results.get(p) ?? readResults(p)),
+    security: collectSecurity(repos, (p) => results.get(p) ?? readResultEntries(p).map((e) => e.result)),
+    security_runs: collectSecurityRuns(repos.map((r) => ({ id: r.id, name: r.label, path: r.path })), (p) => entries.get(p) ?? readResultEntries(p)),
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
     summary: buildSummary(repos, usage, machineSetup),
     version: await versionP,

@@ -38,6 +38,11 @@ export interface Finding {
   title?: string;
   cwe?: string | null;
   finding_id?: string;
+  /**
+   * security-review / security-pentest: the finding's full description; security-threat-model: the
+   * threat's full statement. Redacted. `message` keeps the 200-character form; absent before 1.18.0.
+   */
+  description?: string;
   /** security-review only: the path exactly as the service reported it (file is repo-relative). */
   raw_file?: string;
   /** security-threat-model only: the threat's id, STRIDE categories, mitigation and every evidence path (repo-relative). */
@@ -123,6 +128,9 @@ export interface ThreatModelInfo {
   system_overview: string | null;
   service_created_at?: string | null;
   service_updated_at?: string | null;
+  /** updatedAt - createdAt of the finished job, and our wall time waiting for it (threat-model only). Absent before 1.18.0. */
+  service_duration_s?: number | null;
+  wall_s?: number | null;
 }
 
 /** security-review only: the job behind the result. */

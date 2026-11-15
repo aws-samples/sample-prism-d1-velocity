@@ -31,7 +31,12 @@ export const SECURITY_SCRIPT = `
 let SA = null, SA_PICK = null, SA_LOADED = false;
 const SA_RE = new RegExp('^#security(?:/([a-f0-9]{16}))?$');
 /** #security or #security/<16 hex>; null for any other route. */
-function securityRoute() { const m = SA_RE.exec(location.hash); return m ? { id: m[1] || null } : null; }
+function securityRoute() {
+  const m = SA_RE.exec(location.hash);
+  if (m) return { id: m[1] || null };
+  const run = runRoute();
+  return run ? { id: run.repo, run } : null;
+}
 
 /** The picked repo: the route's id, else the last pick, else the repo the dashboard started in, else the first. */
 function saRepo() {
@@ -151,21 +156,22 @@ function saSetupLine(s) {
 const saSetupTag = (s) => (!s ? 'not set up on this machine' : s.source === 'repo' ? 'repo override' : 'uses machine setup');
 
 /** One result line: its pills and when, or "none saved". */
-function saResultCell(x, levels) {
+function saResultCell(x, levels, link) {
   if (!x) return el('span', { class: 'fix' }, 'none saved');
   return el('div', {}, el('span', { class: 'pills' }, ...resultPills(x, levels, 'clean')), el('div', { class: 'fix' }, (x.pending ? 'started ' + when(x.started_at) : when(x.finished_at)) + ' · job ' + txt(x.job_id).slice(0, 12)),
-    runningNote(x, null));
+    runningNote(x, null), x.pending ? null : link);
 }
 
 function saResultsCard(repo) {
   const r = saResults(repo);
-  const row = (label, x, levels, id, btn) => el('tr', {}, el('td', {}, el('b', {}, label)), el('td', {}, saResultCell(x, levels)), el('td', {}, saRun(id, repo, btn)));
+  // A finished run links to its findings; a running one stays amber with no link.
+  const row = (label, x, levels, id, btn, type) => el('tr', {}, el('td', {}, el('b', {}, label)), el('td', {}, saResultCell(x, levels, runCellLink(repo.id, type))), el('td', {}, saRun(id, repo, btn)));
   return saCard('Results for ' + txt(repo.name), saSetupTag(repo.setup) + ' · from this repo\\'s .prism/results; no AWS call to show them',
     table(['Result', 'Latest', 'Refresh (read-only)'], [
-      row('Code review', r.review, RISKS, 'security-findings', 'Fetch findings'),
-      row('Threat model', r.threat, THREAT_LEVELS, 'security-threats', 'Fetch threats'),
-      row('Pentest', r.pentest, RISKS, 'security-pentest-findings', 'Fetch pentest findings')]),
-    el('p', { class: 'note' }, 'All findings are on the ', el('a', { href: '#' }, 'Dashboard'), ' under Security findings.'));
+      row('Code review', r.review, RISKS, 'security-findings', 'Fetch findings', 'code-review'),
+      row('Threat model', r.threat, THREAT_LEVELS, 'security-threats', 'Fetch threats', 'threat-model'),
+      row('Pentest', r.pentest, RISKS, 'security-pentest-findings', 'Fetch pentest findings', 'pentest')]),
+    el('p', { class: 'note' }, 'Every run, with its findings, is in Security runs above.'));
 }
 
 function saStartCard(repo) {
@@ -263,6 +269,9 @@ function drawSecurity() {
   saBadge();
   const root = document.getElementById('security');
   if (!root) return;
+  const route = securityRoute();
+  // A run's drill-down (#security/run/<repo>/<run>) reads its own API and needs nothing else on this page.
+  if (route && route.run) { drawRunDetail(root, route.run); return; }
   if (!SA_LOADED) { root.replaceChildren(el('p', { class: 'loading' }, 'loading...')); return; }
   const openState = new Map([...root.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
   root.replaceChildren(el('h2', { class: 'sr-only' }, 'Security Agent'));
@@ -278,7 +287,7 @@ function drawSecurity() {
   else if (!SA.machine && !repo.setup) { left.push(saSetupCard(repo, 'Security Agent is not set up on this machine yet. Run enable security once, from any directory; every repo then uses it.', true), saResultsCard(repo), saStartCard(repo)); right.push(saHealthCard(repo)); }
   else { left.push(saResultsCard(repo), saStartCard(repo), saSetupCard(repo, 'Set up already? Re-running enable security is safe: it shows what would change and asks first.', false)); right.push(saHealthCard(repo)); }
   right.push(saWhichCard());
-  root.append(el('div', { class: 'sa-grid' }, el('div', { class: 'sa-col' }, ...left), el('div', { class: 'sa-col' }, ...right)));
+  root.append(allRunsCard(), el('div', { class: 'sa-grid' }, el('div', { class: 'sa-col' }, ...left), el('div', { class: 'sa-col' }, ...right)));
   for (const d of root.querySelectorAll('details[data-key]')) { const k = d.getAttribute('data-key'); if (openState.has(k)) d.open = openState.get(k); }
 }
 `;
