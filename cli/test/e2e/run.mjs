@@ -538,7 +538,7 @@ try {
     const shop = data.repos.find((r) => r.current);
     const mainText = () => page.evaluate(() => [...document.querySelectorAll('main')].filter((m) => !m.hidden).map((m) => m.innerText).join('\n'));
     await page.goto(srv.base + '/#'); await sleep(900);
-    out.dashboardSecurity = await page.evaluate(() => document.getElementById('security-findings')?.innerText || '');
+    out.dashboardSecurity = await page.evaluate(() => document.getElementById('security-runs')?.innerText || '');
     out.meta = await page.textContent('#meta');
     out.codewatchCard = await page.evaluate(() => document.querySelector('#codewatch h2')?.textContent || '');
     await page.goto(srv.base + '/#repo/' + shop.id); await sleep(900);
@@ -594,6 +594,7 @@ try {
         await sleep(400);
       }
       out.drawer = d;
+      out.drawerLink = await page.evaluate(() => !!document.querySelector('#action-drawer [data-run-link]'));
       await sleep(1500);
       out.row = await page.evaluate(() => { const tr = [...document.querySelectorAll('#security tr')].find((x) => /Code review/.test(x.innerText)); return tr ? tr.innerText.replace(/\s+/g, ' ') : ''; });
       await page.screenshot({ path: join(SHOTS, 'pending-fetch-findings.png'), fullPage: true });
@@ -638,6 +639,83 @@ try {
       return { status: r.status, body: (await r.text()).slice(0, 200) };
     }, csrf);
     await ctx.close();
+  }
+  // ---------- 13. security runs (1.18): Dashboard list, full table, drill-down, completion link, phone width ----------
+  if (want('runs')) {
+    const out = {};
+    R.suites.runs = out;
+    const srv = await live('runs', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
+    out.total = (data.security_runs || []).length;
+    await page.goto(srv.base + '/#'); await sleep(900);
+    out.dash = await page.evaluate(() => {
+      const c = document.getElementById('security-runs');
+      const all = c && c.querySelector('[data-all-runs]');
+      return { rows: c ? c.querySelectorAll('tr[data-run]').length : -1, all: all ? all.textContent : null, href: all ? all.getAttribute('href') : null, oldList: !!document.getElementById('security-findings'),
+        chips: c ? c.querySelectorAll('.runchips .pill').length : 0 };
+    });
+    await page.locator('#security-runs').screenshot({ path: join(SHOTS, 'runs-dashboard-card.png') }).catch(() => {});
+    // The full table on the Security Agent page, and its filters.
+    await page.goto(srv.base + '/#security'); await sleep(1200);
+    const types = () => page.$$eval('#security-runs-all tr[data-run] .runtype', (x) => x.map((e) => e.textContent));
+    out.allRows = (await types()).length;
+    await page.selectOption('#security-runs-all select[data-filter="type"]', 'threat-model'); await sleep(200);
+    out.filteredTypes = await types();
+    await page.selectOption('#security-runs-all select[data-filter="type"]', ''); await sleep(200);
+    await page.selectOption('#security-runs-all select[data-filter="status"]', 'running'); await sleep(200);
+    out.filteredStatus = await page.$$eval('#security-runs-all tr[data-run] .st', (x) => x.map((e) => e.textContent));
+    await page.selectOption('#security-runs-all select[data-filter="status"]', ''); await sleep(200);
+    // Fetch the pending review: it completes (FAKE_AWS=complete), and the drawer links to its findings.
+    const fetchBtn = page.locator('#security button:visible', { hasText: /^Fetch findings$/ }).first();
+    out.fetchFound = await fetchBtn.count();
+    if (out.fetchFound) {
+      await fetchBtn.click(); await sleep(300);
+      await page.click('dialog.confirm button:not(:has-text("Cancel"))');
+      await page.waitForSelector('#action-drawer [data-run-link] a', { timeout: 60000 }).catch(() => {});
+      out.drawer = await page.evaluate(() => { const b = document.querySelector('#action-drawer [data-run-link]'); return b ? { text: b.textContent, href: b.querySelector('a').getAttribute('href') } : null; });
+      await page.locator('#action-drawer').screenshot({ path: join(SHOTS, 'runs-drawer-complete.png') }).catch(() => {});
+      if (out.drawer) {
+        out.drawerNull = await page.evaluate(() => /\bnull\b/.test(document.querySelector('#action-drawer .drawer-head').innerText));
+        await page.click('#action-drawer [data-run-link] a');
+        await page.waitForSelector('[data-run-findings]', { timeout: 15000 }).catch(() => {});
+        await page.click('#action-drawer .drawer-head button:has-text("Close")').catch(() => {});
+        await sleep(300);
+        out.detail = await page.evaluate(() => {
+          const sec = document.getElementById('security');
+          return { hash: location.hash, findings: sec.querySelectorAll('details.rf').length, text: sec.innerText.slice(0, 3000), imgs: sec.querySelectorAll('img').length };
+        });
+        await page.screenshot({ path: join(SHOTS, 'runs-drilldown-1280.png'), fullPage: true });
+        out.resultsRow = null;
+        await page.goto(srv.base + '/#security'); await sleep(1200);
+        out.resultsRow = await page.evaluate(() => { const tr = [...document.querySelectorAll('#security tr')].find((x) => /^Code review/.test(x.innerText) && !x.hasAttribute('data-run')); return tr ? tr.innerText.replace(/\s+/g, ' ') : ''; });
+        await page.screenshot({ path: join(SHOTS, 'runs-security-agent-1280.png'), fullPage: true });
+      }
+    }
+    // Light theme: the runs card and the drill-down keep 4.5:1 text contrast (3:1 for large text).
+    await setTheme(page, 'light');
+    out.contrast = {};
+    for (const [k, route] of [['dashboard', '#'], ['detail', out.drawer ? out.drawer.href : '#security']]) {
+      await page.goto(srv.base + '/' + route); await sleep(1200);
+      out.contrast[k] = (await layoutCheck(page)).lowContrast;
+    }
+    await page.screenshot({ path: join(SHOTS, 'runs-drilldown-1280-light.png'), fullPage: true });
+    await setTheme(page, 'dark');
+    // An unknown run id.
+    await page.goto(srv.base + '/#security/run/0000000000000000/nope'); await sleep(900);
+    out.missing = await page.evaluate(() => document.getElementById('security').innerText.slice(0, 400));
+    await ctx.close();
+    // Phone width: the Dashboard card and a drill-down stack, no sideways scroll.
+    const phone = await openCtx(srv, { width: 390, height: 844 });
+    out.phone = {};
+    for (const [k, route] of [['dashboard', '#'], ['detail', out.drawer ? out.drawer.href : '#security']]) {
+      await phone.page.goto(srv.base + '/' + route); await sleep(1200);
+      out.phone[k] = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      await phone.page.screenshot({ path: join(SHOTS, 'runs-' + k + '-390.png'), fullPage: true });
+    }
+    out.log.push(...phone.log);
+    await phone.ctx.close();
   }
   // ---------- 12. enable security once per machine (1.17): the page and the CLI read the same setup ----------
   if (want('machine')) {
@@ -773,6 +851,28 @@ function verdicts(R) {
     const leak = [...accountLeaks(d.out || ''), ...((d.out || '').match(/demo-session/g) || [])];
     add('pending-mask', 'the drawer shows ••••3333, the role name only, and no home path', !leak.length && /••••3333/.test(d.out || '') && /assumed-role\/PrismDemoReadOnly\/…/.test(d.out || '') && !(d.out || '').includes(S.pending.home), leak.join(', ') || (d.out || '').slice(0, 300));
   }
+  if (S.runs) {
+    const U = S.runs;
+    add('R1', 'Dashboard: the latest 5 runs with four severity chips each, and See all N runs → to the Security Agent page; no long findings list',
+      U.dash.rows === Math.min(5, U.total) && U.dash.all === 'See all ' + U.total + ' runs →' && U.dash.href === '#security' && !U.dash.oldList && U.dash.chips > 0, JSON.stringify(U.dash) + ' total ' + U.total);
+    add('R2', 'Security Agent page: the full table, filtered by type and by status',
+      U.allRows === U.total && U.filteredTypes.length > 0 && U.filteredTypes.every((t) => t === 'Threat model') && U.filteredStatus.every((t) => t === 'running'),
+      JSON.stringify({ all: U.allRows, total: U.total, types: U.filteredTypes, status: U.filteredStatus }));
+    add('R3', 'a run that completes: the drawer says Complete. View findings → and links to the drill-down',
+      !!U.drawer && /^Complete\./.test(U.drawer.text) && /^#security\/run\/[a-f0-9]{16}\/[A-Za-z0-9_-]+$/.test(U.drawer.href) && U.drawerNull === false, JSON.stringify(U.drawer) + ' null shown: ' + U.drawerNull);
+    const t = (U.detail && U.detail.text) || '';
+    add('R4', 'drill-down: the fetched findings load in full, markup in them stays text, and the CLI command and result file (~) are shown',
+      !!U.detail && U.detail.findings === 2 && /SQL injection in order lookup/.test(t) && t.includes('<img src=x onerror=alert(1)>') && U.detail.imgs === 0
+        && /rather than the first two hundred characters only/.test(t) && /No remediation provided by this run type/.test(t) && /prism-cli security findings --job job-demo-2 --path ~\/src\/demo-shop/.test(t) && /Result file: ~\//.test(t),
+      JSON.stringify(U.detail || {}).slice(0, 400));
+    add('R5', 'the Security Agent results row links the completed review to its findings', /Complete\. ?View findings →/.test(U.resultsRow || ''), U.resultsRow);
+    add('R6', 'an unknown run id says Run not found with a way back', /Run not found/.test(U.missing) && /Back to Security runs/.test(U.missing), U.missing);
+    add('R7', 'at 390 px the Dashboard and the drill-down do not scroll sideways', U.phone.dashboard <= 1 && U.phone.detail <= 1, JSON.stringify(U.phone));
+    add('R8', 'light theme: no text below 4.5:1 on the Dashboard or the drill-down', U.contrast && !U.contrast.dashboard.length && !U.contrast.detail.length, JSON.stringify(U.contrast).slice(0, 400));
+  }
+  if (S.pending) {
+    add('pending-nolink', 'a run still running has no View findings link in the drawer', S.pending.drawerLink === false, String(S.pending.drawerLink));
+  }
   if (S.machine) {
     const M = S.machine;
     const t = M.texts || {};
@@ -796,7 +896,7 @@ function verdicts(R) {
   if (S.fixes) {
     const F = S.fixes;
     add('B1', 'repo page: the running review reads "running", never "no findings"', /running/.test(F.repoSecurity) && !/no findings/.test(F.repoSecurity), F.repoSecurity);
-    add('B4', 'Dashboard keeps the last completed review\'s findings with a "new review running" note', /1 critical/.test(F.dashboardSecurity) && /new review running/.test(F.dashboardSecurity), F.dashboardSecurity.slice(0, 400));
+    add('B4', 'Dashboard Security runs: the completed review with its chips and the newer review still running', /1 critical/.test(F.dashboardSecurity) && /running/.test(F.dashboardSecurity), F.dashboardSecurity.slice(0, 400));
     add('B6', 'the Security Agent picker shows distinct labels for same-named repos', new Set(F.pickerOptions).size === F.pickerOptions.length, F.pickerOptions.join(' | '));
     add('B7', 'footer and Codewatch card name the same counts', /with codewatch hooks installed/.test(F.meta) && /with hooks installed/.test(F.codewatchCard), F.meta + ' | ' + F.codewatchCard);
     const ids = accountLeaks(F.repoText + F.settingsReposText + F.securityText);

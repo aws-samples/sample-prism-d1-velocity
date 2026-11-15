@@ -3,17 +3,30 @@
 # $HOME/aws-calls.log and answers like the real CLI with no credentials configured.
 # FAKE_AWS=in-progress: answers as the seeded demo account (AWS's example id 111122223333) whose
 # Security Agent code review job-demo-2 is still IN_PROGRESS, so security findings exits 2.
+# FAKE_AWS=complete: the same account, with job-demo-2 COMPLETED and two findings.
 echo "$*" >> "$HOME/aws-calls.log"
 case "$1" in
   --version) echo "aws-cli/2.36.0-fake Python/3 Linux"; exit 0 ;;
   configure)
     if [ "$2" = "list-profiles" ]; then sed -n 's/^\[profile \(.*\)\]$/\1/p; s/^\[default\]$/default/p' "$HOME/.aws/config"; exit 0; fi ;;
 esac
-if [ "$FAKE_AWS" = "in-progress" ]; then
+if [ "$FAKE_AWS" = "in-progress" ] || [ "$FAKE_AWS" = "complete" ]; then
   case "$1 $2" in
     "sts get-caller-identity") echo '{"Account":"111122223333","Arn":"arn:aws:sts::111122223333:assumed-role/PrismDemoReadOnly/demo-session"}'; exit 0 ;;
     "iam list-account-aliases") echo '{"AccountAliases":["demo-dev"]}'; exit 0 ;;
     "ssm get-parameter") echo "" >&2; echo "An error occurred (ParameterNotFound) when calling the GetParameter operation: " >&2; exit 254 ;;
+  esac
+fi
+# FAKE_AWS=complete: job-demo-2 has finished with two findings, one whose text carries markup (it must show as text).
+if [ "$FAKE_AWS" = "complete" ]; then
+  case "$1 $2" in
+    "securityagent batch-get-code-review-jobs") echo '{"codeReviewJobs":[{"codeReviewJobId":"job-demo-2","status":"COMPLETED","createdAt":"2026-11-15T10:00:00Z","updatedAt":"2026-11-15T10:14:00Z"}]}'; exit 0 ;;
+    "securityagent list-findings") echo '{"findingsSummaries":[{"findingId":"fd-1","name":"SQL injection in order lookup","riskLevel":"CRITICAL"},{"findingId":"fd-2","name":"Missing rate limit on login","riskLevel":"LOW"}]}'; exit 0 ;;
+    "securityagent batch-get-findings") echo '{"findings":[{"findingId":"fd-1","name":"SQL injection in order lookup","riskLevel":"CRITICAL","riskType":"CWE-89","description":"The order id from the query string is concatenated into a SQL string. Demo text with markup: <img src=x onerror=alert(1)> stays text. This description is longer than two hundred characters so the drill-down shows that the full text is saved now rather than the first two hundred characters only.","codeLocations":[{"filePath":"src/orders.ts","lineStart":42}]},{"findingId":"fd-2","name":"Missing rate limit on login","riskLevel":"LOW","description":"No rate limit.","codeLocations":[{"filePath":"src/login.ts","lineStart":5}]}]}'; exit 0 ;;
+  esac
+fi
+if [ "$FAKE_AWS" = "in-progress" ]; then
+  case "$1 $2" in
     "securityagent batch-get-code-review-jobs") echo '{"codeReviewJobs":[{"codeReviewJobId":"job-demo-2","status":"IN_PROGRESS","createdAt":"2026-11-15T10:00:00Z"}]}'; exit 0 ;;
   esac
 fi

@@ -204,8 +204,11 @@ function showStatus(s) {
   const pending = s.state === 'done' && s.outcome === 'pending';
   const p = s.state === 'running' ? pill('warn', 'running') : s.exitCode === 0 ? pill('ok', 'exit 0')
     : pending ? pill('warn', 'still running (exit ' + s.exitCode + ')') : pill('error', s.timedOut ? 'timed out' : 'exit ' + s.exitCode);
-  OUT.status.replaceChildren(p, el('code', {}, txt(s.command)), el('span', { class: 'fix' }, (s.repo ? 'in ' + txt(s.repo) + ' · ' : '') + 'started ' + when(s.startedAt)),
-    pending ? el('span', { class: 'fix', 'data-pending-hint': '' }, 'The job is still running in AWS; nothing failed. Check back later, or run the same command with --wait.') : null);
+  // replaceChildren would print a null as text: only nodes go in.
+  OUT.status.replaceChildren(...[p, el('code', {}, txt(s.command)), el('span', { class: 'fix' }, (s.repo ? 'in ' + txt(s.repo) + ' · ' : '') + 'started ' + when(s.startedAt)),
+    pending ? el('span', { class: 'fix', 'data-pending-hint': '' }, 'The job is still running in AWS; nothing failed. Check back later, or run the same command with --wait.') : null,
+    // A Security Agent action that saved a finished run: the server read its id from the result file.
+    s.state === 'done' && typeof runDoneBar === 'function' ? runDoneBar(s.result) : null].filter(Boolean));
   OUT.pre.textContent = txt(s.output) || (s.state === 'running' ? '(no output yet)' : '(no output)');
   OUT.pre.scrollTop = OUT.pre.scrollHeight;
 }

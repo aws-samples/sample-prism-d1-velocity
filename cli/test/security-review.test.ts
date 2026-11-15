@@ -837,12 +837,10 @@ test('dashboard: a pending repo shows review running with its start time, stale?
   // A verdict for the same job beats its pending copy.
   const done = collectSecurity([{ name: 'w', path: '/w', current: true }], () => [pending('2026-11-07T11:00:00Z'), result('job-p', 'unknown', '2026-11-07T11:00:00Z')], now).repos[0];
   assert.equal(done.pending, false);
+  // The page: a pending run reads running, a stale one "no verdict yet" (security-runs.ts runStatus).
   const html = renderPage('NONCE');
-  const panel = html.slice(html.indexOf('const jobLine = '), html.indexOf('async function load('));
-  assert.match(panel, /pendingBlock\(b, 'review running', r\.stale/);
-  assert.match(panel, /sevPill\('zero', 'stale\?'\)/);
-  assert.match(panel, /'started ' \+ when\(r\.started_at\)/);
-  assert.match(panel, /sec\.pending_hint/);
+  assert.match(html, /noverdict: 'no verdict yet'/);
+  assert.match(html, /'Running in Security Agent'/);
 });
 
 // --------------------------------------------------------------- machine setup and the lazy per-repo code review

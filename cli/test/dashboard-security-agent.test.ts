@@ -504,8 +504,9 @@ test('Settings > AWS points to the Security Agent page; the Dashboard\'s securit
   assert.ok(aws.querySelectorAll('a').some((a) => a.getAttribute('href') === '#security'));
   assert.doesNotMatch(aws.textContent, /Security Agent runs/, 'the copy-only Security Agent rows moved to the page');
   const q = JSON.parse(JSON.stringify(p)) as DashboardPayload;
-  (q as any).security = { repos: [row(q.repos[1].path, { counts: { HIGH: 1 } })], pentests: [], threat_models: [], hint: '', pending_hint: '', pentest_hint: '', threats_hint: '' };
+  q.security_runs = [{ repo_id: q.repos[1].id, run_id: 'abc123456789-20261115T120000000Z-manual-security-review', repo: q.repos[1].label, type: 'code-review', status: 'complete', started_at: '2026-11-15T12:00:00Z',
+    duration_s: 600, branch: 'main', commit: 'abc123456789', counts: { critical: 0, high: 1, medium: 0, low: 0 }, total: 1, top_title: 'x', reason: null, job_id: 'job-1' }];
   const dash = await runPage([q]);
-  const link = dash.dom.byId.main.querySelectorAll('a').find((a) => a.textContent === 'Open in Security Agent →');
-  assert.equal(link?.getAttribute('href'), '#security/' + q.repos[1].id);
+  const link = dash.dom.byId.main.querySelectorAll('a').find((a) => a.textContent === 'View findings →');
+  assert.equal(link?.getAttribute('href'), '#security/run/' + q.repos[1].id + '/abc123456789-20261115T120000000Z-manual-security-review');
 });

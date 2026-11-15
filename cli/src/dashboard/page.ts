@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { SETUP_SCRIPT, SETUP_STYLE, THEME_BOOT, THEME_SCRIPT } from './setup-page.js';
 import { SETTINGS_SCRIPT, SETTINGS_STYLE } from './settings-page.js';
 import { SECURITY_SCRIPT, SECURITY_STYLE } from './security-page.js';
+import { SECURITY_RUNS_SCRIPT, SECURITY_RUNS_STYLE } from './security-runs-page.js';
 import { ACCOUNTGUARD_SCRIPT, ACCOUNTGUARD_STYLE } from './accountguard-page.js';
 import { REPO_SCRIPT } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
@@ -128,6 +129,7 @@ details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--mut
 ${SETUP_STYLE}
 ${SETTINGS_STYLE}
 ${SECURITY_STYLE}
+${SECURITY_RUNS_STYLE}
 ${ACCOUNTGUARD_STYLE}
 `;
 
@@ -443,9 +445,6 @@ const riskPills = (counts, levels, none) => {
   return shown.length ? shown.map((k) => sevPill(k, counts[k] + ' ' + k.toLowerCase())) : [sevPill('ok', none)];
 };
 
-/** Started, or finished, and the job's scope line. */
-const jobLine = (r, extra) => (r.pending ? 'started ' + when(r.started_at) : when(r.finished_at)) + ' · ' + extra + ' · job ' + txt(r.job_id).slice(0, 12);
-
 /** A cached result's pills: running (pending), the job's failure, else its counts. */
 const resultPills = (x, levels, none) => x.pending ? [sevPill('medium', 'running'), x.stale ? sevPill('zero', 'stale?') : null].filter(Boolean)
   : x.status === 'error' ? [sevPill('blocked', txt(x.job_status).toLowerCase())] : riskPills(x.counts, levels, none);
@@ -456,98 +455,12 @@ const runningNote = (r, hint) => r && r.running ? el('p', { class: 'note' }, sev
   ' started ' + when(r.running.started_at) + ' · ' + txt(SCOPE_TEXT[r.running.scope] || 'scope unknown') + ' · job ' + txt(r.running.job_id).slice(0, 12)
   + '. Shown: the last completed review' + (hint ? '; fetch the new one with ' : '.'), hint ? el('code', {}, hint) : null, hint ? '.' : null) : null;
 
-/** A pending job: the page only knows it was started, not whether it has finished since. */
-function pendingBlock(b, label, stale, staleText, hint) {
-  b.append(el('div', { class: 'sec-pills' }, sevPill('medium', label), stale ? sevPill('zero', 'stale?') : null),
-    el('p', { class: 'note' }, stale ? staleText : '', 'Fetch the results with ', el('code', {}, hint), '.'));
-  return b;
-}
-
-function findingsList(items, line) {
-  const list = el('ul', { class: 'sec-findings' });
-  for (const f of items) list.append(el('li', {}, sevPill(f.level, txt(f.level).toLowerCase()), ' ', el('span', { class: 'sec-title' }, txt(f.title)), line(f)));
-  return list;
-}
-
-/** "Open in Security Agent →" for a result row's repo (#security/<repo-id>); null when the repo is not in this scan. */
-function securityLink(r) {
-  const own = ((LAST && LAST.repos) || []).find((x) => x.path === r.path);
-  return own ? el('a', { href: '#security/' + own.id, class: 'rlink' }, 'Open in Security Agent →') : null;
-}
-const secHead = (r) => el('div', { class: 'sec-head' }, el('b', {}, labelOf(r)), r.current ? el('span', { class: 'tag' }, 'this repo') : null, el('span', { class: 'spacer' }), securityLink(r));
-
-function codeReviewBlock(r, sec) {
-  const b = el('div', { class: 'sec-repo' });
-  b.append(secHead(r));
-  b.append(el('div', { class: 'fix' }, jobLine(r, r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched')));
-  if (r.pending) return pendingBlock(b, 'review running', r.stale, 'Started over 2 h ago and not fetched yet; it has most likely finished. ', (sec && sec.pending_hint) || 'prism-cli security findings');
-  b.append(el('div', { class: 'sec-pills' }, ...resultPills(r, RISKS, 'no findings')));
-  const note = runningNote(r, (sec && sec.pending_hint) || 'prism-cli security findings');
-  if (note) b.append(note);
-  if (r.reason) b.append(el('p', { class: 'note' }, txt(r.reason)));
-  if (r.status === 'error' && !r.findings.length) b.append(el('p', { class: 'empty' }, 'The job did not complete.'));
-  if (r.findings.length) b.append(findingsList(r.findings.map((f) => ({ ...f, level: f.risk_level })), (f) => el('div', { class: 'fix' }, el('code', {}, f.file ? f.file + (f.line ? ':' + f.line : '') : 'no location'), f.cwe ? ' · ' + txt(f.cwe) : '')));
-  if (r.truncated) b.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings for all'));
-  return b;
-}
-
-/** Cached Security Agent results (code reviews, pentests, threat models); the page only reads them. */
+/** No saved Security Agent run yet: where to start (the Security runs card replaces this once there is one). */
 function securityPanel(sec) {
-  const rows = (sec && sec.repos) || [];
-  const tms = (sec && sec.threat_models) || [];
-  const pts = (sec && sec.pentests) || [];
-  if (!rows.length && !tms.length && !pts.length) {
-    return moreItem('Security Agent', el('code', {}, 'prism-cli enable security'), ', then ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'));
-  }
-  const s = el('section', { class: 'card', id: 'security-findings' }, el('h2', {}, 'Security findings', el('span', { class: 'sub' }, 'Security Agent · run and fetch on the ', el('a', { href: '#security', class: 'rlink' }, 'Security Agent page'))));
-  if (!rows.length) s.append(inlineEmpty('Code reviews', 'none yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), '.'));
-  for (const r of rows) s.append(codeReviewBlock(r, sec));
-  securityPentestRows(s, sec);
-  if (tms.length) {
-    s.append(el('h3', {}, 'Threat models'));
-    for (const t of tms) s.append(threatModelBlock(t, (sec && sec.threats_hint) || 'prism-cli security threats'));
-  } else s.append(inlineEmpty('Threat models', 'none yet. Run ', el('code', {}, 'prism-cli security threat-model'), '.'));
-  return s;
+  return moreItem('Security Agent', el('code', {}, 'prism-cli enable security'), ', then ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'));
 }
 
 const THREAT_LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
-/** "INFORMATION_DISCLOSURE" -> "information disclosure". */
-const strideText = (list) => (list || []).map((x) => txt(x).toLowerCase().replace(/_/g, ' ')).join(', ');
-
-/** One cached threat model per repo, in the code review blocks' compact style. */
-function threatModelBlock(t, hint) {
-  const b = el('div', { class: 'sec-repo' });
-  b.append(secHead(t));
-  const docs = (t.scope_docs || []).length;
-  b.append(el('div', { class: 'fix' }, jobLine(t, 'commit ' + txt(t.commit).slice(0, 12) + ' · ' + (docs ? docs + ' scope doc' + (docs === 1 ? '' : 's') : 'source only'))));
-  if (t.pending) return pendingBlock(b, 'threat model running', t.stale, 'Started over 2 h ago and not fetched yet; it has most likely finished. ', hint);
-  b.append(el('div', { class: 'sec-pills' }, ...(t.status === 'error' ? [sevPill('blocked', txt(t.job_status).toLowerCase())] : riskPills(t.counts, THREAT_LEVELS, 'no threats'))));
-  if (t.reason) b.append(el('p', { class: 'note' }, txt(t.reason)));
-  if (t.overview) b.append(el('p', { class: 'note' }, txt(t.overview)));
-  if ((t.threats || []).length) b.append(findingsList(t.threats.map((x) => ({ ...x, level: x.severity })), (x) => (x.stride || []).length ? el('div', { class: 'fix' }, strideText(x.stride)) : null));
-  if (t.more) b.append(el('p', { class: 'note' }, t.more + ' more; run ' + hint + ' for all'));
-  return b;
-}
-
-/** Penetration-test rows, in the same Security card below the code-review rows. */
-function securityPentestRows(s, sec) {
-  const rows = (sec && sec.pentests) || [];
-  if (!rows.length) { s.append(inlineEmpty('Penetration tests', 'none yet. Run ', el('code', {}, 'prism-cli security pentest'), '.')); return; }
-  s.append(el('h3', {}, 'Penetration tests'));
-  for (const r of rows) {
-    const b = el('div', { class: 'sec-repo' });
-    b.append(secHead(r));
-    b.append(el('div', { class: 'fix' }, jobLine(r, txt(r.target_host))));
-    if (r.pending) { s.append(pendingBlock(b, 'pentest running', r.stale, 'Started over 6 h ago and not refreshed. ', (sec && sec.pentest_hint) || 'prism-cli security pentest --status')); continue; }
-    b.append(el('div', { class: 'sec-pills' }, ...(r.status === 'error' ? [sevPill('blocked', txt(r.job_status).toLowerCase())] : riskPills(r.counts, RISKS, 'no findings')),
-      r.teardown_failed ? sevPill('blocked', 'teardown failed') : null));
-    if (r.reason) b.append(el('p', { class: 'note' }, txt(r.reason)));
-    if (r.teardown_failed) b.append(el('p', { class: 'note' }, 'The environment is still up (' + txt(r.teardown_failed.reason) + '). Retry with ', el('code', {}, 'prism-cli security pentest --cleanup'), '.'));
-    if (r.findings.length) b.append(findingsList(r.findings.map((f) => ({ ...f, level: f.risk_level })), (f) => f.confidence ? el('div', { class: 'fix' }, txt(f.confidence).toLowerCase() + ' confidence') : null));
-    if (r.truncated) b.append(el('p', { class: 'note' }, 'showing the first ' + r.findings.length + '; run prism-cli security findings --pentest for all'));
-    s.append(b);
-  }
-}
 
 const AUDIT_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
@@ -626,7 +539,7 @@ async function getJson(path) {
 /** The dashboard view: cards, then each section with data; empty ones become "Get more from PRISM" items. */
 function renderMain(main, data) {
   MORE = [];
-  const parts = [summaryCards(data.summary), codewatchPanel(data), spendPanel(data.usage), securityPanel(data.security), awsPanel(data.aws)];
+  const parts = [summaryCards(data.summary), codewatchPanel(data), spendPanel(data.usage), (data.security_runs || []).length ? securityRunsCard() : securityPanel(data.security), awsPanel(data.aws)];
   if (data.scope.error) main.append(el('section', { class: 'card' }, pill('error'), ' ', data.scope.error));
   main.append(...parts.filter(Boolean));
   if (MORE.length) main.append(el('div', { class: 'more', id: 'more' }, el('b', {}, 'Get more from PRISM'), ...MORE));
@@ -674,6 +587,7 @@ async function render() {
   return data;
 }
 ${SETUP_SCRIPT}
+${SECURITY_RUNS_SCRIPT}
 ${SECURITY_SCRIPT}
 ${ACCOUNTGUARD_SCRIPT}
 ${SETTINGS_SCRIPT}

@@ -65,6 +65,10 @@ if (scenario === 'full' || scenario === 'partial') {
     review(pay, pay.shas[2], ago(5 * H), []);
     // An older review whose commit prefix is 12 digits (about 1 commit in 280): its result id is not an account id.
     review(pay, '123456789012' + 'abcdef0123456789abcdef0123456789', ago(8 * D), []);
+    // A pentest that ended without a verdict, so the Security runs list has a failed row.
+    writeResult(pay.dir, makeResult({ kind: 'security-pentest', hook: 'manual', tool: 'security-agent', status: 'error', commit: pay.shas[2], branch: 'main', started_at: ago(3 * D), finished_at: ago(3 * D - 25 * 60e3),
+      reason: 'job FAILED: the target app did not become healthy',
+      pentest: { job_id: 'ptj-demo-1', pentest_id: 'pt-demo', agent_space_id: 'as-pt-demo', agent_space_dedicated: true, region: 'us-west-2', account: '111122223333', target_host: 'app.payments.internal', job_status: 'FAILED', counts: {}, wall_s: 1500 } }));
     secrets(pay, pay.shas[2], ago(5 * H), 'findings');
     // Security Agent results in demo-shop.
     writeFileSync(join(shop.dir, '.prism', 'security.local.json'), JSON.stringify({ agentSpaceId: 'as-0demo0000000001', applicationId: 'app-demo', codeReviewId: 'cr-demo-01', region: 'us-west-2', account: '111122223333', setupAt: ago(10 * D) }));

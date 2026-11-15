@@ -9,6 +9,7 @@
  *   POST /api/update-check  asks the npm registry for the latest prism-cli now (one GET)
  *   GET  /api/security-agent         the Security Agent page's data (no AWS call; security-agent.ts)
  *   POST /api/security-agent/spaces  {repo, refresh?}: the read-only agent-space lookup
+ *   GET  /api/security-run?repo=<id>&run=<id>  one security run's findings (local result files; security-runs.ts)
  * Account ids and ARNs appear only here and in the page, never in `dashboard --json`.
  */
 import { gitleaksInstallHint, shellPath } from './setup.js';
@@ -18,6 +19,7 @@ import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountg
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
 import { securityAgentLookup, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
+import { securityRunDetail } from './security-runs.js';
 
 /** Commands the page shows as Copy only: each writes to AWS, needs a terminal, or both. */
 export const COPY_ONLY = {
@@ -77,6 +79,9 @@ export function setupApi(d: SetupApiDeps) {
       '/api/recheck': async () => d.refresh(),
       '/api/security-agent': async () => (d.securityAgent ? securityAgentView(d.securityAgent) : { repos: [], ttlSec: 0 }),
       '/api/accountguard': async () => (d.accountGuard ? accountGuardView(d.accountGuard) : null),
+      // Ids only: the repo id is matched against the scan list and the run id against that repo's result files.
+      '/api/security-run': async (url: URL) => securityRunDetail(d.securityAgent ? await d.securityAgent.repos() : [],
+        url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home),
     },
     postApi: {
       '/api/action': (body: unknown): Promise<ApiResult> => d.runner.start(body),
