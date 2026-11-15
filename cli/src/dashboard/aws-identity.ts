@@ -11,7 +11,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyConnection, connectionLabel, loadConnection, PROFILE_RE, REGION_RE } from '../aws/connection.js';
+import { applyConnection, connectionLabel, last4, loadConnection, PROFILE_RE, REGION_RE } from '../aws/connection.js';
 import { resolveRegion } from '../security/setup.js';
 import { tildeHome } from './payload.js';
 
@@ -192,7 +192,7 @@ export function resolveAwsIdentity(d: IdentityDeps): AwsIdentityView {
     region: region ? { value: region.region, source: region.source } : null,
     steps,
     saved: saved ? {
-      scope: saved.scope, path: tildeHome(saved.path, d.home), profile: saved.profile, region: saved.region, account: saved.account,
+      scope: saved.scope, path: tildeHome(saved.path, d.home), profile: saved.profile, region: saved.region, account: last4(saved.account),
       alias: saved.alias, verifiedAt: saved.verifiedAt, inUse: !!applied.profileSource,
     } : null,
     warnings,

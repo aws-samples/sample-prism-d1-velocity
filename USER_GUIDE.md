@@ -1306,10 +1306,11 @@ results (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommen
   baseline.
 - **Checks by area** (Bedrock protection, PRISM setup, Account baseline, Startup Advisor): failing
   checks first, each with what was found, its fix and its ranked fix number, marked **new since
-  baseline** when it was not failing then. A check that could not run says what is missing: **access
-  denied** (the IAM action to grant), **waits on a fix** (the ranked fix to do first), **no credential
-  report**, **not integrated**, or **no answer** (re-run). It says "grant" only when access was
-  actually denied. Passing checks are folded.
+  baseline** when it was not failing then. A check that could not run says why, from the result's
+  `reason`: **access denied** (the IAM action to grant), **not enabled here** (the service is off or
+  not offered in the region), **throttled** (re-run), **waits on a fix** (the ranked fix to do first),
+  **no credential report**, **not integrated**, or **no answer** (re-run). It says "grant" only when
+  access was actually denied. Passing checks are folded.
 - **Ranked fixes:** `aws recommend`'s list, severity first and quick wins first, with why, the checks
   each fix covers, the steps, a command to copy when there is one, and a docs link. AccountGuard never
   writes to the account; each fix is a change you make yourself.
@@ -1323,8 +1324,10 @@ results (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommen
 - **Not connected:** one state that points to Settings › AWS. **Never run:** what `aws check` checks
   and the Run button.
 
-Account ids appear as their last 4 digits and runs as opaque ids; the result files themselves stay
-in `.prism/results/`. The static snapshot shows a note instead: AccountGuard needs the live dashboard.
+Account ids appear as their last 4 digits, in check text too, and runs as opaque ids; the result
+files themselves stay in `.prism/results/`. The dashboard's APIs (`/api/data`, `/api/setup`,
+`/api/accountguard`) and the Action output drawer never carry a full 12-digit account id. The static
+snapshot shows a note instead: AccountGuard needs the live dashboard.
 
 **Checklist.** The Settings view's This machine, Usage sync, AWS and Repos tabs list, for this machine: codeburn installed, the scheduled sync from `enable codeburn`
 and its last run (by sync mode: local shows "local only" as info with how to join a team; team without
@@ -2336,6 +2339,29 @@ It stores **no credentials**: only `{profile, region, account, alias, verifiedAt
 does not, or when the account changed. `--clear` removes the user file, or the repo file with
 `--repo`. Every flag: [`prism-cli aws connect`](docs/CLI-REFERENCE.md#prism-cli-aws-connect).
 
+`--json` (with a connect, `--status` or `--clear`) prints one JSON object on stdout and the usual
+lines on stderr, and never prompts. The shape is `prism.aws-connect.v1`; fields are only ever added:
+
+```json
+{
+  "schema": "prism.aws-connect.v1",
+  "action": "connect",
+  "ok": true,
+  "connection": { "profile": "prism-sa-test", "region": "us-west-2", "account": "••••3333", "alias": "sandbox", "verifiedAt": "2026-11-14T10:00:00.000Z", "scope": "user" },
+  "access": "read-only",
+  "org": "unknown"
+}
+```
+
+- `action` is `connect`, `status` or `clear`. `ok` is false on the same runs that exit 1, and then
+  `error` holds the Error line.
+- `connection` is what was saved (connect) or the connection that applies (status), with the account
+  as its last 4 digits; null after `--clear`, or when nothing is saved.
+- connect adds `access` (`admin`, `read-only` or `unknown`) and `org` (`management`, `member`, `none`
+  or `unknown`). status adds `inUse`, `envOverride` (the env var that wins over the saved profile, or
+  null) and `validation` (`{ok, accountMatches, error}`). clear adds `removed` and `scope`.
+- It never prints a credential, the caller ARN or the full account id.
+
 **How the saved connection is used.** It becomes the default for `enable security`, every `security` command, `aws check`/`aws recommend` and `bedrock-protection`. The order, per field:
 
 - profile: `--profile`, then the environment (`AWS_PROFILE`, or env keys / web identity / container credentials), then the repo file, then the user file, then the default credential chain;
@@ -2345,7 +2371,29 @@ The saved region applies only together with its own profile: `--profile other` u
 
 ### aws check
 
-Runs read-only checks in sections and saves the result to `.prism/results/` as kind `aws-check` (in the current repo, or `~/.prism/results/` outside one). Each check is PASS, FAIL or INDETERMINATE; a check that could not run (access denied, an old CLI) is INDETERMINATE and is never counted as a pass.
+Runs read-only checks in sections and saves the result to `.prism/results/` as kind `aws-check` (in the current repo, or `~/.prism/results/` outside one). Each check is PASS, FAIL or INDETERMINATE; a check that could not run is INDETERMINATE and is never counted as a pass.
+
+The result file is `aws-<run_id>-aws-check.json`, where `run_id` (also saved in the result) is the
+start time plus 6 random hex characters, so no account id is in the file name. Results from before
+1.16.0, named `aws-<account>-<region>-<time>-aws-check.json`, are still read by `aws recommend`,
+AccountGuard and the Dashboard.
+
+Each INDETERMINATE check records why it could not run in `reason`, and the report prints it on a
+`Reason:` line with advice to match. Only `access-denied` says "Grant"; it also lists the IAM actions
+in `needs`.
+
+| `reason` | Meaning | Advice |
+|---|---|---|
+| `access-denied` | `AccessDenied`, `AccessDeniedException`, `UnauthorizedOperation` or "not authorized" | Grant the named read-only action (from the error message when it names one) |
+| `not-available` | `OptInRequired`, `SubscriptionRequired…`, a service not enabled for the account, or no endpoint or no support in the region | Nothing to grant: turn the service on if you use it, or check a region where it is offered |
+| `throttled` | `Throttling`, `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded` | Nothing to grant: wait a minute and re-run |
+| `no-credential-report` | No IAM credential report yet (`ReportNotPresent`) | Create one first; `aws check` never generates it |
+| `prerequisite` | The check waits on another fix (budget alerts need a budget) | Do that fix first |
+| `not-integrated` | The Startup Advisor placeholder | Nothing to do yet |
+| `other` | Any other failure (a timeout, a service error) | Re-run; check the network and the AWS CLI if it repeats |
+
+The summary adds one line counting the INDETERMINATE checks per reason. Results from before 1.16.0
+have no `reason`; `aws recommend` and AccountGuard read it from the check's detail instead.
 
 | Section | Checks |
 |---|---|
@@ -2369,9 +2417,12 @@ Reads the latest `aws-check` result for the account (the `aws connect` account, 
 
 - Each FAIL is looked up in a fixed table: a title, why it matters, the steps, the `prism-cli` command that fixes it when there is one (`enable security`, `enable codeburn`, `bootstrapper setup-github-oidc`) and a doc link.
 - Fixes are ranked by severity, then effort (quick wins first), and grouped by section.
-- Each INDETERMINATE check becomes an item that says what to do before it can be checked, by cause:
+- Each INDETERMINATE check becomes an item that says what to do before it can be checked, by its
+  `reason` (see [aws check](#aws-check)):
   - **access denied**: "Grant read access to check" this, naming the read-only IAM actions the check
     needs;
+  - **not enabled here** or **throttled**: nothing to grant; turn the service on (or check another
+    region), or wait and re-run;
   - **no IAM credential report yet**: create one first (`prism-cli bedrock-protection scan-account`
     generates one, which is a write, or `aws iam generate-credential-report`), because `aws check`
     never generates it;
@@ -2389,7 +2440,7 @@ writes `<result>.recommend.md` next to the result. Every flag:
 
 ### Permissions
 
-Every check needs only read actions, so a read-only identity is enough. When a read is denied, the check is INDETERMINATE and `aws recommend` names the action to grant; a check that could not run for another reason (no credential report, a missing prerequisite) names that instead. Admin credentials work but are not needed; `aws connect` points this out.
+Every check needs only read actions, so a read-only identity is enough. When a read is denied, the check is INDETERMINATE and `aws recommend` names the action to grant; a check that could not run for another reason (a service not enabled in the region, throttling, no credential report, a missing prerequisite) names that instead. Admin credentials work but are not needed; `aws connect` points this out.
 
 ---
 

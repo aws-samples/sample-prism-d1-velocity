@@ -10,6 +10,7 @@
  * `.prism/results/` to .gitignore.
  */
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { appendFileSync, existsSync as fileExists } from 'node:fs';
 import { run } from '../utils/exec.js';
@@ -86,6 +87,8 @@ export interface HarnessResultInfo {
  * `checks` (their shape differs from a code finding); `findings` stays empty.
  */
 export interface AwsCheckInfo {
+  /** The run's id, also its file name (`aws-<run_id>-aws-check.json`). Absent on results written before 1.16.0. */
+  run_id?: string;
   account: string;
   alias: string | null;
   region: string;
@@ -277,14 +280,20 @@ export function compactTimestamp(iso: string): string {
   return iso.replace(/[-:]/g, '').replace('.', '');
 }
 
+/** An aws check run id: `<compact time>-<6 random hex>`. Sortable by time, and free of any account id. */
+export function newRunId(startedIso: string): string {
+  return `${compactTimestamp(startedIso)}-${randomBytes(3).toString('hex')}`;
+}
+
 /**
  * `<commit12>-<time>-<hook>-<kind>.json`, or `tree-<tree12>-...` when there is
  * no commit yet (pre-commit).
  */
 export function resultFileName(r: PrismResult): string {
-  // An account check is not tied to a commit: `aws-<account>-<region>-<time>-aws-check.json`.
+  // An account check is not tied to a commit, and its name carries no account id: `aws-<run_id>-aws-check.json`.
+  // Results written before 1.16.0 are named `aws-<account>-<region>-<time>-aws-check.json`; they still load (by content).
   if (r.kind === 'aws-check' && r.aws_check) {
-    return `aws-${safePart(r.aws_check.account)}-${safePart(r.aws_check.region)}-${compactTimestamp(r.started_at)}-${safePart(r.kind)}.json`;
+    return `aws-${safePart(r.aws_check.run_id ?? compactTimestamp(r.started_at))}-${safePart(r.kind)}.json`;
   }
   const id = r.commit ? safePart(r.commit.slice(0, 12)) : r.tree ? `tree-${safePart(r.tree.slice(0, 12))}` : 'nocommit';
   return `${id}-${compactTimestamp(r.started_at)}-${safePart(r.hook)}-${safePart(r.kind)}.json`;

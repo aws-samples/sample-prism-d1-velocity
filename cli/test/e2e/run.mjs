@@ -544,6 +544,11 @@ try {
     await page.goto(srv.base + '/#security'); await sleep(900);
     out.pickerOptions = await page.$$eval('#sa-repo option', (o) => o.map((x) => x.textContent));
     out.securityText = await mainText();
+    // 1.16.0: AccountGuard says why each check could not run; no full account id in the APIs or the page.
+    out.apiJson = await page.evaluate(() => Promise.all(['/api/data', '/api/accountguard', '/api/setup'].map((u) => fetch(u).then((r) => r.text()))).then((x) => x.join('\n')));
+    await page.goto(srv.base + '/#accountguard'); await sleep(900);
+    out.accountguardText = await mainText();
+    await page.screenshot({ path: join(SHOTS, 'fixes-accountguard-reasons.png'), fullPage: true });
     await page.goto(srv.base + '/#settings/updates'); await sleep(900);
     out.updates = await page.evaluate(() => {
       const b = [...document.querySelectorAll('#settings button')].filter((x) => x.offsetParent && x.textContent.trim() === 'Check now').pop();
@@ -651,6 +656,10 @@ function verdicts(R) {
     add('B7', 'footer and Codewatch card name the same counts', /with codewatch hooks installed/.test(F.meta) && /with hooks installed/.test(F.codewatchCard), F.meta + ' | ' + F.codewatchCard);
     const ids = (F.repoText + F.settingsReposText + F.securityText).match(/\b\d{12}\b/g);
     add('B9', 'no full 12-digit account id on the repo, Settings › Repos or Security Agent pages', !ids, (ids || []).join(', '));
+    const apiIds = ((F.apiJson || '') + (F.accountguardText || '')).match(/\b\d{12}\b/g);
+    add('G3', 'no full 12-digit account id in /api/data, /api/accountguard, /api/setup or on AccountGuard', F.apiJson && !apiIds, (apiIds || ['no API text']).join(', '));
+    const ag = F.accountguardText || '';
+    add('G1', 'AccountGuard names why each check could not run (throttled, not enabled, access denied)', /throttled/.test(ag) && /not enabled here/.test(ag) && /access denied/.test(ag) && /nothing to grant/.test(ag), ag.slice(0, 400));
     add('B10', 'update check off: Check now disabled and the reason shown', F.updates.disabled && /The update check is off/.test(F.updates.text) && /off \(PRISM_NO_UPDATE_CHECK=1\)/.test(F.updates.pillTitle), JSON.stringify(F.updates).slice(0, 300));
     for (const k of ['cb-month', 'cb-history']) {
       // The failure lines only: the rest of the page shows repo paths on purpose.

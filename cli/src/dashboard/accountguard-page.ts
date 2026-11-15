@@ -29,6 +29,8 @@ let AG = null, AG_LOADED = false, AG_ERROR = '';
 const agRoute = () => location.hash === '#accountguard';
 const AG_CAUSE = {
   'access-denied': ['access denied', 'medium'],
+  'not-available': ['not enabled here', 'zero'],
+  'throttled': ['throttled', 'zero'],
   'prerequisite': ['waits on a fix', 'zero'],
   'no-credential-report': ['no credential report', 'zero'],
   'not-integrated': ['not integrated', 'zero'],
@@ -82,7 +84,7 @@ function agCheckRow(x, fixOf, accessOf, isNew) {
   const fail = x.status === 'FAIL', ind = x.status === 'INDETERMINATE';
   const cause = AG_CAUSE[x.cause] || AG_CAUSE.other;
   const status = fail ? sevPill(x.severity, txt(x.severity).toLowerCase()) : ind ? sevPill(cause[1], 'could not check') : sevPill('ok', 'pass');
-  // aws check appends "Needs <action>." to every failed read; only an access-denied one is about IAM.
+  // aws check before 1.16.0 appended "Needs <action>." to every failed read; only an access-denied one is about IAM.
   const detail = ind && x.cause !== 'access-denied' ? txt(x.detail).replace(/ Needs [^.]+\\.$/, '') : txt(x.detail);
   const li = el('li', { class: fail ? 'is-fail' : ind ? 'is-ind' : 'is-pass' },
     el('div', { class: 'sa-head' }, el('b', {}, txt(x.title)), el('span', { class: 'pills' }, isNew ? sevPill('medium', 'new since baseline') : null, status)),

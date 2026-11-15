@@ -20,6 +20,23 @@ export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
  */
 export type Status = 'PASS' | 'FAIL' | 'INDETERMINATE';
 
+/**
+ * Why an INDETERMINATE check could not run. Only access-denied means "grant
+ * a permission"; the others say what to do instead.
+ */
+export type IndeterminateReason =
+  | 'access-denied' | 'not-available' | 'throttled' | 'no-credential-report' | 'prerequisite' | 'not-integrated' | 'other';
+
+export const REASON_LABEL: Record<IndeterminateReason, string> = {
+  'access-denied': 'access denied',
+  'not-available': 'service not enabled, or not offered in this region',
+  throttled: 'throttled by AWS',
+  'no-credential-report': 'no IAM credential report yet',
+  prerequisite: 'waits on another fix',
+  'not-integrated': 'not integrated yet',
+  other: 'the call failed',
+};
+
 export interface Finding {
   id: string;
   /** Report grouping key; each command supplies its own headings. */
@@ -29,6 +46,10 @@ export interface Finding {
   severity: Severity;
   detail: string;
   remediation?: string;
+  /** INDETERMINATE only, written by aws check since 1.16.0: why the check could not run. */
+  reason?: IndeterminateReason;
+  /** With reason access-denied only: the IAM action(s) the check needs. */
+  needs?: string[];
 }
 
 export const SEVERITY_ORDER: Severity[] = ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
@@ -72,6 +93,7 @@ export function renderReport(findings: Finding[], opts: ReportOptions): void {
     for (const f of rows) {
       console.log(`  ${ICON[f.status]} [${f.severity}] ${f.title}`);
       console.log(`     ${f.detail}`);
+      if (f.status === 'INDETERMINATE' && f.reason) console.log(`     Reason: ${REASON_LABEL[f.reason]}`);
       if (f.status !== 'PASS' && f.remediation) console.log(`     → ${f.remediation}`);
       console.log('');
     }
@@ -87,6 +109,9 @@ export function renderReport(findings: Finding[], opts: ReportOptions): void {
 
   if (indet.length) {
     console.log(`  ❓ ${indet.length} check(s) could not run and are NOT passes: ${indet.map((f) => f.id).join(', ')}`);
+    const why = new Map<string, number>();
+    for (const f of indet) if (f.reason) why.set(REASON_LABEL[f.reason], (why.get(REASON_LABEL[f.reason]) ?? 0) + 1);
+    if (why.size) console.log(`     Why: ${[...why].map(([label, n]) => `${n} ${label}`).join('; ')}.`);
     console.log(`     Treat the result as a floor, not a clean bill of health.\n`);
   }
 }

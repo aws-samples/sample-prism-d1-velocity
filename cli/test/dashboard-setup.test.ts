@@ -358,7 +358,7 @@ test('AWS section: env, saved aws connect profile (repo over user) and no creden
   writeConnectionFile(join(home, '.prism', 'aws.json'), { profile: 'cp', region: 'us-east-2', account: '111122223333', alias: 'sandbox', verifiedAt: '2026-11-01T00:00:00.000Z' });
   const user = resolveAwsIdentity({ env: {}, home, repoRoot: null });
   assert.deepEqual([user.profile, user.source, user.credentialType, user.region?.value], ['cp', 'aws connect, user', 'credential_process', 'us-east-2']);
-  assert.deepEqual({ ...user.saved, path: '' }, { scope: 'user', path: '', profile: 'cp', region: 'us-east-2', account: '111122223333', alias: 'sandbox', verifiedAt: '2026-11-01T00:00:00.000Z', inUse: true });
+  assert.deepEqual({ ...user.saved, path: '' }, { scope: 'user', path: '', profile: 'cp', region: 'us-east-2', account: '••••3333', alias: 'sandbox', verifiedAt: '2026-11-01T00:00:00.000Z', inUse: true });
   assert.equal(user.saved!.path, '~/.prism/aws.json');
 
   const repo = tmp('repo');

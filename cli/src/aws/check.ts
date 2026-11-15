@@ -10,6 +10,7 @@ import { aws, type AwsResult, type AwsTarget } from '../utils/aws.js';
 import { severityRank, type Finding, type Severity } from '../utils/audit.js';
 import { auditAccount, ACCOUNT_AUDIT_IDS } from '../utils/audit-account.js';
 import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
+import { explainIndeterminate } from './reason.js';
 import {
   collectSecurityStatus, PIPELINE_STACK, type Ctx, type Deps, type Resolved, type StatusRow,
 } from '../security/setup.js';
@@ -40,12 +41,16 @@ const why = (r: AwsResult) => r.errorCode || r.raw.split('\n').map((l) => l.trim
 type Base = Omit<Finding, 'status' | 'detail' | 'remediation'>;
 const pass = (b: Base, detail: string): Finding => ({ ...b, status: 'PASS', detail });
 const fail = (b: Base, detail: string, remediation: string): Finding => ({ ...b, status: 'FAIL', detail, remediation });
-/** A read that did not answer. `action` is the IAM action the check needs, when known. */
-const unknown = (b: Base, r: AwsResult | string, action?: string): Finding => ({
-  ...b, status: 'INDETERMINATE',
-  detail: `Could not check (${typeof r === 'string' ? r : why(r)}).${action ? ` Needs ${action}.` : ''}`,
-  remediation: action ? `Grant ${action} (read-only) and re-run prism-cli aws check.` : undefined,
-});
+/**
+ * A read that did not answer. `action` is the IAM action the check needs,
+ * when known; the detail names it, and the remediation grants it, only when
+ * the call was denied (reason.ts).
+ */
+const unknown = (b: Base, r: AwsResult | string, action?: string): Finding => {
+  const text = typeof r === 'string' ? r : `${r.errorCode}\n${r.raw}`;
+  const f = explainIndeterminate({ ...b, status: 'INDETERMINATE', detail: `Could not check (${typeof r === 'string' ? r : why(r)}).` }, text, action);
+  return f.needs ? { ...f, detail: `${f.detail} Needs ${f.needs.join(', ')}.` } : f;
+};
 
 // ---------------------------------------------------------------------------
 // bedrock: the bedrock-protection scan-account checks, unchanged
@@ -147,13 +152,14 @@ export function cloudTrail(c: CheckContext): Finding {
   const multi: any[] = (r.json?.trailList || []).filter((t: any) => t?.IsMultiRegionTrail);
   if (!multi.length) return fail(b, 'No multi-region trail, so API activity in other regions is not recorded.', fix);
   let readable = 0;
+  let failed: AwsResult | undefined;
   for (const t of multi) {
     const s = call(c, ['cloudtrail', 'get-trail-status', '--name', String(t.TrailARN || t.Name)], String(t.HomeRegion || c.region));
-    if (!s.ok) continue;
+    if (!s.ok) { failed = s; continue; }
     readable++;
     if (s.json?.IsLogging) return pass(b, `${t.Name} is multi-region and logging.`);
   }
-  if (!readable) return unknown(b, 'get-trail-status was denied for every multi-region trail', 'cloudtrail:GetTrailStatus');
+  if (!readable) return unknown(b, failed ?? 'get-trail-status answered for no multi-region trail', 'cloudtrail:GetTrailStatus');
   return fail(b, `Multi-region trail(s) ${multi.map((t) => t.Name).join(', ')} exist but none is logging.`, 'Start logging: aws cloudtrail start-logging --name <trail>.');
 }
 

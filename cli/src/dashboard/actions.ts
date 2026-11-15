@@ -168,6 +168,8 @@ const ANSI_RE = /\u001b\[[0-9;?]*[A-Za-z]/g;
 export function redact(s: string): string {
   return s
     .replace(ANSI_RE, '')
+    // A 12-digit AWS account id (aws check, aws connect and ARNs print it) leaves as its last 4 digits, as the pages show it.
+    .replace(/\b\d{12}\b/g, (m) => '••••' + m.slice(-4))
     .replace(/\b(?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16}\b/g, '[REDACTED]')
     .replace(/\b((?:aws_)?(?:secret_access_key|session_token|security_token|secret|password|passwd|api[_-]?key|access_token|refresh_token|id_token|client_secret)["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi, '$1[REDACTED]')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 [REDACTED]')
