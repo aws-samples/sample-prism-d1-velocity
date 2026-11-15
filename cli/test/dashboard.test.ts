@@ -622,7 +622,7 @@ test('the Security findings panel: compact blocks and wrapping rows, no wide tab
   const html = renderPage('NONCE');
   const panel = html.slice(html.indexOf('function codeReviewBlock('), html.indexOf('const THREAT_LEVELS'));
   assert.ok(panel.length > 0);
-  assert.match(panel, /el\('section', \{ class: 'card', id: 'security' \}, el\('h2', \{\}, 'Security findings'/);
+  assert.match(panel, /el\('section', \{ class: 'card', id: 'security-findings' \}, el\('h2', \{\}, 'Security findings'/);
   assert.doesNotMatch(panel, /table\(/, 'no table');
   assert.match(html, /riskPills\(r\.counts, RISKS, 'no findings'\)/, 'all-zero state');
   assert.match(html, /levels\.filter\(\(k\) => \(\(counts \|\| \{\}\)\[k\] \|\| 0\) > 0\)/, 'zero counts hidden');

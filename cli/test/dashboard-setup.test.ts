@@ -187,6 +187,7 @@ test('the page embeds the CSRF token; GET routes stay GET-only', async () => {
 
 test('each allowed action spawns the CLI binary (npm for the update) with a fixed argv and shell:false', async () => {
   const hooks = (c: string, g: boolean, rm: boolean) => ({ args: ['enable', 'agent-hooks', '--client', c, ...(g ? ['--global'] : []), ...(rm ? ['--uninstall'] : [])], cwd: '/work' });
+  const sa = (args: string[], write = false) => ({ args: [...args, '--profile', 'dev', '--region', 'us-west-2'], cwd: REPO_A, body: { repo: repoId(REPO_A), ...(write ? { confirm: true } : {}) } });
   const expected: Record<ActionId, { args: string[]; cwd: string; body?: Record<string, unknown>; npm?: true }> = {
     'codewatch-repo': { args: ['enable', 'codewatch'], cwd: REPO_A, body: { repo: repoId(REPO_A) } },
     'codewatch-global': { args: ['enable', 'codewatch', '--global'], cwd: '/work' },
@@ -203,10 +204,19 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'agent-hooks-claude-remove': hooks('claude', false, true), 'agent-hooks-claude-global-remove': hooks('claude', true, true),
     'kirocrew-app': { args: ['enable', 'kirocrew', '--yes'], cwd: '/work' },
     'update-cli': { args: ['i', '-g', '@prism-d1/cli@latest'], cwd: '/work', npm: true },
+    // The Security Agent page: in the picked repo, with the server's --profile/--region.
+    'security-status': sa(['enable', 'security', '--status']),
+    'security-dry-run': sa(['enable', 'security', '--dry-run']),
+    'security-findings': sa(['security', 'findings']),
+    'security-threats': sa(['security', 'threats']),
+    'security-pentest-findings': sa(['security', 'findings', '--pentest']),
+    'security-code-review': sa(['security', 'code-review', '--no-wait'], true),
+    'security-code-review-full': sa(['security', 'code-review', '--full', '--no-wait'], true),
+    'security-threat-model': sa(['security', 'threat-model', '--no-wait'], true),
   };
   for (const [id, e] of Object.entries(expected) as [ActionId, typeof expected[ActionId]][]) {
     const calls: Spawned[] = [];
-    const r = runner(calls);
+    const r = runner(calls, { awsArgs: () => ['--profile', 'dev', '--region', 'us-west-2'], writeGate: () => null });
     const res = await r.start({ action: id, ...e.body });
     assert.equal(res.status, 202, id);
     assert.equal(calls.length, 1);
@@ -217,9 +227,12 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     assert.deepEqual(calls[0].opts.stdio, ['ignore', 'pipe', 'pipe'], `${id}: stdin closed`);
     await until(() => !r.running);
   }
-  // No AWS-writing command is in the allowlist.
-  for (const a of Object.values(ACTIONS)) {
-    assert.ok(!/^(security|team add-developer|enable security|aws connect)/.test(a.args.join(' ')), a.args.join(' '));
+  // The only AWS-writing commands in the allowlist are the two --no-wait uploads, each behind confirm and the write gate.
+  for (const [id, a] of Object.entries(ACTIONS)) {
+    const line = a.args.join(' ');
+    if (a.writesAws) { assert.match(line, /^security (code-review( --full)?|threat-model) --no-wait$/, id); assert.equal(a.confirm, true, id); continue; }
+    assert.ok(!/^(security (code-review|threat-model|pentest)|team add-developer|aws connect)/.test(line), line);
+    assert.ok(!/^enable security( |$)/.test(line) || /--(status|dry-run)$/.test(line), line);
   }
 });
 

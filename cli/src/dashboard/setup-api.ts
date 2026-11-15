@@ -6,6 +6,8 @@
  *   POST /api/action     start an allowlisted action
  *   POST /api/check-now  one read-only sts get-caller-identity
  *   POST /api/update-check  asks the npm registry for the latest prism-cli now (one GET)
+ *   GET  /api/security-agent         the Security Agent page's data (no AWS call; security-agent.ts)
+ *   POST /api/security-agent/spaces  {repo, refresh?}: the read-only agent-space lookup
  * Account ids and ARNs appear only here and in the page, never in `dashboard --json`.
  */
 import { gitleaksInstallHint, shellPath } from './setup.js';
@@ -14,6 +16,7 @@ import { checkNow, checkNowAws, resolveAwsIdentity, type CheckNowDeps, type Iden
 import { loadConnection } from '../aws/connection.js';
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
+import { securityAgentLookup, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
 
 /** Commands the page shows as Copy only: each writes to AWS, needs a terminal, or both. */
 export const COPY_ONLY = {
@@ -36,6 +39,8 @@ export interface SetupApiDeps {
   /** The Updates tab's Check now: asks the npm registry now, past the once-a-day limit. Absent: the route answers 404-like. */
   checkUpdate?: () => Promise<VersionInfo>;
   now?: () => Date;
+  /** The Security Agent page's routes; absent: they answer 400. */
+  securityAgent?: SecurityAgentDeps;
 }
 
 const emptyObject = (b: unknown) => !!b && typeof b === 'object' && !Array.isArray(b) && Object.keys(b).length === 0;
@@ -48,7 +53,7 @@ export function setupApi(d: SetupApiDeps) {
     const a = ACTIONS[id];
     return {
       id, label: a.label, command: displayCommand(a.args, a.program), repo: !!a.repo, url: !!a.url, confirm: !!a.confirm,
-      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
+      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
     };
   });
   return {
@@ -68,9 +73,12 @@ export function setupApi(d: SetupApiDeps) {
       },
       '/api/action/status': async () => d.runner.status(),
       '/api/recheck': async () => d.refresh(),
+      '/api/security-agent': async () => (d.securityAgent ? securityAgentView(d.securityAgent) : { repos: [], ttlSec: 0 }),
     },
     postApi: {
       '/api/action': (body: unknown): Promise<ApiResult> => d.runner.start(body),
+      '/api/security-agent/spaces': async (body: unknown): Promise<ApiResult> =>
+        d.securityAgent ? securityAgentLookup(d.securityAgent, body) : { status: 400, json: { error: 'the Security Agent page is not available here' } },
       '/api/update-check': async (body: unknown): Promise<ApiResult> => {
         if (!emptyObject(body)) return { status: 400, json: { error: 'update-check takes an empty JSON object' } };
         if (!d.checkUpdate) return { status: 400, json: { error: 'the update check is not available here' } };

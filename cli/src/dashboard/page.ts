@@ -2,7 +2,7 @@
  * The dashboard's single-page app: one self-contained HTML document with
  * inline CSS and JS (nonce-gated by the CSP), no CDN and no network fetch
  * other than its own GET routes (/api/data, then /api/usage), so it works offline.
- * Views are hash routes: # (dashboard), #settings[/<tab>] (#setup is an alias), #repo/<id>.
+ * Views are hash routes: # (dashboard), #security[/<repo-id>], #settings[/<tab>] (#setup is an alias), #repo/<id>.
  *
  * Every value from the payload is placed with textContent or a DOM attribute;
  * innerHTML is never used for data.
@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { SETUP_SCRIPT, SETUP_STYLE, THEME_BOOT, THEME_SCRIPT } from './setup-page.js';
 import { SETTINGS_SCRIPT, SETTINGS_STYLE } from './settings-page.js';
+import { SECURITY_SCRIPT, SECURITY_STYLE } from './security-page.js';
 import { REPO_SCRIPT } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
 
@@ -125,6 +126,7 @@ details.missing-group > summary { cursor:pointer; padding:8px 0; color:var(--mut
 @media (prefers-reduced-motion: no-preference) { .changed { animation:prism-flash 2.5s ease-out 1; } }
 ${SETUP_STYLE}
 ${SETTINGS_STYLE}
+${SECURITY_STYLE}
 `;
 
 const SCRIPT = `
@@ -455,9 +457,16 @@ function findingsList(items, line) {
   return list;
 }
 
+/** "Open in Security Agent →" for a result row's repo (#security/<repo-id>); null when the repo is not in this scan. */
+function securityLink(r) {
+  const own = ((LAST && LAST.repos) || []).find((x) => x.path === r.path);
+  return own ? el('a', { href: '#security/' + own.id, class: 'rlink' }, 'Open in Security Agent →') : null;
+}
+const secHead = (r) => el('div', { class: 'sec-head' }, el('b', {}, labelOf(r)), r.current ? el('span', { class: 'tag' }, 'this repo') : null, el('span', { class: 'spacer' }), securityLink(r));
+
 function codeReviewBlock(r, sec) {
   const b = el('div', { class: 'sec-repo' });
-  b.append(el('div', { class: 'sec-head' }, el('b', {}, labelOf(r)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
+  b.append(secHead(r));
   b.append(el('div', { class: 'fix' }, jobLine(r, r.scope === 'diff' ? 'branch diff' : r.scope === 'full' ? 'whole repo' : 'fetched')));
   if (r.pending) return pendingBlock(b, 'review running', r.stale, 'Started over 2 h ago and not fetched yet; it has most likely finished. ', (sec && sec.pending_hint) || 'prism-cli security findings');
   b.append(el('div', { class: 'sec-pills' }, ...(r.status === 'error' ? [sevPill('blocked', txt(r.job_status).toLowerCase())] : riskPills(r.counts, RISKS, 'no findings'))));
@@ -476,7 +485,7 @@ function securityPanel(sec) {
   if (!rows.length && !tms.length && !pts.length) {
     return moreItem('Security Agent', el('code', {}, 'prism-cli enable security'), ', then ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'));
   }
-  const s = el('section', { class: 'card', id: 'security' }, el('h2', {}, 'Security findings', el('span', { class: 'sub' }, 'Security Agent')));
+  const s = el('section', { class: 'card', id: 'security-findings' }, el('h2', {}, 'Security findings', el('span', { class: 'sub' }, 'Security Agent · run and fetch on the ', el('a', { href: '#security', class: 'rlink' }, 'Security Agent page'))));
   if (!rows.length) s.append(inlineEmpty('Code reviews', 'none yet. Run ', el('code', {}, (sec && sec.hint) || 'prism-cli security code-review'), '.'));
   for (const r of rows) s.append(codeReviewBlock(r, sec));
   securityPentestRows(s, sec);
@@ -494,7 +503,7 @@ const strideText = (list) => (list || []).map((x) => txt(x).toLowerCase().replac
 /** One cached threat model per repo, in the code review blocks' compact style. */
 function threatModelBlock(t, hint) {
   const b = el('div', { class: 'sec-repo' });
-  b.append(el('div', { class: 'sec-head' }, el('b', {}, labelOf(t)), t.current ? el('span', { class: 'tag' }, 'this repo') : null));
+  b.append(secHead(t));
   const docs = (t.scope_docs || []).length;
   b.append(el('div', { class: 'fix' }, jobLine(t, 'commit ' + txt(t.commit).slice(0, 12) + ' · ' + (docs ? docs + ' scope doc' + (docs === 1 ? '' : 's') : 'source only'))));
   if (t.pending) return pendingBlock(b, 'threat model running', t.stale, 'Started over 2 h ago and not fetched yet; it has most likely finished. ', hint);
@@ -513,7 +522,7 @@ function securityPentestRows(s, sec) {
   s.append(el('h3', {}, 'Penetration tests'));
   for (const r of rows) {
     const b = el('div', { class: 'sec-repo' });
-    b.append(el('div', { class: 'sec-head' }, el('b', {}, labelOf(r)), r.current ? el('span', { class: 'tag' }, 'this repo') : null));
+    b.append(secHead(r));
     b.append(el('div', { class: 'fix' }, jobLine(r, txt(r.target_host))));
     if (r.pending) { s.append(pendingBlock(b, 'pentest running', r.stale, 'Started over 6 h ago and not refreshed. ', (sec && sec.pentest_hint) || 'prism-cli security pentest --status')); continue; }
     b.append(el('div', { class: 'sec-pills' }, ...(r.status === 'error' ? [sevPill('blocked', txt(r.job_status).toLowerCase())] : riskPills(r.counts, RISKS, 'no findings')),
@@ -650,6 +659,7 @@ async function render() {
   const r = repoRoute();
   if (r) renderRepo(r);
   await renderSetup(data);
+  await renderSecurity();
   for (const d of document.querySelectorAll('details[data-key]')) {
     const k = d.getAttribute('data-key');
     if (openState.has(k)) d.open = openState.get(k);
@@ -657,6 +667,7 @@ async function render() {
   return data;
 }
 ${SETUP_SCRIPT}
+${SECURITY_SCRIPT}
 ${SETTINGS_SCRIPT}
 ${THEME_SCRIPT}
 if (SNAPSHOT) {
@@ -690,14 +701,14 @@ function shell(live: boolean): { head: string; header: string } {
   const head = m.icon ? `<link rel="icon" type="image/png" href="${m.icon}">` : '';
   const logo = m.logo ? `<img class="logo" src="${m.logo}" width="36" height="36" alt="">` : '';
   const header = `<header><h1>${logo}PRISM dashboard</h1>
-<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#settings" data-view="settings">Settings <span class="badge warn" id="settings-badge" hidden></span></a></nav>
+<nav class="tabs" aria-label="Views"><a href="#" data-view="dashboard">Dashboard</a><a href="#security" data-view="security">Security Agent <span class="badge warn" id="security-badge" hidden></span></a><a href="#settings" data-view="settings">Settings <span class="badge warn" id="settings-badge" hidden></span></a></nav>
 <span class="spacer"></span>
 <div class="tools"><span id="ver"></span>${live ? '<button id="refresh" type="button">Refresh</button>' : ''}
 <div class="theme" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div></header>`;
   return { head, header };
 }
 
-const VIEWS = '<main id="main"></main>\n<main id="repo" hidden></main>\n<main id="settings" hidden></main>\n<p class="note meta" id="meta"></p>';
+const VIEWS = '<main id="main"></main>\n<main id="repo" hidden></main>\n<main id="security" hidden></main>\n<main id="settings" hidden></main>\n<p class="note meta" id="meta"></p>';
 
 export function renderPage(nonce: string, csrf = ''): string {
   // The nonce and the CSRF token are base64/base64url generated server-side; nothing user-derived is interpolated here.

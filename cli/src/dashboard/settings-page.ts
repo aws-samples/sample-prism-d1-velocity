@@ -49,13 +49,16 @@ function settingsRoute() {
   if (!m) return null;
   return SETTINGS_TABS.some(([t]) => t === m[1]) ? m[1] : 'overview';
 }
-function currentView() { return settingsRoute() ? 'settings' : repoRoute() ? 'repo' : 'dashboard'; }
+function currentView() { return settingsRoute() ? 'settings' : securityRoute() ? 'security' : repoRoute() ? 'repo' : 'dashboard'; }
 function showView() {
   const v = currentView();
   document.getElementById('main').hidden = v !== 'dashboard';
   document.getElementById('repo').hidden = v !== 'repo';
   document.getElementById('settings').hidden = v !== 'settings';
+  const sec = document.getElementById('security');
+  if (sec) sec.hidden = v !== 'security';
   if (v === 'repo') renderRepo(repoRoute());
+  if (v === 'security') drawSecurity();
   if (v === 'settings') selectTab(settingsRoute());
   for (const a of document.querySelectorAll('[data-view]')) {
     if (a.getAttribute('data-view') === (v === 'repo' ? 'dashboard' : v)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -132,8 +135,7 @@ function repoRowCells(r) {
   const sc = el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', sec.status === 'in-use' ? 'in use' : sec.status));
   const cd = cds[r.path] ? cds[r.path] + ' && ' : '';
   if (sec.status === 'missing') sc.append(copyOnly(sec.fix || cd + cp.enableSecurity, 'AWS'));
-  else sc.append(el('details', { class: 'copies' }, el('summary', {}, 'Security Agent commands (AWS, copy only)'),
-    [cp.codeReview, cp.threatModel, cp.pentest].map((x) => el('div', {}, copyButton(cd + x)))));
+  if (ids[r.path]) sc.append(el('div', {}, el('a', { href: '#security/' + ids[r.path], class: 'rlink' }, 'Open in Security Agent →')));
   return [repoName(r), cw, sc];
 }
 

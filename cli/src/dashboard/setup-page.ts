@@ -6,7 +6,8 @@
  * Every value from the server is placed with textContent or an attribute.
  * Run buttons only send an action id (plus a repo id or the collector URL);
  * the server maps the id to a fixed argv. Each Run shows the exact command in
- * a confirm dialog first. AWS-writing commands are Copy only.
+ * a confirm dialog first. AWS-writing commands are Copy only here; the
+ * Security Agent page (security-page.ts) runs its two upload actions.
  */
 
 /**
@@ -281,6 +282,7 @@ function checkResult(r) {
 
 function awsSection(a) {
   const s = el('section', { class: 'card wide' }, el('h2', {}, 'AWS'));
+  s.append(el('p', { class: 'callout', role: 'note' }, 'Security Agent moved to its own page: ', el('a', { href: '#security', class: 'rlink' }, 'Security Agent →')));
   s.append(el('p', { class: 'note' }, 'From the environment and local config files only: no AWS call until you press Check now. Only setting names are read from ~/.aws; secret values are never read or shown.'));
   s.append(el('div', { class: 'srow' }, el('div', {}, 'prism-cli would use ', el('b', {}, a.profile ? 'profile ' + txt(a.profile) : txt(a.source)), ' · ', el('span', { class: 'badge' }, txt(a.credentialLabel))),
     el('div', { class: 'fix' }, 'chosen by ' + txt(a.source) + ' · region ' + (a.region ? txt(a.region.value) + ' (' + txt(a.region.source) + ')' : 'not set'))));
@@ -316,9 +318,7 @@ function awsSection(a) {
   const cp = SETUP.copy || {};
   s.append(el('h3', {}, 'Copy only (writes to AWS or needs a terminal)'),
     srow(null, 'Choose and save the AWS profile', 'Asks questions on a terminal.', copyOnly(cp.awsConnect, 'terminal')),
-    srow(null, 'Set up the Security Agent in a repo', 'Creates AWS resources.', copyOnly(cp.enableSecurity, 'AWS write')),
-    srow(null, 'Add a developer telemetry account', 'Creates a Cognito user.', copyOnly(cp.addDeveloper, 'AWS write')),
-    srow(null, 'Security Agent runs', 'Uploads code and starts AWS jobs.', copyOnly(cp.codeReview, 'AWS write'), copyOnly(cp.threatModel, 'AWS write'), copyOnly(cp.pentest, 'AWS write')));
+    srow(null, 'Add a developer telemetry account', 'Creates a Cognito user.', copyOnly(cp.addDeveloper, 'AWS write')));
   return s;
 }
 

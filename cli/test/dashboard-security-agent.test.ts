@@ -1,0 +1,461 @@
+/**
+ * Tests for the Security Agent page (#security, #security/<repo-id>): the
+ * action ids and their argv in the picked repo, repo-id validation, the
+ * AWS-writing actions' gate and confirm text, the nav badge rules, the
+ * agent-space lookup (timeouts, cache, failures, the shared lock), no AWS call
+ * on page load, the routes, the Settings > AWS pointer and the Dashboard links.
+ * No AWS, npm or network: every AWS call is a fake.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
+import { ACTIONS, ActionRunner, repoId, type ActionId, type ScanRepo } from '../src/dashboard/actions.js';
+import {
+  awsTargetFor, commandLine, execAwsCall, identityIn, LOOKUP_TIMEOUT_MS, LOOKUP_TTL_MS, LookupCache, lookupSpaces, SECURITY_ACTIONS,
+  securityAgentLookup, securityAgentView, targetArgs, WRITE_KIND, writeNotice, type AwsCall, type Lookup, type SecurityAgentDeps,
+} from '../src/dashboard/security-agent.js';
+import { setupApi } from '../src/dashboard/setup-api.js';
+import type { AwsResult } from '../src/utils/aws.js';
+import { FakeElement, runPage, SETUP_STUB } from './page-dom.js';
+
+process.env.GIT_CONFIG_GLOBAL = join(mkdtempSync(join(tmpdir(), 'prism-sa-gcfg-')), 'gitconfig');
+const tmp = (p: string) => realpathSync(mkdtempSync(join(tmpdir(), `prism-sa-${p}-`)));
+const ok = (json: unknown): AwsResult => ({ ok: true, json, errorCode: '', raw: JSON.stringify(json) });
+const err = (raw: string): AwsResult => ({ ok: false, json: null, errorCode: (/\(([A-Za-z]+)\)/.exec(raw) || [])[1] || '', raw });
+
+/** A fake AWS: answers by `service verb`, records every call with its target. */
+function fakeAws(over: Record<string, AwsResult> = {}) {
+  const calls: { args: string[]; profile: string | null; region: string | null; timeoutMs: number }[] = [];
+  const answers: Record<string, AwsResult> = {
+    'sts get-caller-identity': ok({ Account: '111122223333', Arn: 'arn:aws:sts::111122223333:assumed-role/Dev/demo' }),
+    'securityagent list-agent-spaces': ok({ agentSpaceSummaries: [
+      { agentSpaceId: 'as-1', name: 'prism-d1-security' }, { agentSpaceId: 'as-2', name: 'pentest-github.com-demo-shop' }, { agentSpaceId: 'as-3', name: 'console-trial' }] }),
+    'securityagent batch-get-agent-spaces': ok({ agentSpaces: [
+      { agentSpaceId: 'as-1', createdAt: '2026-11-02T00:00:00Z', awsResources: { s3Buckets: ['arn:aws:s3:::prism-scan-demo'] } },
+      { agentSpaceId: 'as-3', createdAt: '2026-09-18T00:00:00Z', awsResources: { s3Buckets: [] } }] }),
+    'ssm get-parameter /prism/continuum/agent-space-id': ok({ Parameter: { Value: 'as-1' } }),
+    'ssm get-parameter /prism/continuum/scan-bucket': ok({ Parameter: { Value: 'prism-scan-demo' } }),
+    ...over,
+  };
+  const call: AwsCall = async (args, t) => {
+    calls.push({ args, profile: t.profile, region: t.region, timeoutMs: t.timeoutMs });
+    const key = args[0] === 'ssm' ? `ssm get-parameter ${args[3]}` : `${args[0]} ${args[1]}`;
+    return answers[key] ?? err('An error occurred (ParameterNotFound)');
+  };
+  return { call, calls };
+}
+
+const T = { profile: 'demo', region: 'us-west-2' };
+
+// ---------------------------------------------------------------- the lookup
+
+test('lookup: the read-only calls, each with a 20 s timeout and the repo\'s profile and region; spaces marked', async () => {
+  const { call, calls } = fakeAws();
+  const l = (await lookupSpaces(call, T, new Date("2026-11-14T12:00:00Z"))).lookup;
+  assert.ok(l.ok);
+  assert.deepEqual(calls.map((c) => c.args.slice(0, 2).join(' ')), ['sts get-caller-identity', 'securityagent list-agent-spaces', 'ssm get-parameter', 'ssm get-parameter', 'securityagent batch-get-agent-spaces']);
+  for (const c of calls) { assert.equal(c.timeoutMs, LOOKUP_TIMEOUT_MS); assert.equal(c.profile, 'demo'); assert.equal(c.region, 'us-west-2'); }
+  assert.ok(calls.every((c) => /^(get|list|batch-get)-/.test(c.args[1])), 'reads only');
+  assert.equal(l.account4, '••••3333', 'the account id leaves as its last 4 digits');
+  assert.equal(l.inUse, 'as-1');
+  assert.equal(l.scanBucket, 'prism-scan-demo');
+  assert.deepEqual(l.spaces.map((s) => [s.name, s.inUse, s.pentest, s.bucketListed]),
+    [['prism-d1-security', true, false, true], ['console-trial', false, false, false], ['pentest-github.com-demo-shop', false, true, null]]);
+  assert.equal(l.consoleUrl, 'https://us-west-2.console.aws.amazon.com/securityagent/home?region=us-west-2');
+  assert.ok(!JSON.stringify(l).includes('111122223333'));
+});
+
+test('lookup: failed credentials, a refused list, no region, and no space for prism-cli', async () => {
+  const expired = (await lookupSpaces(fakeAws({ 'sts get-caller-identity': err('An error occurred (ExpiredToken) when calling GetCallerIdentity: The security token included in the request is expired') }).call, T, new Date())).lookup;
+  assert.ok(!expired.ok && expired.credentials, 'credentials');
+  assert.match(expired.ok ? '' : expired.error, /ExpiredToken|expired/);
+  const denied = (await lookupSpaces(fakeAws({ 'securityagent list-agent-spaces': err('An error occurred (AccessDeniedException): not authorized to perform securityagent:ListAgentSpaces') }).call, T, new Date())).lookup;
+  assert.ok(!denied.ok && !denied.credentials);
+  const noRegion = fakeAws();
+  const nr = (await lookupSpaces(noRegion.call, { profile: null, region: null }, new Date())).lookup;
+  assert.ok(!nr.ok && /No AWS region/.test(nr.error));
+  assert.equal(noRegion.calls.length, 0, 'no call without a region');
+  const none = (await lookupSpaces(fakeAws({ 'ssm get-parameter /prism/continuum/agent-space-id': err('An error occurred (ParameterNotFound)') }).call, T, new Date())).lookup;
+  assert.ok(none.ok && none.inUse === null && none.spaces.every((s) => !s.inUse));
+  // A refused SSM read is not "not set up": it fails the lookup with its reason.
+  const ssmDenied = (await lookupSpaces(fakeAws({ 'ssm get-parameter /prism/continuum/agent-space-id': err('An error occurred (AccessDeniedException) when calling the GetParameter operation: not authorized to perform: ssm:GetParameter') }).call, T, new Date())).lookup;
+  assert.ok(!ssmDenied.ok && !ssmDenied.credentials);
+  assert.match(ssmDenied.ok ? '' : ssmDenied.error, /reading SSM \/prism\/continuum\/agent-space-id failed \(ssm:GetParameter\).*AccessDenied/);
+});
+
+test('lookup cache: verify() re-checks the account right before a write; another account drops the lookup', async () => {
+  let account = '111122223333';
+  const aws = fakeAws();
+  const call: AwsCall = async (args, t) => (args[1] === 'get-caller-identity' ? ok({ Account: account }) : aws.call(args, t));
+  const cache = new LookupCache(call);
+  assert.match((await cache.verify(T))!, /Look up agent spaces first/);
+  await cache.get(T);
+  assert.equal(await cache.verify(T), null, 'same account');
+  account = '444455556666';
+  assert.match((await cache.verify(T))!, /now point to account ••••6666, not ••••3333/);
+  assert.equal(cache.fresh(T), null, 'the stale lookup is dropped');
+});
+
+test('lookup cache: 5 minutes per profile and region; refresh forces; a failure is shown but never reused', async () => {
+  const { call, calls } = fakeAws();
+  let now = new Date('2026-11-14T12:00:00Z');
+  const cache = new LookupCache(call, () => now);
+  assert.equal(cache.peek(T), null);
+  const a = await cache.get(T);
+  assert.equal(a.cached, false);
+  const n = calls.length;
+  assert.equal((await cache.get(T)).cached, true);
+  assert.equal(calls.length, n, 'no call within the TTL');
+  assert.equal((await cache.get({ ...T, region: 'eu-west-1' })).cached, false, 'keyed by region');
+  const m = calls.length;
+  await cache.get(T, true);
+  assert.ok(calls.length > m, 'refresh calls again');
+  now = new Date(now.getTime() + LOOKUP_TTL_MS + 1);
+  assert.equal(cache.fresh(T), null, 'expired');
+  assert.equal((await cache.get(T)).cached, false);
+
+  const bad = fakeAws({ 'sts get-caller-identity': err('Unable to locate credentials') });
+  const c2 = new LookupCache(bad.call, () => now);
+  assert.equal((await c2.get(T)).lookup.ok, false);
+  assert.equal(c2.peek(T)?.ok, false, 'the failure is shown');
+  assert.equal(c2.fresh(T), null);
+  const k = bad.calls.length;
+  await c2.get(T);
+  assert.ok(bad.calls.length > k, 'a failure is never served from the cache');
+});
+
+test('execAwsCall refuses anything but a get/list/describe call, before spawning', async () => {
+  const r = await execAwsCall(['securityagent', 'create-agent-space', '--name', 'x'], { ...T, timeoutMs: 10 });
+  assert.equal(r.ok, false);
+  assert.equal(r.errorCode, 'NotReadOnly');
+});
+
+// ---------------------------------------------------------------- profile, region and command lines
+
+test('the repo\'s own resolution picks --profile and --region; env keys and the default chain pass no --profile', () => {
+  const home = tmp('home'), repo = tmp('repo');
+  mkdirSync(join(repo, '.prism'), { recursive: true });
+  writeFileSync(join(repo, '.prism', 'aws.local.json'), JSON.stringify({ profile: 'repo-demo', region: 'eu-west-1', account: '111122223333', alias: null, verifiedAt: '' }));
+  const inRepo = awsTargetFor(identityIn({ identity: { env: {}, home } }, repo));
+  assert.deepEqual(inRepo, { profile: 'repo-demo', region: 'eu-west-1' }, 'the repo file counts, as it does for the CLI there');
+  assert.deepEqual(awsTargetFor(identityIn({ identity: { env: { AWS_PROFILE: 'dev', AWS_REGION: 'us-east-2' }, home } }, tmp('r2'))), { profile: 'dev', region: 'us-east-2' });
+  assert.deepEqual(awsTargetFor(identityIn({ identity: { env: { AWS_ACCESS_KEY_ID: 'AKIAEXAMPLE', AWS_REGION: 'us-east-2' }, home } }, tmp('r3'))), { profile: null, region: 'us-east-2' });
+  assert.deepEqual(awsTargetFor(identityIn({ identity: { env: {}, home } }, tmp('r4'))), { profile: null, region: null });
+  assert.deepEqual(targetArgs({ profile: 'dev', region: 'us-west-2' }), ['--profile', 'dev', '--region', 'us-west-2']);
+  assert.equal(commandLine(ACTIONS['security-code-review'].args, join(home, 'src', 'demo shop'), home, { profile: 'dev', region: 'us-west-2' }),
+    "cd '~/src/demo shop' && prism-cli security code-review --no-wait --profile dev --region us-west-2");
+});
+
+test('the page actions: fixed ids, in the repo, read-only except the two --no-wait uploads', () => {
+  for (const id of SECURITY_ACTIONS) {
+    const a = ACTIONS[id];
+    assert.equal(a.repo, true, id); assert.equal(a.awsTarget, true, id);
+    assert.ok(!!a.readOnlyAws !== !!a.writesAws, `${id}: read-only or writing, not both`);
+  }
+  assert.deepEqual(SECURITY_ACTIONS.filter((id) => ACTIONS[id].writesAws), ['security-code-review', 'security-code-review-full', 'security-threat-model']);
+  assert.deepEqual(Object.keys(WRITE_KIND).sort(), ['security-code-review', 'security-code-review-full', 'security-threat-model']);
+  for (const id of SECURITY_ACTIONS) assert.ok(!/pentest$|pentest --(status|dry-run)|^enable security$/.test(ACTIONS[id].args.join(' ')) || id === 'security-pentest-findings', id);
+});
+
+// ---------------------------------------------------------------- the runner gates
+
+interface Spawned { file: string; args: string[]; opts: any; child: any }
+const REPO: ScanRepo = { id: repoId('/work/demo'), name: 'demo', path: '/work/demo' };
+function fakeSpawn(calls: Spawned[]) {
+  return (file: string, args: string[], opts: any) => {
+    const child: any = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => true;
+    calls.push({ file, args, opts, child });
+    setTimeout(() => child.emit('close', 0), 1);
+    return child;
+  };
+}
+const runnerWith = (calls: Spawned[], over: Partial<ConstructorParameters<typeof ActionRunner>[0]> = {}) => new ActionRunner({
+  execPath: '/usr/bin/node', entry: '/opt/prism/dist/bin/prism-cli.js', cwd: '/work', home: tmp('home'), repos: async () => [REPO],
+  systemdAvailable: () => false, platform: 'linux', spawn: fakeSpawn(calls) as any,
+  awsArgs: () => ['--profile', 'demo', '--region', 'us-west-2'], writeGate: () => null, ...over,
+});
+const until = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 5)); };
+
+test('runner: a security action needs a repo id from the scan list; the cwd is that repo; the server appends --profile/--region', async () => {
+  const calls: Spawned[] = [];
+  const r = runnerWith(calls);
+  assert.equal((await r.start({ action: 'security-findings' })).status, 400, 'no repo');
+  assert.equal((await r.start({ action: 'security-findings', repo: '../../etc' })).status, 400, 'not an id');
+  assert.equal((await r.start({ action: 'security-findings', repo: 'ffffffffffffffff' })).status, 400, 'unknown id');
+  assert.equal((await r.start({ action: 'security-findings', repo: REPO.id, profile: 'evil' })).status, 400, 'no profile from the page');
+  assert.equal((await r.start({ action: 'security-findings', repo: REPO.id, path: '/tmp' })).status, 400, 'no path from the page');
+  assert.equal(calls.length, 0);
+  const res = await r.start({ action: 'security-findings', repo: REPO.id });
+  assert.equal(res.status, 202);
+  assert.deepEqual(calls[0].args, ['/opt/prism/dist/bin/prism-cli.js', 'security', 'findings', '--profile', 'demo', '--region', 'us-west-2']);
+  assert.equal(calls[0].opts.cwd, '/work/demo');
+  assert.equal(calls[0].opts.shell, false);
+  assert.equal((res.json as any).command, 'prism-cli security findings --profile demo --region us-west-2');
+  await until(() => !r.running);
+  const bad = runnerWith([], { awsArgs: () => ['--profile', 'x; rm -rf /'] });
+  assert.equal((await bad.start({ action: 'security-findings', repo: REPO.id })).status, 400, 'a resolved value that is not a profile name is refused');
+  const dash = runnerWith([], { awsArgs: () => ['--profile', '--endpoint-url=http://evil'] });
+  assert.equal((await dash.start({ action: 'security-findings', repo: REPO.id })).status, 400, 'a value that reads as a flag is refused');
+});
+
+test('runner: an async write gate holds the action lock while it checks', async () => {
+  let release!: (v: string | null) => void;
+  const calls: Spawned[] = [];
+  const r = runnerWith(calls, { writeGate: () => new Promise((res) => { release = res; }) });
+  const first = r.start({ action: 'security-code-review', repo: REPO.id, confirm: true });
+  await new Promise((res) => setTimeout(res, 5));
+  assert.equal(r.running, true, 'locked during the check');
+  assert.equal((await r.start({ action: 'security-findings', repo: REPO.id })).status, 409);
+  release('the credentials now point to account ••••6666');
+  assert.equal((await first).status, 409);
+  assert.equal(r.running, false);
+  assert.equal(calls.length, 0);
+  const thrower = runnerWith(calls, { writeGate: async () => { throw new Error('boom'); } });
+  assert.equal((await thrower.start({ action: 'security-code-review', repo: REPO.id, confirm: true })).status, 409, 'a failing check refuses');
+  assert.equal(thrower.running, false);
+});
+
+test('runner: the AWS-writing actions need confirm and a passing write gate; one action at a time', async () => {
+  const calls: Spawned[] = [];
+  assert.equal((await runnerWith(calls).start({ action: 'security-code-review', repo: REPO.id })).status, 400, 'needs confirm: true');
+  const gated = await runnerWith(calls, { writeGate: () => 'Look up agent spaces first' }).start({ action: 'security-code-review', repo: REPO.id, confirm: true });
+  assert.equal(gated.status, 409);
+  assert.match((gated.json as any).error, /Look up agent spaces first/);
+  assert.equal((await runnerWith(calls, { writeGate: undefined }).start({ action: 'security-threat-model', repo: REPO.id, confirm: true })).status, 409, 'no gate: refused');
+  assert.equal(calls.length, 0);
+  let seen: [ActionId, string] | null = null;
+  const r = runnerWith(calls, { writeGate: (id, repo) => { seen = [id, repo.path]; return null; }, spawn: ((f: string, a: string[], o: any) => { const c: any = new EventEmitter(); c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => true; calls.push({ file: f, args: a, opts: o, child: c }); return c; }) as any });
+  assert.equal((await r.start({ action: 'security-code-review-full', repo: REPO.id, confirm: true })).status, 202);
+  assert.deepEqual(seen, ['security-code-review-full', '/work/demo']);
+  assert.deepEqual(calls[0].args.slice(1), ['security', 'code-review', '--full', '--no-wait', '--profile', 'demo', '--region', 'us-west-2']);
+  assert.equal((await r.start({ action: 'security-threat-model', repo: REPO.id, confirm: true })).status, 409, 'one at a time');
+  calls[0].child.emit('close', 0);
+});
+
+test('write notice: names the repo, scan bucket, masked account and region; refuses without a usable lookup', () => {
+  const good: Lookup = { ok: true, at: '', profile: 'demo', region: 'us-west-2', account4: '••••3333', spaces: [], inUse: 'as-1', scanBucket: 'prism-scan-demo', consoleUrl: '' };
+  assert.equal(writeNotice('code review', 'demo-shop', good).text,
+    'Uploads demo-shop source at HEAD to the scan bucket prism-scan-demo in account ••••3333 / us-west-2 and starts a code review job.');
+  assert.match(writeNotice('threat model', 'demo-shop', good).text!, /^Uploads demo-shop source at HEAD to the scan bucket prism-scan-demo in account ••••3333 \/ us-west-2 and starts a threat model job\. Its scope docs/);
+  assert.match(writeNotice('code review', 'x', null).reason!, /Look up agent spaces first/);
+  assert.match(writeNotice('code review', 'x', { ...good, inUse: null }).reason!, /run enable security first/);
+  assert.match(writeNotice('code review', 'x', { ...good, scanBucket: null }).reason!, /scan-bucket is not set/);
+  assert.match(writeNotice('code review', 'x', { ok: false, at: '', profile: null, region: 'us-west-2', error: 'e', credentials: true }).reason!, /Look up agent spaces first/);
+});
+
+// ---------------------------------------------------------------- routes
+
+function saDeps(home: string, repos: (ScanRepo & { current: boolean })[], aws = fakeAws(), runner?: ActionRunner): SecurityAgentDeps & { aws: ReturnType<typeof fakeAws> } {
+  const r = runner ?? runnerWith([]);
+  return { repos: async () => repos, identity: { env: { AWS_PROFILE: 'demo', AWS_REGION: 'us-west-2' }, home }, cache: new LookupCache(aws.call), exclusive: (fn) => r.exclusive(fn), aws };
+}
+
+test('GET /api/security-agent makes no AWS call: identity, marker, commands and notices per repo', async () => {
+  const home = tmp('home'), path = join(home, 'src', 'demo');
+  mkdirSync(join(path, '.prism'), { recursive: true });
+  writeFileSync(join(path, '.prism', 'security.local.json'), JSON.stringify({ agentSpaceId: 'as-1', applicationId: 'app-1', codeReviewId: 'cr-1', region: 'us-west-2', account: '111122223333', setupAt: '2026-11-02T00:00:00Z' }));
+  const d = saDeps(home, [{ id: repoId(path), name: 'demo', path, current: true }]);
+  const v = await securityAgentView(d);
+  assert.equal(d.aws.calls.length, 0, 'no AWS call');
+  const r = v.repos[0];
+  assert.equal(r.path, '~/src/demo');
+  assert.deepEqual([r.target.profile, r.target.region, r.target.source], ['demo', 'us-west-2', 'AWS_PROFILE']);
+  assert.deepEqual(r.marker, { agentSpaceId: 'as-1', codeReviewId: 'cr-1', account4: '••••3333', region: 'us-west-2', setupAt: '2026-11-02T00:00:00Z' });
+  assert.equal(r.commands['security-status'], 'cd ~/src/demo && prism-cli enable security --status --profile demo --region us-west-2');
+  assert.equal(r.copy.pentest, 'cd ~/src/demo && prism-cli security pentest --profile demo --region us-west-2');
+  assert.equal(r.notices['security-code-review'].text, null, 'no lookup yet');
+  assert.equal(r.lookup, null);
+  assert.ok(!JSON.stringify(v).includes('111122223333'), 'no full account id');
+  // After a lookup, the notices name the bucket.
+  await d.cache.get({ profile: 'demo', region: 'us-west-2' });
+  const v2 = await securityAgentView(d);
+  assert.match(v2.repos[0].notices['security-code-review'].text!, /^Uploads demo source at HEAD to the scan bucket prism-scan-demo in account ••••3333 \/ us-west-2/);
+});
+
+test('POST /api/security-agent/spaces: repo ids from the scan list only, runs under the action lock', async () => {
+  const home = tmp('home'), path = join(home, 'demo');
+  const calls: Spawned[] = [];
+  const runner = runnerWith(calls, { spawn: ((f: string, a: string[], o: any) => { const c: any = new EventEmitter(); c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => true; calls.push({ file: f, args: a, opts: o, child: c }); return c; }) as any, repos: async () => [{ id: repoId(path), name: 'demo', path }] });
+  const d = saDeps(home, [{ id: repoId(path), name: 'demo', path, current: true }], fakeAws(), runner);
+  assert.equal((await securityAgentLookup(d, [])).status, 400);
+  assert.equal((await securityAgentLookup(d, { repo: 'nothex' })).status, 400);
+  assert.equal((await securityAgentLookup(d, { repo: 'ffffffffffffffff' })).status, 400, 'unknown repo');
+  assert.equal((await securityAgentLookup(d, { repo: repoId(path), region: 'us-east-1' })).status, 400, 'no other fields');
+  assert.equal((await securityAgentLookup(d, { repo: repoId(path), refresh: 'yes' })).status, 400);
+  assert.equal(d.aws.calls.length, 0);
+  await runner.start({ action: 'security-status', repo: repoId(path) });
+  assert.equal((await securityAgentLookup(d, { repo: repoId(path) })).status, 409, 'waits for the running action');
+  calls[0].child.emit('close', 0);
+  const r = await securityAgentLookup(d, { repo: repoId(path) });
+  assert.equal(r.status, 200);
+  assert.equal((r.json as any).lookup.ok, true);
+  assert.equal((r.json as any).cached, false);
+  assert.equal(((await securityAgentLookup(d, { repo: repoId(path) })).json as any).cached, true);
+  assert.equal(((await securityAgentLookup(d, { repo: repoId(path), refresh: true })).json as any).cached, false);
+});
+
+test('setup-api: the routes are mounted; the catalog flags the writing actions', async () => {
+  const home = tmp('home');
+  const api = setupApi({ runner: runnerWith([]), cwd: '/work', repoPaths: async () => [], identity: { env: {}, home, repoRoot: null }, refresh: async () => ({}), securityAgent: saDeps(home, []) });
+  assert.ok(api.getApi['/api/security-agent']);
+  assert.ok(api.postApi['/api/security-agent/spaces']);
+  const cat = (await api.getApi['/api/setup']()) as any;
+  assert.deepEqual(cat.actions.filter((a: any) => a.writesAws).map((a: any) => a.id), ['security-code-review', 'security-code-review-full', 'security-threat-model']);
+  const none = setupApi({ runner: runnerWith([]), cwd: '/work', repoPaths: async () => [], identity: { env: {}, home, repoRoot: null }, refresh: async () => ({}) });
+  assert.equal((await none.postApi['/api/security-agent/spaces']({ repo: 'x' })).status, 400);
+});
+
+// ---------------------------------------------------------------- the page
+
+async function pagePayload(): Promise<DashboardPayload> {
+  const home = tmp('ph');
+  for (const n of ['demo-shop', 'payments']) mkdirSync(join(home, n, '.git'), { recursive: true });
+  return buildPayload({
+    cwd: tmp('nowhere'), home, pathEnv: tmp('path'),
+    exporter: async () => ({ schema: 'codeburn.export.v2', currency: { code: 'USD' }, summary: [{ 'Cost (USD)': 0, 'API Calls': 0, Sessions: 0 }], periods: [], projects: [] }),
+    machineDeps: { home, env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', systemdAvailable: () => false },
+    version: async () => ({ installed: '1.14.0', latest: '1.14.0', publishedAt: '2026-11-13T00:00:00.000Z', update: false, checkedAt: '2026-11-14T00:00:00.000Z' }),
+    agentHooks: () => ({ rows: [], plugin: { active: false, version: null, outdated: false } }),
+  });
+}
+
+const row = (path: string, over: Record<string, unknown> = {}) => ({
+  name: 'x', path, current: false, job_id: 'job-1', job_status: 'COMPLETED', status: 'findings', scope: 'diff', started_at: '2026-11-13T10:00:00Z', finished_at: '2026-11-13T10:20:00Z',
+  counts: {}, findings: [], truncated: false, reason: null, pending: false, stale: false, threats: [], more: 0, scope_docs: [], overview: '', commit: null, target_host: 'app.internal', teardown_failed: null, ...over,
+});
+
+function saAnswer(p: DashboardPayload, lookup: Lookup | null, current = 0) {
+  return {
+    ttlSec: 300,
+    repos: p.repos.map((r, i) => ({
+      id: r.id, name: r.name, path: '~/' + r.name, current: i === current, marker: null,
+      target: { profile: 'demo', region: 'us-west-2', source: 'aws connect, user', credentialLabel: 'IAM Identity Center (SSO)' },
+      commands: Object.fromEntries(SECURITY_ACTIONS.map((id) => [id, `cd ~/${r.name} && prism-cli ${ACTIONS[id].args.join(' ')} --profile demo --region us-west-2`])),
+      copy: { enableSecurity: `cd ~/${r.name} && prism-cli enable security`, pentest: 'p', pentestDryRun: 'pd', pentestStatus: 'ps' },
+      notices: Object.fromEntries(Object.entries(WRITE_KIND).map(([id, kind]) => [id, writeNotice(kind!, r.name, lookup)])),
+      lookup,
+    })),
+  };
+}
+const GOOD: Lookup = { ok: true, at: '2026-11-14T12:00:00Z', profile: 'demo', region: 'us-west-2', account4: '••••3333', inUse: 'as-1', scanBucket: 'prism-scan-demo', consoleUrl: 'https://us-west-2.console.aws.amazon.com/securityagent/home?region=us-west-2',
+  spaces: [{ id: 'as-1', name: 'prism-d1-security', createdAt: null, inUse: true, pentest: false, bucketListed: true }, { id: 'as-2', name: 'pentest-demo', createdAt: null, inUse: false, pentest: true, bucketListed: null }] };
+const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, label: ACTIONS[id].label, command: 'prism-cli ' + ACTIONS[id].args.join(' '), repo: true, url: false, confirm: !!ACTIONS[id].confirm, readOnlyAws: !!ACTIONS[id].readOnlyAws, writesAws: !!ACTIONS[id].writesAws, note: ACTIONS[id].note ?? null, installs: false, timeoutSec: 180, available: true })) };
+
+const buttons = (root: FakeElement) => root.querySelectorAll('button');
+const btn = (root: FakeElement, label: string) => buttons(root).find((b) => b.textContent === label);
+
+test('page: Dashboard | Security Agent | Settings; #security opens the page on the current repo; #security/<id> on that repo', async () => {
+  const p = await pagePayload();
+  const [a, b] = p.repos;
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, null, 0) });
+  const sec = page.dom.byId.security;
+  assert.equal(sec.hidden, false);
+  assert.equal(page.dom.byId.main.hidden, true);
+  assert.match(sec.textContent, new RegExp('Results for ' + a.name));
+  page.go('#security/' + b.id);
+  assert.match(sec.textContent, new RegExp('Results for ' + b.name));
+  page.go('#security/ffffffffffffffff');
+  assert.match(sec.textContent, new RegExp('Results for ' + b.name), 'an unknown id keeps the last pick');
+  const sel = sec.all().find((e) => e.nodeName === 'SELECT')!;
+  sel.value = a.id; sel.listeners.change();
+  assert.equal(page.location.hash, '#security/' + a.id, 'the picker writes the deep link');
+  page.go('');
+  assert.equal(sec.hidden, true);
+  const { renderPage } = await import('../src/dashboard/page.js');
+  assert.match(renderPage('N'), /<a href="#">Dashboard<\/a>|data-view="dashboard">Dashboard<\/a><a href="#security" data-view="security">Security Agent <span class="badge warn" id="security-badge" hidden><\/span><\/a><a href="#settings" data-view="settings">Settings/);
+});
+
+test('page: no AWS call on load; the lookup runs on a click only, for the picked repo', async () => {
+  const p = await pagePayload();
+  let lookups = 0;
+  const page = await runPage([p], '#security/' + p.repos[1].id, SETUP, {
+    '/api/security-agent': saAnswer(p, null),
+    '/api/security-agent/spaces': (body: any) => { lookups++; assert.deepEqual(body, { repo: p.repos[1].id, refresh: false }); return { lookup: GOOD, cached: false }; },
+  });
+  assert.equal(page.requests.filter((r) => r.method === 'POST').length, 0, 'loading posts nothing');
+  assert.ok(page.requests.some((r) => r.url === '/api/security-agent'));
+  btn(page.dom.byId.security, 'Look up agent spaces')!.listeners.click();
+  await page.settle();
+  assert.equal(lookups, 1);
+});
+
+test('page: the code review Run is gated on a lookup; its dialog names repo, bucket, masked account and region, with Cancel focused', async () => {
+  const p = await pagePayload();
+  const before = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, null) });
+  assert.equal(btn(before.dom.byId.security, 'Start code review'), undefined, 'no Run before a lookup');
+  assert.match(before.dom.byId.security.textContent, /Look up agent spaces first, so the dialog can name the account, region and scan bucket\./);
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
+  btn(page.dom.byId.security, 'Start code review')!.listeners.click();
+  const dlg = page.dom.document.body.childNodes.find((n) => n instanceof FakeElement && n.nodeName === 'DIALOG') as FakeElement;
+  assert.ok(dlg.modal);
+  const t = dlg.textContent;
+  assert.match(t, new RegExp('Uploads ' + p.repos[0].name + ' source at HEAD to the scan bucket prism-scan-demo in account ••••3333 / us-west-2 and starts a code review job\\.'));
+  assert.match(t, new RegExp('cd ~/' + p.repos[0].name + ' && prism-cli security code-review --no-wait --profile demo --region us-west-2'));
+  const cancel = buttons(dlg).find((b) => b.textContent === 'Cancel')!, run = buttons(dlg).find((b) => b.textContent === 'Upload and start')!;
+  assert.ok(cancel.focused, 'Cancel has the focus: Enter never confirms');
+  assert.ok(!run.focused);
+  run.listeners.click();
+  await page.settle();
+  const post = page.requests.find((r) => r.url === '/api/action')!;
+  assert.deepEqual(post.body, { action: 'security-code-review', repo: p.repos[0].id, confirm: true }, 'only the action id, the repo id and confirm');
+});
+
+test('page: copy-only for enable security and every pentest command; Run for the read-only fetches', async () => {
+  const p = await pagePayload();
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
+  const labels = buttons(page.dom.byId.security).map((b) => b.textContent);
+  for (const l of ['Fetch findings', 'Fetch threats', 'Fetch pentest findings', 'Start code review', 'Start full review', 'Start threat model', 'Run status check', 'Dry run']) assert.ok(labels.includes(l), l);
+  assert.ok(!labels.some((l) => /pentest/i.test(l) && !/Fetch/.test(l)), 'no Run for pentest');
+  const t = page.dom.byId.security.textContent;
+  assert.match(t, /cd ~\/\S+ && prism-cli enable securityCopy/);
+});
+
+test('nav badge: failed credentials, no space after a lookup, high latest results, pending reviews and threat models; not a running pentest', async () => {
+  const p = await pagePayload();
+  const path = p.repos[0].path;
+  const badge = async (sec: unknown, lookup: Lookup | null) => {
+    const q = JSON.parse(JSON.stringify(p)) as DashboardPayload;
+    (q as any).security = { repos: [], pentests: [], threat_models: [], hint: '', pending_hint: '', pentest_hint: '', threats_hint: '', ...(sec as object) };
+    const page = await runPage([q], '', SETUP, { '/api/security-agent': saAnswer(q, lookup) });
+    const b = page.dom.byId['security-badge'];
+    return b.hidden ? 0 : Number(b.textContent);
+  };
+  assert.equal(await badge({}, null), 0, 'nothing known: no badge, no guess');
+  assert.equal(await badge({}, GOOD), 0);
+  assert.equal(await badge({ pentests: [row(path, { pending: true, status: 'pending' })] }, GOOD), 0, 'a running pentest is not counted');
+  assert.equal(await badge({ pentests: [row(path, { counts: { HIGH: 1 } })] }, GOOD), 1, 'a finished pentest with a high finding is');
+  assert.equal(await badge({ repos: [row(path, { pending: true, status: 'pending' })] }, GOOD), 1, 'pending code review');
+  assert.equal(await badge({ threat_models: [row(path, { pending: true, status: 'pending' })] }, GOOD), 1, 'pending threat model');
+  assert.equal(await badge({ repos: [row(path, { counts: { CRITICAL: 1 } })], threat_models: [row(path, { counts: { HIGH: 2 } })] }, GOOD), 2);
+  assert.equal(await badge({ repos: [row(path, { counts: { MEDIUM: 4 } })] }, GOOD), 0, 'medium only: nothing to act on');
+  assert.equal(await badge({ repos: [row(p.repos[1].path, { counts: { HIGH: 1 } })] }, GOOD), 0, 'another repo\'s finding is not the picked repo\'s');
+  assert.equal(await badge({}, { ...GOOD, inUse: null }), 1, 'no space for prism-cli');
+  assert.equal(await badge({}, { ok: false, at: '', profile: 'demo', region: 'us-west-2', error: 'ExpiredToken', credentials: true }), 1, 'credentials');
+  assert.equal(await badge({}, { ok: false, at: '', profile: 'demo', region: 'us-west-2', error: 'AccessDenied', credentials: false }), 0, 'a refused list is not a credentials failure');
+});
+
+test('page: no space for prism-cli shows the set-up flow first; failed credentials show the sign-in callout', async () => {
+  const p = await pagePayload();
+  const nospace = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, { ...GOOD, inUse: null }) });
+  assert.match(nospace.dom.byId.security.textContent, /Set up Security Agentwith prism-cli enable security/);
+  const creds = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, { ok: false, at: '', profile: 'demo', region: 'us-west-2', error: 'the credentials did not work: ExpiredToken', credentials: true }) });
+  assert.match(creds.dom.byId.security.textContent, /The AWS credentials did not work\./);
+});
+
+test('Settings > AWS points to the Security Agent page; the Dashboard\'s security rows link to it per repo', async () => {
+  const p = await pagePayload();
+  const settings = await runPage([p], '#settings/aws', { ...SETUP, aws: { steps: [], warnings: [] } });
+  const aws = settings.dom.byId.settings.all().find((e) => e.getAttribute('data-pane') === 'aws')!;
+  assert.match(aws.textContent, /^AWSSecurity Agent moved to its own page: Security Agent →/);
+  assert.ok(aws.querySelectorAll('a').some((a) => a.getAttribute('href') === '#security'));
+  assert.doesNotMatch(aws.textContent, /Security Agent runs/, 'the copy-only Security Agent rows moved to the page');
+  const q = JSON.parse(JSON.stringify(p)) as DashboardPayload;
+  (q as any).security = { repos: [row(q.repos[1].path, { counts: { HIGH: 1 } })], pentests: [], threat_models: [], hint: '', pending_hint: '', pentest_hint: '', threats_hint: '' };
+  const dash = await runPage([q]);
+  const link = dash.dom.byId.main.querySelectorAll('a').find((a) => a.textContent === 'Open in Security Agent →');
+  assert.equal(link?.getAttribute('href'), '#security/' + q.repos[1].id);
+});
