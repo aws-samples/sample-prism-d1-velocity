@@ -1405,7 +1405,10 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   each time you open its page and on the page's minute refresh, so it shows its findings once they
   are fetched, without a reload. An unknown or deleted run id, or a result file whose job id is not
   a plain id, shows **Run not found** with a link
-  back. The page reads one local result file through `GET /api/security-run`, which takes only the
+  back (the API answers 404, and the page does not ask again). If the run cannot be loaded for any
+  other reason, the page says **Could not load this run** with **Retry**; that state is not kept. A
+  refresh keeps the severity filter you picked and the findings you opened, and leaves the page
+  alone when nothing changed. The page reads one local result file through `GET /api/security-run`, which takes only the
   repo id and the run id and matches both against the dashboard's own repo list. Finding text, which
   comes from AWS and from code, is shown as text.
 - **Action output.** When a fetch or start action saves a finished run, the drawer ends with

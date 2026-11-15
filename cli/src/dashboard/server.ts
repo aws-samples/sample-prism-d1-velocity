@@ -127,6 +127,11 @@ function sameOrigin(req: IncomingMessage, port: number): boolean {
 const json = (res: ServerResponse, status: number, body: unknown) =>
   send(res, status, 'application/json; charset=utf-8', JSON.stringify(body));
 
+/** A GET route's answer with a status other than 200 (for example 404 for an unknown id). */
+export class ApiAnswer {
+  constructor(public readonly status: number, public readonly json: unknown) {}
+}
+
 export function createHandler(opts: HandlerOptions) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -180,7 +185,7 @@ export function createHandler(opts: HandlerOptions) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(payload));
       }
       const extra = own(opts.getApi, url.pathname);
-      if (extra) return json(res, 200, await extra(url));
+      if (extra) { const out = await extra(url); return out instanceof ApiAnswer ? json(res, out.status, out.json) : json(res, 200, out); }
       const m = REPORT_ROUTE.exec(url.pathname);
       if (m && opts.getReport) {
         const report = await opts.getReport(m[1]);

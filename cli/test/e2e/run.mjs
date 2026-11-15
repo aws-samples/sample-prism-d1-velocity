@@ -673,7 +673,7 @@ try {
     const out = {};
     R.suites.runs = out;
     const srv = await live('runs', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete' });
-    const { ctx, page, log } = await openCtx(srv);
+    const { ctx, page, log, setTag } = await openCtx(srv);
     out.log = log;
     const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
     out.total = (data.security_runs || []).length;
@@ -730,9 +730,11 @@ try {
     }
     await page.screenshot({ path: join(SHOTS, 'runs-drilldown-1280-light.png'), fullPage: true });
     await setTheme(page, 'dark');
-    // An unknown run id.
+    // An unknown run id: the API answers 404 on purpose (the console verdict expects exactly that request).
+    setTag('expected-404');
     await page.goto(srv.base + '/#security/run/0000000000000000/nope'); await sleep(900);
     out.missing = await page.evaluate(() => document.getElementById('security').innerText.slice(0, 400));
+    setTag('runs');
     await ctx.close();
     // Phone width: the Dashboard card and a drill-down stack, no sideways scroll.
     const phone = await openCtx(srv, { width: 390, height: 844 });
@@ -819,6 +821,9 @@ function verdicts(R) {
   const logs = [];
   const collect = (x) => { if (!x || typeof x !== 'object') return; if (Array.isArray(x.log)) logs.push(...x.log); for (const v of Object.values(x)) if (v && typeof v === 'object') collect(v); };
   for (const [k, v] of Object.entries(S)) if (k !== 'auth') collect(v);
+  // The unknown-run probe's 404 is the answer under test, and the browser logs it too.
+  const expected = (l) => l.tag === 'expected-404' && (/\/api\/security-run\?repo=0000000000000000&run=nope/.test(l.text) || /status of 404/.test(l.text));
+  logs.splice(0, logs.length, ...logs.filter((l) => !expected(l)));
   add('console', 'no console errors, page errors, failed requests or 4xx/5xx', !logs.length, logs.slice(0, 5).map((l) => `${l.tag}: ${l.type} ${l.text}`).join('; '));
   if (S.nav) {
     const wrong = S.nav.deep.filter((d) => d.route.startsWith('#settings') || d.route === '#setup' ? !d.visible.includes('settings') : d.route.startsWith('#security') ? !d.visible.includes('security')
