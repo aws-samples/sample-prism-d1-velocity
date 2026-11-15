@@ -13,8 +13,10 @@ import { ADVICE, GROUPS } from './advice.js';
 export const NO_REPORT_STEP = 'No credential report exists yet. Run `prism-cli bedrock-protection scan-account` once (it generates one, which is a write) or `aws iam generate-credential-report`, then re-run aws check.';
 
 const NO_REPORT = /ReportNotPresent/;
-// Checked before DENIED: Cost Explorer answers AccessDeniedException "User not enabled for cost explorer access".
-const NOT_AVAILABLE = /OptInRequired|SubscriptionRequired|not (?:enabled|subscribed) for|not (?:available|supported) in (?:this |the |your )?region/i;
+// Cost Explorer that is switched off answers AccessDeniedException "User not enabled for cost explorer access":
+// the one access-denied-shaped error that is not about IAM, so it is matched before DENIED.
+const CE_OFF = /not enabled for cost explorer/i;
+const NOT_AVAILABLE = /OptInRequired|SubscriptionRequired|not (?:available|supported) in (?:this |the |your )?region/i;
 // shortcut: 'Could not connect to the endpoint URL' stays 'other': it also means offline, DNS or a proxy. Classify it as not-available only if a regional service map is added.
 const THROTTLED = /Throttl|TooManyRequests|RequestLimitExceeded|Rate exceeded|SlowDown/i;
 const DENIED = /AccessDenied|UnauthorizedOperation|AuthorizationError|not authorized|Unauthorized/i;
@@ -22,9 +24,11 @@ const DENIED = /AccessDenied|UnauthorizedOperation|AuthorizationError|not author
 /** The reason an AWS CLI error text points at, from its code and message. */
 export function classifyAwsError(text: string): IndeterminateReason {
   if (NO_REPORT.test(text)) return 'no-credential-report';
+  if (CE_OFF.test(text)) return 'not-available';
+  // Access denied wins over a looser "not available" wording in the same message.
+  if (DENIED.test(text)) return 'access-denied';
   if (NOT_AVAILABLE.test(text)) return 'not-available';
   if (THROTTLED.test(text)) return 'throttled';
-  if (DENIED.test(text)) return 'access-denied';
   return 'other';
 }
 

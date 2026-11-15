@@ -216,3 +216,12 @@ test('harness: outside withFakeAws, `aws` is the blocking stub, metadata is off 
   assert.equal(process.env.AWS_EC2_METADATA_DISABLED, 'true');
   for (const k of ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SESSION_TOKEN']) assert.equal(process.env[k], '', k);
 });
+
+test('classify: an access-denied message wins over "not enabled for" wording; switched-off Cost Explorer stays not-available', () => {
+  for (const t of [
+    'An error occurred (AccessDeniedException) when calling the DescribeHub operation: User: arn:aws:sts::111122223333:assumed-role/R/x is not authorized to perform: securityhub:DescribeHub because no identity-based policy allows it; the action is not enabled for this principal',
+    'AccessDenied: Access to this feature is not enabled for your role',
+    'UnauthorizedOperation: not available in this region for this user',
+  ]) assert.equal(classifyAwsError(t), 'access-denied', t);
+  assert.equal(classifyAwsError('An error occurred (AccessDeniedException) when calling the GetAnomalyMonitors operation: User not enabled for cost explorer access'), 'not-available');
+});

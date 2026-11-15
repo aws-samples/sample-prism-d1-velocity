@@ -221,7 +221,7 @@ function jsonRun(h: ReturnType<typeof harness>, errs: string[]) {
     assert.equal(h.lines.length, 1, 'stdout is one JSON object');
     const text = h.lines[0];
     assert.ok(!/\b\d{12}\b/.test(text), 'no full account id: ' + text);
-    assert.ok(!/arn:aws/.test(text), 'no caller ARN');
+    assert.ok(!/arn:aws:[^\s"]*::\d{12}:/.test(text), 'no caller ARN with its account id');
     assert.ok(!/AKIA|ASIA|SecretAccessKey|SessionToken|aws_secret_access_key|aws_session_token/i.test(text), 'no key material');
     return JSON.parse(text);
   };
@@ -299,4 +299,22 @@ test('connect --json: a failed connection-file write still prints one JSON objec
   assert.equal(j.connection, null);
   assert.match(j.error, /ENOTDIR|EEXIST|not a directory/i);
   assert.ok(errs.some((l) => l.startsWith('Error: ')), 'the Error line goes to stderr');
+});
+
+test('connect --json: the error field is masked like the dashboard drawer (no 12-digit id, no session name)', async () => {
+  const msg = 'An error occurred (AccessDenied) when calling the GetCallerIdentity operation: User: arn:aws:sts::444455556666:assumed-role/Dev/someone@example.com is not authorized';
+  const h = harness({ table: { 'sts get-caller-identity': { ok: false, json: null, errorCode: '', raw: msg } } });
+  const read = jsonRun(h, []);
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', json: true }, h.deps), 1);
+  const j = read();
+  assert.match(j.error, /arn:aws:sts::••••6666:assumed-role\/Dev\/…/);
+  assert.ok(!j.error.includes('someone@example.com'));
+  // --status: the same in validation.error.
+  const h2 = harness({ table: { 'sts get-caller-identity': { ok: false, json: null, errorCode: '', raw: msg } } });
+  const read2 = jsonRun(h2, []);
+  writeConnectionFile(userConnectionPath(h2.home), { profile: 'prism-sa-test', region: 'us-west-2', account: ACCOUNT, alias: null, verifiedAt: '' });
+  assert.equal(await awsConnect({ status: true, json: true }, h2.deps), 1);
+  const j2 = read2();
+  assert.match(j2.validation.error, /••••6666/);
+  assert.match(j2.error, /••••6666/);
 });

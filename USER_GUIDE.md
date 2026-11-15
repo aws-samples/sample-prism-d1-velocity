@@ -1242,10 +1242,10 @@ and links straight to it as `#settings/<tab>`:
 Every Run first shows the exact command in a confirm dialog. The page sends only an action id; the
 server maps it to a fixed argument list for this CLI's own binary (or for npm, for the update), runs
 one at a time, without a terminal (so prompts take their no-terminal answer), with a timeout. The
-output appears in an **Action output** drawer at the bottom of the window, with secrets masked (and
-account ids as their last 4 digits, an assumed-role ARN as its role name, the home directory as
-`~`), and
-each run is logged to `~/.prism/logs/dashboard-actions.log` (time, action, repo name, exit code; no
+output appears in an **Action output** drawer at the bottom of the window, with secrets masked. Every
+12-digit number shows as its last 4 digits, because it may be an account id (another account's id in
+an error is masked too); an assumed-role ARN shows its role name only; the home directory shows as
+`~`. Each run is logged to `~/.prism/logs/dashboard-actions.log` (time, action, repo name, exit code; no
 output and no URLs).
 
 - **Run (local only):** `enable codewatch` in a repo from the list, `enable codewatch --global`,
@@ -2371,7 +2371,10 @@ lines on stderr, and never prompts. The shape is `prism.aws-connect.v1`; fields 
 - connect adds `access` (`admin`, `read-only` or `unknown`) and `org` (`management`, `member`, `none`
   or `unknown`). status adds `inUse`, `envOverride` (the env var that wins over the saved profile, or
   null) and `validation` (`{ok, accountMatches, error}`). clear adds `removed` and `scope`.
-- The JSON never carries a credential, the caller ARN or the full account id. The human lines on stderr still name the full account and the caller, as without `--json`.
+- The JSON never carries a credential or a full account id. `error` and `validation.error` go through
+  the same masking as the dashboard's Action output drawer: every 12-digit number as its last 4 digits,
+  an assumed-role ARN as its role name. The human lines on stderr still name the full account and the
+  caller, as without `--json`.
 
 **How the saved connection is used.** It becomes the default for `enable security`, every `security` command, `aws check`/`aws recommend` and `bedrock-protection`. The order, per field:
 
