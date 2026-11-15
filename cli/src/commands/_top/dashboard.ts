@@ -6,7 +6,7 @@ import { ActionRunner, cliEntry, repoId } from '../../dashboard/actions.js';
 import { setupApi } from '../../dashboard/setup-api.js';
 import { profileChoices } from '../../dashboard/aws-identity.js';
 import { connectionArgs } from '../../dashboard/accountguard.js';
-import { LookupCache, securityTargetIn, targetArgs, WRITE_KIND, writeNotice } from '../../dashboard/security-agent.js';
+import { LookupCache, securityTargetIn, targetArgs, writeGateIn } from '../../dashboard/security-agent.js';
 import { repoRootOf } from '../../aws/connection.js';
 import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
 import type { DashboardPayload, PayloadTiming } from '../../dashboard/payload.js';
@@ -134,12 +134,8 @@ export default {
         npmPath: () => findOnPath('npm'),
         onDone: () => payload.invalidate(),
         awsArgs: (repo) => targetArgs(targetIn(repo.path)),
-        // A current lookup that named the space, the bucket and the account, and the same account right now.
-        writeGate: async (id, repo) => {
-          const kind = WRITE_KIND[id], t = targetIn(repo.path);
-          if (!kind) return 'not an AWS-writing action';
-          return writeNotice(kind, repo.name, lookups.fresh(t)).reason ?? await lookups.verify(t);
-        },
+        // The setup gate passes in the repo, the lookup named the space and the bucket, and the account is the same right now.
+        writeGate: (id, repo) => writeGateIn({ ...saIdentity, cache: lookups }, id, repo),
         // aws-connect accepts only names read fresh from the section headers of the two AWS files, and the region list.
         awsChoices: () => { const c = profileChoices(identity); return { profiles: c.profiles.map((p) => p.name), regions: c.regions }; },
         connectionArgs: () => connectionArgs(identity.home, identity.repoRoot),

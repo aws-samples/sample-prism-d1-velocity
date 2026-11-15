@@ -38,6 +38,7 @@ export default {
     { flags: '--fail-on <level>', description: `Exit 1 when any finding is at or above this level: ${FAIL_ON_LEVELS.join(' | ')}` },
     { flags: '--json', description: 'Print only the final result JSON (progress goes to stderr)' },
     { flags: '--no-wait', description: 'Start the job, print its id and exit' },
+    { flags: '--force', description: 'Start even while a job of this code review is still pending here (it replaces the shared source snapshot repo/<slug>/latest.zip, which that job may still read)' },
   ],
   async action(opts: CodeReviewOptions, hooks: ReviewHooks = {}) {
     await runGuarded(() => {

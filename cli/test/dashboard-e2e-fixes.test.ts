@@ -98,7 +98,7 @@ test('dashboard and repo page (B4): the last completed review keeps its findings
 
 test('Security Agent picker (B6): two repos with one name show the dashboard labels', async () => {
   const p = await payload(['a/demo-shop', 'b/demo-shop']);
-  const sa = { ttlSec: 300, repos: p.repos.map((r, i) => ({ id: r.id, name: r.name, path: '~/' + r.name, current: i === 0, marker: null, target: { profile: null, region: 'us-west-2', source: 'default chain', credentialLabel: '' }, commands: {}, copy: {}, notices: {}, lookup: null })) };
+  const sa = { ttlSec: 300, repos: p.repos.map((r, i) => ({ id: r.id, name: r.name, path: '~/' + r.name, current: i === 0, marker: null, target: { profile: null, region: 'us-west-2', source: 'default chain', credentialLabel: '' }, gate: { state: 'connect', step: 1, title: 'Connect an AWS account first', detail: [], copy: {}, using: null, info: [] }, commands: {}, copy: {}, notices: {}, lookup: null })) };
   const page = await runPage([p], '#security', SETUP_STUB, { '/api/security-agent': sa });
   const opts = page.dom.byId.security.all().filter((e) => e.nodeName === 'OPTION').map((o) => o.textContent);
   assert.deepEqual(opts.sort(), ['a/demo-shop (this repo)', 'b/demo-shop']);

@@ -100,8 +100,16 @@ export async function runPage(payloads: unknown[], hash = '', setup: unknown = n
   const window = { addEventListener: (t: string, f: () => void) => { handlers[t] = f; }, scrollTo: () => {} };
   const location = { hash };
   const localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
-  new Function('document', 'Node', 'Element', 'fetch', 'setInterval', 'window', 'location', 'localStorage', js)(
-    dom.document, FakeNode, FakeElement, fetch, () => 0, window, location, localStorage);
+  // Timers of 5 s or more (the gate's 10 s re-check) are held, not run: `timers` lists them and a test fires them.
+  const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
+  const setTimeoutFake = (fn: () => void, ms = 0) => {
+    if (ms < 5000) return setTimeout(fn, ms);
+    timers.push({ fn, ms, cleared: false });
+    return timers.length;
+  };
+  const clearTimeoutFake = (id: unknown) => { if (typeof id === 'number' && timers[id - 1]) timers[id - 1].cleared = true; else clearTimeout(id as NodeJS.Timeout); };
+  new Function('document', 'Node', 'Element', 'fetch', 'setInterval', 'window', 'location', 'localStorage', 'setTimeout', 'clearTimeout', js)(
+    dom.document, FakeNode, FakeElement, fetch, () => 0, window, location, localStorage, setTimeoutFake, clearTimeoutFake);
   const settle = () => new Promise((r) => setTimeout(r, 20));
   await settle();
   return {
@@ -112,6 +120,10 @@ export async function runPage(payloads: unknown[], hash = '', setup: unknown = n
     location,
     requests,
     settle,
+    /** The held timers still pending (not cleared, not fired). */
+    pendingTimers: () => timers.filter((t) => !t.cleared),
+    /** Fires every held timer still pending, then settles. */
+    fireTimers: async () => { const due = timers.filter((t) => !t.cleared); for (const t of due) { t.cleared = true; t.fn(); } await settle(); },
     text: () => dom.byId.main.textContent,
     settingsText: () => dom.byId.settings.textContent,
     meta: () => dom.byId.meta.textContent,

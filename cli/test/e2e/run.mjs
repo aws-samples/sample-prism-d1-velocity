@@ -98,6 +98,9 @@ const layoutCheck = (page) => page.evaluate(() => {
   return out;
 });
 
+/** Waits until the Security Agent gate passes (the "ready" strip), or 30 s. */
+const saReady = (page) => page.waitForSelector('#sa-ready', { timeout: 30000 }).then(() => sleep(300), () => {});
+
 async function setTheme(page, theme) {
   await page.click(`[data-theme-set="${theme}"]`);
   await sleep(150);
@@ -363,29 +366,15 @@ try {
     const bl = page.locator('#accountguard button', { hasText: /baseline/i }).first();
     if (await bl.count()) { await bl.click(); await sleep(800); out.steps.push({ step: 'ag baseline click', text: (await page.innerText('#accountguard')).slice(0, 600), file: existsSync(join(srv.home, '.prism', 'accountguard.json')) }); }
 
-    // Security Agent: look up agent spaces (read-only AWS) and the AWS-writing buttons.
+    // Security Agent: the gate's step 3 runs the read-only lookup by itself; without credentials it stops at the sign-in card.
     setTag('security');
-    await page.goto(srv.base + '/#security'); await sleep(900);
+    const t0 = Date.now();
+    await page.goto(srv.base + '/#security');
+    await page.waitForSelector('#sa-gate[data-state]:not([data-state="checking"])', { timeout: 90000 }).catch(() => {});
+    out.steps.push({ step: 'sa lookup', ms: Date.now() - t0, state: await page.getAttribute('#sa-gate', 'data-state').catch(() => null), text: (await page.innerText('#security')).slice(0, 1600) });
+    await page.screenshot({ path: join(SHOTS, 'actions-sa-lookup.png'), fullPage: true });
     out.saButtons = await page.$$eval('#security button', (b) => b.filter((x) => x.offsetParent).map((x) => x.textContent.trim()));
-    out.saWriteRows = await page.$$eval('#security .salist li', (l) => l.slice(0, 3).map((x) => x.innerText.replace(/\s+/g, ' ').slice(0, 200)));
-    const lk = page.locator('#security button', { hasText: /look up/i }).first();
-    if (await lk.count()) {
-      const t0 = Date.now(); await lk.click();
-      await page.waitForFunction(() => { const b = [...document.querySelectorAll('#security button')].find((x) => /look up/i.test(x.textContent)); return b && !b.disabled; }, null, { timeout: 90000 }).catch(() => {});
-      await sleep(600);
-      out.steps.push({ step: 'sa lookup', ms: Date.now() - t0, text: (await page.innerText('#security')).slice(0, 1600) });
-      await page.screenshot({ path: join(SHOTS, 'actions-sa-lookup.png'), fullPage: true });
-      out.badgeAfterLookup = await page.textContent('#security-badge');
-    }
-    const st = page.locator('#security button:visible', { hasText: /status check/i }).first();
-    if (await st.count()) {
-      await st.click(); await sleep(300);
-      out.steps.push({ step: 'sa status: dialog', ...(await dialogState()) });
-      await page.click('dialog.confirm button:not(:has-text("Cancel"))');
-      const done = await waitDone(200000);
-      out.steps.push({ step: 'sa status: result', ...done });
-      await page.screenshot({ path: join(SHOTS, 'actions-sa-status-result.png'), fullPage: true });
-    }
+    out.badgeAfterLookup = await page.textContent('#security-badge');
     // Drawer close and keyboard reach.
     const d0 = await drawer();
     await page.click('#action-drawer button:has-text("Close")').catch(() => {});
@@ -576,10 +565,10 @@ try {
   if (want('pending')) {
     const out = { steps: [] };
     R.suites.pending = out;
-    const srv = await live('pending', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress' });
+    const srv = await live('pending', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' });
     const { ctx, page, log } = await openCtx(srv);
     out.log = log;
-    await page.goto(srv.base + '/#security'); await sleep(900);
+    await page.goto(srv.base + '/#security'); await saReady(page);
     const btn = page.locator('#security button:visible', { hasText: /^Fetch findings$/ }).first();
     out.found = await btn.count();
     if (out.found) {
@@ -606,14 +595,14 @@ try {
   if (want('rerun')) {
     const out = { steps: [] };
     R.suites.rerun = out;
-    const srv = await live('rerun', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress' });
+    const srv = await live('rerun', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' });
     const { ctx, page, log } = await openCtx(srv);
     out.log = log;
     const posts = [];
     page.on('response', async (r) => { if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/action') posts.push({ status: r.status(), body: (await r.text().catch(() => '')).slice(0, 200) }); });
     const pill = () => page.evaluate(() => document.querySelector('#action-drawer .srow-head .pill')?.textContent || '');
     const runOne = async (label) => {
-      await page.goto(srv.base + '/#security'); await sleep(900);
+      await page.goto(srv.base + '/#security'); await saReady(page);
       const b = page.locator('#security button:visible', { hasText: new RegExp('^' + label + '$') }).first();
       const step = { label, found: await b.count() };
       if (step.found) {
@@ -672,7 +661,7 @@ try {
   if (want('runs')) {
     const out = {};
     R.suites.runs = out;
-    const srv = await live('runs', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete' });
+    const srv = await live('runs', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete', FAKE_SA: 'ready' });
     const { ctx, page, log, setTag } = await openCtx(srv);
     out.log = log;
     const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
@@ -686,7 +675,7 @@ try {
     });
     await page.locator('#security-runs').screenshot({ path: join(SHOTS, 'runs-dashboard-card.png') }).catch(() => {});
     // The full table on the Security Agent page, and its filters.
-    await page.goto(srv.base + '/#security'); await sleep(1200);
+    await page.goto(srv.base + '/#security'); await saReady(page);
     const types = () => page.$$eval('#security-runs-all tr[data-run] .runtype', (x) => x.map((e) => e.textContent));
     out.allRows = (await types()).length;
     await page.selectOption('#security-runs-all select[data-filter="type"]', 'threat-model'); await sleep(200);
@@ -716,7 +705,7 @@ try {
         });
         await page.screenshot({ path: join(SHOTS, 'runs-drilldown-1280.png'), fullPage: true });
         out.resultsRow = null;
-        await page.goto(srv.base + '/#security'); await sleep(1200);
+        await page.goto(srv.base + '/#security'); await saReady(page);
         out.resultsRow = await page.evaluate(() => { const tr = [...document.querySelectorAll('#security tr')].find((x) => /^Code review/.test(x.innerText) && !x.hasAttribute('data-run')); return tr ? tr.innerText.replace(/\s+/g, ' ') : ''; });
         await page.screenshot({ path: join(SHOTS, 'runs-security-agent-1280.png'), fullPage: true });
       }
@@ -751,7 +740,7 @@ try {
   if (want('machine')) {
     const out = {};
     R.suites.machine = out;
-    const srv = await live('machine', 'full', { PRISM_NO_UPDATE_CHECK: '1' });
+    const srv = await live('machine', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' });
     const { ctx, page, log } = await openCtx(srv);
     out.log = log;
     const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
@@ -761,7 +750,7 @@ try {
     for (const r of sa.repos) {
       const k = r.setup ? r.setup.source : 'none';
       if (texts[k]) continue;
-      await page.goto(srv.base + '/#security/' + r.id); await sleep(900);
+      await page.goto(srv.base + '/#security/' + r.id); await saReady(page);
       texts[k] = await page.innerText('#security');
     }
     out.texts = texts;
@@ -783,6 +772,115 @@ try {
     const bare = seed('machine-none', 'partial');
     out.noSetup = cli(bare, readFileSync(join(bare, '.start-dir'), 'utf8').trim(), ['security', 'findings']);
     out.home = home;
+  }
+  // ---------- 15. the Security Agent setup gate (1.19): every state at 1280 and 390 px, the automatic check, the guards ----------
+  if (want('gate')) {
+    const out = { states: {} };
+    R.suites.gate = out;
+    out.log = [];
+    const rmConn = (h) => rmSync(join(h, '.prism', 'aws.json'), { force: true });
+    const rmSetup = (h) => rmSync(join(h, '.prism', 'security.json'), { force: true });
+    const machineSetup = (account, region) => JSON.stringify({ agentSpaceId: 'as-0demo0000000001', applicationId: 'app-demo', region, account, setupAt: new Date().toISOString() }) + '\n';
+    const otherSetup = (h) => writeFileSync(join(h, '.prism', 'security.json'), machineSetup('444455556666', 'eu-west-1'));
+    const calls = (h) => (existsSync(join(h, 'aws-calls.log')) ? readFileSync(join(h, 'aws-calls.log'), 'utf8').split('\n').filter(Boolean) : []);
+    const settled = (page) => page.waitForFunction(() => document.getElementById('sa-ready') || document.querySelector('#sa-gate[data-state]:not([data-state="checking"])'), null, { timeout: 30000 }).catch(() => {});
+    const snap = (page) => page.evaluate(() => {
+      const g = document.getElementById('sa-gate');
+      const words = [...document.querySelectorAll('#security .cmdw .w:not(.long)')].filter((w) => w.offsetParent);
+      return {
+        state: g ? g.getAttribute('data-state') : document.getElementById('sa-ready') ? 'ready' : null,
+        text: document.getElementById('security').innerText.slice(0, 2500),
+        scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        brokenWords: words.filter((w) => w.getClientRects().length > 1).map((w) => w.textContent),
+        words: words.length,
+      };
+    });
+    // [name, expected state, seed change, env, repo]: payments-api uses the machine setup, src/demo-shop its repo override.
+    const cases = [
+      ['connect', 'connect', rmConn, {}, 'payments-api'],
+      ['profile', 'profile', null, { AWS_PROFILE: 'prism-typo' }, 'payments-api'],
+      ['setup', 'setup', rmSetup, {}, 'payments-api'],
+      ['mismatch', 'mismatch', otherSetup, {}, 'payments-api'],
+      ['checking', 'checking', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'slow' }, 'payments-api'],
+      ['sso', 'sso', null, { FAKE_SA: 'sso' }, 'payments-api'],
+      ['denied', 'denied', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'denied' }, 'payments-api'],
+      ['nospace', 'nospace', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'nospace' }, 'payments-api'],
+      ['ready', 'ready', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }, 'payments-api'],
+      ['envprofile', 'ready', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'ready', AWS_PROFILE: 'prism-readonly' }, 'payments-api'],
+      ['override', 'ready', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }, 'src/demo-shop'],
+    ];
+    for (const [name, want, change, env, repoName] of cases) {
+      const srv = await live('gate-' + name, 'full', { PRISM_NO_UPDATE_CHECK: '1', ...env }, change || undefined);
+      const o = out.states[name] = { want };
+      const desk = await openCtx(srv);
+      const sa = await desk.page.evaluate(() => fetch('/api/security-agent').then((r) => r.text()));
+      o.homeLeak = sa.includes(srv.home);
+      const repo = JSON.parse(sa).repos.find((r) => r.path.endsWith('/' + repoName));
+      const hash = '#security/' + repo.id;
+      await desk.page.goto(srv.base + '/' + hash);
+      if (name === 'checking') await desk.page.waitForSelector('#sa-gate[data-state="checking"]', { timeout: 15000 }).catch(() => {});
+      else await settled(desk.page);
+      o.desk = await snap(desk.page);
+      await desk.page.screenshot({ path: join(SHOTS, `gate-${name}-1280.png`), fullPage: true });
+      if (name === 'checking') { await settled(desk.page); o.after = (await snap(desk.page)).state; }
+      if (name === 'ready') {
+        // Loads, refreshes and a second tab: the kept answer, no second lookup.
+        await desk.page.click('#refresh'); await sleep(800); await desk.page.click('#refresh'); await sleep(800);
+        await desk.page.reload(); await saReady(desk.page);
+        o.lookupsAfterLoads = calls(srv.home).filter((c) => /^securityagent list-agent-spaces/.test(c)).length;
+        await desk.page.click('#sa-ready button:has-text("Check again")');
+        await desk.page.waitForFunction(() => { const b = document.querySelector('#sa-ready button'); return b && b.textContent === 'Check again'; }, null, { timeout: 30000 }).catch(() => {});
+        o.lookupsAfterCheckAgain = calls(srv.home).filter((c) => /^securityagent list-agent-spaces/.test(c)).length;
+      }
+      if (name === 'setup') {
+        // Run enable security elsewhere: the card notices the new file within ~10 s, with no click and no AWS call before it.
+        o.callsWhileSetup = calls(srv.home).filter((c) => !/^(--version|configure )/.test(c));
+        writeFileSync(join(srv.home, '.prism', 'security.json'), machineSetup('111122223333', 'us-west-2'));
+        const t0 = Date.now();
+        await desk.page.waitForFunction(() => { const g = document.getElementById('sa-gate'); return !g || g.getAttribute('data-state') !== 'setup'; }, null, { timeout: 20000 }).catch(() => {});
+        o.recheck = { ms: Date.now() - t0, state: (await snap(desk.page)).state };
+      }
+      if (name === 'override') {
+        // Guards: demo-shop's job-demo-2 is still running (seeded 20 min ago).
+        const cmd = (env2) => spawnSync(process.execPath, [ENTRY, 'security', 'code-review', '--no-wait'], { cwd: join(srv.home, 'src', 'demo-shop'), encoding: 'utf8', timeout: 120000, env: demoEnv(srv.home, { PRISM_NO_UPDATE_CHECK: '1', ...env2 }) });
+        const before = calls(srv.home).length;
+        const cli = cmd({ FAKE_AWS: 'in-progress', FAKE_SA: 'ready' });
+        o.cliGuard = { code: cli.status, out: ((cli.stdout || '') + (cli.stderr || '')).slice(-600), writes: calls(srv.home).slice(before).filter((c) => /^(s3api put-object|securityagent start|securityagent create)/.test(c)) };
+        const dialog = async (page, label) => {
+          await page.locator('#security button:visible', { hasText: new RegExp('^' + label + '$') }).first().click(); await sleep(300);
+          return page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return { open: !!d?.open, text: d?.innerText || '', buttons: [...(d?.querySelectorAll('button') || [])].map((b) => b.textContent), focused: document.activeElement?.textContent || '' }; });
+        };
+        o.running = await dialog(desk.page, 'Start code review');
+        await desk.page.screenshot({ path: join(SHOTS, 'gate-running-1280.png') });
+        await desk.page.click('dialog.confirm button:has-text("View it")'); await sleep(500);
+        o.runningView = await desk.page.evaluate(() => location.hash);
+        const phone = await openCtx(srv, { width: 390, height: 844 });
+        await phone.page.goto(srv.base + '/' + hash); await saReady(phone.page);
+        o.runningPhone = (await dialog(phone.page, 'Start code review')).open;
+        await phone.page.screenshot({ path: join(SHOTS, 'gate-running-390.png') });
+        // The job finishes (the CLI fetches it; the fake answers COMPLETED): HEAD now has a finished review.
+        const fin = spawnSync(process.execPath, [ENTRY, 'security', 'findings'], { cwd: join(srv.home, 'src', 'demo-shop'), encoding: 'utf8', timeout: 120000, env: demoEnv(srv.home, { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete', FAKE_SA: 'ready' }) });
+        o.finished = fin.status;
+        await desk.page.goto(srv.base + '/' + hash); await desk.page.reload(); await saReady(desk.page);
+        o.reviewed = await dialog(desk.page, 'Start code review');
+        await desk.page.screenshot({ path: join(SHOTS, 'gate-reviewed-1280.png') });
+        await desk.page.click('dialog.confirm button:has-text("Open those findings")'); await sleep(500);
+        o.reviewedOpen = await desk.page.evaluate(() => location.hash);
+        await phone.page.reload(); await saReady(phone.page);
+        o.reviewedPhone = (await dialog(phone.page, 'Start code review')).open;
+        await phone.page.screenshot({ path: join(SHOTS, 'gate-reviewed-390.png') });
+        out.log.push(...phone.log);
+        await phone.ctx.close();
+      }
+      const phone = await openCtx(srv, { width: 390, height: 844 });
+      await phone.page.goto(srv.base + '/' + hash);
+      if (name === 'checking') await phone.page.waitForSelector('#sa-gate', { timeout: 15000 }).catch(() => {}); else await settled(phone.page);
+      o.phone = await snap(phone.page);
+      await phone.page.screenshot({ path: join(SHOTS, `gate-${name}-390.png`), fullPage: true });
+      o.calls = calls(srv.home);
+      out.log.push(...desk.log, ...phone.log);
+      await desk.ctx.close(); await phone.ctx.close();
+    }
   }
 } catch (e) {
   R.fatal = String(e.stack || e);
@@ -848,11 +946,12 @@ function verdicts(R) {
       st('disconnect: dialog opened').focused === 'Cancel' && st('disconnect: dialog opened').runDisabled && st('disconnect: after checkbox').runDisabled === false
       && st('disconnect: Enter with Cancel focused').open === false && st('disconnect: after Cancel').open === false && st('disconnect: after Cancel').connFile && st('disconnect: after Esc').open === false,
       JSON.stringify(S.actions.steps.slice(0, 6)));
-    const results = ['connect: result', 'ag check: result', 'sa status: result'].map(st);
+    const results = ['connect: result', 'ag check: result'].map(st);
     add('no-hang', 'AWS actions without credentials finish with an error in the drawer, no hang', results.every((r) => r.status && !r.hung && /exit 1/.test(r.status)), JSON.stringify(results.map((r) => [r.status, r.ms])));
     add('B12', 'no doubled period in the AWS error text', results.every((r) => !/\.\./.test(r.out || '')), results.map((r) => r.out).join(' | '));
     const lookup = st('sa lookup');
-    add('sa-lookup', 'the agent-space lookup without credentials shows the sign-in callout', /The AWS credentials did not work/.test(lookup.text || ''), (lookup.text || '').slice(0, 200));
+    add('sa-lookup', 'the automatic agent-space check without credentials stops at the sign-in card, with Retry and no Start button',
+      lookup.state === 'sso' && /credentials did not work/.test(lookup.text || '') && (S.actions.saButtons || []).includes('Retry') && !(S.actions.saButtons || []).some((b) => /^Start /.test(b)), lookup.state + ' ' + (lookup.text || '').slice(0, 200));
     const writes = (S.actions.awsCalls || []).filter((c) => !READ_ONLY_AWS.test(c));
     add('aws-readonly', 'the fake aws saw read-only calls only', !writes.length, writes.join('; '));
   }
@@ -931,6 +1030,41 @@ function verdicts(R) {
     const setupRows = [so.out, ss.out].join('\n').split('\n').filter((l) => /Setup:|Repo override:/.test(l)).join('\n');
     const leak = accountLeaks(setupRows + (n.out || '') + both);
     add('M7', 'no full account id in the Setup rows, the hint or the page', setupRows && !leak.length, (setupRows ? leak : ['no Setup rows']).join(', '));
+  }
+  if (S.gate) {
+    const G = S.gate.states;
+    const st = (k) => G[k] || {};
+    const wrong = Object.entries(G).filter(([, o]) => o.desk?.state !== o.want).map(([k, o]) => `${k}: ${o.desk?.state} (want ${o.want})`);
+    add('GATE1', 'Security Agent gate: each case shows its state, and only that card (connect, profile, setup, mismatch, checking, sso, denied, nospace, ready, override)', !wrong.length && st('checking').after === 'ready', wrong.join('; ') + ' checking then ' + st('checking').after);
+    const wide = Object.entries(G).flatMap(([k, o]) => [['1280', o.desk], ['390', o.phone]].filter(([, x]) => !x || x.scroll > 1).map(([w, x]) => `${k}@${w}: ${x?.scroll}`));
+    add('GATE2', 'no sideways scroll in any gate state at 1280 or 390 px', !wide.length, wide.join('; '));
+    const broken = Object.entries(G).flatMap(([k, o]) => (o.phone?.brokenWords || []).map((w) => `${k}: ${w}`));
+    add('GATE3', 'at 390 px, commands wrap only at spaces (no --repo -/-profile split)', !broken.length && (st('mismatch').phone?.words || 0) > 10, broken.join('; ') + ' words ' + st('mismatch').phone?.words);
+    add('GATE4', 'step 1: AWS_PROFILE naming no configured profile is said; AWS_PROFILE over aws connect is named, with why',
+      /AWS_PROFILE: prism-typo names a profile that is not in ~\/\.aws\/config or ~\/\.aws\/credentials/.test(st('profile').desk?.text || '')
+      && /AWS: AWS_PROFILE: prism-readonly/.test(st('envprofile').desk?.text || '') && /AWS_PROFILE \(prism-readonly\) wins over the saved aws connect profile prism-demo: prism-cli reads the environment before/.test(st('envprofile').desk?.text || '')
+      && /Open Settings › AWS/.test(st('connect').desk?.text || ''), (st('profile').desk?.text || '').slice(0, 200) + ' | ' + (st('envprofile').desk?.text || '').slice(0, 300));
+    add('GATE5', 'step 3 runs once by itself: loads, refreshes and a second tab reuse the kept answer; Check again runs it again',
+      st('ready').lookupsAfterLoads === 1 && st('ready').lookupsAfterCheckAgain === 2, JSON.stringify([st('ready').lookupsAfterLoads, st('ready').lookupsAfterCheckAgain]));
+    add('GATE6', 'step 2: enable security copy-only, no AWS call while waiting, and the card re-checks by itself once the setup file appears',
+      /prism-cli enable security --profile prism-demo --region us-west-2/.test(st('setup').desk?.text || '') && !/cd \S+ && prism-cli enable security --profile/.test(st('setup').desk?.text || '')
+      && !(st('setup').callsWhileSetup || []).length && st('setup').recheck?.state && st('setup').recheck.state !== 'setup', JSON.stringify(st('setup').recheck) + ' calls ' + (st('setup').callsWhileSetup || []).join('; '));
+    add('GATE7', 'step 3 cards: aws sso login --profile, the denied action, enable security for a missing space, mismatch with --repo and --replace',
+      /aws sso login --profile prism-demo/.test(st('sso').desk?.text || '') && /securityagent:ListAgentSpaces/.test(st('denied').desk?.text || '')
+      && /prism-cli enable security --profile prism-demo --region us-west-2/.test(st('nospace').desk?.text || '')
+      && /cd ~\/src\/payments-api && prism-cli enable security --repo --profile prism-demo --region us-west-2/.test(st('mismatch').desk?.text || '') && /prism-cli enable security --replace --profile prism-demo --region us-west-2/.test(st('mismatch').desk?.text || ''),
+      ['sso', 'denied', 'nospace', 'mismatch'].map((k) => k + ': ' + (st(k).desk?.text || '').slice(0, 160)).join(' | '));
+    const o = st('override');
+    add('GATE8', 'start guards: a running review offers View it / Start another anyway (Cancel focused); a reviewed HEAD offers Open those findings first',
+      o.running?.open && JSON.stringify(o.running.buttons) === '["Cancel","View it →","Start another anyway"]' && o.running.focused === 'Cancel' && /^#security\/run\/[a-f0-9]{16}\//.test(o.runningView || '')
+      && o.finished === 0 && o.reviewed?.open && JSON.stringify(o.reviewed.buttons) === '["Cancel","Open those findings →","Review it again"]' && /^#security\/run\/[a-f0-9]{16}\//.test(o.reviewedOpen || '') && o.runningPhone && o.reviewedPhone
+      && /repo override/.test(o.desk?.text || ''), JSON.stringify({ running: o.running, view: o.runningView, finished: o.finished, reviewed: o.reviewed, open: o.reviewedOpen }).slice(0, 400));
+    add('GATE9', 'the CLI refuses to replace latest.zip while a job of that code review is pending (no upload, no start)',
+      o.cliGuard?.code === 1 && /still pending.*pass --force to start another anyway/s.test(o.cliGuard.out || '') && !(o.cliGuard.writes || []).length, JSON.stringify(o.cliGuard));
+    const leaks = Object.entries(G).flatMap(([k, x]) => [...accountLeaks((x.desk?.text || '') + (x.phone?.text || '')), ...(x.homeLeak ? ['home path in /api/security-agent'] : [])].map((l) => `${k}: ${l}`));
+    add('GATE10', 'no full account id on the gate cards, and no home path in /api/security-agent', !leaks.length, leaks.join('; '));
+    const writes = Object.entries(G).flatMap(([k, x]) => (x.calls || []).filter((c) => !READ_ONLY_AWS.test(c) && !/^(cloudformation describe|securityagent batch-get-code-review-jobs|securityagent list-findings|securityagent batch-get-findings|securityagent list-code-reviews|s3api head-object)/.test(c)).map((c) => `${k}: ${c}`));
+    add('GATE11', 'the gate suite made read calls only (the fake aws)', !writes.length, writes.join('; '));
   }
   if (S.fixes) {
     const F = S.fixes;

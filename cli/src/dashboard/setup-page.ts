@@ -48,6 +48,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visibl
 .srow-head { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
 .srow-ctl { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px; } .srow-ctl code { min-width:0; overflow-wrap:anywhere; } .srow-ctl select { max-width:100%; min-width:0; }
 .cmdline { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; max-width:100%; } .cmdline code { white-space:normal; overflow-wrap:anywhere; }
+code.cmdw, pre.cmd.cmdw { overflow-wrap:normal; } .cmdw .w { white-space:nowrap; } .cmdw .w.long { white-space:normal; overflow-wrap:anywhere; }
 .badge { font-size:11px; padding:0 6px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:var(--raised); white-space:nowrap; font-weight:600; }
 .badge.warn { color:var(--warn); }
 button.run { background:var(--accent); border-color:var(--accent); color:var(--bg); font-weight:600; }
@@ -108,13 +109,25 @@ function ago(iso) {
   return 'just now';
 }
 
+/**
+ * A command whose lines break only at its spaces, never inside a flag or a
+ * name (a browser breaks after a hyphen otherwise: --repo -/-profile). Each
+ * word is a nowrap span; a word over 20 characters may still break, so the
+ * line never scrolls sideways. The text, selected or copied, is the command.
+ */
+function cmdWords(tag, cls, cmd) {
+  const kids = [];
+  txt(cmd).split(' ').forEach((w, i) => { if (i) kids.push(' '); kids.push(el('span', { class: w.length > 20 ? 'w long' : 'w' }, w)); });
+  return el(tag, { class: (cls ? cls + ' ' : '') + 'cmdw' }, ...kids);
+}
+
 function copyButton(cmd) {
   const b = el('button', { type: 'button', title: 'Copy to the clipboard' }, 'Copy');
   b.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(cmd); b.textContent = 'Copied'; } catch (e) { b.textContent = 'Select the text to copy'; }
     setTimeout(() => { b.textContent = 'Copy'; }, 1500);
   });
-  return el('span', { class: 'cmdline' }, el('code', {}, cmd), b);
+  return el('span', { class: 'cmdline' }, cmdWords('code', '', cmd), b);
 }
 const copyOnly = (cmd, why) => el('div', { class: 'srow-ctl' }, copyButton(cmd), why ? el('span', { class: 'badge' }, why) : null);
 

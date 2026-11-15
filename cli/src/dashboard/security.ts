@@ -5,10 +5,11 @@
  */
 import { readResults, type PrismResult } from '../codewatch/results.js';
 import { firstParagraph } from '../security/threat-model.js';
+import { PENDING_STALE_MS } from '../security/review.js';
 
 export const MAX_PANEL_FINDINGS = 50;
-/** A pending record older than this is marked `stale?`: results are local, so the dashboard cannot know the job's real state. */
-export const PENDING_STALE_MS = 2 * 60 * 60 * 1000;
+/** A pending record older than PENDING_STALE_MS (security/review.ts) is marked `stale?`: results are local, so the dashboard cannot know the job's real state. */
+export { PENDING_STALE_MS };
 export const PENDING_HINT = 'prism-cli security findings';
 
 export interface SecurityFindingRow { risk_level: string; title: string; file: string; line: number | null; cwe: string | null }
