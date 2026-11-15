@@ -272,6 +272,7 @@ function drawSecurity() {
   const route = securityRoute();
   // A run's drill-down (#security/run/<repo>/<run>) reads its own API and needs nothing else on this page.
   if (route && route.run) { drawRunDetail(root, route.run); return; }
+  if (typeof runLeave === 'function') runLeave();
   if (!SA_LOADED) { root.replaceChildren(el('p', { class: 'loading' }, 'loading...')); return; }
   const openState = new Map([...root.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
   root.replaceChildren(el('h2', { class: 'sr-only' }, 'Security Agent'));

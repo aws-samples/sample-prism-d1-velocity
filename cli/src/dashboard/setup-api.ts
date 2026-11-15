@@ -20,6 +20,7 @@ import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
 import { securityAgentLookup, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
 import { securityRunDetail } from './security-runs.js';
+import { ApiAnswer } from './server.js';
 
 /** Commands the page shows as Copy only: each writes to AWS, needs a terminal, or both. */
 export const COPY_ONLY = {
@@ -80,8 +81,11 @@ export function setupApi(d: SetupApiDeps) {
       '/api/security-agent': async () => (d.securityAgent ? securityAgentView(d.securityAgent) : { repos: [], ttlSec: 0 }),
       '/api/accountguard': async () => (d.accountGuard ? accountGuardView(d.accountGuard) : null),
       // Ids only: the repo id is matched against the scan list and the run id against that repo's result files.
-      '/api/security-run': async (url: URL) => securityRunDetail(d.securityAgent ? await d.securityAgent.repos() : [],
-        url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home),
+      // No such run answers 404 (the page shows Run not found and stops asking); any other failure is retried.
+      '/api/security-run': async (url: URL) => {
+        const run = securityRunDetail(d.securityAgent ? await d.securityAgent.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home);
+        return run.found ? run : new ApiAnswer(404, run);
+      },
     },
     postApi: {
       '/api/action': (body: unknown): Promise<ApiResult> => d.runner.start(body),

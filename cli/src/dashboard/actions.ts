@@ -200,6 +200,8 @@ export interface RunnerDeps {
   awsChoices?: () => { profiles: string[]; regions: string[] };
   /** For AccountGuard: --profile/--region of the connected account, or null when none is connected. */
   connectionArgs?: () => string[] | null;
+  /** Finds the run a Security Agent action wrote (default: security-runs.ts runWrittenSince); a test seam. */
+  runWritten?: typeof runWrittenSince;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
   /** After the child exits, how long to keep reading output a process it started may still write (default EXIT_GRACE_MS). */
@@ -393,9 +395,14 @@ export class ActionRunner {
     st.exitCode = code;
     if (wrote) {
       try {
-        const r = runWrittenSince(wrote.path, Date.parse(st.startedAt!), (this.d.now ?? (() => new Date()))());
+        const r = (this.d.runWritten ?? runWrittenSince)(wrote.path, Date.parse(st.startedAt!), (this.d.now ?? (() => new Date()))());
         st.result = r ? { repo: wrote.id, ...r } : null;
-      } catch { st.result = null; }
+      } catch (e) {
+        // The drawer then has no View findings link: say why, here and in the gateway log.
+        st.result = null;
+        st.buf += '\n[Could not find the result file; open the Security Agent page to see the run]\n';
+        process.stderr.write(`prism dashboard: could not read the run ${logSafe(st.action ?? '')} wrote in ${logSafe(wrote.name)}: ${redact((e as Error).message)}\n`);
+      }
     }
     st.outcome = code === 0 ? 'ok' : !st.timedOut && code === ACTIONS[st.action!].pendingExit ? 'pending' : 'failed';
     st.state = 'done';

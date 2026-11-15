@@ -203,20 +203,54 @@ const runCellLink = (repoId, type) => { const r = latestRunOf(repoId, type); ret
 // ---------------------------------------------------------------- the drill-down
 const RUN_RE = new RegExp('^#security/run/([a-f0-9]{16})/([A-Za-z0-9_-]{1,200})$');
 function runRoute() { const m = RUN_RE.exec(location.hash); return m ? { repo: m[1], run: m[2] } : null; }
-let RUN_DETAIL = null, RUN_KEY = null;
+let RUN_DETAIL = null, RUN_KEY = null, RUN_FETCH = null, RUN_SHOWN = null;
+/** What the person chose on the run's page (severity filter, open findings): kept across a refresh's repaint, dropped on leaving. */
+let RUN_UI = { key: null, pick: '', open: null };
+/**
+ * Only a run without a verdict yet can change under the page: its copy is read again on every draw
+ * (route entry, the minute refresh). A finished run and a server's not found (404) are final.
+ */
+const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict');
+/** Leaving the drill-down (the router calls this) drops its copy, so coming back always reads the run again. */
+function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null }; }
 
+/** Draws the cached copy (when there is one and it is not on screen), then reads the run again if it may have changed. */
 async function drawRunDetail(root, route) {
   const key = route.repo + '/' + route.run;
-  const back = el('a', { href: '#security' }, 'Back to Security runs');
-  if (SNAPSHOT) { root.replaceChildren(el('section', { class: 'card' }, el('p', { class: 'empty' }, 'A run\\'s findings open on the live dashboard only (prism-cli dashboard). '), back)); return; }
-  if (RUN_KEY !== key || !RUN_DETAIL) {
-    root.replaceChildren(el('p', { class: 'loading' }, 'loading...'));
-    let r;
-    try { r = await api('/api/security-run?repo=' + encodeURIComponent(route.repo) + '&run=' + encodeURIComponent(route.run)); } catch (e) { r = { ok: false, json: { error: e.message } }; }
-    if (location.hash !== '#security/run/' + key) return;
-    RUN_KEY = key; RUN_DETAIL = r.ok ? r.json : { found: false, error: txt(r.json && r.json.error) || 'could not load the run' };
+  if (SNAPSHOT) { root.replaceChildren(el('section', { class: 'card' }, el('p', { class: 'empty' }, 'A run\\'s findings open on the live dashboard only (prism-cli dashboard). '), el('a', { href: '#security' }, 'Back to Security runs'))); return; }
+  const cached = RUN_KEY === key ? RUN_DETAIL : null;
+  if (cached && RUN_SHOWN !== key) paintRunDetail(root, cached, key);
+  if (cached && !runStale(cached)) return;
+  if (!cached) root.replaceChildren(el('p', { class: 'loading' }, 'loading...'));
+  if (RUN_FETCH === key) return;
+  RUN_FETCH = key;
+  let r;
+  try { r = await api('/api/security-run?repo=' + encodeURIComponent(route.repo) + '&run=' + encodeURIComponent(route.run)); } catch (e) { r = { ok: false, status: 0, json: { error: e.message } }; }
+  finally { RUN_FETCH = null; }
+  if (location.hash !== '#security/run/' + key) return;
+  // A 404 with found: false is the server saying there is no such run: final, and kept. Anything else that failed is retried.
+  const missing = r.status === 404 && r.json && r.json.found === false;
+  if (!r.ok && !missing) {
+    console.warn('prism dashboard: could not load run ' + key + ': ' + txt(r.json && r.json.error));
+    RUN_SHOWN = null;
+    const retry = el('button', { type: 'button', 'data-run-retry': '' }, 'Retry');
+    retry.addEventListener('click', () => drawRunDetail(root, route));
+    root.replaceChildren(el('section', { class: 'card', 'data-run-error': '' }, el('h2', {}, 'Could not load this run'),
+      el('p', { class: 'fix' }, txt(r.json && r.json.error) || 'The dashboard did not answer.'), el('div', { class: 'srow-ctl' }, retry, el('a', { href: '#security' }, 'Back to Security runs'))));
+    return;
   }
-  const d = RUN_DETAIL;
+  // Nothing changed (a running job on the minute refresh): leave the page exactly as it is.
+  if (cached && RUN_SHOWN === key && JSON.stringify(cached) === JSON.stringify(r.json)) return;
+  RUN_KEY = key; RUN_DETAIL = r.json;
+  paintRunDetail(root, RUN_DETAIL, key);
+}
+
+function paintRunDetail(root, d, key) {
+  // Keep which findings are open across a repaint of the same run.
+  if (RUN_UI.key === key && RUN_SHOWN === key) RUN_UI.open = new Set([...root.querySelectorAll('details[data-fid]')].filter((x) => x.open).map((x) => x.getAttribute('data-fid')));
+  else if (RUN_UI.key !== key) RUN_UI = { key, pick: '', open: null };
+  RUN_SHOWN = key;
+  const back = el('a', { href: '#security' }, 'Back to Security runs');
   if (!d.found) {
     root.replaceChildren(el('div', { class: 'crumbs' }, el('a', { href: '#' }, 'Dashboard'), ' / ', el('a', { href: '#security' }, 'Security Agent'), ' / run not found'),
       el('section', { class: 'card', 'data-run-missing': '' }, el('h2', {}, 'Run not found'), el('p', {}, txt(d.error)), el('p', {}, back)));
@@ -249,7 +283,7 @@ function runDetail(d) {
   if (r.status === 'failed') out.push(el('section', { class: 'card' }, el('h2', {}, 'Why there is no verdict'), el('p', {}, txt(r.reason) || 'The job did not complete.')));
   if (r.status === 'running' || r.status === 'noverdict') out.push(el('section', { class: 'card' }, el('h2', {}, r.status === 'running' ? 'Still running' : 'No verdict fetched yet'),
     el('p', { class: 'fix' }, (r.status === 'running' ? 'Findings appear here when the job finishes. ' : 'The job most likely finished. ') + 'Fetch them on the ', el('a', { href: '#security/' + txt(r.repo_id) }, 'Security Agent page'), ', or run the command below.')));
-  if (r.status === 'complete') out.push(runFindingsCard(d));
+  if (r.status === 'complete' || (d.findings || []).length) out.push(runFindingsCard(d));
   out.push(el('section', { class: 'card' }, el('h2', {}, 'Report and links'), el('ul', { class: 'runlinks' },
     el('li', {}, el('b', {}, 'Result file: '), el('code', {}, txt(d.result_file))),
     el('li', {}, el('b', {}, 'Same run in a terminal: '), copyButton(txt(d.cli))),
@@ -262,24 +296,28 @@ function runFindingsCard(d) {
   const s = el('section', { class: 'card', 'data-run-findings': String(fs.length) }, el('h2', {}, label, el('span', { class: 'sub' }, fs.length ? 'most severe first; open one for the full description' + (d.no_remediation ? '' : ' and recommendation') : '')));
   if (!fs.length) { s.append(el('p', { class: 'fix' }, r.type === 'threat-model' ? 'No threats in this run.' : 'No findings in this run.')); return s; }
   const levels = [...new Set(fs.map((f) => f.severity))];
-  let pick = '';
+  // The filter the person chose survives a refresh; one whose level is gone falls back to All.
+  if (RUN_UI.pick && !levels.includes(RUN_UI.pick)) RUN_UI.pick = '';
   const list = el('div');
   const bar = el('div', { class: 'sevfilter', role: 'group', 'aria-label': 'Filter by severity' });
-  const chip = (v, text) => { const b = el('button', { type: 'button', 'aria-pressed': String(v === pick), 'data-sev': v }, text); b.addEventListener('click', () => { pick = v; sync(); }); return b; };
+  const chip = (v, text) => { const b = el('button', { type: 'button', 'aria-pressed': String(v === RUN_UI.pick), 'data-sev': v }, text); b.addEventListener('click', () => { RUN_UI.pick = v; sync(); }); return b; };
+  const fid = (f, i) => txt(f.finding_id) || 'i' + i;
   function sync() {
     bar.replaceChildren(chip('', 'All ' + fs.length), ...['critical', 'high', 'medium', 'low', 'info', 'unknown'].filter((x) => levels.includes(x)).map((x) => chip(x, x[0].toUpperCase() + x.slice(1) + ' ' + fs.filter((f) => f.severity === x).length)));
-    list.replaceChildren(...fs.filter((f) => !pick || f.severity === pick).map((f, i) => runFinding(f, d, i === 0)));
+    const open = RUN_UI.open;
+    list.replaceChildren(...fs.map((f, i) => [f, fid(f, i)]).filter(([f]) => !RUN_UI.pick || f.severity === RUN_UI.pick)
+      .map(([f, id], i) => runFinding(f, d, open ? open.has(id) : i === 0, id)));
   }
   sync();
   s.append(bar, list);
   return s;
 }
 
-function runFinding(f, d, open) {
+function runFinding(f, d, open, id) {
   const where = [f.location ? el('code', {}, txt(f.location)) : null, f.cwe ? txt(f.cwe) : null, (f.stride || []).length ? (f.stride || []).map((x) => txt(x).toLowerCase().replace(/_/g, ' ')).join(', ') : null,
     f.confidence ? txt(f.confidence).toLowerCase() + ' confidence' : null].filter(Boolean).flatMap((x, i) => i ? [' · ', x] : [x]);
   const thr = d.run.type === 'threat-model';
-  const dt = el('details', { class: 'rf' },
+  const dt = el('details', { class: 'rf', 'data-fid': id || null },
     el('summary', {}, sevPill(f.severity, txt(f.severity)), el('span', { class: 't' }, txt(f.title)), el('span', { class: 'chev', 'aria-hidden': 'true' }, '›'),
       where.length ? el('span', { class: 'loc' }, ...where) : null),
     el('div', { class: 'body' },

@@ -239,3 +239,131 @@ test('page: the drawer shows "Complete. View findings" for a finished run, nothi
   assert.match(SECURITY_RUNS_SCRIPT, /if \(!r \|\| r\.status === 'running' \|\| !r\.repo \|\| !r\.run\) return null;/);
   assert.match(SECURITY_RUNS_SCRIPT, /ok \? 'Complete\.' :/);
 });
+
+test('a job id outside the safe shape is never listed or opened; a valid one is quoted in the copy command', () => {
+  const { list, cleanup } = repos();
+  try {
+    const [shop] = list;
+    const hostile = 'job$(touch pwned);x';
+    const p = writeResult(shop.path, review(hostile, at(5), { counts: { LOW: 1 }, findings: [crFinding('LOW', 'x')] }));
+    const id = p.split('/').pop()!.replace(/\.json$/, '');
+    assert.deepEqual(collectSecurityRuns(list, undefined, NOW), [], 'not in the list');
+    const d = securityRunDetail(list, shop.id, id, '', NOW);
+    assert.equal(d.found, false);
+    assert.ok(!JSON.stringify(d).includes('touch'), 'the id never reaches a command');
+    const ok = writeResult(shop.path, review('crj-1:a.b_c', at(4)));
+    const g = securityRunDetail(list, shop.id, ok.split('/').pop()!.replace(/\.json$/, ''), '', NOW);
+    assert.ok(g.found && g.cli.startsWith('prism-cli security findings --job crj-1:a.b_c --path '));
+  } finally { cleanup(); }
+});
+
+test('runner: when the run lookup fails, the output says so and there is no link', async () => {
+  const home = tmp('runner-fail');
+  const path = join(home, 'src', 'demo');
+  mkdirSync(path, { recursive: true });
+  const REPO: ScanRepo = { id: repoId(path), name: 'demo', path };
+  const spawn = () => {
+    const c: any = new EventEmitter(); c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => true;
+    setTimeout(() => { c.stdout.emit('data', 'Saved it\n'); c.emit('close', 0); }, 5);
+    return c;
+  };
+  const errs: string[] = [];
+  const orig = process.stderr.write.bind(process.stderr);
+  (process.stderr as any).write = (s: string) => { errs.push(String(s)); return true; };
+  const r = new ActionRunner({ execPath: '/usr/bin/node', entry: '/x.js', cwd: home, home, repos: async () => [REPO], systemdAvailable: () => false, platform: 'linux', spawn: spawn as any, awsArgs: () => [], writeGate: () => null,
+    runWritten: () => { throw new Error('EACCES: permission denied'); } });
+  try {
+    assert.equal((await r.start({ action: 'security-findings', repo: REPO.id })).status, 202);
+    for (let i = 0; i < 200 && r.status().state !== 'done'; i++) await new Promise((x) => setTimeout(x, 5));
+    const s = r.status();
+    assert.equal(s.result, null);
+    assert.match(s.output!, /\[Could not find the result file; open the Security Agent page to see the run\]/);
+    assert.ok(errs.some((l) => /could not read the run security-findings wrote in demo: EACCES/.test(l)), errs.join(''));
+  } finally { (process.stderr as any).write = orig; rmSync(home, { recursive: true, force: true }); }
+});
+
+test('page: a run opened while running is read again when the page comes back to it, and shows its findings', async () => {
+  const { p, cleanup } = await pagePayload();
+  try {
+    const run = 'r9-20261115T120000000Z-manual-security-review';
+    const url = `/api/security-run?repo=${REPO_ID}&run=${run}`;
+    const base = { found: true, account4: '••••3333', region: 'us-west-2', scope: null, target_host: null, overview: null, result_file: '~/r9.json', cli: 'prism-cli security findings --job job-9 --path ~/src/x', no_remediation: 'No remediation provided by this run type.' };
+    let calls = 0, finished = false;
+    const answer = () => (++calls, !finished ? { ...base, run: row(9, { status: 'running', duration_s: null }), findings: [] }
+      : { ...base, run: row(9), findings: [{ severity: 'critical', title: 'Now found', location: 'a.ts:1', cwe: null, stride: [], confidence: null, description: 'd', remediation: null, evidence: [], finding_id: 'f' }] });
+    const page = await runPage([p], `#security/run/${REPO_ID}/${run}`, null, { [url]: answer, '/api/security-agent': { repos: [] } });
+    await page.settle();
+    assert.match(page.dom.byId.security.textContent, /Still running/);
+    const before = calls;
+    finished = true;
+    page.go('#');
+    page.go(`#security/run/${REPO_ID}/${run}`);
+    await page.settle();
+    assert.ok(calls > before, 'read again on the way back');
+    assert.match(page.dom.byId.security.textContent, /Now found/);
+    assert.doesNotMatch(page.dom.byId.security.textContent, /Still running/);
+  } finally { cleanup(); }
+});
+
+test('page: a failed fetch shows a retryable error, is not cached and is logged; a 404 is Run not found and is not asked again', async () => {
+  const { p, cleanup } = await pagePayload();
+  const warns: string[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
+  try {
+    const run = 'r5-20261115T120000000Z-manual-security-review';
+    const url = `/api/security-run?repo=${REPO_ID}&run=${run}`;
+    const routes: Record<string, unknown> = { '/api/security-agent': { repos: [] } };
+    const page = await runPage([p], `#security/run/${REPO_ID}/${run}`, null, routes);
+    await page.settle();
+    const sec = page.dom.byId.security;
+    assert.match(sec.textContent, /Could not load this run/);
+    assert.doesNotMatch(sec.textContent, /Run not found/, 'a failure is not "not found"');
+    assert.ok(warns.some((w) => w.includes('could not load run ' + REPO_ID + '/' + run)), 'logged');
+    // The run answers now: Retry reads it again (nothing was cached).
+    routes[url] = { found: true, run: row(5), findings: [], account4: null, region: null, scope: null, target_host: null, overview: null, result_file: '~/r5.json', cli: 'c', no_remediation: null };
+    sec.all().find((e) => e.hasAttribute('data-run-retry'))!.listeners.click();
+    await page.settle();
+    assert.ok(sec.all().some((e) => e.getAttribute('data-run-detail') === run));
+
+    const gone = 'gone-20261115T120000000Z-manual-security-review';
+    const gurl = `/api/security-run?repo=${REPO_ID}&run=${gone}`;
+    const page2 = await runPage([p], `#security/run/${REPO_ID}/${gone}`, null, { [gurl]: { __status: 404, body: { found: false, error: 'no such run in this repo (it may have been deleted)' } }, '/api/security-agent': { repos: [] } });
+    await page2.settle();
+    assert.match(page2.dom.byId.security.textContent, /Run not found/);
+    const asked = page2.requests.filter((r) => r.url === gurl).length;
+    await page2.reload();
+    await page2.reload();
+    assert.equal(page2.requests.filter((r) => r.url === gurl).length, asked, 'a final not found is not asked again on refresh');
+  } finally { console.warn = orig; cleanup(); }
+});
+
+test('page: the minute refresh of a running run keeps the severity filter and the open findings, and shows the new data', async () => {
+  const { p, cleanup } = await pagePayload();
+  try {
+    const run = 'r6-20261115T120000000Z-manual-security-review';
+    const url = `/api/security-run?repo=${REPO_ID}&run=${run}`;
+    let title = 'Medium one';
+    const answer = () => ({ found: true, run: row(6, { status: 'running', duration_s: null }), account4: null, region: null, scope: null, target_host: null, overview: null, result_file: '~/r6.json', cli: 'c', no_remediation: 'none',
+      findings: [
+        { severity: 'critical', title: 'Critical one', location: null, cwe: null, stride: [], confidence: null, description: 'c', remediation: null, evidence: [], finding_id: 'f-c' },
+        { severity: 'medium', title, location: null, cwe: null, stride: [], confidence: null, description: 'm', remediation: null, evidence: [], finding_id: 'f-m' }] });
+    const page = await runPage([p], `#security/run/${REPO_ID}/${run}`, null, { [url]: answer, '/api/security-agent': { repos: [] } });
+    await page.settle();
+    const sec = page.dom.byId.security;
+    sec.all().find((e) => e.getAttribute('data-sev') === 'medium')!.listeners.click();
+    const medium = () => sec.all().find((e) => e.nodeName === 'DETAILS' && e.getAttribute('data-fid') === 'f-m')!;
+    (medium() as any).open = true;
+    // Unchanged data: the page is left exactly as it is.
+    const same = medium();
+    await page.reload();
+    assert.equal(medium(), same, 'not redrawn when nothing changed');
+    // New data: redrawn, with the filter and the open finding kept.
+    title = 'Medium one, updated';
+    await page.reload();
+    assert.equal(sec.all().find((e) => e.getAttribute('data-sev') === 'medium')!.getAttribute('aria-pressed'), 'true');
+    assert.equal(sec.all().filter((e) => e.nodeName === 'DETAILS').length, 1, 'still filtered to medium');
+    assert.ok((medium() as any).open, 'the opened finding is still open');
+    assert.match(medium().textContent, /Medium one, updated/);
+  } finally { cleanup(); }
+});

@@ -55,7 +55,13 @@ export const runTypeOf = (r: PrismResult): RunType | null => TYPE_OF[r.kind] ?? 
 function info(r: PrismResult) {
   return r.security ?? r.threat_model ?? r.pentest ?? null;
 }
-const jobKey = (r: PrismResult): string | null => (r.kind === 'security-pentest' ? r.pentest?.job_id || r.pentest?.stack || null : info(r)?.job_id || null);
+const rawJobKey = (r: PrismResult): string | null => (r.kind === 'security-pentest' ? r.pentest?.job_id || r.pentest?.stack || null : info(r)?.job_id || null);
+/**
+ * The job id, or null when the file holds none or one outside the shape AWS and prism-cli
+ * use: the id goes into a copyable command and a URL, so an edited file cannot inject anything.
+ */
+export const JOB_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
+const jobKey = (r: PrismResult): string | null => { const k = rawJobKey(r); return k && JOB_ID.test(k) ? k : null; };
 
 /**
  * One entry per job. Two files can hold the same job (code-review writes it
@@ -181,6 +187,7 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
   if (!repo) return { found: false, error: 'that repo is not in the scan list' };
   const e = read(repo.path).find((x) => x.id === runArg);
   if (!e || !runTypeOf(e.result)) return { found: false, error: 'no such run in this repo (it may have been deleted)' };
+  if (!jobKey(e.result)) return { found: false, error: 'this result file has no valid job id' };
   const r = e.result, type = runTypeOf(r)!, i = info(r) as { account?: string; region?: string } | null;
   const findings: RunFinding[] = sorted(r.findings || []).map((f) => ({
     severity: sev(f), title: f.title || f.message,
@@ -191,7 +198,7 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
     evidence: f.evidence || [], finding_id: f.finding_id || f.threat_id || null,
   }));
   const where = shellWord(tilde(repo.path, home));
-  const job = jobKey(r) || '';
+  const job = shellWord(jobKey(r)!);
   const cli = type === 'code-review' ? `prism-cli security findings --job ${job} --path ${where}`
     : type === 'threat-model' ? `prism-cli security threats --job ${job} --path ${where}`
       : `prism-cli security findings --pentest ${job} --path ${where}`;
