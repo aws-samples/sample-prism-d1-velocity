@@ -440,7 +440,7 @@ test('gate step 1 and 2: Settings › AWS link, enable security copy-only with n
   const cmd = 'prism-cli enable security --profile demo --region us-west-2';
   const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, null, 0, false, gate('setup', { copy: { setup: cmd } })) });
   const sec = page.dom.byId.security;
-  assert.match(sec.textContent, new RegExp(cmd.replace(/[.*]/g, '\\$&') + 'Copy'));
+  assert.match(sec.textContent, new RegExp(cmd.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&') + 'Copy'));
   assert.doesNotMatch(sec.textContent, /cd \S+ && prism-cli enable security/, 'once per machine: no cd');
   assert.equal(btn(sec, 'Run'), undefined, 'enable security never runs from the page');
   const gets = () => page.requests.filter((r) => r.url === '/api/security-agent').length;

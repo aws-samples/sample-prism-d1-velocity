@@ -139,7 +139,7 @@ test('step 3: checking, expired SSO (the exact login command), access denied (th
   const denied = computeGate(input(h, {}, { lookup: failed('denied', 'securityagent:ListAgentSpaces') }));
   assert.equal(denied.state, 'denied');
   assert.equal(denied.action, 'securityagent:ListAgentSpaces');
-  assert.match(denied.detail.join(' '), new RegExp('Access denied for securityagent:ListAgentSpaces.*' + LOOKUP_GRANTS.join(', ').replace(/[.*/]/g, '\\$&')));
+  assert.match(denied.detail.join(' '), new RegExp('Access denied for securityagent:ListAgentSpaces.*' + LOOKUP_GRANTS.join(', ').replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')));
   assert.equal(computeGate(input(h, {}, { lookup: failed('other') })).state, 'error');
   const none = computeGate(input(h, {}, { lookup: { ...GOOD, inUse: null }, lookupAccount: ACCOUNT }));
   assert.equal(none.state, 'nospace');
