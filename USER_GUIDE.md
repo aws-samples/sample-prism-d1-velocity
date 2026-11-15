@@ -2371,7 +2371,7 @@ lines on stderr, and never prompts. The shape is `prism.aws-connect.v1`; fields 
 - connect adds `access` (`admin`, `read-only` or `unknown`) and `org` (`management`, `member`, `none`
   or `unknown`). status adds `inUse`, `envOverride` (the env var that wins over the saved profile, or
   null) and `validation` (`{ok, accountMatches, error}`). clear adds `removed` and `scope`.
-- It never prints a credential, the caller ARN or the full account id.
+- The JSON never carries a credential, the caller ARN or the full account id. The human lines on stderr still name the full account and the caller, as without `--json`.
 
 **How the saved connection is used.** It becomes the default for `enable security`, every `security` command, `aws check`/`aws recommend` and `bedrock-protection`. The order, per field:
 
