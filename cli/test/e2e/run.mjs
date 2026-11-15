@@ -12,7 +12,13 @@ import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startDashboard, demoEnv, ENTRY } from './start-dashboard.mjs';
+import { startDashboard, demoEnv, ENTRY, CLI } from './start-dashboard.mjs';
+// The same account-id rule the dashboard masks with: ARNs, Account lines, account fields and bare runs,
+// but not a commit prefix, result id or UUID group that happens to be 12 digits.
+const { accountIdsIn } = await import(join(CLI, 'dist', 'src', 'utils', 'redact.js'));
+const DEMO_ACCOUNT = '111122223333';
+/** Account ids left in `text`: the demo account anywhere, or any 12-digit run in an account context. */
+const accountLeaks = (text) => [...new Set([...(String(text).includes(DEMO_ACCOUNT) ? [DEMO_ACCOUNT] : []), ...accountIdsIn(String(text))])];
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = process.env.PRISM_E2E_OUT || join(tmpdir(), 'prism-dashboard-e2e');
@@ -764,7 +770,7 @@ function verdicts(R) {
     add('pending', 'Fetch findings on a running job: amber "still running" pill with a hint, not a red exit pill', S.pending.found && !d.hung && /s-warn/.test(d.pillClass) && !/s-error/.test(d.pillClass)
       && /still running \(exit 2\)/.test(d.pillText) && /Check back later, or run the same command with --wait/.test(d.status) && /still IN_PROGRESS/.test(d.out), JSON.stringify(d).slice(0, 400));
     add('pending-row', 'the code review row still reads "running" after the fetch', /running/i.test(S.pending.row || ''), S.pending.row);
-    const leak = (d.out || '').match(/\b\d{12}\b|demo-session/g) || [];
+    const leak = [...accountLeaks(d.out || ''), ...((d.out || '').match(/demo-session/g) || [])];
     add('pending-mask', 'the drawer shows ••••3333, the role name only, and no home path', !leak.length && /••••3333/.test(d.out || '') && /assumed-role\/PrismDemoReadOnly\/…/.test(d.out || '') && !(d.out || '').includes(S.pending.home), leak.join(', ') || (d.out || '').slice(0, 300));
   }
   if (S.machine) {
@@ -784,8 +790,8 @@ function verdicts(R) {
     add('M6', 'no setup on the machine: security findings prints the one-line hint and makes no AWS call', n.code === 1 && /Security Agent is not set up on this machine: run prism-cli enable security \(once, from any directory\)\./.test(n.out || '') && !(n.calls || []).length, (n.out || '').slice(0, 300) + ' | calls: ' + (n.calls || []).join('; '));
     // The terminal's Account line shows the full id on purpose (as before); the Setup rows and the page never do.
     const setupRows = [so.out, ss.out].join('\n').split('\n').filter((l) => /Setup:|Repo override:/.test(l)).join('\n');
-    const leak = (setupRows + (n.out || '') + both).match(/\b\d{12}\b/g);
-    add('M7', 'no full account id in the Setup rows, the hint or the page', setupRows && !leak, (leak || ['no Setup rows']).join(', '));
+    const leak = accountLeaks(setupRows + (n.out || '') + both);
+    add('M7', 'no full account id in the Setup rows, the hint or the page', setupRows && !leak.length, (setupRows ? leak : ['no Setup rows']).join(', '));
   }
   if (S.fixes) {
     const F = S.fixes;
@@ -793,10 +799,12 @@ function verdicts(R) {
     add('B4', 'Dashboard keeps the last completed review\'s findings with a "new review running" note', /1 critical/.test(F.dashboardSecurity) && /new review running/.test(F.dashboardSecurity), F.dashboardSecurity.slice(0, 400));
     add('B6', 'the Security Agent picker shows distinct labels for same-named repos', new Set(F.pickerOptions).size === F.pickerOptions.length, F.pickerOptions.join(' | '));
     add('B7', 'footer and Codewatch card name the same counts', /with codewatch hooks installed/.test(F.meta) && /with hooks installed/.test(F.codewatchCard), F.meta + ' | ' + F.codewatchCard);
-    const ids = (F.repoText + F.settingsReposText + F.securityText).match(/\b\d{12}\b/g);
-    add('B9', 'no full 12-digit account id on the repo, Settings › Repos or Security Agent pages', !ids, (ids || []).join(', '));
-    const apiIds = ((F.apiJson || '') + (F.accountguardText || '')).match(/\b\d{12}\b/g);
-    add('G3', 'no full 12-digit account id in /api/data, /api/accountguard, /api/setup or on AccountGuard', F.apiJson && !apiIds, (apiIds || ['no API text']).join(', '));
+    const ids = accountLeaks(F.repoText + F.settingsReposText + F.securityText);
+    add('B9', 'no full 12-digit account id on the repo, Settings › Repos or Security Agent pages', !ids.length, ids.join(', '));
+    const apiIds = accountLeaks((F.apiJson || '') + (F.accountguardText || ''));
+    add('G3', 'no full 12-digit account id in /api/data, /api/accountguard, /api/setup or on AccountGuard', F.apiJson && !apiIds.length, (F.apiJson ? apiIds : ['no API text']).join(', '));
+    // The seeded review whose commit prefix is 12 digits: its id reaches the API whole, and is not counted as an account.
+    add('G3b', 'a 12-digit result id stays whole in /api/data and is not taken for an account id', /"123456789012-\d{8}T\d+Z-pre-push-review"/.test(F.apiJson || ''), (F.apiJson || '').match(/.{40}123456789012.{40}/)?.[0] || 'the seeded id is not in /api/data');
     const ag = F.accountguardText || '';
     add('G1', 'AccountGuard names why each check could not run (throttled, not enabled, access denied)', /throttled/.test(ag) && /not enabled here/.test(ag) && /access denied/.test(ag) && /nothing to grant/.test(ag), ag.slice(0, 400));
     add('B10', 'update check off: Check now disabled and the reason shown', F.updates.disabled && /The update check is off/.test(F.updates.text) && /off \(PRISM_NO_UPDATE_CHECK=1\)/.test(F.updates.pillTitle), JSON.stringify(F.updates).slice(0, 300));
