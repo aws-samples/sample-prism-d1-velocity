@@ -58,6 +58,9 @@ const SA_STEPS = ['AWS connected', 'Security Agent set up', 'Agent space verifie
 const SA_POLL_STATES = ['connect', 'profile', 'setup', 'mismatch'];
 const SA_POLL_MS = 10000;
 let SA_TIMER = null;
+/** What a branch review would review, per repo id (GET /api/security-agent/scope, local git): a scope, or null when unknown. */
+const SA_SCOPE = new Map();
+let SA_SCOPE_LOADING = null;
 /** Repo|profile|region keys whose automatic lookup already ran on this page load: step 3 starts once each, never on a refresh. */
 const SA_AUTO = new Set();
 /** The repo id of the lookup in flight (one at a time), and the last refused request per repo (another action running, a network error). */
@@ -256,12 +259,62 @@ function saResultsCard(repo) {
     el('p', { class: 'note' }, 'Every run, with its findings, is in Security runs above.'));
 }
 
+/** The whole-repo review, offered where a branch review has nothing to check (the card, the drawer). Same guards as its own Start. */
+function saFullButton(repo) {
+  const a = actionDef('security-code-review-full');
+  if (!a || !a.available || SNAPSHOT) return null;
+  const b = el('button', { type: 'button', class: 'run danger', 'data-full-offer': '' }, 'Review the whole repo instead');
+  b.addEventListener('click', () => saStart(a, repo));
+  return b;
+}
+/** The drawer's offer after a branch review that had nothing to review: that repo, by id, once its setup check passes. */
+function saFullOffer(repoId) {
+  const repo = ((SA && SA.repos) || []).find((r) => r.id === repoId);
+  return repo && repo.gate && repo.gate.state === 'ready' ? saFullButton(repo) : null;
+}
+
+/** Reads the branch review's scope for the picked repo once per full answer (local git only), then redraws. */
+async function saScopeLoad(repo) {
+  if (SNAPSHOT || SA_SCOPE.has(repo.id) || SA_SCOPE_LOADING) return;
+  SA_SCOPE_LOADING = repo.id;
+  let r;
+  try { r = await api('/api/security-agent/scope?repo=' + repo.id); } catch (e) { r = { ok: false }; }
+  SA_SCOPE_LOADING = null;
+  SA_SCOPE.set(repo.id, r.ok && r.json && r.json.scope ? r.json.scope : null);
+  drawSecurity();
+}
+
+/**
+ * The branch review: what it diffs against (the CLI's rule: the upstream, else the remote's default branch),
+ * and, when that diff is empty or there is no base, a disabled Start with the whole-repo review instead.
+ * Unknown scope (still loading, or the check failed): the usual Start; the CLI decides.
+ */
+function saBranchItem(repo) {
+  const s = SA_SCOPE.get(repo.id) || null;
+  const why = ['Uploads the repo at HEAD and a patch of your branch to the scan bucket and starts a code review job. The first run in a repo also creates its code review, as the CI gate does.'];
+  let ctl = [saRun('security-code-review', repo, 'Start code review')], note = null;
+  if (s) {
+    const br = s.branch ? txt(s.branch) : 'this commit (no branch checked out)';
+    if (!s.base) {
+      note = 'No upstream for ' + br + ' and no default branch on the remote, so there is nothing to diff against. Push the branch with an upstream, or review the whole repo.';
+    } else {
+      why.push(s.base.fromUpstream ? 'It diffs against the upstream, ' + txt(s.base.upstream) + '.' : 'No upstream for ' + br + ': it diffs against ' + txt(s.base.upstream) + ', the remote\\'s default branch.');
+      if (s.empty) note = 'Nothing new on ' + br + ' since ' + txt(s.base.upstream) + '; a branch review would have nothing to check.';
+    }
+    why.push(s.dirty ? s.dirty + ' uncommitted change' + (s.dirty === 1 ? '' : 's') + ' here will not be reviewed: commit them first.' : 'Uncommitted changes are never reviewed.');
+    if (note) ctl = [el('button', { type: 'button', class: 'run danger', disabled: '', 'data-branch-start': '' }, 'Start code review'), saFullButton(repo)];
+  }
+  return el('li', { 'data-branch-review': s ? (note ? 'blocked' : 'ok') : 'unknown' }, el('div', { class: 'sa-head' }, el('b', {}, 'Code review of this branch')),
+    note ? el('div', { class: 'callout', role: 'note' }, note) : null,
+    el('div', { class: 'fix' }, why.join(' ')), el('div', { class: 'srow-ctl' }, ...ctl));
+}
+
 function saStartCard(repo) {
   const c = repo.copy || {};
   const item = (label, why, ctl) => el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, label)), el('div', { class: 'fix' }, why), el('div', { class: 'srow-ctl' }, ctl));
   return saCard('Start new work in ' + txt(repo.name), 'writes to AWS',
     el('ul', { class: 'salist' },
-      item('Code review of this branch', 'Uploads the repo at HEAD and a patch of your branch to the scan bucket and starts a code review job. The first run in a repo also creates its code review, as the CI gate does.', saRun('security-code-review', repo, 'Start code review')),
+      saBranchItem(repo),
       item('Code review of the whole repo', 'Uploads the repo at HEAD and starts a code review job.', saRun('security-code-review-full', repo, 'Start full review')),
       item('Threat model', 'Uploads the repo and its scope docs at HEAD, creates a threat model and starts a job.', saRun('security-threat-model', repo, 'Start threat model')),
       item('Pentest plan', 'Shows the plan, target and cost. Copy only: run it in a terminal.', copyOnly(txt(c.pentestDryRun), 'terminal')),
@@ -453,7 +506,7 @@ function saReadyStrip(repo) {
 
 /** Fetches GET /api/security-agent (no AWS call), then draws the page and the nav badge. Runs on every load, whatever the view. */
 async function renderSecurity() {
-  if (!SNAPSHOT) { try { const r = await api('/api/security-agent'); if (r.ok) SA = r.json; } catch (e) { /* keep the last good copy */ } }
+  if (!SNAPSHOT) { try { const r = await api('/api/security-agent'); if (r.ok) { SA = r.json; SA_SCOPE.clear(); } } catch (e) { /* keep the last good copy */ } }
   SA_LOADED = true;
   drawSecurity();
 }
@@ -484,6 +537,7 @@ function drawSecurity() {
     saAuto(repo);
     return;
   }
+  saScopeLoad(repo);
   root.append(saReadyStrip(repo));
   if (g.precedence) root.append(el('div', { class: 'callout', role: 'note' }, txt(g.precedence)));
   for (const line of g.info || []) root.append(el('div', { class: 'callout', role: 'note' }, txt(line)));

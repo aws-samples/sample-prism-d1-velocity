@@ -858,24 +858,24 @@ try {
           await page.locator('#security button:visible', { hasText: new RegExp('^' + label + '$') }).first().click(); await sleep(300);
           return page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return { open: !!d?.open, text: d?.innerText || '', buttons: [...(d?.querySelectorAll('button') || [])].map((b) => b.textContent), focused: document.activeElement?.textContent || '' }; });
         };
-        o.running = await dialog(desk.page, 'Start code review');
+        o.running = await dialog(desk.page, 'Start full review');
         await desk.page.screenshot({ path: join(SHOTS, 'gate-running-1280.png') });
         await desk.page.click('dialog.confirm button:has-text("View it")'); await sleep(500);
         o.runningView = await desk.page.evaluate(() => location.hash);
         const phone = await openCtx(srv, { width: 390, height: 844 });
         await phone.page.goto(srv.base + '/' + hash); await saReady(phone.page);
-        o.runningPhone = (await dialog(phone.page, 'Start code review')).open;
+        o.runningPhone = (await dialog(phone.page, 'Start full review')).open;
         await phone.page.screenshot({ path: join(SHOTS, 'gate-running-390.png') });
         // The job finishes (the CLI fetches it; the fake answers COMPLETED): HEAD now has a finished review.
         const fin = spawnSync(process.execPath, [ENTRY, 'security', 'findings'], { cwd: join(srv.home, 'src', 'demo-shop'), encoding: 'utf8', timeout: 120000, env: demoEnv(srv.home, { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete', FAKE_SA: 'ready' }) });
         o.finished = fin.status;
         await desk.page.goto(srv.base + '/' + hash); await desk.page.reload(); await saReady(desk.page);
-        o.reviewed = await dialog(desk.page, 'Start code review');
+        o.reviewed = await dialog(desk.page, 'Start full review');
         await desk.page.screenshot({ path: join(SHOTS, 'gate-reviewed-1280.png') });
         await desk.page.click('dialog.confirm button:has-text("Open those findings")'); await sleep(500);
         o.reviewedOpen = await desk.page.evaluate(() => location.hash);
         await phone.page.reload(); await saReady(phone.page);
-        o.reviewedPhone = (await dialog(phone.page, 'Start code review')).open;
+        o.reviewedPhone = (await dialog(phone.page, 'Start full review')).open;
         await phone.page.screenshot({ path: join(SHOTS, 'gate-reviewed-390.png') });
         out.log.push(...phone.log);
         await phone.ctx.close();
@@ -889,6 +889,59 @@ try {
       out.log.push(...desk.log, ...phone.log);
       await desk.ctx.close(); await phone.ctx.close();
     }
+  }
+  // ---------- 16. a branch with nothing new since its upstream (1.19.2): disabled branch Start, the whole-repo offer, a neutral drawer ----------
+  if (want('branch')) {
+    const out = {};
+    R.suites.branch = out;
+    const BR = 'feat/receiver-tool-usage';
+    // demo-shop on a feature branch pushed to a local bare origin: its upstream has every commit.
+    const upstream = (h) => {
+      const env = { ...process.env, HOME: h, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Demo Dev', GIT_AUTHOR_EMAIL: 'demo@example.com', GIT_COMMITTER_NAME: 'Demo Dev', GIT_COMMITTER_EMAIL: 'demo@example.com' };
+      const g = (cwd, ...a) => execFileSync('git', a, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const shop = join(h, 'src', 'demo-shop');
+      g(h, 'init', '-q', '--bare', join(h, 'remotes', 'demo-shop.git'));
+      // Pushes go to the local bare repo; the origin URL stays the github one, which names the repo for the code review.
+      g(shop, 'config', 'url.' + join(h, 'remotes', 'demo-shop.git') + '.pushInsteadOf', 'https://github.com/example/demo-shop.git');
+      g(shop, 'switch', '-q', '-c', BR);
+      g(shop, 'push', '-q', '-u', 'origin', BR);
+      writeFileSync(join(shop, 'scratch.txt'), 'not committed\n');
+    };
+    const srv = await live('branch', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }, upstream);
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+    const repo = sa.repos.find((r) => r.path.endsWith('/src/demo-shop'));
+    await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
+    await page.waitForSelector('[data-branch-review="blocked"]', { timeout: 15000 }).catch(() => {});
+    out.card = await page.evaluate(() => {
+      const li = document.querySelector('[data-branch-review]');
+      const start = li && [...li.querySelectorAll('button')].find((b) => b.textContent === 'Start code review');
+      return { state: li?.getAttribute('data-branch-review'), text: li?.innerText || '', startDisabled: !!start?.disabled, offer: !!li?.querySelector('[data-full-offer]') };
+    });
+    await page.locator('[data-branch-review]').screenshot({ path: join(SHOTS, 'branch-nothing-card-1280.png') }).catch(() => {});
+    // The offer opens the whole-repo review's own guard (demo-shop's job-demo-2 is still running).
+    await page.click('[data-branch-review] [data-full-offer]'); await sleep(300);
+    out.offerDialog = await page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return { open: !!d?.open, title: d?.querySelector('h2')?.textContent || '', buttons: [...(d?.querySelectorAll('button') || [])].map((b) => b.textContent) }; });
+    await page.click('dialog.confirm button:has-text("Cancel")');
+    // What the user did before: Start another anyway on the branch review. The CLI runs, finds no changes and starts nothing.
+    await page.evaluate((id) => startAction(actionDef('security-code-review-force'), { repo: id }), repo.id);
+    await page.waitForFunction(() => /nothing to review|exit|refused/.test(document.querySelector('#action-drawer .srow-head .pill')?.textContent || ''), null, { timeout: 90000 }).catch(() => {});
+    await sleep(500);
+    out.drawer = await page.evaluate(() => {
+      const d = document.getElementById('action-drawer');
+      return { pill: d?.querySelector('.srow-head .pill')?.textContent || '', pillClass: d?.querySelector('.srow-head .pill')?.className || '', hint: !!d?.querySelector('[data-nothing-hint]'), offer: !!d?.querySelector('[data-full-offer]'), out: d?.querySelector('pre')?.innerText || '' };
+    });
+    await page.locator('#action-drawer').screenshot({ path: join(SHOTS, 'branch-nothing-drawer-1280.png') }).catch(() => {});
+    out.calls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').split('\n').filter(Boolean) : [];
+    await ctx.close();
+    const phone = await openCtx(srv, { width: 390, height: 844 });
+    await phone.page.goto(srv.base + '/#security/' + repo.id); await saReady(phone.page);
+    await phone.page.waitForSelector('[data-branch-review="blocked"]', { timeout: 15000 }).catch(() => {});
+    out.phoneScroll = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await phone.page.locator('[data-branch-review]').screenshot({ path: join(SHOTS, 'branch-nothing-card-390.png') }).catch(() => {});
+    out.log.push(...phone.log);
+    await phone.ctx.close();
   }
 } catch (e) {
   R.fatal = String(e.stack || e);
@@ -1077,6 +1130,18 @@ function verdicts(R) {
     add('GATE10', 'no full account id on the gate cards, and no home path in /api/security-agent', !leaks.length, leaks.join('; '));
     const writes = Object.entries(G).flatMap(([k, x]) => (x.calls || []).filter((c) => !READ_ONLY_AWS.test(c) && !/^(cloudformation describe|securityagent batch-get-code-review-jobs|securityagent list-findings|securityagent batch-get-findings|securityagent list-code-reviews|s3api head-object)/.test(c)).map((c) => `${k}: ${c}`));
     add('GATE11', 'the gate suite made read calls only (the fake aws)', !writes.length, writes.join('; '));
+  }
+  if (S.branch) {
+    const B = S.branch;
+    add('BR1', 'a branch with nothing new since its upstream: the card says so, counts uncommitted changes, disables the branch Start and offers the whole repo',
+      B.card?.state === 'blocked' && /Nothing new on feat\/receiver-tool-usage since origin\/feat\/receiver-tool-usage; a branch review would have nothing to check\./.test(B.card.text)
+      && /\d+ uncommitted changes? here will not be reviewed: commit them first\./.test(B.card.text) && B.card.startDisabled && B.card.offer && B.phoneScroll <= 1, JSON.stringify(B.card) + ' scroll ' + B.phoneScroll);
+    add('BR2', 'the whole-repo offer goes through the full review\'s own guard (a review is already running)',
+      B.offerDialog?.open && /whole repo/.test(B.offerDialog.title) && JSON.stringify(B.offerDialog.buttons) === '["Cancel","View it →","Start another anyway"]', JSON.stringify(B.offerDialog));
+    const writes = (B.calls || []).filter((c) => /^(s3api put-object|securityagent start|securityagent create)/.test(c));
+    add('BR3', 'a branch review that finds nothing: the drawer shows a neutral "nothing to review", the next step and the whole-repo offer; the CLI says to use --full and uploads nothing',
+      B.drawer?.pill === 'nothing to review' && !/s-error|s-ok/.test(B.drawer.pillClass) && B.drawer.hint && B.drawer.offer
+      && /No changes against origin\/feat\/receiver-tool-usage; nothing to review\. To review the whole repo at HEAD, run with --full\./.test(B.drawer.out) && !writes.length, JSON.stringify({ ...B.drawer, out: (B.drawer?.out || '').slice(-300) }) + ' writes ' + writes.join('; '));
   }
   if (S.fixes) {
     const F = S.fixes;

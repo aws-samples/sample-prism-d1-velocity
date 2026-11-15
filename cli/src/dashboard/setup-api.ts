@@ -9,6 +9,7 @@
  *   POST /api/update-check  asks the npm registry for the latest prism-cli now (one GET)
  *   GET  /api/security-agent         the Security Agent page's data (no AWS call; security-agent.ts)
  *   GET  /api/security-agent/gate?repo=<id>  the gate card's re-check for one repo (local files only, no git)
+ *   GET  /api/security-agent/scope?repo=<id> what a branch code review would review there (local git only)
  *   POST /api/security-agent/spaces  {repo, refresh?}: the read-only agent-space lookup
  *   GET  /api/security-run?repo=<id>&run=<id>  one security run's findings (local result files; security-runs.ts)
  * Account ids and ARNs appear only here and in the page, never in `dashboard --json`.
@@ -19,7 +20,7 @@ import { profileChoices, resolveAwsIdentity, type IdentityDeps } from './aws-ide
 import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountguard.js';
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
-import { securityAgentGate, securityAgentLookup, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
+import { securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
 import { securityRunDetail } from './security-runs.js';
 import { ApiAnswer } from './server.js';
 
@@ -84,6 +85,11 @@ export function setupApi(d: SetupApiDeps) {
       '/api/security-agent/gate': async (url: URL) => {
         const g = d.securityAgent ? securityAgentGate(d.securityAgent, url.searchParams.get('repo')) : null;
         return g ?? new ApiAnswer(404, { error: 'not a repo from the last Security Agent answer' });
+      },
+      // The branch review's scope in the picked repo: local git only (security/review.ts branchScope).
+      '/api/security-agent/scope': async (url: URL) => {
+        const s = d.securityAgent ? securityAgentScope(d.securityAgent, url.searchParams.get('repo')) : null;
+        return s ?? new ApiAnswer(404, { error: 'not a repo from the last Security Agent answer' });
       },
       '/api/accountguard': async () => (d.accountGuard ? accountGuardView(d.accountGuard) : null),
       // Ids only: the repo id is matched against the scan list and the run id against that repo's result files.

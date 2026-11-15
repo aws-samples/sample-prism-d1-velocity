@@ -41,6 +41,7 @@ import { readResultEntries } from '../codewatch/results.js';
 import { loadSetup, type ResolvedSetup } from '../security/config.js';
 import { run } from '../utils/exec.js';
 import { listsBucket, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET } from '../security/setup.js';
+import { branchScope, type BranchScope } from '../security/review.js';
 import { ACTIONS, displayCommand, redact, type ActionId, type ApiResult, type ScanRepo } from './actions.js';
 import { resolveAwsIdentity, type AwsIdentityView, type IdentityDeps } from './aws-identity.js';
 import { tildeHome } from './payload.js';
@@ -410,6 +411,18 @@ const KNOWN = new WeakMap<object, Map<string, ScanRepo>>();
 export function securityAgentGate(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, id: string | null): { repo: string; gate: Gate } | null {
   const r = id && /^[a-f0-9]{16}$/.test(id) ? KNOWN.get(d)?.get(id) : undefined;
   return r ? { repo: r.id, gate: gateIn(d, r.path, r.name, true) } : null;
+}
+
+/**
+ * GET /api/security-agent/scope?repo=<id>: what a branch code review would
+ * review in one repo the last full answer named (security/review.ts
+ * branchScope, the CLI's own rule): its base, whether the diff is empty, and
+ * how many uncommitted changes it would leave out. Local git only, read-only,
+ * no AWS call. null when the id is not one of them.
+ */
+export function securityAgentScope(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, id: string | null): { repo: string; scope: BranchScope } | null {
+  const r = id && /^[a-f0-9]{16}$/.test(id) ? KNOWN.get(d)?.get(id) : undefined;
+  return r ? { repo: r.id, scope: branchScope((a) => run('git', a), r.path) } : null;
 }
 
 /** GET /api/security-agent: no AWS call. */

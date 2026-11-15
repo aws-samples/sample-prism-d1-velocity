@@ -16,6 +16,7 @@
  * dashboard can show them without credentials.
  */
 import { realpathSync, statSync } from 'node:fs';
+import type { RunResult } from '../utils/exec.js';
 import { basename, join, resolve } from 'node:path';
 import { makeResult, readResultEntries, writeResult, type Finding, type PrismResult, type ResultEntry, type Severity } from '../codewatch/results.js';
 import { explainAwsError, EXIT_PENDING, redact } from './errors.js';
@@ -606,19 +607,61 @@ function git(ctx: Ctx, repo: RepoCtx, args: string[]): string | null {
   return r.ok ? r.stdout.trim() : null;
 }
 
-/** The pre-push base: the branch's upstream, else the remote's default branch. */
-function resolveDiffBase(ctx: Ctx, repo: RepoCtx): { base: string; upstream: string } {
-  const up = git(ctx, repo, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+export const NO_DIFF_BASE = 'This branch has no upstream and the remote has no default branch to diff against. Push the branch, or review the whole repo with --full.';
+
+/**
+ * The pre-push base: the branch's upstream, else the remote's default branch
+ * (origin/HEAD), else null. Local git only. `fromUpstream` says which. The
+ * one rule for both the CLI's branch scope and the dashboard's check of it.
+ */
+export function diffBase(gitRun: (args: string[]) => RunResult, root: string): { base: string; upstream: string; fromUpstream: boolean } | null {
+  const g = (args: string[]) => { const r = gitRun(['-C', root, ...args]); return r.ok ? r.stdout.trim() : null; };
+  const up = g(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
   if (up) {
-    const sha = git(ctx, repo, ['rev-parse', '--verify', '--quiet', `${up}^{commit}`]);
-    if (sha) return { base: sha, upstream: up };
+    const sha = g(['rev-parse', '--verify', '--quiet', `${up}^{commit}`]);
+    if (sha) return { base: sha, upstream: up, fromUpstream: true };
   }
-  const head = git(ctx, repo, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+  const head = g(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
   if (head) {
-    const sha = git(ctx, repo, ['rev-parse', '--verify', '--quiet', head]);
-    if (sha) return { base: sha, upstream: head.replace(/^refs\/remotes\//, '') };
+    const sha = g(['rev-parse', '--verify', '--quiet', head]);
+    if (sha) return { base: sha, upstream: head.replace(/^refs\/remotes\//, ''), fromUpstream: false };
   }
-  throw new Abort('This branch has no upstream and the remote has no default branch to diff against. Push the branch, or review the whole repo with --full.');
+  return null;
+}
+
+function resolveDiffBase(ctx: Ctx, repo: RepoCtx): { base: string; upstream: string } {
+  const b = diffBase(ctx.deps.git, repo.root);
+  if (!b) throw new Abort(NO_DIFF_BASE);
+  return b;
+}
+
+/** What `security code-review` (branch scope) would review in `root`, from local git only. */
+export interface BranchScope {
+  /** The checked-out branch, or null when HEAD is detached or there is no commit. */
+  branch: string | null;
+  /** The base the diff is against; null: no upstream and no remote default branch (the CLI stops, NO_DIFF_BASE). */
+  base: { upstream: string; fromUpstream: boolean; commit: string } | null;
+  /** True when `git diff <base>...HEAD` is empty: the CLI starts nothing ("nothing to review"). */
+  empty: boolean;
+  /** Uncommitted changes (tracked and untracked paths), which no review includes. */
+  dirty: number;
+}
+
+export function branchScope(gitRun: (args: string[]) => RunResult, root: string): BranchScope {
+  const g = (args: string[]) => { const r = gitRun(['-C', root, ...args]); return r.ok ? r.stdout.trim() : null; };
+  const tip = g(['rev-parse', '--verify', '--quiet', 'HEAD']);
+  const name = g(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const status = g(['status', '--porcelain']);
+  const dirty = status ? status.split('\n').filter(Boolean).length : 0;
+  const b = tip ? diffBase(gitRun, root) : null;
+  // The same comparison the CLI's patch makes (base...tip); --name-only is empty exactly when that patch is.
+  const changed = b && tip ? g(['diff', '--no-color', '--no-ext-diff', '--name-only', `${b.base}...${tip}`]) : null;
+  return {
+    branch: name && name !== 'HEAD' ? name : null,
+    base: b ? { upstream: b.upstream, fromUpstream: b.fromUpstream, commit: b.base.slice(0, 12) } : null,
+    empty: !!b && changed === '',
+    dirty,
+  };
 }
 
 function buildScope(ctx: Ctx, repo: RepoCtx, full: boolean): Scope {
@@ -712,7 +755,7 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     const s = buildScope(ctx, repo, !!input.full);
     say(`Scope:       ${s.scope === 'full' ? `the whole repo at ${s.tip.slice(0, 12)}` : `${s.upstream}...${s.tip.slice(0, 12)}`}`);
     if (s.empty) {
-      say(`No changes against ${s.upstream}; nothing to review.`);
+      say(`No changes against ${s.upstream}; nothing to review. To review the whole repo at HEAD, run with --full.`);
       return 0;
     }
     const ctxUri = `s3://${bucket}/${s.context.key}`;
