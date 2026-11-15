@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../utils/exec.js';
-import { fallbackPushBase } from './pushbase.js';
+import { fallbackPushBase, NO_REMOTE_LABEL } from './pushbase.js';
 import { DEFAULT_REVIEW_TIMEOUT_SECONDS, modelLabel, readEvalConfig, resolveReviewModel, reviewModelGitKey, REVIEWER_GIT_CONFIG_KEY } from './config.js';
 import { loadReviewRules } from './rules.js';
 import { safeWrite } from './gitleaks.js';
@@ -81,6 +81,13 @@ export function resolveBase(ref: PushRef, remote: string | null, repoRoot = '.')
   const fb = fallbackPushBase(repoRoot, { remote, dst, branch, tip: ref.localSha });
   if (fb && fb.base !== ref.localSha) return { base: fb.base, upstream: fb.emptyTree ? null : fb.label, emptyTree: fb.emptyTree };
   return { base: null, upstream: null };
+}
+
+/** What the review compares with, for the log line: an upstream ref, or why there is none. */
+export function reviewTarget(upstream: string | null, emptyTree?: boolean): string {
+  if (emptyTree) return '(first push, nothing on a remote yet: reviewing the whole tree)';
+  if (upstream === NO_REMOTE_LABEL) return '(no upstream yet, reviewing commits not on any remote)';
+  return `against ${upstream}`;
 }
 
 /**
@@ -191,7 +198,7 @@ function reviewRef(opts: PrePushOptions, ref: PushRef, log: (l: string) => void)
     const diffPath = join(tmp, 'branch.diff');
     writeFileSync(diffPath, diff, { mode: 0o600 });
     const timeoutS = Number(evalCfg.timeout_seconds) > 0 ? Number(evalCfg.timeout_seconds) : DEFAULT_REVIEW_TIMEOUT_SECONDS;
-    log(`prism: reviewing ${branch} against ${upstream} with ${adapter.displayName}, model ${modelLabel(adapter.id, model)} (report only, up to ${timeoutS}s)...`);
+    log(`prism: reviewing ${branch} ${reviewTarget(upstream, emptyTree)} with ${adapter.displayName}, model ${modelLabel(adapter.id, model)} (report only, up to ${timeoutS}s)...`);
     const res = runReview(adapter, { repoRoot, rulesPath, rulesText, diffPath, diff, model: model || undefined }, timeoutS * 1000, bin);
     const finished = new Date().toISOString();
     const version = toolVersion(bin);

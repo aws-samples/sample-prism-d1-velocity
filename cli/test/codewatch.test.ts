@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { ADAPTERS, detectReviewers, resolveReviewer, extractReviewJson } from '../src/codewatch/reviewers/index.js';
 import { gitleaksInstallHint, parseGitleaksReport, runPreCommit } from '../src/codewatch/gitleaks.js';
 import { makeResult, readResults, resultFileName, writeResult, RESULTS_DIR, REASON_GITLEAKS_MISSING } from '../src/codewatch/results.js';
-import { runPrePush, parsePushInput } from '../src/codewatch/prepush.js';
+import { runPrePush, parsePushInput, reviewTarget } from '../src/codewatch/prepush.js';
+import { NO_REMOTE_LABEL } from '../src/codewatch/pushbase.js';
 import { installHooks, uninstallHooks, retireLegacyCommitMsgHook, ensureResultsIgnored, PRE_PUSH_SCRIPT, PRE_COMMIT_SCRIPT } from '../src/codewatch/hooks.js';
 import { writeEvalConfig, readPrismConfig, resolveReviewModel, modelLabel, reviewModelGitKey } from '../src/codewatch/config.js';
 import { chooseModel, CLAUDE_MODEL_ALIASES, listKiroModels, type ModelPromptDeps } from '../src/commands/enable/codewatch.js';
@@ -683,4 +684,10 @@ test('pre-push: a model set for kiro is not passed to Claude Code when the push 
   assert.match(log, /with Claude Code, model default \(report only/);
   const args = readFileSync(argsLog, 'utf8');
   assert.ok(!args.includes('--model'), args);
+});
+
+test('pre-push log: what the review compares with, on a first push too', () => {
+  assert.equal(reviewTarget('origin/main'), 'against origin/main');
+  assert.equal(reviewTarget(NO_REMOTE_LABEL), '(no upstream yet, reviewing commits not on any remote)');
+  assert.equal(reviewTarget(null, true), '(first push, nothing on a remote yet: reviewing the whole tree)');
 });

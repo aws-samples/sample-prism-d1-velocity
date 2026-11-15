@@ -1079,7 +1079,7 @@ test('push gate: commits on no remote are reviewed when no remote branch matches
   r.write('src/k.ts', 'x\n');
   r.commit('unpushed');
   const v = runHarnessReview(r.opts({ event: 'pre-push', scope: 'branch' }));
-  assert.ok(v.warnings.some((w) => /1 commit\(s\) that are on no remote/.test(w)), v.warnings.join('|'));
+  assert.ok(v.warnings.some((w) => /no upstream yet and no remote branch to compare with; reviewing the 1 commit\(s\) not on any remote/.test(w)), v.warnings.join('|'));
   assert.equal(v.diff.files, 1, 'only the unpushed commit, not what other/dev already has');
 });
 
