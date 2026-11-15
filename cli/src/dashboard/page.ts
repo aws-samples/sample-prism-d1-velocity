@@ -539,7 +539,6 @@ function securityPentestRows(s, sec) {
 
 const AUDIT_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
-/** The latest aws check per account. Local results only. */
 /** The latest aws check per account, one line each (the detail is on AccountGuard). Local results only. */
 function awsPanel(aws) {
   const rows = (aws && aws.accounts) || [];
