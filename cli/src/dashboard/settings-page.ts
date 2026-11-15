@@ -59,6 +59,8 @@ function showView() {
   if (sec) sec.hidden = v !== 'security';
   const ag = document.getElementById('accountguard');
   if (ag) ag.hidden = v !== 'accountguard';
+  // Leaving a run's page drops its cached copy (security-runs-page.ts), so coming back reads it again.
+  if (v !== 'security' && typeof runLeave === 'function') runLeave();
   if (v === 'repo') renderRepo(repoRoute());
   if (v === 'security') drawSecurity();
   if (v === 'accountguard') drawAccountGuard();

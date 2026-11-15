@@ -640,6 +640,34 @@ try {
     }, csrf);
     await ctx.close();
   }
+  // ---------- 14. a run opened while running shows its findings once it finishes, without a reload ----------
+  if (want('rundetail')) {
+    const out = {};
+    R.suites.rundetail = out;
+    const srv = await live('rundetail', 'full', { PRISM_NO_UPDATE_CHECK: '1' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
+    const run = (data.security_runs || []).find((r) => r.status === 'running' && r.type === 'code-review');
+    out.found = !!run;
+    if (run) {
+      const hash = '#security/run/' + run.repo_id + '/' + run.run_id;
+      await page.evaluate((h) => { location.hash = h; }, hash);
+      await page.waitForSelector('[data-run-detail]', { timeout: 15000 }).catch(() => {});
+      out.before = await page.evaluate(() => document.getElementById('security').innerText.slice(0, 600));
+      // The job finishes: the CLI fetches it with the fake aws answering COMPLETED (no AWS call).
+      const cwd = readFileSync(join(srv.home, '.start-dir'), 'utf8').trim();
+      const sp = spawnSync(process.execPath, [ENTRY, 'security', 'findings'], { cwd, encoding: 'utf8', timeout: 120000, env: demoEnv(srv.home, { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete' }) });
+      out.cliExit = sp.status;
+      // Away and back, in the same page: no reload.
+      out.marker = await page.evaluate(() => { window.__noReload = 1; return 1; });
+      await page.evaluate(() => { location.hash = '#'; }); await sleep(400);
+      await page.evaluate((h) => { location.hash = h; }, hash);
+      await page.waitForSelector('[data-run-findings]', { timeout: 15000 }).catch(() => {});
+      out.after = await page.evaluate(() => ({ text: document.getElementById('security').innerText.slice(0, 1500), sameDoc: window.__noReload === 1 }));
+    }
+    await ctx.close();
+  }
   // ---------- 13. security runs (1.18): Dashboard list, full table, drill-down, completion link, phone width ----------
   if (want('runs')) {
     const out = {};
@@ -869,6 +897,12 @@ function verdicts(R) {
     add('R6', 'an unknown run id says Run not found with a way back', /Run not found/.test(U.missing) && /Back to Security runs/.test(U.missing), U.missing);
     add('R7', 'at 390 px the Dashboard and the drill-down do not scroll sideways', U.phone.dashboard <= 1 && U.phone.detail <= 1, JSON.stringify(U.phone));
     add('R8', 'light theme: no text below 4.5:1 on the Dashboard or the drill-down', U.contrast && !U.contrast.dashboard.length && !U.contrast.detail.length, JSON.stringify(U.contrast).slice(0, 400));
+  }
+  if (S.rundetail) {
+    const D = S.rundetail;
+    add('R9', 'a run opened while running shows its findings after it finishes, on coming back, without a reload',
+      D.found && /Still running/.test(D.before || '') && D.cliExit === 0 && !!D.after && D.after.sameDoc && /SQL injection in order lookup/.test(D.after.text) && !/Still running/.test(D.after.text),
+      JSON.stringify({ found: D.found, cli: D.cliExit, before: (D.before || '').slice(0, 120), after: D.after && D.after.text.slice(0, 200), same: D.after && D.after.sameDoc }));
   }
   if (S.pending) {
     add('pending-nolink', 'a run still running has no View findings link in the drawer', S.pending.drawerLink === false, String(S.pending.drawerLink));

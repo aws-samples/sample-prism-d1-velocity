@@ -203,20 +203,33 @@ const runCellLink = (repoId, type) => { const r = latestRunOf(repoId, type); ret
 // ---------------------------------------------------------------- the drill-down
 const RUN_RE = new RegExp('^#security/run/([a-f0-9]{16})/([A-Za-z0-9_-]{1,200})$');
 function runRoute() { const m = RUN_RE.exec(location.hash); return m ? { repo: m[1], run: m[2] } : null; }
-let RUN_DETAIL = null, RUN_KEY = null;
+let RUN_DETAIL = null, RUN_KEY = null, RUN_FETCH = null, RUN_SHOWN = null;
+/** A run without a verdict yet can change under the page: its cached copy is refetched on every draw (route entry, the minute refresh). */
+const runStale = (d) => !d || !d.found || d.run.status === 'running' || d.run.status === 'noverdict';
+/** Leaving the drill-down (the router calls this) drops its copy, so coming back always reads the run again. */
+function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; }
 
+/** Draws the cached copy at once (when there is one), then reads the run again if it may have changed. */
 async function drawRunDetail(root, route) {
   const key = route.repo + '/' + route.run;
+  if (SNAPSHOT) { root.replaceChildren(el('section', { class: 'card' }, el('p', { class: 'empty' }, 'A run\\'s findings open on the live dashboard only (prism-cli dashboard). '), el('a', { href: '#security' }, 'Back to Security runs'))); return; }
+  const cached = RUN_KEY === key ? RUN_DETAIL : null;
+  // A finished run already on screen stays as it is: a refresh keeps the open findings and the filter.
+  if (cached && !runStale(cached)) { if (RUN_SHOWN !== key) paintRunDetail(root, cached, key); return; }
+  if (cached) paintRunDetail(root, cached, key); else root.replaceChildren(el('p', { class: 'loading' }, 'loading...'));
+  if (RUN_FETCH === key) return;
+  RUN_FETCH = key;
+  let r;
+  try { r = await api('/api/security-run?repo=' + encodeURIComponent(route.repo) + '&run=' + encodeURIComponent(route.run)); } catch (e) { r = { ok: false, json: { error: e.message } }; }
+  finally { RUN_FETCH = null; }
+  if (location.hash !== '#security/run/' + key) return;
+  RUN_KEY = key; RUN_DETAIL = r.ok ? r.json : { found: false, error: txt(r.json && r.json.error) || 'could not load the run' };
+  paintRunDetail(root, RUN_DETAIL, key);
+}
+
+function paintRunDetail(root, d, key) {
+  RUN_SHOWN = key;
   const back = el('a', { href: '#security' }, 'Back to Security runs');
-  if (SNAPSHOT) { root.replaceChildren(el('section', { class: 'card' }, el('p', { class: 'empty' }, 'A run\\'s findings open on the live dashboard only (prism-cli dashboard). '), back)); return; }
-  if (RUN_KEY !== key || !RUN_DETAIL) {
-    root.replaceChildren(el('p', { class: 'loading' }, 'loading...'));
-    let r;
-    try { r = await api('/api/security-run?repo=' + encodeURIComponent(route.repo) + '&run=' + encodeURIComponent(route.run)); } catch (e) { r = { ok: false, json: { error: e.message } }; }
-    if (location.hash !== '#security/run/' + key) return;
-    RUN_KEY = key; RUN_DETAIL = r.ok ? r.json : { found: false, error: txt(r.json && r.json.error) || 'could not load the run' };
-  }
-  const d = RUN_DETAIL;
   if (!d.found) {
     root.replaceChildren(el('div', { class: 'crumbs' }, el('a', { href: '#' }, 'Dashboard'), ' / ', el('a', { href: '#security' }, 'Security Agent'), ' / run not found'),
       el('section', { class: 'card', 'data-run-missing': '' }, el('h2', {}, 'Run not found'), el('p', {}, txt(d.error)), el('p', {}, back)));

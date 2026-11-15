@@ -239,3 +239,68 @@ test('page: the drawer shows "Complete. View findings" for a finished run, nothi
   assert.match(SECURITY_RUNS_SCRIPT, /if \(!r \|\| r\.status === 'running' \|\| !r\.repo \|\| !r\.run\) return null;/);
   assert.match(SECURITY_RUNS_SCRIPT, /ok \? 'Complete\.' :/);
 });
+
+test('a job id outside the safe shape is never listed or opened; a valid one is quoted in the copy command', () => {
+  const { list, cleanup } = repos();
+  try {
+    const [shop] = list;
+    const hostile = 'job$(touch pwned);x';
+    const p = writeResult(shop.path, review(hostile, at(5), { counts: { LOW: 1 }, findings: [crFinding('LOW', 'x')] }));
+    const id = p.split('/').pop()!.replace(/\.json$/, '');
+    assert.deepEqual(collectSecurityRuns(list, undefined, NOW), [], 'not in the list');
+    const d = securityRunDetail(list, shop.id, id, '', NOW);
+    assert.equal(d.found, false);
+    assert.ok(!JSON.stringify(d).includes('touch'), 'the id never reaches a command');
+    const ok = writeResult(shop.path, review('crj-1:a.b_c', at(4)));
+    const g = securityRunDetail(list, shop.id, ok.split('/').pop()!.replace(/\.json$/, ''), '', NOW);
+    assert.ok(g.found && g.cli.startsWith('prism-cli security findings --job crj-1:a.b_c --path '));
+  } finally { cleanup(); }
+});
+
+test('runner: when the run lookup fails, the output says so and there is no link', async () => {
+  const home = tmp('runner-fail');
+  const path = join(home, 'src', 'demo');
+  mkdirSync(path, { recursive: true });
+  const REPO: ScanRepo = { id: repoId(path), name: 'demo', path };
+  const spawn = () => {
+    const c: any = new EventEmitter(); c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => true;
+    setTimeout(() => { c.stdout.emit('data', 'Saved it\n'); c.emit('close', 0); }, 5);
+    return c;
+  };
+  const errs: string[] = [];
+  const orig = process.stderr.write.bind(process.stderr);
+  (process.stderr as any).write = (s: string) => { errs.push(String(s)); return true; };
+  const r = new ActionRunner({ execPath: '/usr/bin/node', entry: '/x.js', cwd: home, home, repos: async () => [REPO], systemdAvailable: () => false, platform: 'linux', spawn: spawn as any, awsArgs: () => [], writeGate: () => null,
+    runWritten: () => { throw new Error('EACCES: permission denied'); } });
+  try {
+    assert.equal((await r.start({ action: 'security-findings', repo: REPO.id })).status, 202);
+    for (let i = 0; i < 200 && r.status().state !== 'done'; i++) await new Promise((x) => setTimeout(x, 5));
+    const s = r.status();
+    assert.equal(s.result, null);
+    assert.match(s.output!, /\[Could not find the result file; open the Security Agent page to see the run\]/);
+    assert.ok(errs.some((l) => /could not read the run security-findings wrote in demo: EACCES/.test(l)), errs.join(''));
+  } finally { (process.stderr as any).write = orig; rmSync(home, { recursive: true, force: true }); }
+});
+
+test('page: a run opened while running is read again when the page comes back to it, and shows its findings', async () => {
+  const { p, cleanup } = await pagePayload();
+  try {
+    const run = 'r9-20261115T120000000Z-manual-security-review';
+    const url = `/api/security-run?repo=${REPO_ID}&run=${run}`;
+    const base = { found: true, account4: '••••3333', region: 'us-west-2', scope: null, target_host: null, overview: null, result_file: '~/r9.json', cli: 'prism-cli security findings --job job-9 --path ~/src/x', no_remediation: 'No remediation provided by this run type.' };
+    let calls = 0, finished = false;
+    const answer = () => (++calls, !finished ? { ...base, run: row(9, { status: 'running', duration_s: null }), findings: [] }
+      : { ...base, run: row(9), findings: [{ severity: 'critical', title: 'Now found', location: 'a.ts:1', cwe: null, stride: [], confidence: null, description: 'd', remediation: null, evidence: [], finding_id: 'f' }] });
+    const page = await runPage([p], `#security/run/${REPO_ID}/${run}`, null, { [url]: answer, '/api/security-agent': { repos: [] } });
+    await page.settle();
+    assert.match(page.dom.byId.security.textContent, /Still running/);
+    const before = calls;
+    finished = true;
+    page.go('#');
+    page.go(`#security/run/${REPO_ID}/${run}`);
+    await page.settle();
+    assert.ok(calls > before, 'read again on the way back');
+    assert.match(page.dom.byId.security.textContent, /Now found/);
+    assert.doesNotMatch(page.dom.byId.security.textContent, /Still running/);
+  } finally { cleanup(); }
+});

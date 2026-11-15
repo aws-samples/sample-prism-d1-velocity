@@ -1401,7 +1401,10 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   ![A code review's page with demo data: the header (demo-shop, main, the whole repo at HEAD, account ••••3333 / us-west-2, 14 min, job job-demo-2 with Copy), 1 critical and 1 low by severity, the findings with the severity filter and the first one open with its full description and "No remediation provided by this run type.", and the result file and CLI command with Copy](assets/images/prism-cli/dashboard-security-run-dark.png)
 
   There is no direct link to the run in the Security Agent console yet. Open the Security Agent web
-  application and find the job id. An unknown or deleted run id shows **Run not found** with a link
+  application and find the job id. A run that is still running (or has no verdict yet) is read again
+  each time you open its page and on the page's minute refresh, so it shows its findings once they
+  are fetched, without a reload. An unknown or deleted run id, or a result file whose job id is not
+  a plain id, shows **Run not found** with a link
   back. The page reads one local result file through `GET /api/security-run`, which takes only the
   repo id and the run id and matches both against the dashboard's own repo list. Finding text, which
   comes from AWS and from code, is shown as text.
