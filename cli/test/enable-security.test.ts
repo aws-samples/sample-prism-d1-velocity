@@ -14,6 +14,8 @@ import { categorize, diffTemplates } from '../src/security/cfn-diff.js';
 import { explainAwsError, NO_CREDENTIALS_MESSAGE, redact } from '../src/security/errors.js';
 import { MARKER_PATH, readSecurityMarker, readSecurityMarkerWithSource, removeLegacyBlock } from '../src/security/marker.js';
 import { securitySetup } from '../src/dashboard/setup.js';
+import { loadSetup, readMachineSetup, USER_SECURITY_PATH, userSecurityPath } from '../src/security/config.js';
+import { statSync } from 'node:fs';
 import alias, { DEPRECATION } from '../src/commands/securityagent/setup.js';
 import { runEnableSecurity, SECURITY_OPTIONS, type RunHooks } from '../src/commands/enable/security.js';
 import { describeUnexpectedError } from '../src/security/errors.js';
@@ -225,7 +227,8 @@ function harness(state: State, o: { ignored?: boolean; tty?: boolean; answers?: 
   };
 }
 
-const opts = (o: Partial<SecurityOptions> = {}): SecurityOptions => ({ region: REGION, ...o });
+// Most tests here cover the per-repo opt-in (--repo); the machine-only default has its own tests below.
+const opts = (o: Partial<SecurityOptions> = {}): SecurityOptions => ({ region: REGION, repo: true, ...o });
 
 // ---------------------------------------------------------------------------
 
@@ -426,7 +429,8 @@ test('--status is read-only and reports every item', async () => {
       /\[ok\] Code review: cr-1 \(".*"\) from \/prism\/continuum\/code-review-id\/github\.com-acme-widgets/,
       /\[warn\] Legacy SSM: \/prism\/continuum\/code-review-id = cr-old/,
       /\[ok\] CI workflow step: \.github\/workflows\/prism-eval-gate\.yml/,
-      /\[missing\] Local marker/,
+      /\[missing\] Setup: Security Agent is not set up on this machine: run prism-cli enable security/,
+      /\[unknown\] Repo override: none: this repo would use the machine setup ~\/\.prism\/security\.json/,
     ]) assert.match(out, re);
   } finally { h.cleanup(); }
 });
@@ -463,9 +467,18 @@ test('outside a git repo: account-level setup only, no marker', async () => {
   const s = fullySetUp(); s.apps = [];
   const h = harness(s, { inRepo: false });
   try {
-    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 0);
+    assert.equal(await enableSecurity(opts({ yes: true, repo: undefined }), h.deps), 0);
     assert.deepEqual(h.writes(), ['securityagent create-application', 'securityagent update-application']);
-    assert.match(h.out(), /\[skip\] Code review: not inside a git repository/);
+    assert.match(h.out(), /\[skip\] Code review: per repo, not part of the machine setup/);
+  } finally { h.cleanup(); }
+});
+
+test('--repo outside a git repo stops before any write', async () => {
+  const h = harness(fullySetUp(), { inRepo: false });
+  try {
+    assert.equal(await enableSecurity(opts({ yes: true }), h.deps), 1);
+    assert.deepEqual(h.writes(), []);
+    assert.match(h.out(), /Error: not inside a git repository/);
   } finally { h.cleanup(); }
 });
 
@@ -542,10 +555,10 @@ test('template diff: IAM, network and endpoint changes are called out', () => {
 test('dashboard Security Agent row comes from the marker', () => {
   const repo = mkdtempSync(join(tmpdir(), 'prism-sec-dash-'));
   try {
-    assert.deepEqual(securitySetup(repo), { status: 'missing', detail: 'not set up', fix: `cd ${repo} && prism-cli enable security` });
+    assert.deepEqual(securitySetup(repo), { status: 'missing', source: null, detail: 'not set up on this machine', fix: 'prism-cli enable security' });
     mkdirSync(join(repo, '.prism'));
     writeFileSync(join(repo, '.prism/config.json'), JSON.stringify({ security: { agentSpaceId: 'as-1', applicationId: 'app-1', codeReviewId: 'cr-1', region: 'us-west-2', account: ACCOUNT, setupAt: '2026-11-06T05:00:00.000Z' } }));
-    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-06`, fix: '' });
+    assert.deepEqual(securitySetup(repo), { status: 'ok', source: 'repo', detail: `repo override: code review cr-1 in account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-06`, fix: '' });
     writeFileSync(join(repo, '.prism/config.json'), JSON.stringify({ security: { agentSpaceId: 'as-1' } }));
     assert.equal(securitySetup(repo).status, 'missing', 'an incomplete marker does not count');
   } finally { rmSync(repo, { recursive: true, force: true }); }
@@ -756,7 +769,7 @@ test('the marker message names the new file and says it is local and not committ
   const h = harness(fullySetUp(), { ignored: true });
   try {
     assert.equal(await enableSecurity(opts(), h.deps), 0);
-    assert.ok(h.out().includes(`Wrote ${join(h.repo, MARKER_PATH)} (ids, account and region; no secrets; local only, not committed)`), h.out());
+    assert.ok(h.out().includes(`Wrote ${MARKER_PATH}, the repo override (ids, account and region; no secrets; local only, not committed)`), h.out());
     assert.doesNotMatch(h.out(), /commit it|teammates|Added .* so git ignores it/);
     assert.equal(existsSync(join(h.repo, '.git-dir', 'info', 'exclude')), false, 'already ignored: info/exclude untouched');
   } finally { h.cleanup(); }
@@ -799,7 +812,7 @@ test('--status reports a legacy block as waiting to move', async () => {
   writeFileSync(join(h.repo, '.prism/config.json'), JSON.stringify({ security: LEGACY }));
   try {
     assert.equal(await enableSecurity(opts({ status: true }), h.deps), 0);
-    assert.match(h.out(), /\[warn\] Local marker: legacy security block in \.prism\/config\.json .* moves it to \.prism\/security\.local\.json/);
+    assert.match(h.out(), /\[warn\] Repo override: legacy security block in \.prism\/config\.json .* enable security --repo moves it to \.prism\/security\.local\.json/);
     assert.ok(JSON.parse(readFileSync(join(h.repo, '.prism/config.json'), 'utf8')).security, '--status never moves it');
   } finally { h.cleanup(); }
 });
@@ -834,9 +847,20 @@ test('dashboard Security Agent row reads the new file', () => {
   try {
     mkdirSync(join(repo, '.prism'));
     writeFileSync(join(repo, MARKER_PATH), JSON.stringify(LEGACY));
-    assert.deepEqual(securitySetup(repo), { status: 'ok', detail: `code review cr-1 in account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-06`, fix: '' });
+    assert.deepEqual(securitySetup(repo), { status: 'ok', source: 'repo', detail: `repo override: code review cr-1 in account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-06`, fix: '' });
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
+
+test('dashboard Security Agent row: a repo without its own file uses the machine setup; its own file wins', () => withHome(async (home) => {
+  const repo = mkdtempSync(join(tmpdir(), 'prism-sec-dash-'));
+  try {
+    writeMachine(home);
+    assert.deepEqual(securitySetup(repo, [], home), { status: 'ok', source: 'machine', detail: `uses the machine setup: account ••••${ACCOUNT.slice(-4)} (us-west-2), set up 2026-11-01`, fix: '' });
+    mkdirSync(join(repo, '.prism'));
+    writeFileSync(join(repo, MARKER_PATH), JSON.stringify(LEGACY));
+    assert.equal(securitySetup(repo, [], home).source, 'repo');
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}));
 
 // --------------------------------------------------------------- unexpected (non-Abort) errors
 
@@ -934,3 +958,152 @@ test('paths containing cdk or .git do not pick the cdk or git hint', () => {
   assert.match(describeUnexpectedError(new Error('cdk deploy exited 1'), {})[1], /The CDK step failed/);
   assert.match(describeUnexpectedError(new Error('fatal: not a git repository'), {})[1], /git command failed/);
 });
+
+// ---------------------------------------------------------------------------
+// Once per machine: ~/.prism/security.json, and the order flags > repo override > machine setup.
+// ---------------------------------------------------------------------------
+const MACHINE = { agentSpaceId: 'as-1', applicationId: 'app-1', region: REGION, account: ACCOUNT, setupAt: '2026-11-01T00:00:00.000Z' };
+const machineOpts = (o: Partial<SecurityOptions> = {}): SecurityOptions => ({ region: REGION, ...o });
+
+function withHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+  const home = mkdtempSync(join(tmpdir(), 'prism-sec-home-'));
+  return fn(home).finally(() => rmSync(home, { recursive: true, force: true }));
+}
+const writeMachine = (home: string, over: Record<string, string> = {}) => {
+  mkdirSync(join(home, '.prism'), { recursive: true });
+  writeFileSync(userSecurityPath(home), JSON.stringify({ ...MACHINE, ...over }));
+};
+
+test('machine setup: no repo needed, writes ~/.prism/security.json owner-only, and makes no per-repo writes', () => withHome(async (home) => {
+  const s = fullySetUp(); s.apps = []; delete s.params[PARAM]; s.reviews = []; s.objects = {};
+  const h = harness(s, { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true }), h.deps), 0);
+    assert.deepEqual(h.writes(), ['securityagent create-application', 'securityagent update-application'], 'no S3 snapshot, code review or SSM pointer');
+    assert.deepEqual(readMachineSetup(home), { agentSpaceId: 'as-1', applicationId: 'app-new-1', region: REGION, account: ACCOUNT, setupAt: '2026-11-06T05:00:00.000Z' });
+    if (process.platform !== 'win32') assert.equal(statSync(userSecurityPath(home)).mode & 0o777, 0o600);
+    assert.equal(existsSync(join(h.repo, MARKER_PATH)), false, 'no repo override without --repo');
+    assert.match(h.out(), /\[skip\] Code review: per repo, not part of the machine setup: security code-review creates it on its first run/);
+    assert.match(h.out(), /Wrote ~\/\.prism\/security\.json: the machine setup every repo on this machine uses/);
+    assert.doesNotMatch(h.out(), new RegExp(home), 'the home path is not printed');
+  } finally { h.cleanup(); }
+}));
+
+test('machine setup: the same file from inside a repo and from outside one', () => withHome(async (home) => {
+  const runs: string[] = [];
+  for (const inRepo of [true, false]) {
+    rmSync(join(home, '.prism'), { recursive: true, force: true });
+    const h = harness(fullySetUp(), { env: { HOME: home }, inRepo });
+    try {
+      assert.equal(await enableSecurity(machineOpts({ yes: true }), h.deps), 0);
+      assert.deepEqual(h.writes(), []);
+      runs.push(readFileSync(userSecurityPath(home), 'utf8'));
+    } finally { h.cleanup(); }
+  }
+  assert.equal(runs[0], runs[1]);
+}));
+
+test('machine setup: a re-run that changes nothing leaves the file as it was', () => withHome(async (home) => {
+  writeMachine(home);
+  const before = readFileSync(userSecurityPath(home), 'utf8');
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true }), h.deps), 0);
+    assert.equal(readFileSync(userSecurityPath(home), 'utf8'), before);
+    assert.match(h.out(), /~\/\.prism\/security\.json is already current/);
+  } finally { h.cleanup(); }
+}));
+
+test('the region comes from the machine setup when no flag names one, and a repo override is ignored without --repo', () => withHome(async (home) => {
+  writeMachine(home);
+  const h = harness(fullySetUp(), { env: { HOME: home, AWS_REGION: 'eu-west-1' } });
+  mkdirSync(join(h.repo, '.prism'));
+  writeFileSync(join(h.repo, MARKER_PATH), JSON.stringify({ ...MACHINE, region: 'ap-south-1', codeReviewId: 'cr-9' }));
+  try {
+    assert.equal(await enableSecurity({ yes: true }, h.deps), 0);
+    assert.match(h.out(), /Region:      us-west-2 \(machine setup ~\/\.prism\/security\.json\)/);
+    assert.deepEqual([...new Set(h.regions)], [REGION]);
+  } finally { h.cleanup(); }
+}));
+
+test('--region beats every setup record', () => withHome(async (home) => {
+  writeMachine(home);
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity({ status: true, region: 'eu-west-1' }, h.deps), 0);
+    assert.match(h.out(), /region eu-west-1, --region/);
+    assert.deepEqual([...new Set(h.regions)], ['eu-west-1']);
+  } finally { h.cleanup(); }
+}));
+
+test('--status names the machine setup with the account masked, and says the repo uses it', () => withHome(async (home) => {
+  writeMachine(home);
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity({ status: true }, h.deps), 0);
+    const out = h.out();
+    assert.match(out, /\[ok\] Setup: machine setup ~\/\.prism\/security\.json \(account ••••3333, region us-west-2, set up 2026-11-01\), in use here/);
+    assert.match(out, /\[ok\] Repo override: none: this repo uses the machine setup ~\/\.prism\/security\.json/);
+    assert.match(out, /region us-west-2, machine setup ~\/\.prism\/security\.json/);
+    assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+}));
+
+test('--status: an old repo-only setup keeps working as the repo override, and wins over the machine setup', () => withHome(async (home) => {
+  writeMachine(home, { region: 'eu-west-1' });
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  mkdirSync(join(h.repo, '.prism'));
+  writeFileSync(join(h.repo, MARKER_PATH), JSON.stringify({ ...MACHINE, codeReviewId: 'cr-1', setupAt: '2026-10-01T00:00:00Z' }));
+  try {
+    assert.equal(await enableSecurity({ status: true }, h.deps), 0);
+    const out = h.out();
+    assert.match(out, /\[ok\] Setup: repo override \.prism\/security\.local\.json \(account ••••3333, region us-west-2, set up 2026-10-01\), in use here/);
+    assert.match(out, /\[ok\] Repo override: \.prism\/security\.local\.json \(code review cr-1, .*\); it takes precedence over the machine setup/);
+    assert.deepEqual([...new Set(h.regions)], [REGION]);
+  } finally { h.cleanup(); }
+}));
+
+test('--status with no home and no repo file says to run enable security once', async () => {
+  const h = harness(fullySetUp(), { inRepo: false });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ status: true }), h.deps), 0);
+    assert.match(h.out(), /\[missing\] Setup: Security Agent is not set up on this machine: run prism-cli enable security \(once, from any directory\)\./);
+  } finally { h.cleanup(); }
+});
+
+test('a setup for another account is flagged, never used silently', () => withHome(async (home) => {
+  writeMachine(home, { account: '999988887777' });
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity({ status: true }, h.deps), 0);
+    assert.match(h.out(), /\[warn\] Setup: machine setup .* is for account ••••7777, but the credentials resolve to account ••••3333/);
+  } finally { h.cleanup(); }
+}));
+
+test('--repo also writes the repo override and the per-repo code review, plus the machine setup', () => withHome(async (home) => {
+  const h = harness(fullySetUp(), { env: { HOME: home } });
+  try {
+    assert.equal(await enableSecurity(machineOpts({ yes: true, repo: true }), h.deps), 0);
+    assert.ok(existsSync(join(h.repo, MARKER_PATH)));
+    assert.ok(readMachineSetup(home));
+    assert.equal(loadSetup(home, h.repo)!.source, 'repo');
+    assert.equal(loadSetup(home, null)!.source, 'machine');
+    assert.match(h.out(), /Repo:        github\.com\/acme\/widgets \(code review slug github\.com-acme-widgets, --repo\)/);
+  } finally { h.cleanup(); }
+}));
+
+test('loadSetup: a repo override git tracks is ignored; a broken machine file reads as none', () => withHome(async (home) => {
+  const repo = mkdtempSync(join(tmpdir(), 'prism-sec-load-'));
+  try {
+    mkdirSync(join(repo, '.prism'));
+    writeFileSync(join(repo, MARKER_PATH), JSON.stringify({ ...MACHINE, codeReviewId: 'cr-1' }));
+    const tracked = () => ({ ok: true, stdout: '', stderr: '' });
+    assert.equal(loadSetup(home, repo, tracked), null);
+    writeMachine(home);
+    assert.equal(loadSetup(home, repo, tracked)!.source, 'machine');
+    writeFileSync(userSecurityPath(home), '{"agentSpaceId":"as-1","region":"nowhere","account":"1"}');
+    assert.equal(loadSetup(home, null), null);
+    assert.equal(loadSetup('', null), null, 'no home: none, never the real one');
+    assert.equal(USER_SECURITY_PATH, '~/.prism/security.json');
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}));

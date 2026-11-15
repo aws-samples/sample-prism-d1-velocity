@@ -332,7 +332,7 @@ test('discovery: --root overrides HOME; a bad root is reported', () => {
 // ---------------------------------------------------------------- overview sort order
 
 test('overview: setup rows put the current repo first, then installed, then missing', () => {
-  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, label: name, path: '/r/' + name, active: false, current, status, reviewer: null, detail: '', fix: '', collapsed: false, global: false, security: { status: 'missing' as const, detail: '', fix: '' } });
+  const row = (name: string, status: 'ok' | 'missing', current = false) => ({ name, label: name, path: '/r/' + name, active: false, current, status, reviewer: null, detail: '', fix: '', collapsed: false, global: false, security: { status: 'missing' as const, source: null, detail: '', fix: '' } });
   const sorted = sortSetupRows([row('a', 'ok'), row('b', 'missing'), row('c', 'missing', true), row('d', 'ok')]);
   assert.deepEqual(sorted.map((r) => r.name), ['c', 'a', 'd', 'b'], 'current repo, then installed, then missing');
 });
@@ -470,7 +470,7 @@ test('--json payload shape', async () => {
   assert.deepEqual(Object.keys(p.scope).sort(), ['current_repo', 'error', 'root', 'root_display', 'scan_ms', 'truncated']);
   assert.equal(p.scope.root_display, '~');
   assert.deepEqual(Object.keys(p.repos[0]).sort(), ['active', 'codewatch', 'current', 'hasPrism', 'id', 'label', 'name', 'path', 'security', 'setup', 'spend']);
-  assert.deepEqual(p.repos[0].security, { status: 'missing', detail: 'not set up', fix: `cd ${p.repos[0].path} && prism-cli enable security` });
+  assert.deepEqual(p.repos[0].security, { status: 'missing', source: null, detail: 'not set up on this machine', fix: 'prism-cli enable security' });
   assert.ok(p.overview.setup.every((r) => r.security && r.security.status === 'missing'));
   assert.equal(p.repos.length, 2);
   assert.equal(p.repos[0].current, true);

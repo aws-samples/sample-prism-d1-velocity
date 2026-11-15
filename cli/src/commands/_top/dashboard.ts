@@ -6,7 +6,7 @@ import { ActionRunner, cliEntry, repoId } from '../../dashboard/actions.js';
 import { setupApi } from '../../dashboard/setup-api.js';
 import { profileChoices } from '../../dashboard/aws-identity.js';
 import { connectionArgs } from '../../dashboard/accountguard.js';
-import { awsTargetFor, identityIn, LookupCache, targetArgs, WRITE_KIND, writeNotice } from '../../dashboard/security-agent.js';
+import { LookupCache, securityTargetIn, targetArgs, WRITE_KIND, writeNotice } from '../../dashboard/security-agent.js';
 import { repoRootOf } from '../../aws/connection.js';
 import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
 import type { DashboardPayload, PayloadTiming } from '../../dashboard/payload.js';
@@ -124,7 +124,7 @@ export default {
       // The Security Agent page: commands run in the picked repo with the account and region prism-cli resolves there.
       const lookups = new LookupCache();
       const saIdentity = { identity: { env: process.env, home: homedir() } };
-      const targetIn = (path: string) => awsTargetFor(identityIn(saIdentity, path));
+      const targetIn = (path: string) => securityTargetIn(saIdentity, path);
       // Settings › AWS and AccountGuard: the connection as Settings shows it (the dashboard repo's file wins over ~/.prism/aws.json).
       const identity = { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) };
       const runner = new ActionRunner({

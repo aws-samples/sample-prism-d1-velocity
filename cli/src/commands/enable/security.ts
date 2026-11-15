@@ -85,11 +85,11 @@ const collect = (v: string, prev: string[] = []) => [...prev, v];
 
 export const SECURITY_OPTIONS: { flags: string; description: string; default?: string; parser?: (v: string, prev?: string[]) => string[] }[] = [
   { flags: '--profile <name>', description: 'AWS CLI profile (default: AWS_PROFILE or env credentials, else the profile saved by prism-cli aws connect, else the standard credential chain)' },
-  { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, the aws connect region, else the profile\'s configured region; refuses when none is set)' },
+  { flags: '--region <region>', description: 'AWS region (default: the region of the existing setup, ~/.prism/security.json, then AWS_REGION, AWS_DEFAULT_REGION, the aws connect region, else the profile\'s configured region; refuses when none is set)' },
   { flags: '--yes', description: 'Approve the changes without a prompt (CI and other non-interactive use)' },
   { flags: '--dry-run', description: 'Run every read-only step and print the plan, including the exact calls; change nothing' },
-  { flags: '--status', description: 'Read-only report: credentials, stack, agent space, application, code review, SSM, CI step' },
-  { flags: '--repo <host/owner/name>', description: 'Repo id for the code review, as the CI gate names it (default: from the origin remote)' },
+  { flags: '--status', description: 'Read-only report: credentials, which setup is in use (machine or repo override), stack, agent space, application, SSM, and in a repo its code review and CI step' },
+  { flags: '--repo [host/owner/name]', description: 'Also set up this repo\'s code review now and write the repo override .prism/security.local.json (optional: the repo id as the CI gate names it; default: from the origin remote). Not needed: security code-review creates it on first use' },
   { flags: '--context <key=value>', description: 'Extra cdk context, repeatable (match how the stack was deployed, e.g. skipVpc=true)', parser: collect },
 ];
 
@@ -134,7 +134,7 @@ export async function runGuarded(body: () => Promise<number>, hooks: Pick<RunHoo
 }
 
 export default {
-  description: 'Set up AWS Security Agent: deploy only its stack (after a diff and your confirmation), then the application, the code review for this repo and its SSM pointer',
+  description: 'Set up AWS Security Agent once per machine, from any directory: deploy only its stack (after a diff and your confirmation), then the application, and save ~/.prism/security.json',
   options: SECURITY_OPTIONS,
   action: runEnableSecurity,
 };

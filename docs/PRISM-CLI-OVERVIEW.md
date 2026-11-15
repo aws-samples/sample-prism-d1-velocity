@@ -20,7 +20,7 @@ Since the slide, prism-cli also gained an MCP server for AI agents (`mcp`, 1.8.0
 | `enable codewatch` | Installs git hooks: a secret scan that blocks a commit with a secret, and an AI code review on push that only reports. | None | None in AWS; the review uses the developer's own AI tool (Kiro or Claude Code). | 1.2.0 |
 | `codewatch report` | Writes the report of one pre-push review (findings by file and commit, and the secret scans) as Markdown, HTML or JSON. | None | None | 1.2.0 |
 | `enable codeburn` | Installs codeburn and, in team mode, schedules it to send AI usage and commit attribution to the team's PRISM collector every 12 hours. Local mode (the default) keeps usage on the machine. | None | None in AWS beyond the team's existing PRISM pipeline. | 1.3.0 |
-| `enable security` | Sets up AWS Security Agent for one account and region, and this repo's code review for the CI gate. | Deploys resources | A KMS key, an S3 bucket and SSM parameters (small monthly charges). | 1.3.0 |
+| `enable security` | Sets up AWS Security Agent for one account and region, once per machine from any directory (`~/.prism/security.json`). Each repo's code review is created on its first `security code-review` or CI run; `--repo` sets it up now. | Deploys resources | A KMS key, an S3 bucket and SSM parameters (small monthly charges). | 1.3.0 |
 | `dashboard` | A local web page with each repo's codewatch results, AI usage, security findings, a Security Agent page, AccountGuard (the connected account's `aws check` results and ranked fixes) and a setup checklist. | None on load; the Settings view's `aws connect` and AccountGuard's `aws check` are read-only. The Security Agent page reads on a click and can start a code review or threat model (Starts jobs) after a confirmation. | As `security code-review` and `security threat-model` | 1.2.0 |
 | `mcp` | An MCP server on stdio that gives an AI agent (Kiro, Claude Code) the dashboard's findings, reports, cached spend and setup checklist. It can also write a static dashboard file, start the live dashboard on 127.0.0.1, and run the harness review (`prism_review`), which writes its result file. | None | None in AWS; `prism_review` uses the developer's own AI tool. | 1.8.0 |
 | `codewatch review` | The agent harness loop's engine: gitleaks, then the AI review of an agent's changes, answering pass, fix or stop. `codewatch hook` runs it from Claude Code and Kiro CLI hooks; the agent's push is denied only for secrets, a failed secret scan, edits to the checks or an unclear push target. | None | None in AWS; the review uses the developer's own AI tool. | 1.11.0 |
@@ -32,7 +32,7 @@ Since the slide, prism-cli also gained an MCP server for AI agents (`mcp`, 1.8.0
 
 ### Secure
 
-All of these use AWS Security Agent. `code-review`, `findings`, `threat-model` and `threats` need `enable security` first; `pentest` sets up its own agent space.
+All of these use AWS Security Agent. `code-review`, `findings`, `threat-model` and `threats` need `enable security` once on the machine first; `code-review` creates the repo's code review on its first run there. `pentest` sets up its own agent space.
 
 | Command | What it does | AWS access | Cost | Since |
 |---|---|---|---|---|

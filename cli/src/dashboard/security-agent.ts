@@ -3,8 +3,11 @@
  *
  * GET /api/security-agent makes no AWS call: per discovered repo it returns the
  * account and region prism-cli would use there (aws-identity.ts, from env and
- * local files), the enable security marker, the exact command line of every
- * page action, and the last agent-space lookup for that account and region.
+ * local files; the region of the Security Agent setup record wins, as in the
+ * CLI), which setup record applies there (the repo override, else the machine
+ * setup, security/config.ts), the exact command line of every page action, and
+ * the last agent-space lookup for that account and region. Once per page: the
+ * machine setup and the enable security command, which needs no repo.
  *
  * POST /api/security-agent/spaces is the one AWS read the page starts itself,
  * on a click: sts get-caller-identity, securityagent list-agent-spaces and
@@ -24,7 +27,8 @@ import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import type { AwsResult } from '../utils/aws.js';
 import { last4, PROFILE_RE, REGION_RE } from '../aws/connection.js';
-import { readSecurityMarker } from '../security/marker.js';
+import { loadSetup, type ResolvedSetup } from '../security/config.js';
+import { run } from '../utils/exec.js';
 import { listsBucket, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET } from '../security/setup.js';
 import { ACTIONS, displayCommand, redact, type ActionId, type ApiResult, type ScanRepo } from './actions.js';
 import { resolveAwsIdentity, type AwsIdentityView, type IdentityDeps } from './aws-identity.js';
@@ -282,9 +286,28 @@ export interface SecurityAgentDeps {
 /** The identity prism-cli resolves inside `repo` (its own .prism/aws.local.json counts). */
 export const identityIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string): AwsIdentityView => resolveAwsIdentity({ ...d.identity, repoRoot: repoPath });
 
+/**
+ * The setup record the security commands use in `repoPath` (null: the machine
+ * setup only). A repo override git tracks is ignored here too, as in the CLI, so
+ * a committed file never picks the region the Run actions get.
+ */
+export const setupIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): ResolvedSetup | null => loadSetup(d.identity.home, repoPath, (a) => run('git', a));
+
+/** --profile/--region for the security commands in `repoPath`: the identity there, with the setup record's region, as the CLI resolves it. */
+export function securityTargetIn(d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): AwsTargetArgs {
+  const t = awsTargetFor(resolveAwsIdentity({ ...d.identity, repoRoot: repoPath }));
+  const s = setupIn(d, repoPath);
+  return s && REGION_RE.test(s.region) ? { ...t, region: s.region } : t;
+}
+
+/** A setup record as the page shows it: the account as its last 4 digits. */
+const setupView = (s: ResolvedSetup | null) => (s ? { source: s.source, file: s.file, account4: last4(s.account), region: s.region, setupAt: s.setupAt, codeReviewId: s.codeReviewId } : null);
+
+/** enable security: once per machine, from any directory, so its copy line has no `cd`. */
+export const ENABLE_SECURITY_ARGS = ['enable', 'security'] as const;
+
 /** AWS-writing commands the page shows as Copy only, with the same profile and region the Run actions get. */
 export const COPY_ARGS = {
-  enableSecurity: ['enable', 'security'],
   pentestDryRun: ['security', 'pentest', '--dry-run'],
   pentest: ['security', 'pentest'],
   pentestStatus: ['security', 'pentest', '--status'],
@@ -302,20 +325,22 @@ export async function securityAgentView(d: SecurityAgentDeps) {
   return {
     repos: repos.map((r) => {
       const idn = identityIn(d, r.path);
-      const t = awsTargetFor(idn);
-      const m = readSecurityMarker(r.path);
+      const t = securityTargetIn(d, r.path);
+      const setup = setupIn(d, r.path);
       const lookup = d.cache.peek(t);
       const notices = Object.fromEntries(Object.entries(WRITE_KIND).map(([id, kind]) => [id, writeNotice(kind!, r.name, lookup)]));
       return {
         id: r.id, name: r.name, path: tildeHome(r.path, d.identity.home), current: r.current,
-        target: { profile: t.profile, region: t.region, source: idn.source, credentialLabel: idn.credentialLabel },
-        marker: m ? { agentSpaceId: m.agentSpaceId, codeReviewId: m.codeReviewId, account4: last4(m.account), region: m.region, setupAt: m.setupAt } : null,
+        target: { profile: t.profile, region: t.region, source: idn.source, credentialLabel: idn.credentialLabel, regionFrom: setup ? setup.source : null },
+        setup: setupView(setup),
         commands: Object.fromEntries(SECURITY_ACTIONS.map((id) => [id, commandLine(ACTIONS[id].args, r.path, d.identity.home, t)])),
         copy: Object.fromEntries(Object.entries(COPY_ARGS).map(([k, args]) => [k, commandLine(args, r.path, d.identity.home, t)])),
         notices,
         lookup,
       };
     }),
+    machine: setupView(setupIn(d, null)),
+    setupCommand: displayCommand([...ENABLE_SECURITY_ARGS, ...targetArgs(securityTargetIn(d, null))]),
     ttlSec: LOOKUP_TTL_MS / 1000,
   };
 }
@@ -331,7 +356,7 @@ export async function securityAgentLookup(d: SecurityAgentDeps, body: unknown): 
   if (b.refresh !== undefined && typeof b.refresh !== 'boolean') return bad('refresh must be true or false');
   const repo = (await d.repos()).find((r) => r.id === b.repo);
   if (!repo) return bad('repo is not in the scan list');
-  const t = awsTargetFor(identityIn(d, repo.path));
+  const t = securityTargetIn(d, repo.path);
   return d.exclusive(async () => {
     const r = await d.cache.get(t, b.refresh === true);
     return { ...r, repo: basename(repo.path) };

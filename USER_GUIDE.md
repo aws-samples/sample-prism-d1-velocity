@@ -62,8 +62,8 @@ npx cdk deploy --all --context enableSecurityAgent=true
 Note the **`OtelCollectorUrl`** and **`OtelUserPoolId`** outputs — you need both in Step 5, and developers need the URL for `prism-cli enable codeburn`.
 
 **Or let prism-cli set up Security Agent.** `prism-cli enable security` deploys only the Security
-Agent resources (after showing a diff and asking) and then does the Continuum onboarding for the
-repo you run it in. If you use it, deploy the pipeline above **without**
+Agent resources (after showing a diff and asking), once per machine from any directory; each repo's
+Continuum code review is created on its first scan. If you use it, deploy the pipeline above **without**
 `--context enableSecurityAgent=true`. See [Security Agent Setup](#security-agent-setup-enable-security).
 
 ### Step 2: Set Up OIDC (CI/CD → AWS Authentication)
@@ -770,7 +770,7 @@ This installs the two hooks into the repo's hooks directory and adds these files
 | File | Purpose | Commit it? |
 |---|---|---|
 | `.prism/review/rules.md` | Review rules. Copied from `.kiro/steering/code-review.md` when that exists, otherwise the bundled default. An existing file is kept | Yes |
-| `.prism/config.json` | `eval.reviewer` is the team default reviewer. Other keys in the file are kept. It holds no account details, so it stays safe to commit (`enable security` writes its own per-developer file, `.prism/security.local.json`) | Yes |
+| `.prism/config.json` | `eval.reviewer` is the team default reviewer. Other keys in the file are kept. It holds no account details, so it stays safe to commit (`enable security` writes `~/.prism/security.json`, and `--repo` the per-developer `.prism/security.local.json`) | Yes |
 | `.gitleaks.toml` | Starter allowlist for gitleaks false positives. An existing file is kept | Yes |
 | `.gitignore` | Gains a `.prism/results/` entry | Yes |
 
@@ -1340,11 +1340,11 @@ codewatch installed (ok); warn, when the global hooks are installed but the repo
 `core.hooksPath` (husky and similar) bypasses them; missing, including only one hook installed or
 hooks from before the codewatch rename; or opted out with `git config prism.codewatch false`. Repos covered by the global hooks are
 marked "(global)". Repos missing codewatch are collapsed into one group. Each problem row shows the
-command that fixes it. A **Security Agent** column shows ok when `prism-cli enable security` has
-finished in that repo (from the `.prism/security.local.json` it writes, or a legacy `security` block in
-`.prism/config.json`), or missing with
-the fix `cd <repo> && prism-cli enable security`. That is local evidence only; `enable security
---status` checks the AWS side (see [Security Agent Setup](#security-agent-setup-enable-security)).
+command that fixes it. A **Security Agent** column shows **machine setup** when the repo uses
+`~/.prism/security.json`, **repo override** when it has its own `.prism/security.local.json` (or a
+legacy `security` block in `.prism/config.json`), or missing with the fix `prism-cli enable
+security` (once, from any directory). That is local evidence only; `enable security --status`
+checks the AWS side (see [Security Agent Setup](#security-agent-setup-enable-security)).
 
 When the global hooks are not installed and at least two repos are missing codewatch, the page
 suggests covering them all with `prism-cli enable codewatch --global` (see
@@ -1363,9 +1363,13 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   confirm dialog shows the exact line, for example
   `cd ~/src/demo-shop && prism-cli security findings --profile demo --region us-west-2`. The page
   sends only the action and the repo's id; the server looks the path up in its own list, adds
-  `--profile` and `--region` itself, and runs a fixed argument list with no shell.
+  `--profile` and `--region` itself, and runs a fixed argument list with no shell. Under the picker
+  the page says which setup the repo uses: `Uses the machine setup (~/.prism/security.json)` or
+  `Repo override: .prism/security.local.json (...)`, with the account as its last 4 digits, or that
+  Security Agent is not set up on this machine yet.
 - **Account and region.** What prism-cli resolves in that repo, in the usual order (env, the repo's
-  `.prism/aws.local.json`, `~/.prism/aws.json`, the default chain). `--profile` is added only when a
+  `.prism/aws.local.json`, `~/.prism/aws.json`, the default chain); the region of the setup in use
+  wins, as in the CLI, and is marked `(machine setup)` or `(repo override)`. `--profile` is added only when a
   profile was chosen (`AWS_PROFILE` or a saved `aws connect` profile). prism-cli has no flag to pick an
   agent space: the commands use the one this account and region are set up with (SSM
   `/prism/continuum/agent-space-id`). To use another, change the profile or region.
@@ -1376,7 +1380,8 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   never kept. Each space is marked **used by prism-cli** (the one SSM names), **temporary pentest
   space** (made by `security pentest` for one run) or **not used by prism-cli**, with whether it lists
   the scan bucket. The account shows as its last 4 digits.
-- **Results.** The repo's latest code review, threat model and pentest from its `.prism/results/`,
+- **Results.** The repo's latest code review, threat model and pentest from its `.prism/results/`
+  (the card's subtitle says `uses machine setup` or `repo override`),
   with **Fetch findings** (`security findings`), **Fetch threats** (`security threats`) and **Fetch
   pentest findings** (`security findings --pentest`). These are read-only in AWS and save to
   `.prism/results/`.
@@ -1389,10 +1394,14 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   runs. The job keeps running in AWS; fetch its result here later. `security pentest`, `--dry-run` and
   `--status` are Copy only (`--status` tears the test environment down once the job has finished).
   ![The confirm dialog for Start code review with demo data: it names demo-shop, the scan bucket prism-d1-scan-demo, account ••••3333 and us-west-2, shows the exact command, and has Cancel focused next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
-- **Setup.** With no agent space for prism-cli, the page leads with the set-up steps: **Dry run**
-  (`enable security --dry-run`, read-only; its first run installs the CDK app's npm packages into
-  prism-cli's own folder), `enable security` to copy (it deploys AWS resources and asks first), then
-  **Run status check** (`enable security --status`).
+- **Setup.** One card for the whole machine, **Set up Security Agent on this machine**. With no
+  agent space for prism-cli, or no setup on this machine, the page leads with it; otherwise it is
+  folded. Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
+  CDK app's npm packages into prism-cli's own folder), `prism-cli enable security` to copy, with no
+  `cd` because it runs once from any directory (it deploys AWS resources and asks first), then
+  **Run status check** (`enable security --status`, which in the picked repo also shows its code
+  review and whether it uses the machine setup or a repo override). **Setup health** says which
+  setup the picked repo uses.
 - **Badge.** The Security Agent tab's count is what needs you in the picked repo: credentials that
   failed, no agent space for prism-cli (only after a lookup), a HIGH or CRITICAL latest result, and a
   pending code review or threat model job. A running pentest is not counted.
@@ -1542,25 +1551,55 @@ Then open the printed URL (`http://127.0.0.1:8765/?token=...`) in your laptop's 
 ## Security Agent Setup (enable security)
 
 `prism-cli enable security` sets up AWS Security Agent (Continuum) for PRISM in one account and
-region, and the code review the CI eval gate uses for the repo you run it in. Unlike codewatch, it
-calls AWS and can create resources, so it always shows what it will do and asks first.
+region, **once per machine**. Run it from any directory: no repo is needed and the result is the
+same everywhere. Unlike codewatch, it calls AWS and can create resources, so it always shows what it
+will do and asks first.
 
 ```bash
 prism-cli enable security --dry-run    # every read, then the plan; changes nothing
 prism-cli enable security              # the same plan, then asks before any change
-prism-cli enable security --status     # read-only report
+prism-cli enable security --status     # read-only report; in a repo, also that repo's code review
 ```
 
-Run it from the repo whose pull requests the eval gate should scan.
+Each repo's code review (what the CI eval gate and `security code-review` run against) is per repo,
+and nothing has to be enabled for it: `prism-cli security code-review` creates it on its first run
+in a repo, and the eval gate does the same on its first CI run. `prism-cli enable security --repo`
+sets it up now instead (see [Per-repo code review](#per-repo-code-review-optional)).
+
+### Which setup a command uses
+
+`enable security` saves the machine setup in `~/.prism/security.json`: the agent space and
+application ids, the account and the region, and when (no credentials; the file is owner-only, and
+the account is shown as its last 4 digits). Every `security` command, `enable security --status`
+and the dashboard resolve the setup in this order:
+
+1. Explicit flags (`--region`).
+2. The repo override `.prism/security.local.json`, only if the repo has one and git does not track
+   it. Repos set up by prism-cli 1.16 or earlier have this file, so they keep working unchanged.
+3. The machine setup `~/.prism/security.json`.
+4. None: `security code-review`, `findings`, `threat-model` and `threats` stop before any AWS call
+   with `Security Agent is not set up on this machine: run prism-cli enable security (once, from
+   any directory).`
+
+The setup's region comes before `AWS_REGION` and the `aws connect` region, because the agent space
+exists only in the region it was set up in. Credentials are chosen as before (`--profile`,
+`AWS_PROFILE`, the `aws connect` profile, the default chain). When they resolve to another account
+than the setup's, the command warns and does not use the setup's ids. `enable security --status`
+prints a `Setup` row naming the source in use and, in a repo, a `Repo override` row. The SSM
+parameters in the account stay the source of truth for the ids; the files only pick the region and
+fill in when SSM has no value. `enable security` itself (without `--repo`) reads only the flags and
+the machine setup, never a repo override, so it gives the same result in every directory.
+`security pentest` does not use the setup: it creates its own agent space for each run.
 
 ### Prerequisites
 
 - AWS credentials for the target account. With no `--profile` the standard AWS credential chain is
   used (`AWS_PROFILE`, environment keys, SSO, a container or instance role); `--profile` picks a
   named profile. The account must be CDK-bootstrapped (`npx cdk bootstrap`).
-- A region: `--region`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the region configured for
-  the profile in use (`aws configure get region`). With none set, the command refuses and asks for
-  `--region`. There is no built-in default.
+- A region: `--region`, else the region of an existing machine setup, else `AWS_REGION`, else
+  `AWS_DEFAULT_REGION`, else the `aws connect` region, else the region configured for the profile in
+  use (`aws configure get region`). With none set, the command refuses and asks for `--region`.
+  There is no built-in default.
 - AWS CLI v2.36 or later, for the `securityagent` commands.
 - Node.js 22 (the CDK app is synthesized locally; its dependencies are installed on first use).
 
@@ -1578,31 +1617,52 @@ Run it from the repo whose pull requests the eval gate should scan.
 4. Prints a summary: resources to add, change and remove, with every IAM and resource-policy,
    security group and network, and public endpoint change named. The full `cdk diff` output is
    written to a file and its path printed.
-5. Looks up the agent space, the Security Agent application and its role, the code review for this
-   repo, the repo snapshot in the scan bucket, and the SSM parameter the eval gate reads.
+5. Looks up the agent space and the Security Agent application and its role.
 6. Prints each item as ok, create, update, conflict or skip, with the exact AWS command for every
-   change.
+   change. The per-repo items show as skip (`per repo, not part of the machine setup`).
 7. Asks once, naming the account ID, its alias and the region. Then it deploys the stack if needed,
-   creates the application and attaches the `prism-d1-security-agent-prism-d1-security` role,
-   uploads `git archive HEAD` to `s3://<scan bucket>/repo/<repo-slug>/latest.zip`, creates the code
-   review, and sets `/prism/continuum/code-review-id/<repo-slug>`.
-8. Writes `.prism/security.local.json` (agent space, application and code review ids, account,
-   region, setup time; no secrets). It is per developer and never committed: if git does not
-   already ignore it, the command adds it to this clone's `.git/info/exclude` (found with
-   `git rev-parse --git-path`, so linked worktrees work) and never edits `.gitignore`. The
-   [Local Dashboard](#local-dashboard) reads it. `.prism/config.json` is not touched and stays safe
-   to commit.
-
-   Earlier versions wrote this record as a `security` block inside `.prism/config.json`. Readers
-   still accept it, `--status` reports it as legacy, and the next successful run moves it into
-   `.prism/security.local.json` and removes only that key from `config.json`, keeping the other
-   keys and the indent.
+   and creates the application and attaches the `prism-d1-security-agent-prism-d1-security` role.
+8. Writes `~/.prism/security.json` (agent space and application ids, account, region, setup time;
+   no secrets; owner-only). A re-run that changes nothing leaves it as it was. The
+   [Local Dashboard](#local-dashboard) reads it.
 
 The resolved region is passed to every AWS call and to CDK, so every step works in the same region.
 
+### Per-repo code review (optional)
+
+The only per-repo part of the setup is the code review the eval gate scans pull requests against:
+
+- a snapshot of the repo, `git archive HEAD`, at `s3://<scan bucket>/repo/<repo-slug>/latest.zip`;
+- a Security Agent code review titled `<repo-slug>-ci-diff-scan`, with that snapshot as its source;
+- the SSM parameter `/prism/continuum/code-review-id/<repo-slug>` holding its id, which the gate
+  and `security code-review` read.
+
+There is no CI step, file or marker to add for it. `prism-cli security code-review` creates all
+three on its first run in a repo (reusing a code review with that title if one exists, and never
+overwriting the SSM parameter), and the eval gate creates them on its first CI run. To create them
+up front, run in the repo:
+
+```bash
+prism-cli enable security --repo                     # this repo, named from its origin remote
+prism-cli enable security --repo github.com/o/name   # when the remote does not match what CI sees
+```
+
+`--repo` runs the machine setup too, then the per-repo items (shown in the plan, and asked about
+with the rest), and writes the repo override `.prism/security.local.json` (agent space,
+application and code review ids, account, region, setup time; no secrets). The override is per
+developer and never committed: if git does not already ignore it, the command adds it to this
+clone's `.git/info/exclude` (found with `git rev-parse --git-path`, so linked worktrees work) and
+never edits `.gitignore`. `.prism/config.json` is not touched and stays safe to commit. Outside a git
+repository `--repo` stops before any change.
+
+Versions before 1.17 wrote the override on every run, and earlier ones a `security` block inside
+`.prism/config.json`. Both keep working: the dashboard still accepts the legacy block, `--status`
+reports it as legacy, and the next `enable security --repo` moves it into
+`.prism/security.local.json` and removes only that key from `config.json`, keeping the other keys
+and the indent. Delete `.prism/security.local.json` to make a repo use the machine setup.
+
 `<repo-slug>` is computed exactly as the eval gate does: the `origin` remote as `host/owner/name`
-with `/` replaced by `-`, for example `github.com-acme-widgets`. Use `--repo host/owner/name` when
-the remote does not match what CI sees.
+with `/` replaced by `-`, for example `github.com-acme-widgets`.
 
 ### Which Stack It Deploys
 
@@ -1759,13 +1819,20 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
 `security code-review`:
 
 1. Prints a notice, then the same account, caller, region and credential block as `enable
-   security`, with the same credential chain and region rules.
+   security`, with the same credential chain, and the region from
+   [the setup in use](#which-setup-a-command-uses). With no setup and no `--region` it stops first.
 2. Finds the agent space and this repo's code review in SSM (`/prism/continuum/agent-space-id` and
    `/prism/continuum/code-review-id/<repo-slug>`), the source of truth, because a file in the repo
-   could be committed by anyone. `.prism/security.local.json` is used only when SSM has no value,
-   only if git does not track it, and it says so; when the two disagree, SSM wins with a warning.
-   The legacy `security` block in `.prism/config.json` is never read here. With no IDs, it says to
-   run `prism-cli enable security` first and exits 1.
+   could be committed by anyone. The setup record (repo override, else machine setup) is used only
+   when SSM has no value, only for the same account and region, a repo override only if git does
+   not track it, and it says so; when they disagree, SSM wins with a warning. The legacy `security`
+   block in `.prism/config.json` is never read here. With no agent space, it says to run `prism-cli
+   enable security` first and exits 1. With an agent space but no code review for this repo yet
+   (its first run here), it creates one after the upload in step 4, as the eval gate does: titled
+   `<repo-slug>-ci-diff-scan` (an existing one with that title is reused), with
+   `repo/<repo-slug>/latest.zip` as its source, and its id put in
+   `/prism/continuum/code-review-id/<repo-slug>` (never overwritten). `security findings` before
+   that first run says so and makes no change.
 3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
    upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
    changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.

@@ -269,7 +269,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
       hasPrism: r.hasPrism,
       codewatch,
       setup: setups[i],
-      security: securitySetup(r.path, repoResults),
+      security: securitySetup(r.path, repoResults, opts.home || homedir()),
     };
   });
   const setupRows = sortSetupRows(repos.map((r) => ({
@@ -277,7 +277,8 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     global: r.setup.global,
     security: r.security,
     // Bypassed repos (warn), set-up repos and repos with activity stay visible.
-    collapsed: !r.current && !r.active && (r.setup.status === 'missing' || r.setup.status === 'opted-out') && r.security.status === 'missing',
+    // The machine setup applies to every repo, so it does not keep a quiet repo expanded.
+    collapsed: !r.current && !r.active && (r.setup.status === 'missing' || r.setup.status === 'opted-out') && (r.security.status === 'missing' || r.security.source === 'machine'),
   })));
   // The summary lists only repos where codewatch is installed or has left
   // results; the rest have nothing to summarize and appear in the setup list.

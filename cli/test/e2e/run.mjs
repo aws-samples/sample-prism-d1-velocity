@@ -12,7 +12,13 @@ import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startDashboard, demoEnv, ENTRY } from './start-dashboard.mjs';
+import { startDashboard, demoEnv, ENTRY, CLI } from './start-dashboard.mjs';
+// The same account-id rule the dashboard masks with: ARNs, Account lines, account fields and bare runs,
+// but not a commit prefix, result id or UUID group that happens to be 12 digits.
+const { accountIdsIn } = await import(join(CLI, 'dist', 'src', 'utils', 'redact.js'));
+const DEMO_ACCOUNT = '111122223333';
+/** Account ids left in `text`: the demo account anywhere, or any 12-digit run in an account context. */
+const accountLeaks = (text) => [...new Set([...(String(text).includes(DEMO_ACCOUNT) ? [DEMO_ACCOUNT] : []), ...accountIdsIn(String(text))])];
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = process.env.PRISM_E2E_OUT || join(tmpdir(), 'prism-dashboard-e2e');
@@ -633,6 +639,43 @@ try {
     }, csrf);
     await ctx.close();
   }
+  // ---------- 12. enable security once per machine (1.17): the page and the CLI read the same setup ----------
+  if (want('machine')) {
+    const out = {};
+    R.suites.machine = out;
+    const srv = await live('machine', 'full', { PRISM_NO_UPDATE_CHECK: '1' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+    out.setupCommand = sa.setupCommand;
+    out.repos = sa.repos.map((r) => ({ name: r.name, setup: r.setup && r.setup.source, region: r.target.region }));
+    const texts = {};
+    for (const r of sa.repos) {
+      const k = r.setup ? r.setup.source : 'none';
+      if (texts[k]) continue;
+      await page.goto(srv.base + '/#security/' + r.id); await sleep(900);
+      texts[k] = await page.innerText('#security');
+    }
+    out.texts = texts;
+    await page.screenshot({ path: join(SHOTS, 'machine-security-page.png'), fullPage: true });
+    await ctx.close();
+    // The CLI, with the fake aws first on PATH: --status names the source; from outside a repo, the machine setup.
+    const home = srv.home;
+    const callLog = (h) => join(h, 'aws-calls.log');
+    const cli = (h, cwd, args, env = {}) => {
+      rmSync(callLog(h), { force: true });
+      const sp = spawnSync(process.execPath, [ENTRY, ...args], { cwd, encoding: 'utf8', timeout: 120000, env: demoEnv(h, { PRISM_NO_UPDATE_CHECK: '1', ...env }) });
+      const calls = existsSync(callLog(h)) ? readFileSync(callLog(h), 'utf8').trim().split('\n').filter(Boolean) : [];
+      return { code: sp.status, out: (sp.stdout || '') + (sp.stderr || ''), calls };
+    };
+    out.whichAws = spawnSync('sh', ['-c', 'command -v aws'], { encoding: 'utf8', env: demoEnv(home) }).stdout.trim();
+    out.statusOutside = cli(home, home, ['enable', 'security', '--status'], { FAKE_AWS: 'in-progress' });
+    out.statusShop = cli(home, readFileSync(join(home, '.start-dir'), 'utf8').trim(), ['enable', 'security', '--status'], { FAKE_AWS: 'in-progress' });
+    // No setup at all: the security commands stop with the hint and make no AWS call.
+    const bare = seed('machine-none', 'partial');
+    out.noSetup = cli(bare, readFileSync(join(bare, '.start-dir'), 'utf8').trim(), ['security', 'findings']);
+    out.home = home;
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -727,8 +770,28 @@ function verdicts(R) {
     add('pending', 'Fetch findings on a running job: amber "still running" pill with a hint, not a red exit pill', S.pending.found && !d.hung && /s-warn/.test(d.pillClass) && !/s-error/.test(d.pillClass)
       && /still running \(exit 2\)/.test(d.pillText) && /Check back later, or run the same command with --wait/.test(d.status) && /still IN_PROGRESS/.test(d.out), JSON.stringify(d).slice(0, 400));
     add('pending-row', 'the code review row still reads "running" after the fetch', /running/i.test(S.pending.row || ''), S.pending.row);
-    const leak = (d.out || '').match(/\b\d{12}\b|demo-session/g) || [];
+    const leak = [...accountLeaks(d.out || ''), ...((d.out || '').match(/demo-session/g) || [])];
     add('pending-mask', 'the drawer shows ••••3333, the role name only, and no home path', !leak.length && /••••3333/.test(d.out || '') && /assumed-role\/PrismDemoReadOnly\/…/.test(d.out || '') && !(d.out || '').includes(S.pending.home), leak.join(', ') || (d.out || '').slice(0, 300));
+  }
+  if (S.machine) {
+    const M = S.machine;
+    const t = M.texts || {};
+    const both = (t.machine || '') + (t.repo || '');
+    add('M1', 'one machine-wide setup card; enable security is copied with no cd', /^prism-cli enable security( |$)/.test(M.setupCommand || '') && /Set up Security Agent on this machine/.test(t.machine || '') && !/cd \S+ && prism-cli enable security/.test(both), (M.setupCommand || '') + ' | ' + (t.machine || '').slice(0, 300));
+    add('M2', 'each repo says "uses the machine setup" or "repo override", never "has not run in this repo"', M.repos.some((r) => r.setup === 'repo') && M.repos.some((r) => r.setup === 'machine')
+      && /Uses the machine setup \(~\/\.prism\/security\.json\): account ••••3333 \/ us-west-2/.test(t.machine || '') && /Repo override: \.prism\/security\.local\.json/.test(t.repo || '')
+      && !/has not run in this repo/.test(both), JSON.stringify(M.repos));
+    const so = M.statusOutside || {}, ss = M.statusShop || {}, n = M.noSetup || {};
+    const all = [...(so.calls || []), ...(ss.calls || [])];
+    add('M3', 'the CLI used the fake aws from the demo HOME, and made only read calls', (M.whichAws || '').startsWith(M.home) && /\/aws$/.test(M.whichAws || '')
+      && all.every((c) => READ_ONLY_AWS.test(c) || /^cloudformation describe-stacks/.test(c)), M.whichAws + ' | ' + all.filter((c) => !READ_ONLY_AWS.test(c)).join('; '));
+    add('M4', 'enable security --status outside any repo names the machine setup, masked', /\[ok\] Setup: machine setup ~\/\.prism\/security\.json \(account ••••3333, region us-west-2/.test(so.out || '') && !/Repo override/.test(so.out || ''), (so.out || '').slice(0, 500));
+    add('M5', 'in a repo with an old repo-only setup, --status names the repo override', /\[ok\] Setup: repo override \.prism\/security\.local\.json/.test(ss.out || ''), (ss.out || '').slice(0, 500));
+    add('M6', 'no setup on the machine: security findings prints the one-line hint and makes no AWS call', n.code === 1 && /Security Agent is not set up on this machine: run prism-cli enable security \(once, from any directory\)\./.test(n.out || '') && !(n.calls || []).length, (n.out || '').slice(0, 300) + ' | calls: ' + (n.calls || []).join('; '));
+    // The terminal's Account line shows the full id on purpose (as before); the Setup rows and the page never do.
+    const setupRows = [so.out, ss.out].join('\n').split('\n').filter((l) => /Setup:|Repo override:/.test(l)).join('\n');
+    const leak = accountLeaks(setupRows + (n.out || '') + both);
+    add('M7', 'no full account id in the Setup rows, the hint or the page', setupRows && !leak.length, (setupRows ? leak : ['no Setup rows']).join(', '));
   }
   if (S.fixes) {
     const F = S.fixes;
@@ -736,10 +799,12 @@ function verdicts(R) {
     add('B4', 'Dashboard keeps the last completed review\'s findings with a "new review running" note', /1 critical/.test(F.dashboardSecurity) && /new review running/.test(F.dashboardSecurity), F.dashboardSecurity.slice(0, 400));
     add('B6', 'the Security Agent picker shows distinct labels for same-named repos', new Set(F.pickerOptions).size === F.pickerOptions.length, F.pickerOptions.join(' | '));
     add('B7', 'footer and Codewatch card name the same counts', /with codewatch hooks installed/.test(F.meta) && /with hooks installed/.test(F.codewatchCard), F.meta + ' | ' + F.codewatchCard);
-    const ids = (F.repoText + F.settingsReposText + F.securityText).match(/\b\d{12}\b/g);
-    add('B9', 'no full 12-digit account id on the repo, Settings › Repos or Security Agent pages', !ids, (ids || []).join(', '));
-    const apiIds = ((F.apiJson || '') + (F.accountguardText || '')).match(/\b\d{12}\b/g);
-    add('G3', 'no full 12-digit account id in /api/data, /api/accountguard, /api/setup or on AccountGuard', F.apiJson && !apiIds, (apiIds || ['no API text']).join(', '));
+    const ids = accountLeaks(F.repoText + F.settingsReposText + F.securityText);
+    add('B9', 'no full 12-digit account id on the repo, Settings › Repos or Security Agent pages', !ids.length, ids.join(', '));
+    const apiIds = accountLeaks((F.apiJson || '') + (F.accountguardText || ''));
+    add('G3', 'no full 12-digit account id in /api/data, /api/accountguard, /api/setup or on AccountGuard', F.apiJson && !apiIds.length, (F.apiJson ? apiIds : ['no API text']).join(', '));
+    // The seeded review whose commit prefix is 12 digits: its id reaches the API whole, and is not counted as an account.
+    add('G3b', 'a 12-digit result id stays whole in /api/data and is not taken for an account id', /"123456789012-\d{8}T\d+Z-pre-push-review"/.test(F.apiJson || ''), (F.apiJson || '').match(/.{40}123456789012.{40}/)?.[0] || 'the seeded id is not in /api/data');
     const ag = F.accountguardText || '';
     add('G1', 'AccountGuard names why each check could not run (throttled, not enabled, access denied)', /throttled/.test(ag) && /not enabled here/.test(ag) && /access denied/.test(ag) && /nothing to grant/.test(ag), ag.slice(0, 400));
     add('B10', 'update check off: Check now disabled and the reason shown', F.updates.disabled && /The update check is off/.test(F.updates.text) && /off \(PRISM_NO_UPDATE_CHECK=1\)/.test(F.updates.pillTitle), JSON.stringify(F.updates).slice(0, 300));

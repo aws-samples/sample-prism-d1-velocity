@@ -22,7 +22,7 @@ export function reviewDeps(opts: SecurityOptions): ReviewDeps {
 
 export const REVIEW_TARGET_OPTIONS = [
   { flags: '--profile <name>', description: 'AWS CLI profile (default: AWS_PROFILE or env credentials, else the profile saved by prism-cli aws connect, else the standard credential chain)' },
-  { flags: '--region <region>', description: 'AWS region (default: AWS_REGION, AWS_DEFAULT_REGION, the aws connect region, else the profile\'s configured region)' },
+  { flags: '--region <region>', description: 'AWS region (default: the Security Agent setup\'s region: the repo override .prism/security.local.json, else ~/.prism/security.json; without either, the command stops and says to run prism-cli enable security once)' },
   { flags: '--path <dir>', description: 'The repository top level to work on (default: the current directory, which must be the top level)' },
   { flags: '--repo <host/owner/name>', description: 'Repo id (not a path) for the code review, as the CI gate names it (default: from the origin remote)' },
 ];

@@ -87,11 +87,11 @@ test('summary: newest review across repos, spend, and setup warnings with the fi
 test('security status: saved results without a marker are "in use", neither is "not set up"', () => {
   const repo = gitRepo(join(tmp('sec'), 'r'));
   assert.equal(securitySetup(repo).status, 'missing');
-  assert.equal(securitySetup(repo, []).detail, 'not set up');
+  assert.equal(securitySetup(repo, []).detail, 'not set up on this machine');
   const tm = makeResult({ kind: 'security-threat-model', hook: 'manual', status: 'findings', tool: 'security-agent', started_at: '2026-11-09T00:00:00Z', finished_at: '2026-11-09T01:00:00Z' });
   const pt = makeResult({ kind: 'security-pentest', hook: 'manual', status: 'ok', tool: 'security-agent', started_at: '2026-11-09T00:00:00Z', finished_at: '2026-11-09T01:00:00Z' });
   const s = securitySetup(repo, [tm, pt, review('2026-11-09T00:00:00Z', 'ok')]);
-  assert.deepEqual(s, { status: 'in-use', detail: 'in use (threat model, pentest results found; no local marker)', fix: '' });
+  assert.deepEqual(s, { status: 'in-use', source: null, detail: 'in use (threat model, pentest results found; not set up on this machine)', fix: 'prism-cli enable security' });
   assert.equal(securitySetup(repo, [review('2026-11-09T00:00:00Z', 'ok')]).status, 'missing', 'codewatch results are not Security Agent evidence');
 });
 
