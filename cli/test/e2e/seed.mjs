@@ -87,9 +87,9 @@ if (scenario === 'full' || scenario === 'partial') {
     repo('src/empty-repo', 1);
     // A long name, to check wrapping.
     repo('src/an-extremely-long-repository-name-for-testing-layout-wrapping-at-narrow-widths', 1);
-    // ~/.aws: profile and region names only, no keys.
+    // ~/.aws: profile, SSO session and region names only, no keys. The two SSO profiles count as configured (the Security Agent gate's step 1).
     mkdirSync(join(home, '.aws'), { recursive: true });
-    writeFileSync(join(home, '.aws', 'config'), '[default]\nregion = us-east-1\n[profile prism-demo]\nregion = us-west-2\n[profile prism-readonly]\nregion = eu-west-1\n[profile prism-demo-sandbox-readonly-team-alpha-us-west-2]\nregion = us-west-2\n');
+    writeFileSync(join(home, '.aws', 'config'), '[default]\nregion = us-east-1\n[profile prism-demo]\nsso_session = demo\nregion = us-west-2\n[profile prism-readonly]\nsso_session = demo\nregion = eu-west-1\n[profile prism-demo-sandbox-readonly-team-alpha-us-west-2]\nregion = us-west-2\n[sso-session demo]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-west-2\n');
     // aws connect + two aws check runs (baseline 9 days ago, latest 2 h ago).
     const ACCOUNT = '111122223333', REGION = 'us-west-2';
     writeConnectionFile(join(home, '.prism', 'aws.json'), { profile: 'prism-demo', region: REGION, account: ACCOUNT, alias: 'demo-dev', verifiedAt: ago(25 * 60e3) });

@@ -1187,8 +1187,9 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   for you to run. The **Settings** view (below) can run a fixed set of local setup commands for you,
   the **Security Agent** page (below) runs the Security Agent commands in a repo you pick, and
   **AccountGuard** (below) checks the connected AWS account.
-- **AWS.** Loading the page makes no AWS calls. **Connect** and **Re-verify** on the Settings AWS tab
-  (`aws connect`), AccountGuard's `aws check`, `team info`, the Security Agent page's agent-space lookup
+- **AWS.** Loading the Dashboard makes no AWS calls. **Connect** and **Re-verify** on the Settings AWS tab
+  (`aws connect`), AccountGuard's `aws check`, `team info`, the Security Agent page's agent-space check
+  (which runs by itself once per session when you open that page and its first two setup steps pass)
   and its fetch and status buttons make read-only calls. Only two buttons write to AWS, both on the Security Agent page and both after a
   dialog that says what they upload and where: **Start code review** (`security code-review
   --no-wait`, branch diff or `--full`) and **Start threat model** (`security threat-model --no-wait`).
@@ -1352,11 +1353,52 @@ suggests covering them all with `prism-cli enable codewatch --global` (see
 
 ### Security Agent Page
 
-![The Security Agent page with demo data: the Security runs table with Type, Repo and Status filters across the top (two code reviews and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
+![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
 
 **Security Agent** in the header (`#security`, or `#security/<repo-id>` for one repo) runs the
 existing [Security Agent commands](#security-scans-from-your-machine) in a repo you pick, as if you
 ran them in a terminal there. It adds no new setting and writes nothing to SSM.
+
+**Setup first.** The page opens with a guided check of three steps, in order, and shows only the
+first one that is not met, as **step n of 3** with a progress bar. Runs, results and the Start
+buttons appear only once all three pass.
+
+![The setup gate with demo data at step 2 of 3: AWS connected, Security Agent not set up yet; the enable security command with the saved profile and region and a Copy button, and I ran it, check again](assets/images/prism-cli/dashboard-security-gate-setup-dark.png)
+
+1. **AWS connected.** A named profile: a saved `aws connect` (Settings › AWS), or `AWS_PROFILE` in
+   the environment you started the dashboard from. The page shows which one it uses
+   (`aws connect: <profile>` or `AWS_PROFILE: <profile>`). The order is the one every prism-cli AWS
+   command uses: `--profile`, then the environment (`AWS_ACCESS_KEY_ID`, then `AWS_PROFILE`, then a
+   web identity token or container credentials), then the repo's `.prism/aws.local.json`, then
+   `~/.prism/aws.json`, then the default chain. So when `AWS_PROFILE` and a saved `aws connect`
+   profile differ, `AWS_PROFILE` wins, and the page says so. Environment keys
+   (`AWS_ACCESS_KEY_ID`), a web identity token, container credentials or the bare default chain do
+   not pass this step: they win over both, so the page asks you to restart the dashboard without
+   them. A profile that is in neither `~/.aws/config` nor `~/.aws/credentials` is named. Only the
+   profile name is read from the environment, never a key.
+2. **Security Agent set up.** A setup record applies to the repo (`~/.prism/security.json`, or the
+   repo's `.prism/security.local.json`), for the account in use. Without one, the card shows
+   `prism-cli enable security` with your profile and region and no `cd`, to copy into a terminal (it
+   never runs from the page). When the setup is for another account than the one in use, the card
+   offers `enable security --repo` (this repo only; it needs the `cd`) or `--replace` (change the
+   machine default), or switching back in Settings › AWS. With `aws connect` the account is the one
+   it verified; with `AWS_PROFILE` it is known after the check in step 3.
+3. **Agent space verified.** Once steps 1 and 2 pass, the page runs a read-only check by itself:
+   `sts get-caller-identity` (which also proves the sign-in works), `securityagent list-agent-spaces`
+   and `batch-get-agent-spaces`, and `ssm get-parameter` for the agent space and scan bucket. It runs
+   once per repo, profile and region, with a 20-second timeout per call and one action at a time, and
+   never on the minute refresh. The answer is kept until the dashboard stops; **Check again** on the
+   ready strip runs it again. A failure gets its own card with **Retry**: an expired sign-in shows
+   the exact `aws sso login --profile <profile>` line, access denied names the IAM action that was
+   refused and the read permissions the check needs, and a missing agent space shows
+   `enable security` to run again.
+
+Steps 1 and 2 read local files only, and their card checks again every 10 seconds while it is open,
+so it moves on by itself once you have run the command. A repo override is shown as information on
+the ready page, and a repo's code review is created by its first code review run, so neither is a
+step.
+
+![The setup gate at 390 px: Security Agent is set up for a different account, with the --repo and --replace commands, each wrapping only at spaces, and Copy buttons](assets/images/prism-cli/dashboard-security-gate-mismatch-390-dark.png)
 
 - **Target repo.** A picker over the repos the dashboard found, starting with the one it was
   started in. Every command on the page runs with that repo as its working directory, and the
@@ -1373,11 +1415,7 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   profile was chosen (`AWS_PROFILE` or a saved `aws connect` profile). prism-cli has no flag to pick an
   agent space: the commands use the one this account and region are set up with (SSM
   `/prism/continuum/agent-space-id`). To use another, change the profile or region.
-- **Agent spaces.** **Look up agent spaces** runs, on a click only, `sts get-caller-identity`,
-  `securityagent list-agent-spaces` and `batch-get-agent-spaces`, and `ssm get-parameter` for the
-  agent space and scan bucket, with a 20-second timeout each, one action at a time. The answer is
-  kept for 5 minutes per profile and region (**Look up again** asks again); a failure is shown and
-  never kept. Each space is marked **used by prism-cli** (the one SSM names), **temporary pentest
+- **Agent spaces.** The spaces step 3 found in the account and region. Each space is marked **used by prism-cli** (the one SSM names), **temporary pentest
   space** (made by `security pentest` for one run) or **not used by prism-cli**, with whether it lists
   the scan bucket. The account shows as its last 4 digits.
 - **Security runs.** At the top: every run in every repo, in the same table as the Dashboard's
@@ -1416,25 +1454,35 @@ ran them in a terminal there. It adds no new setting and writes nothing to SSM.
   dashboard takes the run from the result file the command wrote, not from its output. A job that
   is still running shows the amber `still running` state and no link.
 - **Start new work.** **Start code review** (`security code-review --no-wait`), **Start full review**
-  (`--full --no-wait`) and **Start threat model** (`security threat-model --no-wait`) are enabled after
-  a lookup has found the agent space and scan bucket. Their dialog says what happens, for example
+  (`--full --no-wait`) and **Start threat model** (`security threat-model --no-wait`) appear once the
+  setup check passes. Their dialog says what happens, for example
   "Uploads demo-shop source at HEAD to the scan bucket prism-d1-scan-demo in account ••••3333 /
   us-west-2 and starts a code review job.", shows the command, and has Cancel focused, so Enter never
-  confirms; the run needs a click on **Upload and start**. The server checks the lookup again before it
-  runs. The job keeps running in AWS; fetch its result here later. `security pentest`, `--dry-run` and
+  confirms; the run needs a click on **Upload and start**. The server checks the setup again, and that
+  the credentials still point to the same account, before it runs. The job keeps running in AWS;
+  fetch its result here later.
+
+  Before that dialog, a code review checks the repo's own results. If a review of the repo is still
+  running, it says so and offers **View it →** or **Start another anyway**. If HEAD already has a
+  finished review, it offers **Open those findings →** first, then **Review it again**. A job
+  reviews the code review's shared source, `repo/<slug>/latest.zip`, which a new start replaces, and
+  the service does not document when a running job reads it. So `security code-review` itself
+  refuses to replace it while a job of that code review is pending in the repo's results, unless you
+  pass `--force` (**Start another anyway** does). Jobs CI started are not in the local results.
+
+  ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png) `security pentest`, `--dry-run` and
   `--status` are Copy only (`--status` tears the test environment down once the job has finished).
   ![The confirm dialog for Start code review with demo data: it names demo-shop, the scan bucket prism-d1-scan-demo, account ••••3333 and us-west-2, shows the exact command, and has Cancel focused next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
-- **Setup.** One card for the whole machine, **Set up Security Agent on this machine**. With no
-  agent space for prism-cli, or no setup on this machine, the page leads with it; otherwise it is
-  folded. Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
+- **Setup.** One folded card for the whole machine, **Set up Security Agent on this machine**
+  (the setup check above leads when something is missing). Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
   CDK app's npm packages into prism-cli's own folder), `prism-cli enable security` to copy, with no
   `cd` because it runs once from any directory (it deploys AWS resources and asks first), then
   **Run status check** (`enable security --status`, which in the picked repo also shows its code
   review and whether it uses the machine setup or a repo override). **Setup health** says which
   setup the picked repo uses.
-- **Badge.** The Security Agent tab's count is what needs you in the picked repo: credentials that
-  failed, no agent space for prism-cli (only after a lookup), a HIGH or CRITICAL latest result, and a
-  pending code review or threat model job. A running pentest is not counted.
+- **Badge.** The Security Agent tab's count is what needs you in the picked repo: a setup step that
+  is not met (not while its check runs), a HIGH or CRITICAL latest result, and a pending code review
+  or threat model job. A running pentest is not counted.
 
 Output goes to the same **Action output** drawer as the Settings view. **Fetch findings**, **Fetch
 threats** and **Fetch pentest findings** on a job that is still running exit 2; the drawer shows an
@@ -1898,7 +1946,11 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
    code around the patch, so a stale zip would make it report code that no longer exists. The
    Security Agent has no per-job source, so this is the zip CI diff jobs read too. A diff then
    goes to `diffs/<repo-slug>/local/<tip>-<base>.patch`. The result records the zip's commit as
-   `security.context_commit`.
+   `security.context_commit`. While a job of the same code review is still pending in this repo's
+   results (started within the last 2 hours, no verdict fetched yet), it stops before any upload:
+   the service does not document when a running job reads that zip, so replacing it could change
+   what the running job reviews. `security findings` fetches that job; `--force` starts another
+   anyway. Jobs CI started are not in the local results.
 5. Starts the job and at once saves a **pending** result in `.prism/results/` with the job ID, the
    scope and the commits. When the job ends, that same file is completed, so a wait that does not
    finish loses nothing. Then it waits. It polls every 10 seconds, doubling up to 60, with a

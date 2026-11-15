@@ -216,6 +216,8 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'security-code-review': sa(['security', 'code-review', '--no-wait'], true),
     'security-code-review-full': sa(['security', 'code-review', '--full', '--no-wait'], true),
     'security-threat-model': sa(['security', 'threat-model', '--no-wait'], true),
+    'security-code-review-force': sa(['security', 'code-review', '--no-wait', '--force'], true),
+    'security-code-review-full-force': sa(['security', 'code-review', '--full', '--no-wait', '--force'], true),
   };
   for (const [id, e] of Object.entries(expected) as [ActionId, typeof expected[ActionId]][]) {
     const calls: Spawned[] = [];
@@ -232,10 +234,10 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     assert.deepEqual(calls[0].opts.stdio, ['ignore', 'pipe', 'pipe'], `${id}: stdin closed`);
     await until(() => !r.running);
   }
-  // The only AWS-writing commands in the allowlist are the two --no-wait uploads, each behind confirm and the write gate.
+  // The only AWS-writing commands in the allowlist are the --no-wait uploads (code review also with --force), each behind confirm and the write gate.
   for (const [id, a] of Object.entries(ACTIONS)) {
     const line = a.args.join(' ');
-    if (a.writesAws) { assert.match(line, /^security (code-review( --full)?|threat-model) --no-wait$/, id); assert.equal(a.confirm, true, id); continue; }
+    if (a.writesAws) { assert.match(line, /^security (code-review( --full)? --no-wait( --force)?|threat-model --no-wait)$/, id); assert.equal(a.confirm, true, id); continue; }
     assert.ok(!/^(security (code-review|threat-model|pentest)|team add-developer)/.test(line), line);
     assert.ok(!/^enable security( |$)/.test(line) || /--(status|dry-run)$/.test(line), line);
   }

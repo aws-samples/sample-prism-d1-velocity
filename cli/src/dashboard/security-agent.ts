@@ -5,37 +5,44 @@
  * account and region prism-cli would use there (aws-identity.ts, from env and
  * local files; the region of the Security Agent setup record wins, as in the
  * CLI), which setup record applies there (the repo override, else the machine
- * setup, security/config.ts), the exact command line of every page action, and
- * the last agent-space lookup for that account and region. Once per page: the
+ * setup, security/config.ts), the setup gate's state (security-gate.ts), the
+ * start guards (a running review, a reviewed HEAD; local result files and
+ * git rev-parse HEAD), the exact command line of every page action, and the
+ * last agent-space lookup for that account and region. Once per page: the
  * machine setup and the enable security command, which needs no repo.
  *
- * POST /api/security-agent/spaces is the one AWS read the page starts itself,
- * on a click: sts get-caller-identity, securityagent list-agent-spaces and
- * batch-get-agent-spaces, and ssm get-parameter for the agent space and scan
- * bucket prism-cli uses. The same calls `enable security --status` makes. Each
- * call has a 20 s timeout and no shell; a good answer is cached for 5 minutes
- * per profile and region, a failure is never cached, and it runs under the
- * action runner's lock, so it never overlaps a Run.
+ * POST /api/security-agent/spaces is the one AWS read the page starts itself:
+ * automatically, once, when the gate's first two steps pass (step 3), and on
+ * Check again or Retry. It makes sts get-caller-identity, securityagent
+ * list-agent-spaces and batch-get-agent-spaces, and ssm get-parameter for the
+ * agent space and scan bucket prism-cli uses: the same calls `enable security
+ * --status` makes. Each call has a 20 s timeout and no shell. A good answer is
+ * kept for the dashboard session per profile and region (until Check again, or
+ * a write's account re-check disagrees); a failure is kept only to show, with
+ * its class (credentials, access denied, other), and never reused as an answer.
+ * It runs under the action runner's lock, so it never overlaps a Run.
  *
- * The cached lookup also gates the two AWS-writing actions (code-review and
+ * The kept lookup also gates the two AWS-writing actions (code-review and
  * threat-model): the confirm dialog names the account, region and scan bucket
- * from it, and the server refuses those actions without a current lookup.
+ * from it, and the server refuses those actions unless the gate passes.
  *
  * Account ids leave this module as their last 4 digits only.
  */
 import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import type { AwsResult } from '../utils/aws.js';
-import { last4, PROFILE_RE, REGION_RE } from '../aws/connection.js';
+import { last4, loadConnection, PROFILE_RE, REGION_RE } from '../aws/connection.js';
+import { readResultEntries } from '../codewatch/results.js';
 import { loadSetup, type ResolvedSetup } from '../security/config.js';
 import { run } from '../utils/exec.js';
 import { listsBucket, PARAM_AGENT_SPACE, PARAM_SCAN_BUCKET } from '../security/setup.js';
 import { ACTIONS, displayCommand, redact, type ActionId, type ApiResult, type ScanRepo } from './actions.js';
 import { resolveAwsIdentity, type AwsIdentityView, type IdentityDeps } from './aws-identity.js';
 import { tildeHome } from './payload.js';
+import { computeGate, type Gate } from './security-gate.js';
+import { startGuard, type StartGuard } from './security-runs.js';
 
 export const LOOKUP_TIMEOUT_MS = 20_000;
-export const LOOKUP_TTL_MS = 5 * 60_000;
 /** Pages of list-agent-spaces read at most (a page holds many spaces; this only bounds a runaway nextToken). */
 export const MAX_SPACE_PAGES = 10;
 /** Ids per batch-get-agent-spaces call. shortcut: a conservative chunk; raise it once the API's limit is documented. */
@@ -47,6 +54,7 @@ const PENTEST_SPACE_RE = /^pentest-/;
 export const SECURITY_ACTIONS = [
   'security-status', 'security-dry-run', 'security-findings', 'security-threats', 'security-pentest-findings',
   'security-code-review', 'security-code-review-full', 'security-threat-model',
+  'security-code-review-force', 'security-code-review-full-force',
 ] as const satisfies readonly ActionId[];
 
 /** Where an AWS call goes: the profile only when one was chosen (else the AWS CLI's own chain), always a region. */
@@ -81,9 +89,12 @@ export interface SpaceRow {
   bucketListed: boolean | null;
 }
 
+/** Why a lookup failed: the sign-in, a refused read (with the IAM action), or anything else (a timeout, no region). */
+export type LookupFailure = 'credentials' | 'denied' | 'other';
+
 export type Lookup =
   | { ok: true; at: string; profile: string | null; region: string; account4: string; spaces: SpaceRow[]; inUse: string | null; scanBucket: string | null; consoleUrl: string }
-  | { ok: false; at: string; profile: string | null; region: string | null; error: string; credentials: boolean };
+  | { ok: false; at: string; profile: string | null; region: string | null; error: string; credentials: boolean; kind: LookupFailure; action: string | null };
 
 /** One read-only AWS CLI call, async, no shell, with a timeout. */
 export type AwsCall = (args: string[], t: AwsTargetArgs & { timeoutMs: number }) => Promise<AwsResult>;
@@ -107,6 +118,11 @@ export const execAwsCall: AwsCall = (args, t) => new Promise((resolve) => {
   });
 });
 
+const DENIED_RE = /AccessDenied|UnauthorizedOperation|AuthorizationError|not authorized to perform/i;
+/** The IAM action behind each call the lookup cannot do without (batch-get only adds details). */
+const ACTION_OF: Record<string, string> = {
+  'sts get-caller-identity': 'sts:GetCallerIdentity', 'securityagent list-agent-spaces': 'securityagent:ListAgentSpaces', 'ssm get-parameter': 'ssm:GetParameter',
+};
 const CRED_RE = /ExpiredToken|InvalidClientTokenId|UnrecognizedClient|Unable to locate credentials|NoCredentialProviders|SignatureDoesNotMatch|AuthFailure|could not be found|Token has expired|sso|credential_process/i;
 
 /** The first useful line of an AWS CLI error, redacted. */
@@ -176,20 +192,23 @@ function spaceRow(s: SpaceSummary, d: SpaceDetail | undefined, inUse: string | n
 export async function lookupSpaces(awsCall: AwsCall, t: AwsTargetArgs, now: Date): Promise<{ lookup: Lookup; account: string | null }> {
   const at = now.toISOString();
   if (!t.region || !REGION_RE.test(t.region)) {
-    return { account: null, lookup: { ok: false, at, profile: t.profile, region: null, error: 'No AWS region is set for this repo. Set one with prism-cli aws connect, or AWS_REGION.', credentials: false } };
+    return { account: null, lookup: { ok: false, at, profile: t.profile, region: null, error: 'No AWS region is set for this repo. Set one with prism-cli aws connect, or AWS_REGION.', credentials: false, kind: 'other', action: null } };
   }
   const call: Call = (args) => awsCall(args, { ...t, timeoutMs: LOOKUP_TIMEOUT_MS });
-  const fail = (r: AwsResult, what: string, credentials = CRED_RE.test(r.raw)) =>
-    ({ account: null, lookup: { ok: false as const, at, profile: t.profile, region: t.region, error: `${what}: ${errLine(r)}`, credentials } });
+  // The class comes from the error code and the call that failed, so the page never parses the text.
+  const fail = (r: AwsResult, verb: string, what: string, signIn = false) => {
+    const kind: LookupFailure = DENIED_RE.test(`${r.errorCode} ${r.raw}`) ? 'denied' : signIn || CRED_RE.test(r.raw) ? 'credentials' : 'other';
+    return { account: null, lookup: { ok: false as const, at, profile: t.profile, region: t.region, error: `${what}: ${errLine(r)}`, credentials: kind === 'credentials', kind, action: kind === 'denied' ? ACTION_OF[verb] ?? null : null } };
+  };
   const who = await call(['sts', 'get-caller-identity']);
-  if (!who.ok) return fail(who, 'the credentials did not work', true);
+  if (!who.ok) return fail(who, 'sts get-caller-identity', 'the credentials did not work', true);
   const account = String(who.json?.Account || '');
   const listed = await listSpaces(call);
-  if ('failed' in listed) return fail(listed.failed, 'list-agent-spaces failed');
+  if ('failed' in listed) return fail(listed.failed, 'securityagent list-agent-spaces', 'list-agent-spaces failed');
   const space = await ssmParam(call, PARAM_AGENT_SPACE);
-  if ('failed' in space) return fail(space.failed, `reading SSM ${PARAM_AGENT_SPACE} failed (ssm:GetParameter)`);
+  if ('failed' in space) return fail(space.failed, 'ssm get-parameter', `reading SSM ${PARAM_AGENT_SPACE} failed (ssm:GetParameter)`);
   const bucket = await ssmParam(call, PARAM_SCAN_BUCKET);
-  if ('failed' in bucket) return fail(bucket.failed, `reading SSM ${PARAM_SCAN_BUCKET} failed (ssm:GetParameter)`);
+  if ('failed' in bucket) return fail(bucket.failed, 'ssm get-parameter', `reading SSM ${PARAM_SCAN_BUCKET} failed (ssm:GetParameter)`);
   const spaces = listed.spaces.filter((s) => s.agentSpaceId);
   const details = await spaceDetails(call, spaces.map((s) => String(s.agentSpaceId)));
   const rows = spaces.map((s) => spaceRow(s, details.get(String(s.agentSpaceId)), space.value, bucket.value));
@@ -205,20 +224,28 @@ export async function lookupSpaces(awsCall: AwsCall, t: AwsTargetArgs, now: Date
   };
 }
 
-const NEED_LOOKUP = 'Look up agent spaces first, so the dialog can name the account, region and scan bucket.';
+const NEED_LOOKUP = 'The agent space has not been checked yet: open the Security Agent page, so it can name the account, region and scan bucket.';
 
-/** Good lookups per profile and region for LOOKUP_TTL_MS; the last failure is kept to show, never reused as an answer. */
+/**
+ * Good lookups per profile and region, kept for the dashboard session (until
+ * a refresh, or verify() sees another account); the last failure is kept to
+ * show, never reused as an answer.
+ */
 export class LookupCache {
   private good = new Map<string, Lookup & { ok: true }>();
   private bad = new Map<string, Lookup & { ok: false }>();
   /** The full account id behind each good lookup; never sent to the page. */
   private accounts = new Map<string, string>();
-  constructor(private call: AwsCall = execAwsCall, private now: () => Date = () => new Date(), private ttlMs = LOOKUP_TTL_MS) {}
+  constructor(private call: AwsCall = execAwsCall, private now: () => Date = () => new Date()) {}
 
-  /** The current good lookup for `t`, or null when there is none or it expired. */
+  /** The good lookup for `t`, or null when there is none. */
   fresh(t: AwsTargetArgs): (Lookup & { ok: true }) | null {
-    const g = this.good.get(targetKey(t));
-    return g && this.now().getTime() - Date.parse(g.at) < this.ttlMs ? g : null;
+    return this.good.get(targetKey(t)) ?? null;
+  }
+
+  /** The full account id behind the good lookup for `t` (server side only), or null. */
+  account(t: AwsTargetArgs): string | null {
+    return this.fresh(t) ? this.accounts.get(targetKey(t)) || null : null;
   }
 
   /** What the page shows for `t`: the fresh good lookup, else the last failure, else null. No AWS call. */
@@ -226,7 +253,7 @@ export class LookupCache {
     return this.fresh(t) ?? this.bad.get(targetKey(t)) ?? null;
   }
 
-  /** The cached answer when fresh (unless `refresh`), else a new lookup. */
+  /** The kept answer (unless `refresh`), else a new lookup. */
   async get(t: AwsTargetArgs, refresh = false): Promise<{ lookup: Lookup; cached: boolean }> {
     const f = this.fresh(t);
     if (f && !refresh) return { lookup: f, cached: true };
@@ -251,7 +278,7 @@ export class LookupCache {
     const now = String(who.json?.Account || '');
     if (now !== want) {
       this.good.delete(k); this.accounts.delete(k);
-      return `the credentials now point to account ${last4(now)}, not ${f.account4} from the lookup; look up agent spaces again.`;
+      return `the credentials now point to account ${last4(now)}, not ${f.account4} from the lookup; open the Security Agent page and check again.`;
     }
     return null;
   }
@@ -260,6 +287,7 @@ export class LookupCache {
 export type WriteKind = 'code review' | 'threat model';
 export const WRITE_KIND: Partial<Record<ActionId, WriteKind>> = {
   'security-code-review': 'code review', 'security-code-review-full': 'code review', 'security-threat-model': 'threat model',
+  'security-code-review-force': 'code review', 'security-code-review-full-force': 'code review',
 };
 
 /**
@@ -319,6 +347,50 @@ export function commandLine(args: readonly string[], repoPath: string, home: str
 }
 const shellWord = (p: string) => (/^[~A-Za-z0-9_./@%+,:=-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
 
+/**
+ * The setup gate in `repoPath` (security-gate.ts), from local files and the
+ * kept lookup: no AWS call. The enable security lines for step 2 and a missing
+ * space use the region the commands use there; the two for another account
+ * (--repo, --replace) use the connected profile's own region.
+ */
+export function gateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, repoPath: string, repoName: string): Gate {
+  const home = d.identity.home;
+  const idn = identityIn(d, repoPath);
+  const t = securityTargetIn(d, repoPath);
+  const connected = awsTargetFor(idn);
+  const saved = idn.saved?.inUse ? loadConnection(home, repoPath) : null;
+  return computeGate({
+    identity: idn, savedAccount: saved?.account ?? null, setup: setupIn(d, repoPath),
+    lookup: d.cache.peek(t), lookupAccount: d.cache.account(t), repoName, region: t.region,
+    commands: {
+      setup: displayCommand([...ENABLE_SECURITY_ARGS, ...targetArgs(t)]),
+      repo: commandLine([...ENABLE_SECURITY_ARGS, '--repo'], repoPath, home, connected),
+      replace: displayCommand([...ENABLE_SECURITY_ARGS, '--replace', ...targetArgs(connected)]),
+      repoSetup: commandLine([...ENABLE_SECURITY_ARGS, '--repo'], repoPath, home, t),
+    },
+  });
+}
+
+/** The code review start guards in `repoPath`: its result files and `git rev-parse HEAD`, local only. */
+export function guardIn(repoPath: string, now: Date = new Date()): StartGuard {
+  const head = run('git', ['-C', repoPath, 'rev-parse', 'HEAD']);
+  return startGuard(readResultEntries(repoPath), head.ok ? head.stdout.trim() : null, now);
+}
+
+/**
+ * The server's check right before an AWS-writing action: the gate passes in
+ * the repo, the kept lookup named the space and bucket, and the credentials
+ * still resolve to its account (one sts get-caller-identity). null to allow.
+ */
+export async function writeGateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, id: ActionId, repo: ScanRepo): Promise<string | null> {
+  const kind = WRITE_KIND[id];
+  if (!kind) return 'not an AWS-writing action';
+  const g = gateIn(d, repo.path, repo.name);
+  if (g.state !== 'ready') return `Security Agent is not ready in ${repo.name} (step ${g.step} of 3: ${g.title}). Open the Security Agent page.`;
+  const t = securityTargetIn(d, repo.path);
+  return writeNotice(kind, repo.name, d.cache.fresh(t)).reason ?? await d.cache.verify(t);
+}
+
 /** GET /api/security-agent: no AWS call. */
 export async function securityAgentView(d: SecurityAgentDeps) {
   const repos = await d.repos();
@@ -333,6 +405,8 @@ export async function securityAgentView(d: SecurityAgentDeps) {
         id: r.id, name: r.name, path: tildeHome(r.path, d.identity.home), current: r.current,
         target: { profile: t.profile, region: t.region, source: idn.source, credentialLabel: idn.credentialLabel, regionFrom: setup ? setup.source : null },
         setup: setupView(setup),
+        gate: gateIn(d, r.path, r.name),
+        guard: guardIn(r.path),
         commands: Object.fromEntries(SECURITY_ACTIONS.map((id) => [id, commandLine(ACTIONS[id].args, r.path, d.identity.home, t)])),
         copy: Object.fromEntries(Object.entries(COPY_ARGS).map(([k, args]) => [k, commandLine(args, r.path, d.identity.home, t)])),
         notices,
@@ -341,7 +415,6 @@ export async function securityAgentView(d: SecurityAgentDeps) {
     }),
     machine: setupView(setupIn(d, null)),
     setupCommand: displayCommand([...ENABLE_SECURITY_ARGS, ...targetArgs(securityTargetIn(d, null))]),
-    ttlSec: LOOKUP_TTL_MS / 1000,
   };
 }
 

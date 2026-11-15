@@ -126,6 +126,30 @@ export function collectSecurityRuns(repos: RunRepo[], read: (root: string) => Re
   return rows.sort((a, b) => b.started_at.localeCompare(a.started_at)).slice(0, MAX_RUNS);
 }
 
+// ---------------------------------------------------------------- start guards
+
+/** What the Start code review dialog checks first: a review of the repo still running, and a finished review of HEAD. */
+export interface StartGuard {
+  running: { run_id: string; job_id: string; started_at: string; commit: string | null; branch: string | null } | null;
+  reviewed: { run_id: string; finished_at: string; commit: string; counts: RunCounts; total: number } | null;
+}
+
+/**
+ * The guards for one repo, from its result files: the newest code review that
+ * is running (pending inside the stale window), and the newest complete one
+ * whose commit is `head`. Local only; `head` null (no commit) skips the second.
+ */
+export function startGuard(entries: ResultEntry[], head: string | null, now: Date): StartGuard {
+  const runs = runEntries(entries).filter((e) => runTypeOf(e.result) === 'code-review')
+    .sort((a, b) => b.result.started_at.localeCompare(a.result.started_at));
+  const r = runs.find((e) => runStatus(e.result, now) === 'running');
+  const done = head ? runs.find((e) => runStatus(e.result, now) === 'complete' && e.result.commit === head) : undefined;
+  return {
+    running: r ? { run_id: r.id, job_id: jobKey(r.result) || '', started_at: r.result.started_at, commit: r.result.commit ? r.result.commit.slice(0, 12) : null, branch: r.result.branch } : null,
+    reviewed: done ? { run_id: done.id, finished_at: done.result.finished_at, commit: head!.slice(0, 12), counts: runCounts(done.result), total: (done.result.findings || []).length } : null,
+  };
+}
+
 // ---------------------------------------------------------------- the drill-down
 
 export interface RunFinding {

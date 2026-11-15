@@ -77,6 +77,8 @@ export interface CodeReviewOptions extends SecurityOptions {
   json?: boolean;
   /** commander turns --no-wait into wait: false. */
   wait?: boolean;
+  /** Start even while a job of this code review is pending here (it replaces the shared source snapshot). */
+  force?: boolean;
 }
 
 export interface FindingsOptions extends SecurityOptions {
@@ -457,6 +459,21 @@ export function toResult(o: ResultBase & {
   });
 }
 
+/** A pending record older than this most likely finished and was never fetched (the dashboard marks it stale). */
+export const PENDING_STALE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Jobs of this code review that are still pending here: a pending record with
+ * no verdict record for the same job, started inside PENDING_STALE_MS. Local
+ * result files only, so a job CI started is not seen.
+ */
+export function pendingJobs(root: string, account: string, region: string, codeReviewId: string, now: Date): ResultEntry[] {
+  const records = reviewRecords(root, account, region, codeReviewId);
+  const decided = new Set(records.filter((e) => e.result.status !== 'pending').map((e) => e.result.security!.job_id));
+  return records.filter((e) => e.result.status === 'pending' && !decided.has(e.result.security!.job_id)
+    && now.getTime() - Date.parse(e.result.started_at) <= PENDING_STALE_MS);
+}
+
 /** updatedAt - createdAt of a finished job: the service's queue plus run time. null when not reported. */
 export function serviceSeconds(job: Pick<JobInfo, 'status' | 'createdAt' | 'updatedAt'>): number | null {
   if (!TERMINAL.has(job.status) || !job.createdAt || !job.updatedAt) return null;
@@ -681,6 +698,14 @@ export async function securityCodeReview(input: CodeReviewOptions, deps: ReviewD
     const found = lookupSetup(ctx, id, repo);
     say(`Repo:        ${repo.id}`);
     say(found.codeReviewId ? `Code review: ${found.codeReviewId} (from ${found.source})` : 'Code review: none yet for this repo; created after the upload (first run here)');
+    // start-code-review-job has no per-job source: a job reads the code review's latest.zip, perhaps after it started,
+    // so a new upload while one is pending can change what that job reviews.
+    const busy = found.codeReviewId && !input.force ? pendingJobs(root, id.account, ctx.opts.region, found.codeReviewId, deps.now()) : [];
+    if (busy.length) {
+      const p = busy[0].result;
+      throw new Abort(`Job ${p.security!.job_id} of this code review is still pending (started ${p.started_at}). Starting another replaces ${repoZipKey(repo.slug)} in the scan bucket, which that job may still read. `
+        + `Fetch it first with prism-cli security findings, or pass --force to start another anyway.`);
+    }
     const bucket = getParam(ctx, PARAM_SCAN_BUCKET);
     if (!bucket) throw new Abort(`SSM ${PARAM_SCAN_BUCKET} is not set in this account and region: ${NOT_SET_UP}.`);
 

@@ -883,7 +883,9 @@ test('machine setup only: code-review takes its region, creates this repo\'s cod
     assert.ok(!h.calls.find((c) => c[1] === 'put-parameter')!.includes('--overwrite'));
     assert.equal(s.params[REVIEW_PARAM], 'cr-new');
     h.calls.length = 0;
-    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    // The first job is still pending here, so the second needs --force (the pending guard).
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 1);
+    assert.equal(await securityCodeReview({ wait: false, force: true }, h.deps), 0);
     assert.ok(!h.calls.some((c) => c[1] === 'create-code-review'), 'second run: from SSM');
     assert.match(h.out(), /Code review: cr-new \(from SSM/);
   } finally { h.cleanup(); }
@@ -956,3 +958,29 @@ test('lazy creation pages through list-code-reviews: the CI-titled review on pag
     assert.ok(h.calls.some((c) => c[1] === 'list-code-reviews' && c.includes('--starting-token')), 'read page 2');
   } finally { h.cleanup(); }
 }));
+
+test('code-review refuses to replace latest.zip while a job of this code review is pending here; --force starts another', async () => {
+  const h = harness(state());
+  try {
+    writePending(h.repo, 'job-busy', '2026-11-07T09:30:00.000Z');
+    assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 1);
+    assert.match(h.out(), new RegExp(`Error: Job job-busy of this code review is still pending \\(started 2026-11-07T09:30:00.000Z\\)\\. Starting another replaces repo/${SLUG}/latest\\.zip in the scan bucket, which that job may still read\\. Fetch it first with prism-cli security findings, or pass --force to start another anyway\\.`));
+    assert.deepEqual(h.writes(), [], 'no upload and no start');
+    assert.equal(await securityCodeReview(cr({ wait: false, force: true }), h.deps), 0);
+    assert.deepEqual(h.writes(), ['s3api put-object', 's3api put-object', 'securityagent start-code-review-job']);
+  } finally { h.cleanup(); }
+});
+
+test('the pending guard: a finished, stale or other-account record does not block', async () => {
+  for (const [why, write] of [
+    ['completed', (repo: string) => { writePending(repo, 'job-old', '2026-11-07T09:30:00.000Z'); writeResult(repo, { ...pendingResult({ setup: SETUP, region: REGION, account: ACCOUNT, scope: 'full', tip: 'c'.repeat(40), startedAt: '2026-11-07T09:30:00.000Z', job: { codeReviewJobId: 'job-old', status: 'COMPLETED' } }), status: 'ok' }); }],
+    ['stale', (repo: string) => writePending(repo, 'job-old', '2026-11-07T07:59:00.000Z')],
+    ['another account', (repo: string) => writePending(repo, 'job-old', '2026-11-07T09:30:00.000Z', '444455556666')],
+  ] as const) {
+    const h = harness(state());
+    try {
+      write(h.repo);
+      assert.equal(await securityCodeReview(cr({ wait: false }), h.deps), 0, why);
+    } finally { h.cleanup(); }
+  }
+});

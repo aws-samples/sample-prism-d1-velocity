@@ -20,10 +20,12 @@
  *     appended to ~/.prism/logs/dashboard-actions.log (time, id, repo name,
  *     exit code; never output or URLs);
  *   - only two kinds of action write to AWS, both from the Security Agent
- *     page: security code-review --no-wait and security threat-model
- *     --no-wait (an S3 upload of the repo at HEAD and one started job). They
- *     need confirm: true and a current agent-space lookup for the repo's
- *     account and region (writeGate), and the page's dialog names the
+ *     page: security code-review --no-wait (and its --force ids, the dialog's
+ *     "Start another anyway" while a review is pending) and security
+ *     threat-model --no-wait (an S3 upload of the repo at HEAD and one started
+ *     job). They need confirm: true and a passing writeGate (the page's setup
+ *     gate passes in the repo, and the agent-space lookup's account is still
+ *     the one the credentials resolve to), and the page's dialog names the
  *     account, region and scan bucket. Every other AWS-writing command
  *     (enable security, security pentest) stays copy-only on the page;
  *   - AWS actions get --profile and --region from the server's own
@@ -49,7 +51,8 @@ export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' 
   | 'agent-hooks-kiro-remove' | 'agent-hooks-kiro-global-remove' | 'agent-hooks-claude-remove' | 'agent-hooks-claude-global-remove'
   | 'kirocrew-app' | 'update-cli'
   | 'security-status' | 'security-dry-run' | 'security-findings' | 'security-threats' | 'security-pentest-findings'
-  | 'security-code-review' | 'security-code-review-full' | 'security-threat-model';
+  | 'security-code-review' | 'security-code-review-full' | 'security-threat-model'
+  | 'security-code-review-force' | 'security-code-review-full-force';
 
 export interface ActionDef {
   label: string;
@@ -140,6 +143,9 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'security-code-review': { label: 'Start a code review of this branch', args: ['security', 'code-review', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-code-review-full': { label: 'Start a code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-threat-model': { label: 'Start a threat model', args: ['security', 'threat-model', '--no-wait'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
+  // "Start another anyway": the same, while a review of this code review is pending (code-review refuses that without --force).
+  'security-code-review-force': { label: 'Start another code review of this branch', args: ['security', 'code-review', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
+  'security-code-review-full-force': { label: 'Start another code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
 };
 
 const isActionId = (x: unknown): x is ActionId => typeof x === 'string' && Object.prototype.hasOwnProperty.call(ACTIONS, x);
@@ -240,7 +246,7 @@ export interface ActionStatus {
 }
 
 /** Actions that write a Security Agent result file in their repo. */
-const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model']);
+const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model', 'security-code-review-force', 'security-code-review-full-force']);
 
 const MAX_OUTPUT = 256 * 1024;
 const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region']);

@@ -4,11 +4,29 @@
 # FAKE_AWS=in-progress: answers as the seeded demo account (AWS's example id 111122223333) whose
 # Security Agent code review job-demo-2 is still IN_PROGRESS, so security findings exits 2.
 # FAKE_AWS=complete: the same account, with job-demo-2 COMPLETED and two findings.
+# FAKE_SA (the Security Agent page's setup gate, with FAKE_AWS set): ready: the agent space and scan
+# bucket SSM names exist; slow: the same after 3 s; sso: the SSO sign-in expired; denied: the role may
+# not call securityagent:ListAgentSpaces; nospace: no agent space and no SSM parameters.
 echo "$*" >> "$HOME/aws-calls.log"
 case "$1" in
   --version) echo "aws-cli/2.36.0-fake Python/3 Linux"; exit 0 ;;
   configure)
     if [ "$2" = "list-profiles" ]; then sed -n 's/^\[profile \(.*\)\]$/\1/p; s/^\[default\]$/default/p' "$HOME/.aws/config"; exit 0; fi ;;
+esac
+if [ "$FAKE_SA" = "sso" ] && [ "$1 $2" = "sts get-caller-identity" ]; then
+  echo "" >&2; echo "Error when retrieving token from sso: Token has expired and refresh failed" >&2; exit 255
+fi
+if [ "$FAKE_SA" = "slow" ] && [ "$1 $2" = "sts get-caller-identity" ]; then sleep 3; fi
+case "$FAKE_SA:$1 $2" in
+  ready:"securityagent list-agent-spaces"|slow:"securityagent list-agent-spaces") echo '{"agentSpaceSummaries":[{"agentSpaceId":"as-0demo0000000001","name":"prism-d1-security"}]}'; exit 0 ;;
+  ready:"securityagent batch-get-agent-spaces"|slow:"securityagent batch-get-agent-spaces") echo '{"agentSpaces":[{"agentSpaceId":"as-0demo0000000001","createdAt":"2026-11-03T00:00:00Z","awsResources":{"s3Buckets":["arn:aws:s3:::prism-demo-scans"]}}]}'; exit 0 ;;
+  ready:"ssm get-parameter"|slow:"ssm get-parameter")
+    case "$*" in
+      *"--name /prism/continuum/agent-space-id "*) echo '{"Parameter":{"Value":"as-0demo0000000001"}}'; exit 0 ;;
+      *"--name /prism/continuum/scan-bucket "*) echo '{"Parameter":{"Value":"prism-demo-scans"}}'; exit 0 ;;
+    esac ;;
+  denied:"securityagent list-agent-spaces") echo "" >&2; echo "An error occurred (AccessDeniedException) when calling the ListAgentSpaces operation: User: arn:aws:sts::111122223333:assumed-role/PrismDemoReadOnly/demo-session is not authorized to perform: securityagent:ListAgentSpaces" >&2; exit 254 ;;
+  nospace:"securityagent list-agent-spaces") echo '{"agentSpaceSummaries":[]}'; exit 0 ;;
 esac
 if [ "$FAKE_AWS" = "in-progress" ] || [ "$FAKE_AWS" = "complete" ]; then
   case "$1 $2" in

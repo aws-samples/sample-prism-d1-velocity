@@ -14,10 +14,21 @@ import { findOnPath } from '../utils/tool-check.js';
 import { homedir } from 'node:os';
 import { ownVersion } from '../commands/_top/version.js';
 import { sep } from 'node:path';
+import { realpathSync } from 'node:fs';
 
 export function tildeHome(p: string, home: string): string {
-  if (p === home) return '~';
-  return p.startsWith(home + sep) ? '~' + p.slice(home.length) : p;
+  // Both spellings of a symlinked home (/home/x -> /local/home/x): discovered repo paths come back resolved.
+  for (const h of new Set([home, realHomeOf(home)])) {
+    if (p === h) return '~';
+    if (p.startsWith(h + sep)) return '~' + p.slice(h.length);
+  }
+  return p;
+}
+const REAL_HOMES = new Map<string, string>();
+function realHomeOf(home: string): string {
+  let r = REAL_HOMES.get(home);
+  if (r === undefined) { try { r = realpathSync(home); } catch { r = home; } REAL_HOMES.set(home, r); }
+  return r;
 }
 import { collectUsage, spendByRepo, type CodeburnExport, type RepoSpend, type UsagePanel } from './usage.js';
 import { versionCachePath } from './usage-cache.js';
