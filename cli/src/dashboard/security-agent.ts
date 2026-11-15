@@ -1,6 +1,11 @@
 /**
  * The Security Agent page's server side (#security, #security/<repo-id>).
  *
+ * GET /api/security-agent/gate?repo=<id> is the light re-check the gate card
+ * runs every 10 s while step 1 or 2 is on screen: one repo, already known from
+ * the last full answer, from the AWS files, the aws connect files, the env and
+ * the setup records only. No git, no result files, no repo scan.
+ *
  * GET /api/security-agent makes no AWS call: per discovered repo it returns the
  * account and region prism-cli would use there (aws-identity.ts, from env and
  * local files; the region of the Security Agent setup record wins, as in the
@@ -319,7 +324,10 @@ export const identityIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: str
  * setup only). A repo override git tracks is ignored here too, as in the CLI, so
  * a committed file never picks the region the Run actions get.
  */
-export const setupIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): ResolvedSetup | null => loadSetup(d.identity.home, repoPath, (a) => run('git', a));
+export const setupIn = (d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null, light = false): ResolvedSetup | null =>
+  // light (the gate re-check): no git, so a repo override counts even when git tracks it; the full answer, which
+  // the page loads as soon as the step passes, applies the tracked-file rule and has the last word.
+  loadSetup(d.identity.home, repoPath, light ? undefined : (a) => run('git', a));
 
 /** --profile/--region for the security commands in `repoPath`: the identity there, with the setup record's region, as the CLI resolves it. */
 export function securityTargetIn(d: Pick<SecurityAgentDeps, 'identity'>, repoPath: string | null): AwsTargetArgs {
@@ -353,14 +361,14 @@ const shellWord = (p: string) => (/^[~A-Za-z0-9_./@%+,:=-]+$/.test(p) ? p : `'${
  * space use the region the commands use there; the two for another account
  * (--repo, --replace) use the connected profile's own region.
  */
-export function gateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, repoPath: string, repoName: string): Gate {
+export function gateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, repoPath: string, repoName: string, light = false): Gate {
   const home = d.identity.home;
   const idn = identityIn(d, repoPath);
   const t = securityTargetIn(d, repoPath);
   const connected = awsTargetFor(idn);
   const saved = idn.saved?.inUse ? loadConnection(home, repoPath) : null;
   return computeGate({
-    identity: idn, savedAccount: saved?.account ?? null, setup: setupIn(d, repoPath),
+    identity: idn, savedAccount: saved?.account ?? null, setup: setupIn(d, repoPath, light),
     lookup: d.cache.peek(t), lookupAccount: d.cache.account(t), repoName, region: t.region,
     commands: {
       setup: displayCommand([...ENABLE_SECURITY_ARGS, ...targetArgs(t)]),
@@ -391,9 +399,23 @@ export async function writeGateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache
   return writeNotice(kind, repo.name, d.cache.fresh(t)).reason ?? await d.cache.verify(t);
 }
 
+/** The repos the last full answer listed, per deps: the only ids the light gate re-check accepts. */
+const KNOWN = new WeakMap<object, Map<string, ScanRepo>>();
+
+/**
+ * GET /api/security-agent/gate?repo=<id>: the gate for one repo the last full
+ * answer named, with no git, no result-file read and no repo scan. null when
+ * the id is not one of them (the page then loads the full answer).
+ */
+export function securityAgentGate(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, id: string | null): { repo: string; gate: Gate } | null {
+  const r = id && /^[a-f0-9]{16}$/.test(id) ? KNOWN.get(d)?.get(id) : undefined;
+  return r ? { repo: r.id, gate: gateIn(d, r.path, r.name, true) } : null;
+}
+
 /** GET /api/security-agent: no AWS call. */
 export async function securityAgentView(d: SecurityAgentDeps) {
   const repos = await d.repos();
+  KNOWN.set(d, new Map(repos.map((r) => [r.id, { id: r.id, name: r.name, path: r.path }])));
   return {
     repos: repos.map((r) => {
       const idn = identityIn(d, r.path);

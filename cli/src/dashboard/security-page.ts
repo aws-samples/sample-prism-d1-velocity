@@ -7,7 +7,9 @@
  * First the setup gate (security-gate.ts): three steps, checked in order,
  * and only the first one not met is shown, as one card with "step n of 3".
  * Steps 1 and 2 read local files only, and their card checks again every
- * 10 s (GET /api/security-agent) while it is open. Step 3 is the read-only
+ * 10 s while it is open and the tab is visible, through the light
+ * GET /api/security-agent/gate (one repo, no git, no repo scan); only when
+ * the step passes does the page load the full answer again. Step 3 is the read-only
  * agent-space lookup: once steps 1 and 2 pass, the page starts it by itself,
  * once per repo and profile and region (never on the minute refresh), and
  * the server keeps the answer for the dashboard session; Check again and
@@ -348,16 +350,36 @@ function saAuto(repo) {
   saLookup(repo, false);
 }
 
-/** Steps 1 and 2 check again every SA_POLL_MS while their card is on screen: GET /api/security-agent, local files only. */
+/** Steps 1 and 2 check again every SA_POLL_MS while their card is on screen and the tab is visible (a hidden tab fetches nothing). */
 function saSchedule(g) {
+  const poll = !SNAPSHOT && !!g && SA_POLL_STATES.includes(g.state) && currentView() === 'security';
+  // A redraw while one is pending keeps it: other loads (the heatmap's 3 s polls) must not push it back forever.
+  if (poll && SA_TIMER) return;
   if (SA_TIMER) { clearTimeout(SA_TIMER); SA_TIMER = null; }
-  if (SNAPSHOT || !g || !SA_POLL_STATES.includes(g.state) || currentView() !== 'security') return;
-  SA_TIMER = setTimeout(() => { SA_TIMER = null; if (document.visibilityState === 'visible') renderSecurity(); else saSchedule(g); }, SA_POLL_MS);
+  if (!poll) return;
+  SA_TIMER = setTimeout(() => { SA_TIMER = null; if (document.visibilityState === 'visible') saRecheck(); else saSchedule(g); }, SA_POLL_MS);
+}
+
+/**
+ * The light re-check: GET /api/security-agent/gate for the picked repo (local
+ * files only, no git, no repo scan). Still on step 1 or 2: redraw the card
+ * only when the answer changed. Past it, or not answered: the full answer.
+ */
+async function saRecheck(force) {
+  const repo = saRepo();
+  if (!repo) return renderSecurity();
+  let r;
+  try { r = await api('/api/security-agent/gate?repo=' + repo.id); } catch (e) { r = { ok: false }; }
+  const g = r.ok && r.json && r.json.gate;
+  if (!g || !SA_POLL_STATES.includes(g.state)) return renderSecurity();
+  const same = JSON.stringify(g) === JSON.stringify(repo.gate);
+  repo.gate = g;
+  if (same && !force) saSchedule(g); else drawSecurity();
 }
 
 const saCheckAgain = (label) => {
   const b = el('button', { type: 'button', class: 'run' }, label);
-  b.addEventListener('click', () => { b.disabled = true; renderSecurity(); });
+  b.addEventListener('click', () => { b.disabled = true; saRecheck(true); });
   return b;
 };
 const saRetry = (repo, label) => {
