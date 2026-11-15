@@ -595,6 +595,44 @@ try {
     out.home = srv.home;
     await ctx.close();
   }
+  // ---------- 11. a second action starts once the first is done (no stuck "another action is running") ----------
+  if (want('rerun')) {
+    const out = { steps: [] };
+    R.suites.rerun = out;
+    const srv = await live('rerun', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress' });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const posts = [];
+    page.on('response', async (r) => { if (r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/action') posts.push({ status: r.status(), body: (await r.text().catch(() => '')).slice(0, 200) }); });
+    const pill = () => page.evaluate(() => document.querySelector('#action-drawer .srow-head .pill')?.textContent || '');
+    const runOne = async (label) => {
+      await page.goto(srv.base + '/#security'); await sleep(900);
+      const b = page.locator('#security button:visible', { hasText: new RegExp('^' + label + '$') }).first();
+      const step = { label, found: await b.count() };
+      if (step.found) {
+        step.enabled = await b.isEnabled();
+        await b.click(); await sleep(300);
+        await page.click('dialog.confirm button:not(:has-text("Cancel"))');
+        const t0 = Date.now();
+        for (;;) { const p = await pill(); if (p && !/^(running|starting)/.test(p)) { step.pill = p; break; } if (Date.now() - t0 > 60000) { step.hung = true; break; } await sleep(400); }
+        step.post = posts[posts.length - 1];
+        step.serverState = await page.evaluate(() => fetch('/api/action/status').then((r) => r.json()).then((j) => j.state));
+      }
+      out.steps.push(step);
+    };
+    await runOne('Fetch findings');
+    await runOne('Fetch threats');
+    await runOne('Fetch findings');
+    // Right after the third run is done, a direct start must answer 202 too.
+    const csrf = await page.evaluate(() => document.querySelector('meta[name="prism-csrf"]')?.content || '');
+    out.direct = await page.evaluate(async (csrf) => {
+      const data = await fetch('/api/data').then((r) => r.json());
+      const repo = data.repos.find((r) => r.current);
+      const r = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json', 'x-prism-csrf': csrf }, body: JSON.stringify({ action: 'security-threats', repo: repo.id }) });
+      return { status: r.status, body: (await r.text()).slice(0, 200) };
+    }, csrf);
+    await ctx.close();
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -676,6 +714,13 @@ function verdicts(R) {
     const live = (S.snapshot.routes || []).flatMap((r) => r.buttons.filter((b) => /^(Run|Re-verify|Disconnect|Upload|Start)/.test(b)).map((b) => r.route + ' ' + b));
     add('snapshot', 'the snapshot is written and draws every route', S.snapshot.exit === 0 && S.snapshot.routes.length >= 8 && !S.snapshot.layout320?.hscroll, JSON.stringify({ exit: S.snapshot.exit, stderr: S.snapshot.stderr }));
     add('snapshot-copy-only', 'nothing runs from the snapshot (Run buttons are Copy)', !live.length, live.join('; '));
+  }
+  if (S.rerun) {
+    const st = S.rerun.steps || [];
+    add('rerun', 'after an action is done, the next one starts (202, not 409), its button enabled, three in a row',
+      st.length === 3 && st.every((x) => x.found && x.enabled && !x.hung && x.post?.status === 202 && x.serverState === 'done') && S.rerun.direct?.status === 202,
+      JSON.stringify(st.map((x) => [x.label, x.enabled, x.pill, x.post?.status, x.serverState])) + ' direct ' + S.rerun.direct?.status);
+    add('rerun-mask', 'the start answer shows the repo path under ~, not the home directory', st.every((x) => !/"cwd":"\//.test(x.post?.body || '')), st.map((x) => (x.post?.body || '').slice(140, 220)).join(' | '));
   }
   if (S.pending) {
     const d = S.pending.drawer || {};

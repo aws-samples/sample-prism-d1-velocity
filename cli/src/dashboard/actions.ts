@@ -33,7 +33,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
@@ -165,6 +165,8 @@ export function repoId(path: string): string {
 
 export { redact };
 
+const realHome = (h: string) => { try { return h ? realpathSync(h) : h; } catch { return h; } };
+
 /** This CLI's own entry script: dist/bin/prism-cli.js beside dist/src/dashboard/. */
 export function cliEntry(): string {
   return fileURLToPath(new URL('../../bin/prism-cli.js', import.meta.url));
@@ -199,7 +201,16 @@ export interface RunnerDeps {
   connectionArgs?: () => string[] | null;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
+  /** After the child exits, how long to keep reading output a process it started may still write (default EXIT_GRACE_MS). */
+  exitGraceMs?: number;
 }
+
+/**
+ * 'close' waits for every stdio pipe to close, so a process the command left behind holding its
+ * stdout/stderr would keep the action "running" (and the lock taken) forever. The run ends this
+ * long after the child's own 'exit' instead, and the pipes are dropped.
+ */
+export const EXIT_GRACE_MS = 2000;
 
 export interface ApiResult { status: number; json: unknown }
 
@@ -344,15 +355,27 @@ export class ActionRunner {
     }, def.timeoutMs);
     timer.unref();
     let settled = false;
+    let lingering: NodeJS.Timeout | undefined;
     const done = (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (killer) clearTimeout(killer);
+      if (lingering) clearTimeout(lingering);
       this.finish(st, st.timedOut ? 124 : code ?? 1);
     };
     child.on('error', (e) => { add(`could not start: ${e.message}\n`); done(1); });
     child.on('close', (code) => done(code));
+    child.on('exit', (code) => {
+      lingering = setTimeout(() => {
+        if (settled) return;
+        add('\n[the command exited, but a process it started still holds its output; stopped reading]\n');
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        done(code);
+      }, this.d.exitGraceMs ?? EXIT_GRACE_MS);
+      lingering.unref();
+    });
     return { status: 202, json: this.status() };
   }
 
@@ -383,6 +406,9 @@ export class ActionRunner {
     if (!c) return { state: 'idle' };
     const { buf, ...rest } = c;
     // The home directory leaves as ~ (repo paths, result paths), as on the rest of the page.
-    return { ...rest, ...(rest.cwd ? { cwd: tildeHome(rest.cwd, this.d.home) } : {}), output: maskHome(redact(buf), this.d.home) };
+    // Both spellings of a symlinked home (/home/x -> /local/home/x): repo paths come back resolved.
+    const homes = [...new Set([this.d.home, realHome(this.d.home)])];
+    const mask = (t: string) => homes.reduce((x, h) => maskHome(x, h), t);
+    return { ...rest, ...(rest.cwd ? { cwd: homes.reduce((x, h) => tildeHome(x, h), rest.cwd) } : {}), output: mask(redact(buf)) };
   }
 }
