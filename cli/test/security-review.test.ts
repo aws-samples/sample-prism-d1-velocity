@@ -47,6 +47,8 @@ interface State {
   pollErrors?: string[];
   /** Code reviews in the agent space (list-code-reviews). */
   reviews?: { codeReviewId: string; title: string }[];
+  /** list-code-reviews pages this many per call (NextToken = the next index); unset: one page. */
+  reviewPageSize?: number;
 }
 
 function state(o: Partial<State> = {}): State {
@@ -106,7 +108,11 @@ function harness(s: State, o: { tracked?: boolean; sandbox?: boolean; cwd?: (rep
           return ok({ findings: ids.map((id) => ({ findingId: id, description: `Details of ${id}. More text.`, codeLocations: [{ filePath: `${o.sandbox ? '/tmp/opt/source_code/code_sc-ab12cd/' : ''}src/${id}.ts`, lineStart: 7 }] })) });
         }
         case 'securityagent list-code-review-jobs-for-code-review': return ok({ codeReviewJobSummaries: s.jobs });
-        case 'securityagent list-code-reviews': return ok({ codeReviewSummaries: s.reviews ?? [] });
+        case 'securityagent list-code-reviews': {
+          const all = s.reviews ?? [], size = s.reviewPageSize ?? all.length + 1;
+          const start = a.includes('--starting-token') ? Number(arg(a, '--starting-token')) : 0;
+          return ok({ codeReviewSummaries: all.slice(start, start + size), ...(start + size < all.length ? { NextToken: String(start + size) } : {}) });
+        }
         case 'securityagent create-code-review': { const id = 'cr-new'; (s.reviews ??= []).push({ codeReviewId: id, title: arg(a, '--title') }); return ok({ codeReviewId: id }); }
         case 'ssm put-parameter': s.params[arg(a, '--name')] = arg(a, '--value'); return ok({});
         default: return fail('', `fake aws: unexpected ${a.join(' ')}`);
@@ -937,5 +943,18 @@ test('a machine setup for another account is warned about, and its ids are not u
     assert.match(h.out(), /Warning: the machine setup ~\/\.prism\/security\.json is for account ••••7777, but the credentials resolve to account ••••3333/);
     assert.ok(!h.calls.flat().includes('as-other'));
     assert.deepEqual(h.writes(), []);
+  } finally { h.cleanup(); }
+}));
+
+test('lazy creation pages through list-code-reviews: the CI-titled review on page 2 is reused, no duplicate', () => withHome(async (home) => {
+  machine(home);
+  const s = state({ reviews: [{ codeReviewId: 'cr-a', title: 'a' }, { codeReviewId: 'cr-b', title: 'b' }, { codeReviewId: 'cr-ci', title: 'github-com-acme-widgets-ci-diff-scan' }], reviewPageSize: 2 });
+  delete s.params[REVIEW_PARAM];
+  const h = harness(s, { marker: false, env: { HOME: home } });
+  try {
+    assert.equal(await securityCodeReview({ wait: false }, h.deps), 0);
+    assert.ok(!h.calls.some((c) => c[1] === 'create-code-review'), 'no duplicate');
+    assert.equal(s.params[REVIEW_PARAM], 'cr-ci');
+    assert.ok(h.calls.some((c) => c[1] === 'list-code-reviews' && c.includes('--starting-token')), 'read page 2');
   } finally { h.cleanup(); }
 }));

@@ -23,7 +23,7 @@ import { homeOf, loadSetup, overrideTracked, setupLabel, SETUP_HINT } from './co
 import { MARKER_PATH, readLocalMarker } from './marker.js';
 import { repoZipKey, SSM_PREFIX } from './repo.js';
 import {
-  Abort, call, calls, getParam, md5, preflight, printIdentity, resolveRegion, resolveRepo, NO_REGION_MESSAGE, PARAM_SERVICE_ROLE, SERVICE_ROLE_NAME,
+  Abort, call, calls, getParam, listCodeReviews, md5, paged, preflight, printIdentity, resolveRegion, resolveRepo, NO_REGION_MESSAGE, PARAM_SERVICE_ROLE, SERVICE_ROLE_NAME,
   type Ctx, type Deps, type Identity, type RepoCtx, type Resolved, type SecurityOptions,
 } from './setup.js';
 
@@ -179,7 +179,7 @@ export function resolveSetup(ctx: Ctx, id: Identity, repo: RepoCtx): Setup {
  */
 export function createCodeReview(ctx: Ctx, id: Identity, agentSpaceId: string, repo: RepoCtx, bucket: string): string {
   const say = ctx.deps.log;
-  const reviews: any[] = call(ctx, ['securityagent', 'list-code-reviews', '--agent-space-id', agentSpaceId]).json?.codeReviewSummaries || [];
+  const reviews = listCodeReviews(ctx, agentSpaceId);
   let crId = String(reviews.find((r) => r?.title === repo.title)?.codeReviewId || '');
   if (crId) say(`Code review: ${crId} ("${repo.title}") already exists; reusing it`);
   else {
@@ -279,18 +279,7 @@ export function getJob(ctx: Ctx, setup: Setup, jobId: string): JobInfo {
   return parseJob(call(ctx, jobArgs(setup, jobId)).json, setup, jobId);
 }
 
-/** Every page of `--max-items` results, following NextToken (the CLI's) or nextToken (the API's). */
-export function paged(ctx: Ctx, args: string[], key: string): any[] {
-  const out: any[] = [];
-  let token: string | undefined;
-  for (let page = 0; page < 1000; page++) {
-    const r = call(ctx, [...args, '--max-items', String(FINDINGS_PAGE), ...(token ? ['--starting-token', token] : [])]);
-    out.push(...(r.json?.[key] || []));
-    token = r.json?.NextToken || r.json?.nextToken || undefined;
-    if (!token) return out;
-  }
-  throw new Abort(`${args[1]} returned more than 1000 pages; stopping.`);
-}
+export { paged } from './setup.js';
 
 export function latestJob(ctx: Ctx, setup: Setup): JobInfo | null {
   const jobs = paged(ctx, ['securityagent', 'list-code-review-jobs-for-code-review', '--agent-space-id', setup.agentSpaceId, '--code-review-id', setup.codeReviewId], 'codeReviewJobSummaries');

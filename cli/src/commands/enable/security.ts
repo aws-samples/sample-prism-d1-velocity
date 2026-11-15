@@ -90,6 +90,7 @@ export const SECURITY_OPTIONS: { flags: string; description: string; default?: s
   { flags: '--dry-run', description: 'Run every read-only step and print the plan, including the exact calls; change nothing' },
   { flags: '--status', description: 'Read-only report: credentials, which setup is in use (machine or repo override), stack, agent space, application, SSM, and in a repo its code review and CI step' },
   { flags: '--repo [host/owner/name]', description: 'Also set up this repo\'s code review now and write the repo override .prism/security.local.json (optional: the repo id as the CI gate names it; default: from the origin remote). Not needed: security code-review creates it on first use' },
+  { flags: '--replace', description: 'Change the machine default (~/.prism/security.json) when this run resolves to another account or region than the existing machine setup; without it, such a run stops before any change' },
   { flags: '--context <key=value>', description: 'Extra cdk context, repeatable (match how the stack was deployed, e.g. skipVpc=true)', parser: collect },
 ];
 

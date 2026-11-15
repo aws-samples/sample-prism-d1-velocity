@@ -1628,6 +1628,26 @@ the machine setup, never a repo override, so it gives the same result in every d
 
 The resolved region is passed to every AWS call and to CDK, so every step works in the same region.
 
+### Another account or region
+
+The machine setup is the default for every repo on the machine, so `enable security` never
+rewrites it by accident. When `~/.prism/security.json` exists and a run resolves to a different
+account (other credentials) or region (`--region`), the run stops after the read-only identity
+check and before any change:
+
+```text
+Error: The machine setup ~/.prism/security.json is account ••••3333, region us-west-2; this run
+resolves to account ••••3333, region eu-west-1. Writing it would change the Security Agent default
+for every repo on this machine. Run it in a repo with --repo to set up an override for that repo
+only, or pass --replace to change the machine default. Nothing was changed.
+```
+
+- `--repo` sets up that account and region for the current repo only (the repo override below) and
+  leaves `~/.prism/security.json` as it was.
+- `--replace` makes this account and region the machine default for every repo.
+- `--dry-run` prints the same message as a note and still shows the plan.
+- A run with the same account and region is a normal, idempotent re-run.
+
 ### Per-repo code review (optional)
 
 The only per-repo part of the setup is the code review the eval gate scans pull requests against:
@@ -1638,9 +1658,9 @@ The only per-repo part of the setup is the code review the eval gate scans pull 
   and `security code-review` read.
 
 There is no CI step, file or marker to add for it. `prism-cli security code-review` creates all
-three on its first run in a repo (reusing a code review with that title if one exists, and never
-overwriting the SSM parameter), and the eval gate creates them on its first CI run. To create them
-up front, run in the repo:
+three on its first run in a repo (reusing a code review with that title if one exists, read
+across every page of `list-code-reviews`, and never overwriting the SSM parameter), and the eval
+gate creates them on its first CI run. To create them up front, run in the repo:
 
 ```bash
 prism-cli enable security --repo                     # this repo, named from its origin remote
@@ -1649,7 +1669,9 @@ prism-cli enable security --repo github.com/o/name   # when the remote does not 
 
 `--repo` runs the machine setup too, then the per-repo items (shown in the plan, and asked about
 with the rest), and writes the repo override `.prism/security.local.json` (agent space,
-application and code review ids, account, region, setup time; no secrets). The override is per
+application and code review ids, account, region, setup time; no secrets). When the run is for
+another account or region than the machine setup, `--repo` writes only the repo override and keeps
+`~/.prism/security.json` as it was. The override is per
 developer and never committed: if git does not already ignore it, the command adds it to this
 clone's `.git/info/exclude` (found with `git rev-parse --git-path`, so linked worktrees work) and
 never edits `.gitignore`. `.prism/config.json` is not touched and stays safe to commit. Outside a git
