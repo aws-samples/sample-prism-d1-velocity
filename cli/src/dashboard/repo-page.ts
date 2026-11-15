@@ -114,8 +114,9 @@ function repoSecurity(repo) {
   const all = LAST.security || {};
   const review = (all.repos || []).find((r) => r.path === repo.path);
   const tm = (all.threat_models || []).find((t) => t.path === repo.path);
-  if (review) s.append(el('h3', {}, 'Code review'), el('div', { class: 'pills' }, ...riskPills(review.counts, RISKS, 'no findings')), el('div', { class: 'fix' }, review.pending ? 'started ' + when(review.started_at) : when(review.finished_at)));
-  if (tm) s.append(el('h3', {}, 'Threat model'), el('div', { class: 'pills' }, ...riskPills(tm.counts, THREAT_LEVELS, 'no threats')), el('div', { class: 'fix' }, tm.pending ? 'started ' + when(tm.started_at) : when(tm.finished_at)));
+  // resultPills: a pending job reads "running", never "no findings".
+  if (review) s.append(el('h3', {}, 'Code review'), el('div', { class: 'pills' }, ...resultPills(review, RISKS, 'no findings')), el('div', { class: 'fix' }, review.pending ? 'started ' + when(review.started_at) : when(review.finished_at)), ...[runningNote(review, all.pending_hint)].filter(Boolean));
+  if (tm) s.append(el('h3', {}, 'Threat model'), el('div', { class: 'pills' }, ...resultPills(tm, THREAT_LEVELS, 'no threats')), el('div', { class: 'fix' }, tm.pending ? 'started ' + when(tm.started_at) : when(tm.finished_at)));
   return s;
 }
 

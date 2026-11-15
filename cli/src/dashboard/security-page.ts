@@ -63,7 +63,11 @@ function saActItems(repo) {
   if (credsFailed(l)) out.push('the AWS credentials did not work');
   else if (l && l.ok && !l.inUse) out.push('no agent space is set up for prism-cli in ' + txt(l.region));
   const r = saResults(repo);
-  if (r.review) { if (r.review.pending) out.push('a code review job is pending'); else if (highOrCritical(r.review.counts)) out.push('high findings in the latest code review'); }
+  if (r.review) {
+    if (r.review.pending || r.review.running) out.push('a code review job is pending');
+    // With a newer job running, the row is the last completed review: its findings still count.
+    if (!r.review.pending && highOrCritical(r.review.counts)) out.push(r.review.running ? 'high findings in the last completed code review' : 'high findings in the latest code review');
+  }
   if (r.threat) { if (r.threat.pending) out.push('a threat model job is pending'); else if (highOrCritical(r.threat.counts)) out.push('high threats in the latest threat model'); }
   if (r.pentest && !r.pentest.pending && highOrCritical(r.pentest.counts)) out.push('high findings in the latest pentest');
   return out;
@@ -122,14 +126,16 @@ const saCard = (title, sub, ...kids) => el('section', { class: 'card' }, el('h2'
 function saPicker(repo) {
   const sel = el('select', { class: 'sa-repo', id: 'sa-repo', 'aria-label': 'Target repo' });
   for (const r of SA.repos) {
-    const o = el('option', { value: r.id }, txt(r.name) + (r.current ? ' (this repo)' : ''));
+    // The dashboard's label (a parent path when two repos share a name), as on every other page.
+    const own = ((LAST && LAST.repos) || []).find((x) => x.id === r.id);
+    const o = el('option', { value: r.id }, (own ? labelOf(own) : txt(r.name)) + (r.current ? ' (this repo)' : ''));
     if (r.id === repo.id) o.setAttribute('selected', '');
     sel.append(o);
   }
   sel.addEventListener('change', () => { SA_PICK = sel.value; location.hash = '#security/' + sel.value; });
   const m = repo.marker;
   return saCard('Target repo', 'every command on this page runs in this repo, as if you ran it there',
-    el('div', { class: 'srow-ctl' }, el('label', { for: 'sa-repo' }, 'Repo'), sel, el('code', {}, txt(repo.path))),
+    el('div', { class: 'srow-ctl' }, el('label', { for: 'sa-repo' }, 'Repo'), sel, el('code', { class: 'path' }, txt(repo.path))),
     el('p', { class: 'fix' }, m ? 'enable security ran here: code review ' + txt(m.codeReviewId) + ', account ' + txt(m.account4) + ' / ' + txt(m.region) + (m.setupAt ? ', set up ' + when(m.setupAt) : '') + ' (.prism/security.local.json).'
       : 'enable security has not run in this repo (no .prism/security.local.json).'));
 }
@@ -137,9 +143,8 @@ function saPicker(repo) {
 /** One result line: its pills and when, or "none saved". */
 function saResultCell(x, levels) {
   if (!x) return el('span', { class: 'fix' }, 'none saved');
-  const pills = x.pending ? [sevPill('medium', 'running'), x.stale ? sevPill('zero', 'stale?') : null]
-    : x.status === 'error' ? [sevPill('blocked', txt(x.job_status).toLowerCase())] : riskPills(x.counts, levels, 'clean');
-  return el('div', {}, el('span', { class: 'pills' }, ...pills.filter(Boolean)), el('div', { class: 'fix' }, (x.pending ? 'started ' + when(x.started_at) : when(x.finished_at)) + ' · job ' + txt(x.job_id).slice(0, 12)));
+  return el('div', {}, el('span', { class: 'pills' }, ...resultPills(x, levels, 'clean')), el('div', { class: 'fix' }, (x.pending ? 'started ' + when(x.started_at) : when(x.finished_at)) + ' · job ' + txt(x.job_id).slice(0, 12)),
+    runningNote(x, null));
 }
 
 function saResultsCard(repo) {

@@ -4,7 +4,7 @@
  * report. Synchronous on purpose: every AWS call is a blocking CLI read, and
  * the tests drive it through the fake `aws` binary.
  */
-import { aws, type AwsTarget } from '../utils/aws.js';
+import { aws, clause, type AwsTarget } from '../utils/aws.js';
 import { parseFailOn, renderReport, type Finding } from '../utils/audit.js';
 import type { RunResult } from '../utils/exec.js';
 import { makeResult, writeResult, type AwsCheckInfo, type PrismResult } from '../codewatch/results.js';
@@ -60,7 +60,7 @@ export function awsCheck(input: CheckOptions, d: CheckRunDeps): CheckOutcome {
   const account = who.ok ? String(who.json?.Account || '') : '';
   if (!account) {
     const why = who.errorCode || who.raw.split('\n').map((l) => l.trim()).filter(Boolean).pop() || 'no account in the response';
-    say(`Error: cannot resolve the AWS identity: ${why}. Sign in (e.g. aws sso login), pass --profile, or run prism-cli aws connect.`);
+    say(`Error: cannot resolve the AWS identity: ${clause(why)}. Sign in (e.g. aws sso login), pass --profile, or run prism-cli aws connect.`);
     return { code: 1 };
   }
   const a = aws(['iam', 'list-account-aliases'], target);

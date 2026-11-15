@@ -38,8 +38,11 @@ From `cli/` in a clone:
 npm ci
 npm run build       # tsc -> dist/, plus the bundled assets
 npm test            # type-checks the tests, then the node:test suite
+npm run test:e2e    # optional: Playwright over the dashboard on demo data (after build; needs a local Chromium, see test/e2e/run.mjs)
 npm run docs        # regenerate docs/CLI-REFERENCE.md after changing a command or flag
 ```
+
+`npm run test:e2e` is not part of `npm test` or CI. It installs `playwright-core` into `test/e2e/` only, runs the built dashboard in throwaway HOMEs with a fake `aws` (no AWS call) and a fake `codeburn`, and writes screenshots and `results.json` to `$PRISM_E2E_OUT` (default: a temp folder).
 
 Releases are published to npm by `.github/workflows/publish.yml` when a `v*` tag is pushed.
 

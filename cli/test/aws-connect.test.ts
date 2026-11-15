@@ -115,6 +115,14 @@ test('connect: a profile that does not validate saves nothing', async () => {
   assert.equal(existsSync(userConnectionPath(h.home)), false);
 });
 
+test('connect: an AWS CLI message that ends with a period is not followed by a second one', async () => {
+  const raw = '\nUnable to locate credentials. You can configure credentials by running "aws configure".';
+  const h = harness({ table: { 'sts get-caller-identity': { ok: false, json: null, errorCode: '', raw } } });
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2' }, h.deps), 1);
+  assert.match(h.out(), /running "aws configure"\. /);
+  assert.doesNotMatch(h.out(), /\.\./);
+});
+
 test('connect --repo: writes .prism/aws.local.json and git-ignores it in this clone', async () => {
   const h = harness({ repo: true });
   assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', repo: true }, h.deps), 0);

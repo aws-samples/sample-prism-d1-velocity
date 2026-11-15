@@ -28,7 +28,7 @@ ul.todo .go { float:right; font-size:12px; margin-left:12px; }
 .drawer pre.out { flex:1; max-height:none; overflow:auto; }
 body:has(.drawer:not([hidden])) .wrap { padding-bottom:48vh; }
 @media (max-width: 860px) {
-  .setup-layout { grid-template-columns:1fr; }
+  .setup-layout { grid-template-columns:minmax(0,1fr); }
   nav.stabs { flex-direction:row; overflow-x:auto; position:static; }
   nav.stabs a { border-left:0; border-bottom:3px solid transparent; white-space:nowrap; border-radius:8px 8px 0 0; }
   nav.stabs a[aria-selected="true"] { border-bottom-color:var(--accent); }
@@ -188,7 +188,7 @@ function agentsPane(data) {
   const ah = data.agentHooks || { rows: [], plugin: {} }, p = ah.plugin || {};
   const rows = ah.rows.map((r) => {
     const st = HOOK_PILL[r.state] || ['skipped', r.state];
-    return [r.client, r.scope, pill(st[0], st[1]), r.path ? el('code', {}, r.path + (r.others ? ' (+' + r.others + ' other)' : '')) : '-', hookButton(r, p)];
+    return [r.client, r.scope, pill(st[0], st[1]), r.path ? el('code', { class: 'path' }, r.path + (r.others ? ' (+' + r.others + ' other)' : '')) : '-', hookButton(r, p)];
   });
   const kc = machineRow(data, 'kirocrew-app');
   return [
@@ -208,9 +208,9 @@ const UPDATE_CMD = 'npm i -g @prism-d1/cli@latest';
 
 function updatesPane(data) {
   const v = data.version || {};
-  const state = v.update ? sevPill('medium', 'update available') : v.latest ? sevPill('ok', 'up to date') : sevPill('zero', 'not checked');
-  const check = el('button', { type: 'button', disabled: SNAPSHOT ? '' : null }, 'Check now');
-  const msg = el('span', { class: 'fix', role: 'status' });
+  const state = v.off ? sevPill('zero', 'check off') : v.update ? sevPill('medium', 'update available') : v.latest ? sevPill('ok', 'up to date') : sevPill('zero', 'not checked');
+  const check = el('button', { type: 'button', disabled: SNAPSHOT || v.off ? '' : null, title: v.off ? 'PRISM_NO_UPDATE_CHECK=1 turns the update check off' : null }, 'Check now');
+  const msg = el('span', { class: 'fix', role: 'status' }, v.off ? 'The update check is off (PRISM_NO_UPDATE_CHECK=1 in the environment the dashboard started in).' : '');
   check.addEventListener('click', async () => {
     check.disabled = true; msg.textContent = 'asking the npm registry...';
     let r;
@@ -228,7 +228,7 @@ function updatesPane(data) {
     section('prism-cli', null, el('div', { class: 'srow-head' }, state), kv([
       ['Installed', el('b', {}, txt(v.installed || '-'))],
       ['Latest on npm', el('span', {}, el('b', {}, txt(v.latest || '-')), v.publishedAt ? el('span', { class: 'fix' }, ' · published ' + when(v.publishedAt)) : null)],
-      ['Last checked', v.checkedAt ? el('span', { title: when(v.checkedAt) }, ago(v.checkedAt)) : 'not yet'],
+      ['Last checked', v.checkedAt ? el('span', { title: when(v.checkedAt) }, ago(v.checkedAt)) : v.off ? 'never: the check is off' : 'not yet'],
     ]), el('div', { class: 'srow-ctl' }, update, check, rel, msg),
     el('p', { class: 'note' }, 'The dashboard asks the npm registry at most once a day and never updates by itself; PRISM_NO_UPDATE_CHECK=1 turns the check off. After an update, restart prism-cli dashboard, update the Claude Code plugin (', el('code', {}, PLUGIN_UPDATE[1]), ') and run ', el('code', {}, 'prism-cli enable kirocrew'), ', so the plugin and the Kiro Crew app match the new CLI.')),
     section('Components', null, table(['Component', 'Installed', 'Note'], [

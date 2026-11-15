@@ -46,7 +46,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visibl
 #setup { display:grid; gap:0 18px; grid-template-columns:repeat(auto-fit, minmax(min(420px, 100%), 1fr)); align-items:start; } #setup > .wide { grid-column:1 / -1; }
 .srow { padding:8px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; } .srow:first-of-type { border-top:none; }
 .srow-head { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
-.srow-ctl { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px; }
+.srow-ctl { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px; } .srow-ctl code { min-width:0; overflow-wrap:anywhere; }
 .cmdline { display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; max-width:100%; } .cmdline code { white-space:normal; overflow-wrap:anywhere; }
 .badge { font-size:11px; padding:0 6px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:var(--raised); white-space:nowrap; font-weight:600; }
 .badge.warn { color:var(--warn); }

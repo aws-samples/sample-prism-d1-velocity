@@ -1,0 +1,8 @@
+{
+  "name": "prism-cli-dashboard-e2e",
+  "private": true,
+  "description": "Playwright e2e run over the prism-cli dashboard (npm run test:e2e in cli/). Not part of npm test or CI.",
+  "dependencies": {
+    "playwright-core": "1.65.1"
+  }
+}

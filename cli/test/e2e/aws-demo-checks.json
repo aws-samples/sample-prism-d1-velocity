@@ -1,0 +1,288 @@
+{
+ "latest": {
+  "checks": [
+   {
+    "id": "bedrock.root-mfa",
+    "category": "bedrock",
+    "title": "Root account MFA",
+    "severity": "CRITICAL",
+    "status": "PASS",
+    "detail": "MFA is enabled on the root user.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.root-access-keys",
+    "category": "bedrock",
+    "title": "Root access keys",
+    "severity": "CRITICAL",
+    "status": "PASS",
+    "detail": "The root user has no access keys.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.password-policy",
+    "category": "bedrock",
+    "title": "Account password policy",
+    "severity": "MEDIUM",
+    "status": "FAIL",
+    "detail": "No account password policy is set.",
+    "remediation": "Set a password policy (minimum length 14, require symbols and numbers).",
+    "cause": null
+   },
+   {
+    "id": "bedrock.access-key-age",
+    "category": "bedrock",
+    "title": "Long-lived access keys",
+    "severity": "HIGH",
+    "status": "FAIL",
+    "detail": "2 access keys are older than 90 days: ci-deploy (214 days), demo-user (131 days).",
+    "remediation": "Rotate or delete the keys; prefer IAM Identity Center or roles.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.console-user-no-mfa",
+    "category": "bedrock",
+    "title": "Console users without MFA",
+    "severity": "HIGH",
+    "status": "PASS",
+    "detail": "Every console user has MFA.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.unused-credentials",
+    "category": "bedrock",
+    "title": "Unused credentials",
+    "severity": "MEDIUM",
+    "status": "INDETERMINATE",
+    "detail": "Could not check (ReportNotPresent). Needs iam:GetCredentialReport.",
+    "remediation": "Grant iam:GetCredentialReport (read-only) and re-run prism-cli aws check.",
+    "cause": "no-credential-report"
+   },
+   {
+    "id": "bedrock.user-admin-policy",
+    "category": "bedrock",
+    "title": "AdministratorAccess on IAM users",
+    "severity": "HIGH",
+    "status": "PASS",
+    "detail": "No IAM user has AdministratorAccess attached.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.bedrock-budget",
+    "category": "bedrock",
+    "title": "Budget covering Bedrock services",
+    "severity": "HIGH",
+    "status": "FAIL",
+    "detail": "No budget filters on Amazon Bedrock or covers all services.",
+    "remediation": "Create a COST budget for all services, or one filtered on Amazon Bedrock.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.marketplace-budget",
+    "category": "bedrock",
+    "title": "Budget covering Marketplace (Bedrock Edition) models",
+    "severity": "MEDIUM",
+    "status": "FAIL",
+    "detail": "No budget covers AWS Marketplace.",
+    "remediation": "Create a budget filtered on AWS Marketplace.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.budget-alerting",
+    "category": "bedrock",
+    "title": "Budget alerting on Bedrock budgets",
+    "severity": "MEDIUM",
+    "status": "INDETERMINATE",
+    "detail": "No Bedrock budget to check the alerts of.",
+    "cause": "prerequisite"
+   },
+   {
+    "id": "bedrock.cost-explorer-enabled",
+    "category": "bedrock",
+    "title": "Cost Explorer enabled",
+    "severity": "LOW",
+    "status": "PASS",
+    "detail": "Cost Explorer returns data.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.anomaly-monitor",
+    "category": "bedrock",
+    "title": "Cost anomaly monitor covering Bedrock",
+    "severity": "MEDIUM",
+    "status": "PASS",
+    "detail": "An AWS services anomaly monitor exists.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.bedrock-invocation-alarm",
+    "category": "bedrock",
+    "title": "CloudWatch alarm on Bedrock invocation volume",
+    "severity": "LOW",
+    "status": "FAIL",
+    "detail": "No CloudWatch alarm on AWS/Bedrock Invocations in us-west-2.",
+    "remediation": "Create an alarm on AWS/Bedrock Invocations.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.guardduty-ai-protection",
+    "category": "bedrock",
+    "title": "GuardDuty AI protection",
+    "severity": "MEDIUM",
+    "status": "INDETERMINATE",
+    "detail": "Could not check (AccessDeniedException: not authorized to perform guardduty:ListDetectors). Needs guardduty:ListDetectors.",
+    "remediation": "Grant guardduty:ListDetectors (read-only) and re-run prism-cli aws check.",
+    "cause": "access-denied"
+   },
+   {
+    "id": "bedrock.provisioned-throughput",
+    "category": "bedrock",
+    "title": "Provisioned Throughput commitments",
+    "severity": "INFO",
+    "status": "PASS",
+    "detail": "No Provisioned Throughput commitments.",
+    "cause": null
+   },
+   {
+    "id": "bedrock.model-invocation-logging",
+    "category": "bedrock",
+    "title": "Bedrock model invocation logging",
+    "severity": "MEDIUM",
+    "status": "FAIL",
+    "detail": "Model invocation logging is off in us-west-2.",
+    "remediation": "Turn on model invocation logging to S3 or CloudWatch Logs.",
+    "cause": null
+   },
+   {
+    "id": "prism-setup.metrics-pipeline",
+    "category": "prism-setup",
+    "title": "PRISM metrics pipeline stack (PrismD1MetricsPipeline)",
+    "severity": "MEDIUM",
+    "status": "PASS",
+    "detail": "PrismD1MetricsPipeline is UPDATE_COMPLETE in us-west-2.",
+    "cause": null
+   },
+   {
+    "id": "prism-setup.security-agent-stack",
+    "category": "prism-setup",
+    "title": "Security Agent stack (PrismD1SecurityAgent or pipeline-hosted)",
+    "severity": "MEDIUM",
+    "status": "PASS",
+    "detail": "PrismD1SecurityAgent UPDATE_COMPLETE, with the Security Agent resources.",
+    "cause": null
+   },
+   {
+    "id": "prism-setup.security-agent-ssm",
+    "category": "prism-setup",
+    "title": "Security Agent SSM parameters (/prism/continuum/*)",
+    "severity": "MEDIUM",
+    "status": "PASS",
+    "detail": "agent-space-id, scan-bucket and service-role-arn are set.",
+    "cause": null
+   },
+   {
+    "id": "prism-setup.scan-bucket-listed",
+    "category": "prism-setup",
+    "title": "Scan bucket listed on the Security Agent space",
+    "severity": "LOW",
+    "status": "PASS",
+    "detail": "The scan bucket is in awsResources.s3Buckets.",
+    "cause": null
+   },
+   {
+    "id": "prism-setup.ci-oidc-role",
+    "category": "prism-setup",
+    "title": "GitHub/GitLab OIDC provider and CI role",
+    "severity": "MEDIUM",
+    "status": "FAIL",
+    "detail": "No IAM OIDC provider for token.actions.githubusercontent.com.",
+    "remediation": "Run prism-cli bootstrapper setup-github-oidc.",
+    "cause": null
+   },
+   {
+    "id": "prism-setup.codeburn-sync",
+    "category": "prism-setup",
+    "title": "codeburn sync endpoint configured on this machine",
+    "severity": "LOW",
+    "status": "PASS",
+    "detail": "codeburn syncs to the team collector.",
+    "cause": null
+   },
+   {
+    "id": "baseline.cloudtrail-multiregion",
+    "category": "baseline",
+    "title": "CloudTrail: a multi-region trail that is logging",
+    "severity": "HIGH",
+    "status": "PASS",
+    "detail": "Trail org-trail is multi-region and logging.",
+    "cause": null
+   },
+   {
+    "id": "baseline.guardduty",
+    "category": "baseline",
+    "title": "GuardDuty detector enabled in us-west-2",
+    "severity": "HIGH",
+    "status": "FAIL",
+    "detail": "No GuardDuty detector in us-west-2.",
+    "remediation": "Enable GuardDuty in this region (aws guardduty create-detector --enable).",
+    "cause": null
+   },
+   {
+    "id": "baseline.securityhub",
+    "category": "baseline",
+    "title": "Security Hub enabled in us-west-2",
+    "severity": "MEDIUM",
+    "status": "FAIL",
+    "detail": "Security Hub is not enabled in us-west-2.",
+    "remediation": "Enable Security Hub with the AWS Foundational Security Best Practices standard.",
+    "cause": null
+   },
+   {
+    "id": "baseline.access-analyzer",
+    "category": "baseline",
+    "title": "IAM Access Analyzer in us-west-2",
+    "severity": "MEDIUM",
+    "status": "PASS",
+    "detail": "An ACCOUNT analyzer exists.",
+    "cause": null
+   },
+   {
+    "id": "baseline.budget",
+    "category": "baseline",
+    "title": "At least one AWS Budget",
+    "severity": "MEDIUM",
+    "status": "FAIL",
+    "detail": "No AWS Budgets in this account.",
+    "remediation": "Create a monthly cost budget with an email alert.",
+    "cause": null
+   },
+   {
+    "id": "baseline.s3-account-bpa",
+    "category": "baseline",
+    "title": "S3 Block Public Access at the account level",
+    "severity": "HIGH",
+    "status": "PASS",
+    "detail": "All four account-level Block Public Access settings are on.",
+    "cause": null
+   },
+   {
+    "id": "baseline.ebs-default-encryption",
+    "category": "baseline",
+    "title": "EBS encryption by default in us-west-2",
+    "severity": "MEDIUM",
+    "status": "PASS",
+    "detail": "EBS encryption by default is on.",
+    "cause": null
+   },
+   {
+    "id": "startup-advisor.not-integrated",
+    "category": "startup-advisor",
+    "title": "Startup Advisor account checks",
+    "severity": "INFO",
+    "status": "INDETERMINATE",
+    "detail": "Not integrated yet: how PRISM consumes Startup Advisor, and under what license, is still open.",
+    "cause": "not-integrated"
+   }
+  ]
+ }
+}

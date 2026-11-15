@@ -49,6 +49,8 @@ export const ENV_CREDENTIAL_VARS = ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_WEB
 
 export const PROFILE_RE = /^[A-Za-z0-9_.+=,@:-]{1,128}$/;
 export const REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/;
+/** An account id as the dashboard shows it: its last 4 digits only (••••3333). */
+export const last4 = (account: string) => (account.length > 4 ? '••••' + account.slice(-4) : account);
 const ACCOUNT_RE = /^\d{12}$/;
 
 export const userConnectionPath = (home: string): string => join(home, '.prism', 'aws.json');

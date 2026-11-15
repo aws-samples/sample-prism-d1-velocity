@@ -11,7 +11,7 @@
  */
 import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { findOnPath } from '../utils/tool-check.js';
@@ -87,15 +87,39 @@ export type CodeburnExport = (args: string[]) => Promise<any>;
 
 export function realCodeburnExport(binary: string): CodeburnExport {
   return async (args) => {
-    const dir = mkdtempSync(join(tmpdir(), 'prism-dash-cb-'));
+    let dir: string | null = null;
     try {
+      dir = mkdtempSync(join(tmpdir(), 'prism-dash-cb-'));
       const out = join(dir, 'export.json');
       await execFileP(binary, ['export', '-f', 'json', '-o', out, ...args], { timeout: EXPORT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
       return JSON.parse(readFileSync(out, 'utf8'));
+    } catch (e) {
+      throw new Error(exportFailure(e, dir));
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      if (dir) rmSync(dir, { recursive: true, force: true });
     }
   };
+}
+
+/**
+ * Why an export failed, as one short line for the page: codeburn's own stderr
+ * line, never execFile's "Command failed: <argv>" (the binary's absolute path
+ * and the temp file). Paths under the temp dir and the home directory are
+ * replaced, in case codeburn names one.
+ */
+export function exportFailure(e: any, dir: string | null, home: string = homedir()): string {
+  if (e?.killed || e?.signal) return `codeburn did not answer within ${EXPORT_TIMEOUT_MS / 1000} s`;
+  let line: string;
+  if (e?.code === 'ENOENT' && e?.syscall?.startsWith('spawn')) line = 'codeburn could not be started';
+  else if (typeof e?.code === 'number' || e?.stderr !== undefined) {
+    line = String(e?.stderr || '').split('\n').map((l) => l.trim()).find(Boolean) || `codeburn exited with code ${e?.code ?? 'unknown'}`;
+  } else if (e?.code === 'ENOENT' && e?.syscall === 'open') line = 'codeburn wrote no export file';
+  else if (e instanceof SyntaxError) line = 'codeburn wrote an export that is not valid JSON';
+  else if (typeof e?.code === 'string') line = `could not use a temp file for the export (${e.code})`;
+  else line = String(e?.message || e).split('\n')[0];
+  if (dir) line = line.split(dir).join('<export file>');
+  if (home && home !== '/') line = line.split(home).join('~');
+  return line.slice(0, MAX_REASON);
 }
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
