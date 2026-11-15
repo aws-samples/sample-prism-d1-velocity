@@ -2,7 +2,7 @@
  * The Security Agent view (#security, #security/<repo-id>): a top-level page
  * next to Dashboard and Settings. A JS string concatenated into page.ts's
  * single document after setup-page.ts and settings-page.ts, whose helpers
- * (api, copyButton, copyOnly, actionDef, startAction, DIALOG, CHECK) it uses.
+ * (api, copyButton, copyOnly, actionDef, startAction, DIALOG) it uses.
  *
  * Two columns on a wide window: the picked repo (picker, results from its
  * .prism/results, Run buttons) on the left; the account and region, agent
@@ -49,11 +49,11 @@ function saResults(repo) {
   return { review: (s.repos || []).find(same) || null, threat: (s.threat_models || []).find(same) || null, pentest: (s.pentests || []).find(same) || null };
 }
 const highOrCritical = (c) => ((c || {}).CRITICAL || 0) + ((c || {}).HIGH || 0) > 0;
-const credsFailed = (l) => (l && !l.ok && l.credentials) || !!(CHECK && CHECK.ok && CHECK.json && CHECK.json.ok === false);
+const credsFailed = (l) => !!(l && !l.ok && l.credentials);
 
 /**
  * Things to act on for the picked repo; the nav badge counts them. Failed
- * credentials (the lookup, or Check now); no space for prism-cli (only after a
+ * credentials (the lookup); no space for prism-cli (only after a
  * lookup); a HIGH or CRITICAL latest result; a pending code review or threat
  * model job. A running pentest is not counted: it runs for hours.
  */
@@ -201,7 +201,7 @@ function saSpacesCard(repo) {
   const kids = [el('div', { class: 'srow-ctl' }, btn, msg),
     el('p', { class: 'fix' }, 'On a click only, never on page load. Read-only: sts get-caller-identity, securityagent list-agent-spaces and batch-get-agent-spaces, ssm get-parameter; 20 s per call; kept 5 minutes.')];
   if (l && !l.ok) kids.push(el('div', { class: 'callout warn', role: 'note' }, pill('error', l.credentials ? 'credentials' : 'failed'), ' ', txt(l.error),
-    l.credentials ? el('div', { class: 'fix' }, 'Sign in again (aws sso login, or your credential_process), then look up again. ', el('a', { href: '#settings/aws' }, 'Check now in Settings › AWS →')) : null));
+    l.credentials ? el('div', { class: 'fix' }, 'Sign in again (aws sso login, or your credential_process), then look up again. ', el('a', { href: '#settings/aws' }, 'Re-verify in Settings › AWS →')) : null));
   if (l && l.ok) {
     // The console link comes from the server (fixed text plus a checked region), like the release-notes link; https only.
     const url = /^https:\\/\\//.test(txt(l.consoleUrl)) ? l.consoleUrl : null;

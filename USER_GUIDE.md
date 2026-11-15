@@ -1172,7 +1172,7 @@ the review runs locally at all, see [Why local code review](docs/WHY-LOCAL-CODE-
 
 `prism-cli dashboard` starts a web page for one developer that shows codewatch results across your
 repos, codeburn spend, Security Agent and AWS check results, a Security Agent page that runs the
-Security Agent commands in a repo you pick, and a Settings view with the setup checklist. Run it from any directory:
+Security Agent commands in a repo you pick, AccountGuard for the connected AWS account, and a Settings view with the setup checklist. Run it from any directory:
 
 ```bash
 prism-cli dashboard
@@ -1185,10 +1185,11 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   share the URL. Ctrl-C stops the server.
 - **Read-only dashboard.** The dashboard view only reads data; every fix it suggests is a command
   for you to run. The **Settings** view (below) can run a fixed set of local setup commands for you,
-  and the **Security Agent** page (below) runs the Security Agent commands in a repo you pick.
-- **AWS.** Loading the page makes no AWS calls. **Check now** on the Settings AWS tab, `aws check`,
-  `team info`, the Security Agent page's agent-space lookup and its fetch and status buttons make
-  read-only calls. Only two buttons write to AWS, both on the Security Agent page and both after a
+  the **Security Agent** page (below) runs the Security Agent commands in a repo you pick, and
+  **AccountGuard** (below) checks the connected AWS account.
+- **AWS.** Loading the page makes no AWS calls. **Connect** and **Re-verify** on the Settings AWS tab
+  (`aws connect`), AccountGuard's `aws check`, `team info`, the Security Agent page's agent-space lookup
+  and its fetch and status buttons make read-only calls. Only two buttons write to AWS, both on the Security Agent page and both after a
   dialog that says what they upload and where: **Start code review** (`security code-review
   --no-wait`, branch diff or `--full`) and **Start threat model** (`security threat-model --no-wait`).
   `enable security` and every `security pentest` command stay Copy only.
@@ -1225,8 +1226,9 @@ and links straight to it as `#settings/<tab>`:
   (`enable agent-hooks --client <c> [--global] [--uninstall]`). It shows the Claude Code plugin's
   version, with a warning below 0.3.0 (older plugins predate the harness hooks) and the commands that
   update it, and the Kiro Crew app with a button for `prism-cli enable kirocrew`.
-- **Usage sync:** where codeburn usage goes and the sync schedule.
-- **AWS:** see below. The saved `aws connect` account is shown as its last 4 digits.
+- **Usage sync:** where codeburn usage goes and the sync schedule, and **Run team info** (`team info`,
+  read-only), which reads the team stack's collector URL and user pool.
+- **AWS:** the AWS account the AWS commands default to (`prism-cli aws connect`); see below.
 - **Updates:** the installed and latest prism-cli, when it was published and when npm was last
   asked; **Update prism-cli** runs `npm i -g @prism-d1/cli@latest` (after the confirm dialog);
   **Check now** asks the npm registry again; a link to the release notes; a reminder to update the
@@ -1248,23 +1250,81 @@ output and no URLs).
   `enable codeburn --local`, `--url <collector URL>` (https only), `--schedule systemd` (Linux with
   `systemctl --user`, team mode), `--remove` (asks twice) and `--status`, `enable agent-hooks`,
   `enable kirocrew --yes`, `npm i -g @prism-d1/cli@latest` (not on Windows), and **Re-check status**.
-- **Run (read-only in AWS):** `aws check`, `team info` and **Check now**.
-- **Copy only:** the gitleaks install hint, `team add-developer` and `aws connect`, because they
+- **Run (read-only in AWS):** `aws connect --profile <p> --region <r>` (**Connect** / **Re-verify**),
+  `aws connect --status`, `team info`, and AccountGuard's `aws check`.
+- **Run (local only, asks twice):** `aws connect --clear` (**Disconnect**).
+- **Copy only:** the gitleaks install hint and `team add-developer`, because they
   write to AWS, install software or need a terminal. The Security Agent commands moved to the
   [Security Agent page](#security-agent-page); the AWS tab starts with a link to it, and each repo on
   the Repos tab links to the page for that repo.
 
-The **AWS** section shows which credentials prism-cli would use and why, in the order every AWS
-command uses: env (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`), `.prism/aws.local.json`, `~/.prism/aws.json`,
-then the default profile. It shows the profile and the credential type (credential_process, SSO,
-static keys in `~/.aws/credentials`, or env vars), read from the setting names in `~/.aws/config` and
-`~/.aws/credentials`; secret values are never read or shown. It warns when the default profile has
-static keys in `~/.aws/credentials` (they win over credential_process and often expire) and when no
-credentials are found. It also shows the saved `aws connect` account, alias, region and when it was
-verified. **Check now** makes one `sts get-caller-identity` call, as `aws connect` does, and shows the
-account, caller ARN and region, whether they match the saved account, and fixes when the credentials
-are expired or invalid. On a match it updates the saved verified time, and says so. Account ids and
-ARNs appear only on the page, never in `prism-cli dashboard --json`.
+### Settings › AWS
+
+![The Settings AWS tab with demo data: the connected account (profile prism-demo, us-west-2, account ••••3333, verified 25 minutes ago) with Show status and Disconnect, the profile and region pickers with Re-verify, and what prism-cli uses with the resolution order](assets/images/prism-cli/dashboard-settings-aws-dark.png)
+
+The **AWS** tab is only about which AWS account the AWS commands use, the one
+[`prism-cli aws connect`](#aws-account-advice-aws-connect-check-recommend) saves:
+
+- **AWS account:** the saved profile, region, account (its last 4 digits) and alias, when it was
+  verified, whether it is in use (an AWS env var wins over it), and which file holds it
+  (`~/.prism/aws.json`, or the dashboard repo's own `.prism/aws.local.json`, which wins there).
+  **Show status** runs `aws connect --status`. **Disconnect** runs `aws connect --clear`, which
+  removes the saved file and changes nothing in AWS.
+- **Connect or re-verify:** a profile picker and a region picker, and **Connect** (or **Re-verify**
+  for the saved pair), which runs `prism-cli aws connect --profile <p> --region <r>` after the confirm
+  dialog. It checks the profile with `sts get-caller-identity` and reads the account alias, Organizations
+  and the attached IAM policies (all read-only), then saves the profile name, region, account and alias.
+  It stores no credentials. The profiles are the section names in `~/.aws/config` and
+  `~/.aws/credentials` (or `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`); only the names and a
+  configured region are read, never a key or token. The regions are a fixed list of commercial regions
+  plus any region a profile has configured. The server accepts only a profile and region from those
+  lists, read again for each request. A per-repo connection (`aws connect --repo`) is a terminal command.
+- **What prism-cli uses:** which credentials prism-cli would use and why, in the order every AWS
+  command uses: env (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`), `.prism/aws.local.json`, `~/.prism/aws.json`,
+  then the default profile. It shows the profile and the credential type (credential_process, SSO,
+  static keys in `~/.aws/credentials`, or env vars), read from the setting names in the two files;
+  secret values are never read or shown. It warns when the default profile has static keys in
+  `~/.aws/credentials` (they win over credential_process and often expire) and when no credentials
+  are found.
+- A line at the bottom points to AccountGuard (account checks), the Security Agent page and Usage sync
+  (team stack info), which used to be on this tab.
+
+### AccountGuard
+
+![AccountGuard with demo data: the connected account ••••3333 in us-west-2 with Run aws check again and Run aws recommend, tiles for 10 failing (3 high), 16 passing, 4 could not check and +2 / -2 since the baseline, the checks by area on the left and the ranked fixes on the right](assets/images/prism-cli/dashboard-accountguard-dark.png)
+
+**AccountGuard** in the header (`#accountguard`) shows the read-only account checks of the account
+connected on Settings › AWS. Loading it makes no AWS call: it reads the cached `prism-cli aws check`
+results (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend)) and ranks them with
+`aws recommend`'s own code.
+
+- **Run aws check** runs `prism-cli aws check --profile <p> --region <r>` for the connected account,
+  from your home directory, so the result lands in `~/.prism/results/`. Every call is a describe, get
+  or list. **Run aws recommend** prints the same ranked list to the Action output drawer (no AWS call).
+- **Summary:** when it last ran and against which account (last 4 digits) and region; failing checks
+  by severity, passing checks, the checks that could not run ("not a pass"), and the change since the
+  baseline.
+- **Checks by area** (Bedrock protection, PRISM setup, Account baseline, Startup Advisor): failing
+  checks first, each with what was found, its fix and its ranked fix number, marked **new since
+  baseline** when it was not failing then. A check that could not run says what is missing: **access
+  denied** (the IAM action to grant), **waits on a fix** (the ranked fix to do first), **no credential
+  report**, **not integrated**, or **no answer** (re-run). It says "grant" only when access was
+  actually denied. Passing checks are folded.
+- **Ranked fixes:** `aws recommend`'s list, severity first and quick wins first, with why, the checks
+  each fix covers, the steps, a command to copy when there is one, and a docs link. AccountGuard never
+  writes to the account; each fix is a change you make yourself.
+- **Baseline:** the oldest full run for the account and region, until you mark another (**Use the
+  latest run as the baseline**, or **Use as baseline** on an earlier run). The mark is saved in
+  `~/.prism/accountguard.json` on this machine only. **Since the baseline** lists the new failures,
+  the fixed checks, checks that failed then and could not run now (not counted as fixed), and how many
+  are still failing. A `--section` run is never a baseline or the latest run.
+- **Badge:** the AccountGuard tab's count is the failing HIGH and CRITICAL checks in the latest run,
+  from the cached result.
+- **Not connected:** one state that points to Settings › AWS. **Never run:** what `aws check` checks
+  and the Run button.
+
+Account ids appear as their last 4 digits and runs as opaque ids; the result files themselves stay
+in `.prism/results/`. The static snapshot shows a note instead: AccountGuard needs the live dashboard.
 
 **Checklist.** The Settings view's This machine, Usage sync, AWS and Repos tabs list, for this machine: codeburn installed, the scheduled sync from `enable codeburn`
 and its last run (by sync mode: local shows "local only" as info with how to join a team; team without
@@ -1398,11 +1458,11 @@ the system overview and the top 5 threats with their STRIDE categories. A job th
 not fetched yet shows `threat model running` and the `prism-cli security threats` command. After
 2 hours it is also marked `stale?`.
 
-**AWS account.** The latest `prism-cli aws check` result per AWS account, from every repo's
-`.prism/results/` and `~/.prism/results/`: the region, when it ran, the profile and where it came
-from, pass / fail / not-checked counts, fails by severity and the top 5 failures, with a pointer to
-`prism-cli aws recommend`. With none cached, it points to `prism-cli aws check`. Local files only;
-no AWS calls (see [AWS Account Advice](#aws-account-advice-aws-connect-check-recommend)).
+**AWS account.** One line per AWS account with a cached `prism-cli aws check` result (from every
+repo's `.prism/results/` and `~/.prism/results/`): the account's last 4 digits, region, when it ran,
+fails by severity, passing and could-not-check counts, and **Open AccountGuard →**, where the checks,
+fixes and baseline are. With none cached, it points to `prism-cli aws check` and AccountGuard. Local
+files only; no AWS calls.
 
 **Get more from PRISM.** A section with nothing recorded yet (codewatch, spend, Security Agent
 results, AWS account checks) is not shown; instead this strip lists it with the command that
@@ -1446,7 +1506,7 @@ exits: no server, no port and no token. It has the same Dashboard and Settings v
 with the data embedded in the file, and works with or without `--root`. The page shows when it was
 generated, doesn't refresh, and makes no network request: its Content Security Policy is
 `default-src 'none'`, with the inline script and style allowed by hash. On the Settings view the Run
-buttons become Copy buttons that show the command, AWS **Check now** is turned off, and report links
+buttons become Copy buttons that show the command, **Connect** is turned off, and report links
 are plain text (use `prism-cli codewatch report`). The file is written with mode 0600 because it
 shows local paths and your saved AWS account, like the live page. The path is printed on stdout.
 

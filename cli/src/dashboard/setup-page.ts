@@ -35,7 +35,8 @@ applyTheme(storedTheme());
 
 export const SETUP_STYLE = `
 [hidden] { display:none !important; }
-nav.tabs { display:flex; gap:4px; margin-left:8px; }
+nav.tabs { display:flex; flex-wrap:wrap; gap:4px; margin-left:8px; }
+@media (max-width: 640px) { nav.tabs { margin-left:0; } nav.tabs a { padding:5px 8px; } }
 nav.tabs a { color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:8px; font-weight:550; display:inline-flex; align-items:center; gap:6px; }
 nav.tabs a[aria-current="page"] { color:var(--accent); background:var(--accent-soft); }
 a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible, tr.click:focus-within { outline:2px solid var(--accent); outline-offset:1px; }
@@ -69,7 +70,7 @@ label.extra { display:flex; gap:6px; align-items:flex-start; margin-top:10px; co
 
 export const SETUP_SCRIPT = `
 const CSRF = (document.querySelector('meta[name="prism-csrf"]') || {}).content || '';
-let SETUP = null, POLL = null, DIALOG = null, CHECK = null, URL_DRAFT = '';
+let SETUP = null, POLL = null, DIALOG = null, URL_DRAFT = '';
 const OUT = { status: el('div', { class: 'srow-head' }), pre: el('pre', { class: 'out', 'aria-live': 'polite' }) };
 /** Action output: a drawer fixed to the bottom of the window, outside the redrawn Settings view, so a refresh keeps it. */
 const DRAWER_CLOSE = el('button', { type: 'button' }, 'Close');
@@ -156,22 +157,24 @@ function runButton(id, o) {
 
 function confirmRun(a, o) {
   if (!DIALOG) { DIALOG = el('dialog', { class: 'confirm', 'aria-labelledby': 'confirm-title' }); document.body.append(DIALOG); }
-  const cmd = a.command + (o.url ? ' ' + o.url : '');
+  // o.command: the server's exact line (it appends --profile/--region itself); o.profile/o.region: aws-connect's picked names.
+  const cmd = o.command || (a.command + (o.profile ? ' --profile ' + o.profile + ' --region ' + o.region : '') + (o.url ? ' ' + o.url : ''));
   const run = el('button', { type: 'button', class: 'run' + (a.confirm ? ' danger' : '') }, 'Run');
   const cancel = el('button', { type: 'button' }, 'Cancel');
   const kids = [el('h2', { id: 'confirm-title' }, a.label), el('p', {}, 'This will run:'), el('pre', { class: 'cmd' }, cmd),
-    el('p', { class: 'fix' }, 'in ' + txt(o.where || (SETUP && SETUP.cwd) || '')),
+    o.command ? null : el('p', { class: 'fix' }, 'in ' + txt(o.where || (a.inHome ? '~' : (SETUP && SETUP.cwd)) || '')),
     el('p', { class: 'note' }, a.readOnlyAws ? 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.'
-      : a.installs ? 'Installs software from the npm registry on this machine. No AWS calls.' : 'Changes setup on this machine only. No AWS calls.'),
+      : a.installs ? 'Installs software from the npm registry on this machine. No AWS calls.' : a.note ? null : 'Changes setup on this machine only. No AWS calls.'),
+    a.note ? el('p', { class: 'note' }, txt(a.note)) : null,
     el('p', { class: 'note' }, 'It runs without a terminal, so it cannot ask questions; it is stopped after ' + Math.max(1, Math.round(a.timeoutSec / 60)) + ' min.')];
   if (a.confirm) {
     const cb = el('input', { type: 'checkbox' });
     run.disabled = true;
     cb.addEventListener('change', () => { run.disabled = !cb.checked; });
-    kids.push(el('label', { class: 'extra' }, cb, 'Yes, remove the scheduled codeburn sync push from this machine'));
+    kids.push(el('label', { class: 'extra' }, cb, txt(a.confirmLabel || 'Yes, run it')));
   }
   kids.push(el('div', { class: 'actions' }, cancel, run));
-  DIALOG.replaceChildren(...kids);
+  DIALOG.replaceChildren(...kids.filter(Boolean));
   cancel.addEventListener('click', () => DIALOG.close());
   run.addEventListener('click', () => { DIALOG.close(); startAction(a, o); });
   DIALOG.showModal();
@@ -182,6 +185,7 @@ async function startAction(a, o) {
   const body = { action: a.id };
   if (a.repo) body.repo = o.repo;
   if (a.url) body.url = o.url;
+  if (a.choose) { body.profile = o.profile; body.region = o.region; }
   if (a.confirm) body.confirm = true;
   ACTION_PANEL.hidden = false;
   OUT.status.replaceChildren(pill('warn', 'starting'), el('code', {}, a.command));
@@ -259,6 +263,7 @@ function syncSection(data) {
   s.append(srow(null, 'Remove the sync schedule', 'Removes the scheduled sync push (cron entry or systemd timer). codeburn and its sync config stay.', runButton('codeburn-remove', { label: 'Remove schedule' })));
   s.append(srow(null, 'Status', 'codeburn, sync and schedule status.', runButton('codeburn-status', { label: 'Show status' })));
   s.append(srow(null, 'Platform team: add a developer', 'Creates a telemetry account in AWS (Cognito), so it is copy only.', copyOnly((SETUP.copy || {}).addDeveloper, 'AWS write')));
+  s.append(srow(null, 'Team stack info', 'Reads the PRISM team stack outputs (collector URL, user pool). Read-only in AWS.', runButton('team-info', { label: 'Run team info' })));
   return s;
 }
 
@@ -268,58 +273,51 @@ function kv(pairs) { return el('dl', { class: 'kv' }, pairs.filter(Boolean).flat
 /** An AWS account id as its last 4 digits; the full id is never put on the Settings page. */
 const maskAccount = (a) => { const v = txt(a); return v.length > 4 ? '••••' + v.slice(-4) : v; };
 
-function checkResult(r) {
-  if (!r) return null;
-  if (!r.ok) return el('div', {}, pill('error', 'refused'), ' ', txt(r.json.error));
-  const j = r.json;
-  if (j.ok) {
-    const m = j.matches === true ? pill('ok', 'matches the saved account') : j.matches === false ? pill('error', 'does not match saved account ' + maskAccount(j.savedAccount)) : pill('info', 'no saved account');
-    return el('div', {}, pill('ok', 'credentials work'), kv([['Account', maskAccount(j.account)], ['Caller', txt(j.arn).replace(/:\\d{12}:/, (m) => ':' + maskAccount(m.slice(1, -1)) + ':')], ['Region', txt(j.region || 'not set')], ['Saved', m]]), el('p', { class: 'note' }, txt(j.note)));
-  }
-  return el('div', {}, pill('error', j.expired ? 'expired or invalid' : 'check failed'), ' ', el('span', {}, txt(j.error)),
-    el('div', { class: 'help' }, 'Fixes:', el('ul', { class: 'help-steps' }, (j.fixes || []).map((f) => el('li', {}, /^(aws|prism-cli) /.test(f) ? copyButton(f) : txt(f))))));
-}
-
+/** Settings › AWS: the account the AWS commands default to (prism-cli aws connect), and what prism-cli would use. */
 function awsSection(a) {
-  const s = el('section', { class: 'card wide' }, el('h2', {}, 'AWS'));
-  s.append(el('p', { class: 'callout', role: 'note' }, 'Security Agent moved to its own page: ', el('a', { href: '#security', class: 'rlink' }, 'Security Agent →')));
-  s.append(el('p', { class: 'note' }, 'From the environment and local config files only: no AWS call until you press Check now. Only setting names are read from ~/.aws; secret values are never read or shown.'));
-  s.append(el('div', { class: 'srow' }, el('div', {}, 'prism-cli would use ', el('b', {}, a.profile ? 'profile ' + txt(a.profile) : txt(a.source)), ' · ', el('span', { class: 'badge' }, txt(a.credentialLabel))),
+  const s = el('section', { class: 'card wide' }, el('h2', {}, 'AWS account', el('span', { class: 'sub' }, a.saved ? 'connected' : 'not connected')));
+  const v = a.saved;
+  if (v) {
+    s.append(kv([['Profile', el('code', {}, txt(v.profile))], ['Region', txt(v.region)],
+      ['Account', el('span', { title: 'last 4 digits' }, maskAccount(v.account), v.alias ? el('span', { class: 'tag' }, txt(v.alias)) : null)],
+      ['Verified', el('span', {}, v.verifiedAt ? el('span', { title: when(v.verifiedAt) }, ago(v.verifiedAt)) : 'unknown', ' ', v.inUse ? pill('ok', 'in use') : pill('warn', 'not in use'))],
+      ['Saved in', txt(v.path) + (v.scope === 'repo' ? ' (this repo only)' : ' (every repo; a repo\\'s own .prism/aws.local.json wins there)')]]));
+    s.append(el('div', { class: 'srow-ctl' }, runButton('aws-connect-status', { label: 'Show status' }), runButton('aws-disconnect', { label: 'Disconnect' })));
+  } else s.append(el('p', { class: 'empty' }, 'No account connected. AWS commands use the default credential chain until you connect one.'));
+  const ch = a.choices || { profiles: [], regions: [] };
+  const conn = el('section', { class: 'card wide' }, el('h2', {}, v ? 'Connect or re-verify' : 'Connect an account', el('span', { class: 'sub' }, 'prism-cli aws connect')));
+  if (!ch.profiles.length) {
+    conn.append(el('p', { class: 'empty' }, 'No AWS profiles in ' + txt((a.files || {}).config) + ' or ' + txt((a.files || {}).credentials) + '. Create one in a terminal, then reload: '), copyButton('aws configure sso'));
+  } else {
+    const prof = el('select', { class: 'pick', id: 'aws-profile', 'aria-label': 'Profile' });
+    for (const p of ch.profiles) { const o = el('option', { value: p.name }, p.name + (p.region ? ' (' + p.region + ')' : '') + (p.from === 'credentials' ? ' · keys file' : '')); if (v && p.name === v.profile) o.setAttribute('selected', ''); prof.append(o); }
+    const reg = el('select', { class: 'pick', id: 'aws-region', 'aria-label': 'Region' });
+    const start = v ? v.region : (ch.profiles[0].region || 'us-east-1');
+    for (const r of ch.regions) { const o = el('option', { value: r }, r); if (r === start) o.setAttribute('selected', ''); reg.append(o); }
+    prof.value = v && ch.profiles.some((p) => p.name === v.profile) ? v.profile : ch.profiles[0].name;
+    reg.value = ch.regions.includes(start) ? start : ch.regions[0];
+    const act = actionDef('aws-connect');
+    const go = el('button', { type: 'button', class: 'run', disabled: SNAPSHOT || !act || !act.available ? '' : null }, '');
+    const label = () => { go.textContent = v && prof.value === v.profile && reg.value === v.region ? 'Re-verify' : v ? 'Connect instead' : 'Connect'; };
+    prof.addEventListener('change', () => { const p = ch.profiles.find((x) => x.name === prof.value); if (p && p.region && ch.regions.includes(p.region)) reg.value = p.region; label(); });
+    reg.addEventListener('change', label);
+    label();
+    go.addEventListener('click', () => { if (act) confirmRun(act, { profile: prof.value, region: reg.value }); });
+    conn.append(el('div', { class: 'srow-ctl' }, el('label', { for: 'aws-profile' }, 'Profile'), prof, el('label', { for: 'aws-region' }, 'Region'), reg, go),
+      el('p', { class: 'fix' }, 'Profiles are the section names in ' + txt((a.files || {}).config) + ' and ' + txt((a.files || {}).credentials) + '; only the names and a configured region are read, never a key or token. Connect checks the profile with STS (read-only) and saves the profile name, region, account and alias; it stores no credentials.'));
+    if (SNAPSHOT) conn.append(el('p', { class: 'fix' }, 'Disabled in a static snapshot. Run prism-cli aws connect in a terminal instead.'));
+  }
+  const uses = el('section', { class: 'card wide' }, el('h2', {}, 'What prism-cli uses', el('span', { class: 'sub' }, 'from the environment and local files; no AWS call')));
+  uses.append(el('div', { class: 'srow' }, el('div', {}, 'prism-cli would use ', el('b', {}, a.profile ? 'profile ' + txt(a.profile) : txt(a.source)), ' · ', el('span', { class: 'badge' }, txt(a.credentialLabel))),
     el('div', { class: 'fix' }, 'chosen by ' + txt(a.source) + ' · region ' + (a.region ? txt(a.region.value) + ' (' + txt(a.region.source) + ')' : 'not set'))));
-  for (const w of a.warnings || []) s.append(el('div', { class: 'callout warn', role: 'note' }, txt(w)));
-  s.append(el('h3', {}, 'Resolution order'), el('ol', { class: 'steps' }, (a.steps || []).map((st) => {
+  for (const w of a.warnings || []) uses.append(el('div', { class: 'callout warn', role: 'note' }, txt(w)));
+  uses.append(el('h3', {}, 'Resolution order'), el('ol', { class: 'steps' }, (a.steps || []).map((st) => {
     const p = STEP_PILL[st.state] || ['skipped', st.state];
     return el('li', {}, el('b', {}, txt(st.label)), ' ', pill(p[0], p[1]), ' ', el('span', { class: 'fix' }, txt(st.detail)));
   })));
-  s.append(el('h3', {}, 'Saved aws connect'));
-  if (a.saved) {
-    const v = a.saved;
-    s.append(kv([['Account', el('span', { title: 'last 4 digits' }, maskAccount(v.account), v.alias ? el('span', { class: 'tag' }, txt(v.alias)) : null)], ['Profile', txt(v.profile) + (v.inUse ? '' : ' (not in use)')],
-      ['Region', txt(v.region)], ['Verified', v.verifiedAt ? el('span', { title: when(v.verifiedAt) }, ago(v.verifiedAt)) : 'unknown'], ['File', txt(v.path) + ' (' + v.scope + ')'],
-      ['Admin / org', 'not stored by aws connect (it prints them when it runs)']]));
-  } else s.append(el('p', { class: 'empty-line' }, 'None saved. ', copyButton((SETUP.copy || {}).awsConnect)));
-  const btn = el('button', { type: 'button', class: 'run' }, 'Check now');
-  const out = el('div', { 'aria-live': 'polite' }, checkResult(CHECK));
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    out.replaceChildren(el('span', { class: 'fix' }, 'checking...'));
-    try { CHECK = await api('/api/check-now', {}); } catch (e) { CHECK = { ok: false, json: { error: e.message } }; }
-    out.replaceChildren(checkResult(CHECK));
-    btn.disabled = false;
-    if (CHECK.ok && CHECK.json.updated) load();
-  });
-  if (SNAPSHOT) btn.disabled = true;
-  s.append(el('h3', {}, 'Check now'), el('div', { class: 'srow-ctl' }, btn, el('span', { class: 'fix' }, SNAPSHOT
-    ? 'Disabled in a static snapshot, which makes no calls. Run prism-cli dashboard for a live check, or run aws sts get-caller-identity yourself.'
-    : 'One read-only call: aws sts get-caller-identity, as aws connect does it.')), out);
-  s.append(el('h3', {}, 'Read-only AWS commands'),
-    srow(null, 'Account check', 'Every call is a describe, get or list; the result is saved to .prism/results/.', runButton('aws-check', { label: 'Run aws check' })),
-    srow(null, 'Team stack info', 'Reads the PRISM stack outputs (collector URL, user pool).', runButton('team-info', { label: 'Run team info' })));
-  const cp = SETUP.copy || {};
-  s.append(el('h3', {}, 'Copy only (writes to AWS or needs a terminal)'),
-    srow(null, 'Choose and save the AWS profile', 'Asks questions on a terminal.', copyOnly(cp.awsConnect, 'terminal')),
-    srow(null, 'Add a developer telemetry account', 'Creates a Cognito user.', copyOnly(cp.addDeveloper, 'AWS write')));
-  return s;
+  const ptr = el('p', { class: 'callout', role: 'note' }, 'Account checks moved to ', el('a', { href: '#accountguard', class: 'rlink' }, 'AccountGuard →'),
+    ' · Security Agent has ', el('a', { href: '#security', class: 'rlink' }, 'its own page →'), ' · Team stack info is under ', el('a', { href: '#settings/sync', class: 'rlink' }, 'Usage sync'), '.');
+  return [s, conn, uses, ptr];
 }
 
 // A reload while an action runs picks its output back up.

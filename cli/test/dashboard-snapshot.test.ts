@@ -115,14 +115,14 @@ test('embedded data cannot close its element; no dashboard token or CSRF token',
   assert.equal(embedJson({ a: '</script>\u2028' }), '{"a":"\\u003c/script>\\u2028"}');
 });
 
-test('generated time is shown, runs are copy only, Check now and Refresh are off', async () => {
+test('generated time is shown, runs are copy only, Connect and Refresh are off', async () => {
   const { html } = await snapshot();
   assert.match(html, /Snapshot generated <time id="snapshot-at" datetime="2026-11-12T15:00:00.000Z">/);
   assert.doesNotMatch(html, /id="refresh"/);
   // The page script's snapshot branches (it is the same script as the live page).
   const page = scripts(html)[1];
   assert.match(page, /if \(SNAPSHOT\) \{\s*const cd = [^\n]+\n\s*return copyOnly\(/, 'Run buttons become copy-only');
-  assert.match(page, /if \(SNAPSHOT\) btn\.disabled = true;/, 'Check now disabled');
+  assert.match(page, /disabled: SNAPSHOT \|\| !act \|\| !act\.available \? '' : null/, 'Connect disabled');
   assert.match(page, /static snapshot: nothing runs from it/, 'POST refused without a fetch');
   // The live page keeps its nonce and CSRF token.
   assert.match(renderPage('abc', 'tok'), /<script nonce="abc">[\s\S]*name="prism-csrf" content="tok"|name="prism-csrf" content="tok"[\s\S]*<script nonce="abc">/);

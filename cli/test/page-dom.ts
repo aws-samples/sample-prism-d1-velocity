@@ -46,9 +46,9 @@ export class FakeElement extends FakeNode {
 }
 
 export function fakeDom() {
-  const ids = ['main', 'repo', 'security', 'settings', 'meta', 'refresh', 'ver', 'settings-badge', 'security-badge'];
+  const ids = ['main', 'repo', 'security', 'accountguard', 'settings', 'meta', 'refresh', 'ver', 'settings-badge', 'security-badge', 'accountguard-badge'];
   const byId: Record<string, FakeElement> = Object.fromEntries(ids.map((id) => [id, new FakeElement(id === 'meta' ? 'p' : id === 'refresh' ? 'button' : id === 'ver' || id.endsWith('-badge') ? 'span' : 'main')]));
-  byId.repo.hidden = true; byId.settings.hidden = true; byId.security.hidden = true; byId['security-badge'].hidden = true;
+  byId.repo.hidden = true; byId.settings.hidden = true; byId.security.hidden = true; byId['security-badge'].hidden = true; byId.accountguard.hidden = true; byId['accountguard-badge'].hidden = true;
   const document = {
     visibilityState: 'visible',
     createElement: (t: string) => new FakeElement(t),

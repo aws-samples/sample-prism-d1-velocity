@@ -4,6 +4,8 @@ import { cachedPayload, startServer, BIND_HOST } from '../../dashboard/server.js
 import { reportFromRepos } from '../../dashboard/report.js';
 import { ActionRunner, cliEntry, repoId } from '../../dashboard/actions.js';
 import { setupApi } from '../../dashboard/setup-api.js';
+import { profileChoices } from '../../dashboard/aws-identity.js';
+import { connectionArgs } from '../../dashboard/accountguard.js';
 import { awsTargetFor, identityIn, LookupCache, targetArgs, WRITE_KIND, writeNotice } from '../../dashboard/security-agent.js';
 import { repoRootOf } from '../../aws/connection.js';
 import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
@@ -123,6 +125,8 @@ export default {
       const lookups = new LookupCache();
       const saIdentity = { identity: { env: process.env, home: homedir() } };
       const targetIn = (path: string) => awsTargetFor(identityIn(saIdentity, path));
+      // Settings › AWS and AccountGuard: the connection as Settings shows it (the dashboard repo's file wins over ~/.prism/aws.json).
+      const identity = { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) };
       const runner = new ActionRunner({
         execPath: process.execPath, entry: cliEntry(), cwd: process.cwd(), home: homedir(), platform: process.platform,
         repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
@@ -136,16 +140,24 @@ export default {
           if (!kind) return 'not an AWS-writing action';
           return writeNotice(kind, repo.name, lookups.fresh(t)).reason ?? await lookups.verify(t);
         },
+        // aws-connect accepts only names read fresh from the section headers of the two AWS files, and the region list.
+        awsChoices: () => { const c = profileChoices(identity); return { profiles: c.profiles.map((p) => p.name), regions: c.regions }; },
+        connectionArgs: () => connectionArgs(identity.home, identity.repoRoot),
       });
       const api = setupApi({
         runner, cwd: process.cwd(),
         repoPaths: async () => (await repos()).map((r) => r.path),
-        identity: { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) },
+        identity,
         refresh: () => { payload.invalidate(); return payload(); },
         checkUpdate: async () => { const v = await updates.get({ force: true }); payload.invalidate(); return v; },
         securityAgent: {
           ...saIdentity, cache: lookups,
           repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path, current: r.current })),
+          exclusive: (fn) => runner.exclusive(fn),
+        },
+        accountGuard: {
+          home: identity.home, repoRoot: identity.repoRoot,
+          roots: async () => [...(await repos()).map((r) => r.path), identity.home],
           exclusive: (fn) => runner.exclusive(fn),
         },
       });
