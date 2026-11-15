@@ -131,7 +131,7 @@ export async function accountGuardView(d: AccountGuardDeps): Promise<AccountGuar
   const L = runs[0], info = L.result.aws_check!;
   const b = baselineRun(d.home, runs, c.account, c.region)!;
   // Some details and fixes spell out the account id (s3control --account-id ...); the page gets the placeholder.
-  const scrub = (s: string | undefined) => (s === undefined ? s : s.split(c.account).join('<account>'));
+  const scrub = (s: string | undefined) => (s === undefined || !c.account ? s : s.split(c.account).join('<account>'));
   const latestChecks = (info.checks || []).map((f) => ({ ...f, detail: scrub(f.detail)!, remediation: scrub(f.remediation) }));
   const checks = latestChecks.map((f) => ({ ...f, cause: f.status === 'INDETERMINATE' ? indeterminateCause(f) : null }));
   return {

@@ -45,12 +45,11 @@ test('classify: not enabled / not offered in the region, throttled, no report, a
   for (const t of [
     'OptInRequired', 'SubscriptionRequiredException',
     'An error occurred (AccessDeniedException) when calling the GetAnomalyMonitors operation: User not enabled for cost explorer access',
-    'Could not connect to the endpoint URL: "https://securityagent.ap-east-2.amazonaws.com/"',
     'ValidationException: This feature is not available in this region',
   ]) assert.equal(classifyAwsError(t), 'not-available', t);
   for (const t of ['Throttling', 'ThrottlingException', 'TooManyRequestsException', 'RequestLimitExceeded', 'Rate exceeded']) assert.equal(classifyAwsError(t), 'throttled', t);
   assert.equal(classifyAwsError('ReportNotPresent'), 'no-credential-report');
-  for (const t of ['InternalFailure', 'ServiceUnavailable', 'Read timeout on endpoint URL', 'unknown error', '']) assert.equal(classifyAwsError(t), 'other', t);
+  for (const t of ['InternalFailure', 'ServiceUnavailable', 'Read timeout on endpoint URL', 'Could not connect to the endpoint URL: "https://securityagent.ap-east-2.amazonaws.com/"', 'unknown error', '']) assert.equal(classifyAwsError(t), 'other', t);
 });
 
 // ---------------------------------------------------------------- through aws check
@@ -208,4 +207,12 @@ test('dashboard page: every reason has a label, including the new ones', async (
   for (const r of ['access-denied', 'not-available', 'throttled', 'prerequisite', 'no-credential-report', 'not-integrated', 'other']) {
     assert.ok(ACCOUNTGUARD_SCRIPT.includes(`'${r}': [`), r);
   }
+});
+
+test('harness: outside withFakeAws, `aws` is the blocking stub, metadata is off and AWS vars are empty', () => {
+  const r = aws(['sts', 'get-caller-identity']);
+  assert.equal(r.ok, false);
+  assert.match(r.raw, /real aws CLI is blocked/);
+  assert.equal(process.env.AWS_EC2_METADATA_DISABLED, 'true');
+  for (const k of ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SESSION_TOKEN']) assert.equal(process.env[k], '', k);
 });

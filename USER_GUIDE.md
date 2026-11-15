@@ -2365,7 +2365,7 @@ lines on stderr, and never prompts. The shape is `prism.aws-connect.v1`; fields 
 ```
 
 - `action` is `connect`, `status` or `clear`. `ok` is false on the same runs that exit 1, and then
-  `error` holds the Error line.
+  `error` holds the Error line (also when saving the connection file fails).
 - `connection` is what was saved (connect) or the connection that applies (status), with the account
   as its last 4 digits; null after `--clear`, or when nothing is saved.
 - connect adds `access` (`admin`, `read-only` or `unknown`) and `org` (`management`, `member`, `none`
@@ -2396,7 +2396,7 @@ in `needs`.
 | `reason` | Meaning | Advice |
 |---|---|---|
 | `access-denied` | `AccessDenied`, `AccessDeniedException`, `UnauthorizedOperation` or "not authorized" | Grant the named read-only action (from the error message when it names one) |
-| `not-available` | `OptInRequired`, `SubscriptionRequired…`, a service not enabled for the account, or no endpoint or no support in the region | Nothing to grant: turn the service on if you use it, or check a region where it is offered |
+| `not-available` | `OptInRequired`, `SubscriptionRequired…`, a service not enabled for the account, or no support in the region ("Could not connect to the endpoint URL" is `other`: it also means offline) | Nothing to grant: turn the service on if you use it, or check a region where it is offered |
 | `throttled` | `Throttling`, `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded` | Nothing to grant: wait a minute and re-run |
 | `no-credential-report` | No IAM credential report yet (`ReportNotPresent`) | Create one first; `aws check` never generates it |
 | `prerequisite` | The check waits on another fix (budget alerts need a budget) | Do that fix first |

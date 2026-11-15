@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { clause, type AwsResult } from '../utils/aws.js';
 import type { RunResult } from '../utils/exec.js';
 import { ensureMarkerIgnored } from '../security/marker.js';
+import { redact } from '../security/errors.js';
 import {
   accountChangeWarning, applyConnection, clearConnectionFile, connectionLabel, ENV_CREDENTIAL_VARS, last4, loadConnection,
   PROFILE_RE, readConnectionFile, REGION_RE, REPO_CONNECTION_PATH, repoConnectionPath, repoRootOf, userConnectionPath,
@@ -256,7 +257,14 @@ export async function awsConnect(o: ConnectOptions, d: ConnectDeps): Promise<num
     ...d, isTTY: false,
     log: (l = '') => { if (l.startsWith('Error: ')) error = l.slice('Error: '.length); d.err?.(l); },
   };
-  const code = await connect(o, quiet, report);
+  let code: number;
+  // A throw (a failed connection-file write) still ends in one JSON object, so --json callers always get one.
+  try { code = await connect(o, quiet, report); } catch (e) {
+    code = 1;
+    report.connection = null;
+    error = redact((e as Error).message || String(e)).split('\n')[0];
+    quiet.log(`Error: ${error}`);
+  }
   report.ok = code === 0;
   if (!report.ok && !report.error && error) report.error = error;
   d.log(JSON.stringify(report, null, 2));

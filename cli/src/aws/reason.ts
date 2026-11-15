@@ -14,7 +14,8 @@ export const NO_REPORT_STEP = 'No credential report exists yet. Run `prism-cli b
 
 const NO_REPORT = /ReportNotPresent/;
 // Checked before DENIED: Cost Explorer answers AccessDeniedException "User not enabled for cost explorer access".
-const NOT_AVAILABLE = /OptInRequired|SubscriptionRequired|not (?:enabled|subscribed) for|not (?:available|supported) in (?:this |the |your )?region|Could not connect to the endpoint URL/i;
+const NOT_AVAILABLE = /OptInRequired|SubscriptionRequired|not (?:enabled|subscribed) for|not (?:available|supported) in (?:this |the |your )?region/i;
+// shortcut: 'Could not connect to the endpoint URL' stays 'other': it also means offline, DNS or a proxy. Classify it as not-available only if a regional service map is added.
 const THROTTLED = /Throttl|TooManyRequests|RequestLimitExceeded|Rate exceeded|SlowDown/i;
 const DENIED = /AccessDenied|UnauthorizedOperation|AuthorizationError|not authorized|Unauthorized/i;
 

@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -285,4 +285,18 @@ test('connect --clear --json: removed and scope', async () => {
   assert.equal(await awsConnect({ clear: true, json: true }, h.deps), 0);
   assert.deepEqual(read(), { schema: 'prism.aws-connect.v1', action: 'clear', ok: true, connection: null, removed: true, scope: 'user' });
   assert.equal(h.calls.length, 0, 'no AWS call');
+});
+
+test('connect --json: a failed connection-file write still prints one JSON object with the error, exit 1', async () => {
+  const h = harness(); const errs: string[] = [];
+  // ~/.prism is a file, so writing ~/.prism/aws.json fails.
+  writeFileSync(join(h.home, '.prism'), 'not a directory');
+  const read = jsonRun(h, errs);
+  assert.equal(await awsConnect({ profile: 'prism-sa-test', region: 'us-west-2', json: true }, h.deps), 1);
+  const j = read();
+  assert.equal(j.ok, false);
+  assert.equal(j.action, 'connect');
+  assert.equal(j.connection, null);
+  assert.match(j.error, /ENOTDIR|EEXIST|not a directory/i);
+  assert.ok(errs.some((l) => l.startsWith('Error: ')), 'the Error line goes to stderr');
 });
