@@ -8,16 +8,15 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import {
   CliError, cliEnv, configuredCliPath, currentBranch, dashboardArgs, DASHBOARD_TIMEOUT_MS, gitToplevel, isResultId, machineDashboardRun, REPORT_TIMEOUT_MS, reportArgs, resolveCli, runCli,
 } from './cli';
 import { DIAGNOSTIC_SOURCE, findingsToDiagnostics, fixPrompt, type DiagnosticRecord } from './diagnostics';
-import { codewatchOff, parsePayload, repoView } from './payload';
-import { machinePanelModel, panelHtml, panelModel, parsePanelMessage, withReportCsp, type AnyPanelModel, type MachineTarget } from './panel-model';
+import { parsePayload, repoView } from './payload';
 import { INTERVAL_MS, Refresher } from './refresh';
-import { commitLookupPaths, lastCommits, latestReviewOf, machineRepos, machineReportPlan, repoFile } from './machine';
-import { cliMissingText, INSTALL_CMD, statusView, type State } from './status';
+import { cliMissingText, statusView, updateText, type State } from './status';
+import { cliIsCurrent, handlePanelMessage, StdioClient, uiHtml, UPDATE_CMD, UPDATE_TEXT, updateHtml, withReportCsp } from './ui-host';
 
 const SEVERITY: Record<DiagnosticRecord['severity'], vscode.DiagnosticSeverity> = {
   error: vscode.DiagnosticSeverity.Error,
@@ -36,18 +35,16 @@ class Prism implements vscode.Disposable {
   private state: State = { kind: 'loading' };
   private repoRoot: string | null = null;
   private records: DiagnosticRecord[] = [];
-  private model: AnyPanelModel | null = null;
-  /** Machine mode: per repo row of the panel, its path and finding files. The webview only sends indexes into this. */
-  private targets: MachineTarget[] = [];
-  private panel: vscode.WebviewPanel | null = null;
+  /** The PRISM panel: prism-cli's own dashboard UI, and the --serve-stdio child that answers it. */
+  private panel: { view: vscode.WebviewPanel; client: StdioClient | null } | null = null;
   private report: vscode.WebviewPanel | null = null;
   private watcher: vscode.FileSystemWatcher | null = null;
   private interval: NodeJS.Timeout | null = null;
 
-  constructor(private readonly ctx: vscode.ExtensionContext) {
+  constructor() {
     this.status.name = 'PRISM';
     const cmd = (id: string, fn: (...a: any[]) => unknown) => this.subs.push(vscode.commands.registerCommand(id, fn));
-    cmd('prism.openPanel', () => this.openPanel());
+    cmd('prism.openPanel', () => { void this.openPanel(); });
     cmd('prism.refresh', () => this.refresher.request({ fresh: true, immediate: true }));
     cmd('prism.openBrowserDashboard', () => this.inTerminal('PRISM dashboard', ['dashboard']));
     cmd('prism.enableCodewatch', () => this.enableCodewatch());
@@ -112,14 +109,16 @@ class Prism implements vscode.Disposable {
       if (!root) {
         const m = machineDashboardRun(fresh, homedir());
         const payload = parsePayload(await runCli(cli.path, m.args, m.cwd, DASHBOARD_TIMEOUT_MS));
-        const commits = await lastCommits(commitLookupPaths(payload));
         if (this.repoRoot !== root) return; // the window opened a repo meanwhile
-        this.setState({ kind: 'machine', payload, repos: machineRepos(payload, commits) });
+        if (!cliIsCurrent(payload.version?.installed)) { this.setState({ kind: 'cli-old', installed: payload.version?.installed ?? null }); return; }
+        this.setState({ kind: 'machine', payload });
         return;
       }
       const [branch, out] = await Promise.all([currentBranch(root), runCli(cli.path, dashboardArgs(root, fresh), root, DASHBOARD_TIMEOUT_MS)]);
       const payload = parsePayload(out);
       if (this.repoRoot !== root) return; // the window's folders changed meanwhile
+      // An older prism-cli: no markers, no data, only how to update it.
+      if (!cliIsCurrent(payload.version?.installed)) { this.publish([]); this.setState({ kind: 'cli-old', installed: payload.version?.installed ?? null }); return; }
       const view = repoView(payload, root, branch);
       // Line numbers of another branch's review do not apply to these files.
       this.publish(view.review?.onBranch ? findingsToDiagnostics(view.findings, root, isFile) : []);
@@ -143,16 +142,6 @@ class Prism implements vscode.Disposable {
     this.status.tooltip = v.tooltip; // a plain string: never rendered as markdown
     this.status.command = v.command;
     this.status.backgroundColor = v.tint ? new vscode.ThemeColor(v.tint === 'error' ? 'statusBarItem.errorBackground' : 'statusBarItem.warningBackground') : undefined;
-    const s = this.state;
-    this.targets = [];
-    if (s.kind === 'machine') {
-      const built = machinePanelModel(s.payload, s.repos, (repo, file) => repoFile(repo, file), fmtTime);
-      this.model = built.model;
-      this.targets = built.targets;
-    } else {
-      this.model = s.kind === 'ready' ? panelModel(s.payload, s.view, this.records, codewatchOff(s.view.repo), fmtTime) : null;
-    }
-    this.postModel();
   }
 
   private publish(records: DiagnosticRecord[]): void {
@@ -186,79 +175,71 @@ class Prism implements vscode.Disposable {
     return out;
   }
 
-  private openPanel(): void {
-    if (this.panel) { this.panel.reveal(); return; }
-    const media = vscode.Uri.joinPath(this.ctx.extensionUri, 'media');
-    const panel = vscode.window.createWebviewPanel('prism.panel', 'PRISM', vscode.ViewColumn.Active, { enableScripts: true, localResourceRoots: [media] });
-    this.panel = panel;
-    const w = panel.webview;
-    w.html = panelHtml({
-      nonce: randomBytes(16).toString('base64'),
-      cspSource: w.cspSource,
-      scriptUri: w.asWebviewUri(vscode.Uri.joinPath(media, 'panel.js')).toString(),
-      styleUri: w.asWebviewUri(vscode.Uri.joinPath(media, 'panel.css')).toString(),
-    });
-    w.onDidReceiveMessage((m) => this.onPanelMessage(m));
-    panel.onDidDispose(() => { this.panel = null; });
-  }
-
-  private postModel(): void {
-    if (!this.panel) return;
-    if (this.model) { void this.panel.webview.postMessage({ type: 'model', model: this.model }); return; }
-    const s = this.state;
-    const text = s.kind === 'cli-missing' ? cliMissingText(s.reason, s.searched) : s.kind === 'error' ? `prism-cli failed: ${s.message}` : 'Loading PRISM results…';
-    void this.panel.webview.postMessage({ type: 'status', text });
-  }
-
-  private async onPanelMessage(m: unknown): Promise<void> {
-    const a = parsePanelMessage(m, this.model);
-    if (!a) return;
-    switch (a.type) {
-      case 'ready': this.postModel(); return;
-      case 'refresh': this.refresher.request({ fresh: true, immediate: true }); return;
-      case 'report': await this.openReport(); return;
-      case 'enable': await this.enableCodewatch(); return;
-      case 'open': {
-        const it = this.model?.mode === 'repo' ? this.model.findings.find((f) => f.openable && f.index === a.index) : undefined;
-        const r = it ? this.records[it.index] : undefined;
-        if (!r) return;
-        const pos = new vscode.Position(r.line, 0);
-        await vscode.window.showTextDocument(vscode.Uri.file(r.path), { selection: new vscode.Range(pos, pos), viewColumn: vscode.ViewColumn.One });
-        return;
-      }
-      case 'copy': {
-        const c = this.model?.checklist.find((x) => x.key === a.key);
-        if (!c?.fix) return;
-        await vscode.env.clipboard.writeText(c.fix);
-        vscode.window.showInformationMessage('PRISM: command copied. Paste it into a terminal to run it.');
-        return;
-      }
-      // Machine mode: the message holds only indexes; paths come from this.targets, built from the last prism-cli JSON.
-      case 'openFolder': {
-        const t = this.targets[a.repoIndex];
-        if (t) await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(t.path), { forceNewWindow: true });
-        return;
-      }
-      case 'openRepoFinding': {
-        const t = this.targets[a.repoIndex];
-        const f = t?.files[a.findingIndex];
-        // Checked again at click time: the file could have become a symlink since the panel was drawn.
-        const file = f?.path ? repoFile(t.path, relative(t.path, f.path)) : null;
-        if (!f || !file) { vscode.window.showWarningMessage('PRISM: that file is not in the repository.'); return; }
-        const pos = new vscode.Position(f.line, 0);
-        await vscode.window.showTextDocument(vscode.Uri.file(file), { selection: new vscode.Range(pos, pos), viewColumn: vscode.ViewColumn.One });
-        return;
-      }
-      case 'repoReport': {
-        const t = this.targets[a.repoIndex];
-        const s = this.state;
-        const repo = s.kind === 'machine' ? s.payload.repos.find((r) => r.path === t?.path) ?? null : null;
-        if (!t) return;
-        const plan = machineReportPlan(t.path, t.name, t.commit, latestReviewOf(repo));
-        await this.showReport(t.path, plan.primary, plan.fallback);
-        return;
-      }
+  /**
+   * The PRISM panel: the browser dashboard's own UI, loaded from the installed prism-cli (dist/ui),
+   * talking to `prism-cli dashboard --serve-stdio` (no port, no token). prism-cli missing or older
+   * than 1.21.0: the panel shows only how to update it.
+   */
+  private async openPanel(): Promise<void> {
+    if (this.panel) { this.panel.view.reveal(); return; }
+    const view = vscode.window.createWebviewPanel('prism.panel', 'PRISM', vscode.ViewColumn.Active, { enableScripts: false, localResourceRoots: [] });
+    const entry: { view: vscode.WebviewPanel; client: StdioClient | null } = { view, client: null };
+    this.panel = entry;
+    view.onDidDispose(() => { entry.client?.dispose(); if (this.panel === entry) this.panel = null; });
+    const notCurrent = (reason: string) => { view.webview.html = updateHtml({ reason, command: UPDATE_CMD }); };
+    const cli = this.cli();
+    if (!cli.ok) { notCurrent(`prism-cli was not found (${cli.reason}). Or set prism.cliPath to the output of \`command -v prism-cli\`.`); return; }
+    const client = new StdioClient(cli.path, this.repoRoot ?? homedir(), cliEnv(cli.path));
+    entry.client = client;
+    let hello;
+    try { hello = await client.start(); } catch (e) {
+      notCurrent((e as Error).message === UPDATE_TEXT || (e as Error).message.startsWith(UPDATE_TEXT) ? `The prism-cli at ${cli.path} is older than this panel needs.` : `prism-cli could not start the panel: ${(e as Error).message}`);
+      return;
     }
+    if (this.panel !== entry) { client.dispose(); return; }
+    try {
+      const ui = vscode.Uri.file(hello.uiDir);
+      const w = view.webview;
+      const body = await readFile(join(hello.uiDir, 'body.html'), 'utf8');
+      w.options = { enableScripts: true, localResourceRoots: [ui] };
+      const uri = (f: string) => w.asWebviewUri(vscode.Uri.joinPath(ui, f)).toString();
+      const kind = vscode.window.activeColorTheme.kind;
+      w.html = uiHtml({
+        nonce: randomBytes(16).toString('base64'), cspSource: w.cspSource,
+        cssUri: uri('prism-ui.css'), bridgeUri: uri('bridge.js'), jsUri: uri('prism-ui.js'), body,
+        theme: kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight ? 'light' : 'dark',
+      });
+      w.onDidReceiveMessage((m) => this.onPanelMessage(entry, client, m).catch((e) => {
+        vscode.window.showErrorMessage(`PRISM: ${e instanceof Error ? e.message : String(e)}`);
+      }));
+    } catch (e) {
+      // Most likely a broken install (the bundle could not be read): stop the child and say so.
+      client.dispose();
+      entry.client = null;
+      notCurrent(`The PRISM panel could not be set up from prism-cli's files (${e instanceof Error ? e.message : String(e)}). Reinstalling prism-cli usually fixes this.`);
+    }
+  }
+
+  /** One webview message (ui-host.ts handlePanelMessage); answers go back only while this panel is open. */
+  private async onPanelMessage(entry: { view: vscode.WebviewPanel }, client: StdioClient, m: unknown): Promise<void> {
+    await handlePanelMessage(m, client, {
+      // AWS-writing actions: a native modal on top of the panel's dialog, decided from the CLI's own catalog.
+      confirm: async (c) => (await vscode.window.showWarningMessage(c.title, { modal: true, detail: c.detail }, c.button)) === c.button,
+      showReport: (html) => this.showReportHtml(html),
+      noReport: (status) => { vscode.window.showWarningMessage(`PRISM: no report for that review (${status}).`); },
+      post: (msg) => { if (this.panel === entry) void entry.view.webview.postMessage(msg); },
+    });
+  }
+
+  private showReportHtml(html: string): void {
+    // The report is CLI-escaped HTML; scripts stay off and the CSP allows only its inline styles.
+    if (!this.report) {
+      this.report = vscode.window.createWebviewPanel('prism.report', 'PRISM review report', vscode.ViewColumn.Active, { enableScripts: false, localResourceRoots: [] });
+      this.report.onDidDispose(() => { this.report = null; });
+    } else {
+      this.report.reveal();
+    }
+    this.report.webview.html = withReportCsp(html);
   }
 
   private async openReport(): Promise<void> {
@@ -269,30 +250,16 @@ class Prism implements vscode.Disposable {
     await this.showReport(root, (out) => reportArgs(root, id, out));
   }
 
-  /** Runs prism-cli codewatch report into a temp file and shows it. `fallback` runs when the first report fails (not when the CLI is missing). */
-  private async showReport(repo: string, args: (output: string) => string[], fallback?: { args: (output: string) => string[]; message: string } | null): Promise<void> {
+  /** Runs prism-cli codewatch report into a temp file and shows it (the Problems quick fix). */
+  private async showReport(repo: string, args: (output: string) => string[]): Promise<void> {
     const cli = this.cli();
     if (!cli.ok) { void this.showInstallHint(); return; }
     let dir: string | null = null;
     try {
       dir = await mkdtemp(join(tmpdir(), 'prism-report-'));
       const file = join(dir, 'report.html');
-      try {
-        await runCli(cli.path, args(file), repo, REPORT_TIMEOUT_MS);
-      } catch (e) {
-        if (!fallback || (e instanceof CliError && e.notFound)) throw e;
-        await runCli(cli.path, fallback.args(file), repo, REPORT_TIMEOUT_MS);
-        vscode.window.showInformationMessage(fallback.message);
-      }
-      const html = await readFile(file, 'utf8');
-      // The report is CLI-escaped HTML; scripts stay off and the CSP allows only its inline styles.
-      if (!this.report) {
-        this.report = vscode.window.createWebviewPanel('prism.report', 'PRISM review report', vscode.ViewColumn.Active, { enableScripts: false, localResourceRoots: [] });
-        this.report.onDidDispose(() => { this.report = null; });
-      } else {
-        this.report.reveal();
-      }
-      this.report.webview.html = withReportCsp(html);
+      await runCli(cli.path, args(file), repo, REPORT_TIMEOUT_MS);
+      this.showReportHtml(await readFile(file, 'utf8'));
     } catch (e) {
       vscode.window.showErrorMessage(`PRISM: could not build the report: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -328,9 +295,11 @@ class Prism implements vscode.Disposable {
 
   private async showInstallHint(): Promise<void> {
     const cli = this.cli();
-    const detail = cli.ok ? `prism-cli could not be started from ${cli.path}.` : cliMissingText(cli.reason, cli.searched);
-    const pick = await vscode.window.showInformationMessage('PRISM: prism-cli was not found.', { modal: true, detail }, 'Copy command', 'Set prism.cliPath');
-    if (pick === 'Copy command') await vscode.env.clipboard.writeText(INSTALL_CMD);
+    const s = this.state;
+    const old = s.kind === 'cli-old';
+    const detail = old ? updateText(s.installed) : cli.ok ? `prism-cli could not be started from ${cli.path}.` : cliMissingText(cli.reason, cli.searched);
+    const pick = await vscode.window.showInformationMessage(old ? `PRISM: update prism-cli to 1.21.0 or later.` : 'PRISM: prism-cli was not found.', { modal: true, detail }, 'Copy command', 'Set prism.cliPath');
+    if (pick === 'Copy command') await vscode.env.clipboard.writeText(UPDATE_CMD);
     if (pick === 'Set prism.cliPath') await vscode.commands.executeCommand('workbench.action.openSettings', 'prism.cliPath');
   }
 
@@ -338,7 +307,7 @@ class Prism implements vscode.Disposable {
     if (this.interval) clearInterval(this.interval);
     this.refresher.dispose();
     this.watcher?.dispose();
-    this.panel?.dispose();
+    this.panel?.view.dispose();
     this.report?.dispose();
     this.status.dispose();
     this.diags.dispose();
@@ -347,7 +316,7 @@ class Prism implements vscode.Disposable {
 }
 
 export function activate(ctx: vscode.ExtensionContext): void {
-  const p = new Prism(ctx);
+  const p = new Prism();
   ctx.subscriptions.push(p);
   void p.init();
 }

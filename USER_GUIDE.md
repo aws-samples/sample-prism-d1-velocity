@@ -497,10 +497,10 @@ them read the same local data as `prism-cli dashboard` and make no AWS calls.
 
 | Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code plugin |
 |---|---|---|---|
-| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes: `/prism:findings`, and a summary of the branch's open findings at session start |
-| Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes: `/prism:report` |
-| AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes: `/prism:spend`, and the [status line](#claude-code-status-line) |
-| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes: `/prism` lists failing items with fix commands |
+| Codewatch findings | Yes: Problems markers, status bar counts, the PRISM panel (the dashboard's own pages) | Yes: PRISM sidebar page | Yes: `/prism:findings`, and a summary of the branch's open findings at session start |
+| Open a review report | Yes: quick fix and the panel's report links | Yes: on the page (sandboxed) | Yes: `/prism:report` |
+| AI spend | Yes: status bar (today), panel (the dashboard's Spend section) | Yes: on the page | Yes: `/prism:spend`, and the [status line](#claude-code-status-line) |
+| Setup checklist | Yes: panel (Settings), with the dashboard's Run buttons and confirm dialogs; AWS uploads also ask in a VS Code dialog | Yes: on the page | Yes: `/prism` lists failing items with fix commands |
 | MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: the plugin's `prism` MCP server |
 | Agent harness loop | Kiro CLI V3 / Kiro IDE: hooks from `prism-cli enable agent-hooks --client kiro` (push gate on, finish gate opt-in, one fix round per prompt; [Kiro CLI and Kiro IDE](#kiro-cli-and-kiro-ide)). Not in the extension | No hooks (Kiro Crew does not load project hooks): the `prism-fix-findings` skill runs `prism_review` | Yes: push gate on by default (blocks secrets and hook tampering, reports other findings); finish gate opt-in ([Agent Harness Loop](#agent-harness-loop)) |
 | Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
@@ -540,23 +540,25 @@ costs.
 
 ### Editor extension
 
-The [editor extension](editor-extension/README.md) works in VS Code, Kiro and Cursor. It puts this
-repo's codewatch findings in the Problems panel and a one-line summary (findings, spend today,
-setup warnings) in the status bar, with a side panel for the setup checklist. With no repository
-open it shows the whole machine instead. It reads `prism-cli dashboard --json`, opens no ports and
-makes no AWS calls. It needs prism-cli 1.7.1 or later.
+The [editor extension](editor-extension/README.md) works in VS Code, Kiro and Cursor. Its PRISM panel
+is the [local dashboard](#local-dashboard) itself: the same Dashboard, Security Agent, AccountGuard
+and Settings pages, drawn from the copy of the UI that ships with your installed prism-cli, with the
+same Run buttons and confirm dialogs. Starting a Security Agent code review or threat model (an
+upload to your AWS account) also asks in a VS Code dialog. The extension also puts this repo's
+codewatch findings in the Problems panel and a one-line summary (findings, spend today, setup
+warnings) in the status bar. It opens no ports: the panel talks to `prism-cli dashboard
+--serve-stdio`, and the status bar reads `prism-cli dashboard --json`. It needs prism-cli 1.21.0 or
+later; with an older one the panel and the status bar say only how to update it.
 
-Download `prism-d1-<version>.vsix` (0.1.1 at the time of writing) and its `.sha256` from the
+Download `prism-d1-<version>.vsix` (0.2.0 at the time of writing) and its `.sha256` from the
 latest [`ext-v*` release](https://github.com/aws-samples/sample-prism-d1-velocity/releases?q=ext-v&expanded=true),
 then install it with `code --install-extension prism-d1-<version>.vsix` (or `kiro`, `cursor`).
 Checking the download, Remote-SSH, features, settings and security:
 [editor extension README](editor-extension/README.md#install).
 
-![PRISM editor extension panel in repo mode for a demo repo named checkout-service: summary cards, four codewatch findings with file links, and the setup checklist](assets/images/prism-cli/editor-extension-panel-dark.png)
+![The PRISM panel in the editor with demo data: the dashboard's summary cards, the Codewatch table with three repos, and the header with Dashboard, Security Agent, AccountGuard and Settings](assets/images/prism-cli/editor-extension-panel-dark.png)
 
-![PRISM editor extension panel in machine mode with demo data: spend cards, top models and projects, and four repos sorted by last commit, one expanded with its findings](assets/images/prism-cli/editor-extension-machine-mode-light.png)
-
-*The PRISM panel with a repo open (top) and with no repo open (bottom). Both show made-up demo data.*
+*The PRISM panel, rendered with made-up demo data.*
 
 ### MCP server (prism-cli mcp)
 

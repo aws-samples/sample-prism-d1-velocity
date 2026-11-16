@@ -93,6 +93,8 @@ export interface DashboardPayload {
   overview?: { counts: { repos: number; codewatch: number }; setup: SetupRow[]; codewatch: CodewatchRow[] };
   machine: { setup: CheckItem[]; codeburnSync: { mode: string } };
   usage?: UsagePayload;
+  /** version.installed: the prism-cli that printed this (1.10 and later). */
+  version?: { installed?: string } | null;
   summary: {
     spend: { status: string; currency: string; today: number | null; month: number | null; message: string | null; updatedAt?: string | null };
     warnings: { count: number; first: string | null };
