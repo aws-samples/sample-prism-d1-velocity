@@ -1671,6 +1671,20 @@ shows local paths and your saved AWS account, like the live page. The path is pr
 SSH session with no display it prints the path and a note instead; copy the file to your laptop and
 open it there. Usage comes from the 5-minute cache, as with `--json` (`--fresh` runs codeburn first).
 
+### Editor and Kiro Crew hosts (`--serve-stdio`)
+
+`prism-cli dashboard --serve-stdio` is for programs that show the dashboard inside another app: the
+PRISM VS Code extension (0.2.0 and later) and the PRISM Kiro Crew app (0.3.0 and later). You don't run
+it yourself. It opens no port and no browser. It answers the same API as the live page, one JSON
+object per line on stdin and stdout, with the same handlers and checks: the same action allowlist, the
+same confirmation for actions that need it, and the same Security Agent check before an AWS upload.
+Requests are refused when they name an unknown route, are not valid JSON, or are larger than 20 KB.
+It stops, along with any action it is running, when the program that started it closes its stdin.
+
+Those apps draw the page from the copy of the UI that ships with your installed prism-cli
+(`dist/ui` in the npm package), so the page and the CLI are always the same version. They need
+prism-cli 1.21.0 or later.
+
 ### Remote Machines
 
 On a cloud desktop or other remote host, keep the dashboard on the remote loopback and forward the
