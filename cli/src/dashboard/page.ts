@@ -252,7 +252,13 @@ const SCAN_LABEL = { ok: ['ok', 'ok'], 'not-scanned': ['warn', 'not scanned'], '
 
 /** Link to a scan report. Ids come from the server's own listing; encodeURIComponent keeps them literal. A snapshot has no report pages. */
 function reportLink(id, label) {
-  if (SNAPSHOT) return el('span', { title: 'Report pages open from the live dashboard (prism-cli dashboard) or prism-cli codewatch report' }, label);
+  // A host with no /report pages (VS Code, Kiro Crew) opens the report itself, from GET /api/report.
+  if (!SNAPSHOT && typeof TRANSPORT.openReport === 'function') {
+    const b = el('a', { href: '#', class: 'rlink', role: 'button' }, label);
+    b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); TRANSPORT.openReport(id); });
+    return b;
+  }
+  if (SNAPSHOT || !TRANSPORT.reports) return el('span', { title: 'Report pages open from the browser dashboard (prism-cli dashboard) or prism-cli codewatch report' }, label);
   const a = el('a', { href: '/report/' + encodeURIComponent(id), class: 'rlink' }, label);
   // Inside a clickable row: open the report, not the row's repo view.
   a.addEventListener('click', (e) => e.stopPropagation());
@@ -533,9 +539,10 @@ async function getJson(path) {
     if (path.startsWith('/api/usage')) return { usage: SNAPSHOT.data.usage, cacheHit: true };
     throw new Error('not in this snapshot');
   }
-  const res = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  return res.json();
+  // Through the page's Transport (setup-page.ts api()), so every host reads the same way.
+  const r = await api(path);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json;
 }
 
 /** The dashboard view: cards, then each section with data; empty ones become "Get more from PRISM" items. */
@@ -700,4 +707,14 @@ ${VIEWS}
 </div>
 ${M.data}${embedJson(s)}${M.scriptEnd}
 ${M.script}${SCRIPT}${M.scriptEnd}</body></html>`;
+}
+
+/**
+ * The shared UI bundle (scripts/build-ui.mjs writes it to dist/ui): the same style, body markup
+ * and script the browser page inlines, for the hosts that load it from the installed package
+ * (the VS Code webview, the Kiro Crew app page). The body has no data and no token in it.
+ */
+export function uiBundle(): { css: string; js: string; body: string; themeBoot: string } {
+  const s = shell(true);
+  return { css: STYLE, js: SCRIPT, body: `${s.header}\n${VIEWS}`, themeBoot: THEME_BOOT };
 }

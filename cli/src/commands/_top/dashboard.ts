@@ -1,20 +1,13 @@
 import { homedir } from 'node:os';
 import { buildPayload } from '../../dashboard/payload.js';
-import { cachedPayload, startServer, BIND_HOST } from '../../dashboard/server.js';
-import { reportFromRepos } from '../../dashboard/report.js';
-import { ActionRunner, cliEntry, repoId } from '../../dashboard/actions.js';
-import { setupApi } from '../../dashboard/setup-api.js';
-import { profileChoices } from '../../dashboard/aws-identity.js';
-import { connectionArgs } from '../../dashboard/accountguard.js';
-import { LookupCache, securityTargetIn, targetArgs, writeGateIn } from '../../dashboard/security-agent.js';
-import { repoRootOf } from '../../aws/connection.js';
-import { systemdUserAvailable } from '../../utils/otel-sync-schedule.js';
-import type { DashboardPayload, PayloadTiming } from '../../dashboard/payload.js';
-import { collectHistory, collectUsage, emptyUsage } from '../../dashboard/usage.js';
+import { startServer, BIND_HOST } from '../../dashboard/server.js';
+import { buildDashboardApi } from '../../dashboard/api-core.js';
+import { serveStdio } from '../../dashboard/stdio.js';
+import type { PayloadTiming } from '../../dashboard/payload.js';
+import { collectHistory, collectUsage } from '../../dashboard/usage.js';
 import { UsageCache, usageCachePath } from '../../dashboard/usage-cache.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../../dashboard/snapshot.js';
 import { ownVersion } from './version.js';
-import { findOnPath } from '../../utils/tool-check.js';
 import { UpdateCheck, updateCachePath } from '../../dashboard/update-check.js';
 import { resolve } from 'node:path';
 
@@ -39,12 +32,13 @@ export default {
     { flags: '--port <n>', description: 'Port on 127.0.0.1 (default: a random free port)' },
     { flags: '--no-open', description: 'Do not open a browser' },
     { flags: '--snapshot <file>', description: 'Write the dashboard as one static HTML file (data embedded, no server, no token, mode 0600) and exit' },
+    { flags: '--serve-stdio', description: 'No server: answer the dashboard API as JSON lines on stdin/stdout (for the VS Code extension and the Kiro Crew app)' },
     { flags: '--exit-on-stdin-close', description: 'Stop the server when stdin closes (prism-cli mcp uses this so the dashboard ends with the session)' },
     { flags: '--open', description: 'With --snapshot: open the file in a browser when a display is available' },
     { flags: '--fresh', description: 'With --json: run the codeburn exports now instead of using the usage cache (~/.prism/cache, 5 minutes)' },
     { flags: '--timing', description: 'With --json: print how long each stage took to stderr' },
   ],
-  async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean }) {
+  async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean; serveStdio?: boolean }) {
     // stderr, so --json output stays parseable.
     if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
     // The month paints first; the earlier weeks of the heatmap (one more export, ~8 s) follow in the background.
@@ -99,76 +93,27 @@ export default {
       await usageCache.historyRun();
       return;
     }
-    // The page's first paint never waits for codeburn: it shows the cached usage, or "loading" until /api/usage answers.
-    const build = () => buildPayload({
-      cwd: process.cwd(), root: opts.root,
-      usage: async () => {
-        const u = usageCache.current();
-        return u ? { usage: u, cacheHit: true } : { usage: emptyUsage('loading', 'Loading usage from codeburn...'), cacheHit: false };
-      },
-      // Never waits for npm: the cached answer now; a due check runs in the background and the next load shows it.
-      version: async () => updates.current(),
-    });
+    if (opts.serveStdio) {
+      // No listener: the same route table over stdin/stdout, for a host process that owns this child (stdio.ts).
+      // stdout carries the protocol only: anything a library logs goes to stderr instead.
+      console.log = console.info = (...a: unknown[]) => console.error(...a);
+      const api = buildDashboardApi({ cwd: process.cwd(), root: opts.root, usageCache, updates });
+      // The host went away (stdin closed, or a signal): stop a running action so nothing outlives this process.
+      const quit = (code: number) => { api.shutdown(); process.exit(code); };
+      process.on('SIGTERM', () => quit(0));
+      process.on('SIGINT', () => quit(0));
+      process.on('SIGHUP', () => quit(0));
+      await serveStdio(api, process.stdin, process.stdout, { version: ownVersion() });
+      quit(0);
+    }
 
     let port: number;
     try { port = parsePort(opts.port); } catch (e: any) { console.error(`Error: ${e.message}`); process.exit(1); }
 
     let srv;
     try {
-      const payload = cachedPayload(build);
-      if (updates.due()) updates.get().then(() => payload.invalidate(), () => {});
-      const repos = async () => ((await payload()) as DashboardPayload).repos;
-      // Reports are looked up only in the repos the dashboard itself discovered.
-      const getReport = async (id: string) => reportFromRepos((await repos()).map((r) => r.path), id);
-      let systemd: boolean | undefined;
-      // The Security Agent page: commands run in the picked repo with the account and region prism-cli resolves there.
-      const lookups = new LookupCache();
-      const saIdentity = { identity: { env: process.env, home: homedir() } };
-      const targetIn = (path: string) => securityTargetIn(saIdentity, path);
-      // Settings › AWS and AccountGuard: the connection as Settings shows it (the dashboard repo's file wins over ~/.prism/aws.json).
-      const identity = { env: process.env, home: homedir(), repoRoot: repoRootOf(process.cwd()) };
-      const runner = new ActionRunner({
-        execPath: process.execPath, entry: cliEntry(), cwd: process.cwd(), home: homedir(), platform: process.platform,
-        repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
-        systemdAvailable: () => (systemd ??= systemdUserAvailable()),
-        npmPath: () => findOnPath('npm'),
-        onDone: () => payload.invalidate(),
-        awsArgs: (repo) => targetArgs(targetIn(repo.path)),
-        // The setup gate passes in the repo, the lookup named the space and the bucket, and the account is the same right now.
-        writeGate: (id, repo) => writeGateIn({ ...saIdentity, cache: lookups }, id, repo),
-        // aws-connect accepts only names read fresh from the section headers of the two AWS files, and the region list.
-        awsChoices: () => { const c = profileChoices(identity); return { profiles: c.profiles.map((p) => p.name), regions: c.regions }; },
-        connectionArgs: () => connectionArgs(identity.home, identity.repoRoot),
-      });
-      const api = setupApi({
-        runner, cwd: process.cwd(),
-        repoPaths: async () => (await repos()).map((r) => r.path),
-        identity,
-        refresh: () => { payload.invalidate(); return payload(); },
-        checkUpdate: async () => { const v = await updates.get({ force: true }); payload.invalidate(); return v; },
-        securityAgent: {
-          ...saIdentity, cache: lookups,
-          repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path, current: r.current })),
-          exclusive: (fn) => runner.exclusive(fn),
-        },
-        accountGuard: {
-          home: identity.home, repoRoot: identity.repoRoot,
-          roots: async () => [...(await repos()).map((r) => r.path), identity.home],
-          exclusive: (fn) => runner.exclusive(fn),
-        },
-      });
-      // fresh=1 (the Refresh button) waits for new exports; otherwise the cache, refreshed in the background when stale.
-      const getUsage = async (url: URL) => {
-        const r = await usageCache.get({ fresh: url.searchParams.get('fresh') === '1' });
-        if (!r.cacheHit) payload.invalidate();
-        // The earlier weeks land after the month: redraw when they do (the page polls while they are pending).
-        // Only when one is running: otherwise every poll would drop the cached payload.
-        const later = () => usageCache.historyRun()?.then(() => payload.invalidate(), () => {});
-        later();
-        r.refresh?.then(() => { payload.invalidate(); later(); }, () => {});
-        return { usage: r.usage, cacheHit: r.cacheHit };
-      };
-      srv = await startServer({ port, getPayload: payload, getReport, getApi: { ...api.getApi, '/api/usage': getUsage }, postApi: api.postApi });
+      const api = buildDashboardApi({ cwd: process.cwd(), root: opts.root, usageCache, updates });
+      srv = await startServer({ port, getPayload: api.getPayload, getReport: api.getReport, getApi: api.getApi, postApi: api.postApi });
     } catch (e: any) {
       console.error(`Error: could not start the dashboard on ${BIND_HOST}${port ? `:${port}` : ''}: ${e.message}`);
       process.exit(1);

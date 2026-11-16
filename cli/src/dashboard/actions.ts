@@ -307,7 +307,14 @@ export class ActionRunner {
   private cur: (ActionStatus & { buf: string }) | null = null;
   private busy = false;
   private seq = 0;
+  /** The running action's process, while there is one. */
+  private child: ChildProcess | null = null;
   constructor(private d: RunnerDeps) {}
+
+  /** Stops the running action, if any (SIGTERM): `dashboard --serve-stdio` calls it when its parent goes away, so no action outlives it. */
+  stop(): void {
+    this.child?.kill('SIGTERM');
+  }
 
   /** True while an action (or Check now) holds the lock. */
   get running(): boolean { return this.busy; }
@@ -410,6 +417,7 @@ export class ActionRunner {
       this.finish(st, 1);
       return { status: 202, json: this.status() };
     }
+    this.child = child;
     child.stdout?.on('data', add);
     child.stderr?.on('data', add);
     let killer: NodeJS.Timeout | undefined;
@@ -426,6 +434,7 @@ export class ActionRunner {
     const done = (code: number | null) => {
       if (settled) return;
       settled = true;
+      this.child = null;
       clearTimeout(timer);
       if (killer) clearTimeout(killer);
       if (lingering) clearTimeout(lingering);

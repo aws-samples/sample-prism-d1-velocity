@@ -7,7 +7,7 @@
 // Writes results.json, verdicts and shots/*.png to $PRISM_E2E_OUT (default: <tmp>/prism-dashboard-e2e);
 // exits 1 when a verdict fails.
 import { chromium } from 'playwright-core';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -1142,6 +1142,102 @@ try {
     out.log.push(...phone.log);
     await phone.ctx.close();
   }
+
+  // ---------- stdio: the shared UI bundle (dist/ui) over dashboard --serve-stdio, as an editor or Kiro Crew host loads it ----------
+  // No server: Chromium serves only the bundle's files from a made-up origin (page.route), the page posts through
+  // bridge.js to a stand-in host here, and the host relays each request to a real --serve-stdio child.
+  if (want('stdio')) {
+    const home = seed('stdio', 'full');
+    const cwd = readFileSync(join(home, '.start-dir'), 'utf8').trim();
+    const env = demoEnv(home, { PRISM_NO_UPDATE_CHECK: '1' });
+    const out = { log: [], relayed: [], dropped: [], reports: [] };
+    R.suites.stdio = out;
+    const child = spawn(process.execPath, [ENTRY, 'dashboard', '--serve-stdio'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    running.push(child);
+    const waiting = new Map();
+    let buf = '', hello = null, seq = 0, helloOk;
+    const helloP = new Promise((r) => { helloOk = r; });
+    child.stdout.on('data', (b) => {
+      buf += b;
+      for (let i; (i = buf.indexOf('\n')) >= 0;) {
+        const o = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
+        if (o.hello) { hello = o; helloOk(o); continue; }
+        waiting.get(o.id)?.(o); waiting.delete(o.id);
+      }
+    });
+    await Promise.race([helloP, sleep(20000)]);
+    out.hello = hello && { hello: hello.hello, api: hello.api, version: hello.version, ui: existsSync(join(hello.uiDir, 'prism-ui.js')) };
+    const ask = (m) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); child.stdin.write(JSON.stringify({ id, ...m }) + '\n'); });
+    const ORIGIN = 'https://prism-ui.test';
+    const files = JSON.parse(readFileSync(join(hello.uiDir, 'manifest.json'), 'utf8')).files;
+    const nonce = 'bm9uY2Vub25jZQ==';
+    const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src ${ORIGIN}; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'`;
+    const html = `<!DOCTYPE html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><link rel="stylesheet" href="${ORIGIN}/prism-ui.css"></head>`
+      + `<body><div class="wrap">${readFileSync(join(hello.uiDir, 'body.html'), 'utf8')}</div><script nonce="${nonce}" src="${ORIGIN}/bridge.js"></script><script nonce="${nonce}" src="${ORIGIN}/prism-ui.js"></script></body></html>`;
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const page = await ctx.newPage();
+    let tag = 'stdio';
+    const csps = [];
+    page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) csps.push(m.text().slice(0, 200)); });
+    // Page errors count in the console verdict; the deliberate fetch probe below logs a CSP error, so console messages are not collected here.
+    page.on('pageerror', (e) => out.log.push({ tag, type: 'pageerror', text: String(e).slice(0, 300) }));
+    await page.route(`${ORIGIN}/**`, (route) => {
+      const name = new URL(route.request().url()).pathname.slice(1);
+      if (name === 'index.html') return route.fulfill({ status: 200, contentType: 'text/html', body: html });
+      if (!files.includes(name)) return route.fulfill({ status: 404, body: '' });
+      route.fulfill({ status: 200, contentType: name.endsWith('.css') ? 'text/css' : 'text/javascript', body: readFileSync(join(hello.uiDir, name)) });
+    });
+    await page.exposeBinding('__hostPost', async (_s, m) => {
+      if (m && m.type === 'prism-ui:open-report') { out.reports.push(m.id); return; }
+      const ok = m && m.type === 'prism-ui:request' && (m.op === 'get' ? hello.routes.get : hello.routes.act).includes(m.path);
+      if (!ok) { out.dropped.push(JSON.stringify(m).slice(0, 80)); return; }
+      out.relayed.push(m.op + ' ' + m.path);
+      const a = await ask(m.op === 'get' ? { op: 'get', path: m.path, query: m.query || {} } : { op: 'act', path: m.path, body: m.body });
+      await page.evaluate((msg) => window.dispatchEvent(new MessageEvent('message', { data: msg })), { type: 'prism-ui:response', id: m.id, status: a.status, json: a.json });
+    });
+    await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: (m) => window.__hostPost(m), getState: () => undefined, setState: () => {} }); });
+    await page.goto(`${ORIGIN}/index.html`);
+    await page.waitForSelector('#summary', { timeout: 30000 }).catch(() => {});
+    await sleep(1200);
+    out.kind = await page.evaluate(() => TRANSPORT.kind);
+    out.dashboard = { cards: await page.$$eval('#summary .scard', (n) => n.length), repos: await page.$$eval('#codewatch tbody tr', (n) => n.length) };
+    await page.screenshot({ path: join(SHOTS, 'stdio-dashboard.png') });
+    // A report link: the page asks the host, and /api/report answers its HTML.
+    tag = 'stdio report';
+    const link = page.locator('#codewatch a.rlink').first();
+    if (await link.count()) { await link.click(); await sleep(300); }
+    out.reportHashAfter = await page.evaluate(() => location.hash);
+    if (out.reports[0]) { const r = await ask({ op: 'get', path: '/api/report', query: { id: out.reports[0] } }); out.report = { status: r.status, html: /<html/i.test(r.json.html || ''), script: /<script/i.test(r.json.html || ''), md: typeof r.json.markdown === 'string' }; }
+    tag = 'stdio findings';
+    const href = await page.$eval('a[href^="#security/run/"]', (a) => a.getAttribute('href')).catch(() => null);
+    if (href) {
+      await page.evaluate((h) => { location.hash = h; }, href);
+      await page.waitForSelector('[data-run-findings]', { timeout: 15000 }).catch(() => {});
+      await sleep(500);
+      out.findings = await page.$$eval('[data-run-findings] details, [data-run-findings] li', (n) => n.length).catch(() => 0);
+      await page.screenshot({ path: join(SHOTS, 'stdio-findings.png') });
+    }
+    tag = 'stdio refusals';
+    out.noConfirm = await page.evaluate(() => api('/api/action', { action: 'aws-disconnect' }).then((x) => ({ status: x.status, error: x.json.error })));
+    out.writeGate = await page.evaluate(() => api('/api/action', { action: 'security-code-review', repo: Object.values(SETUP.repoIds)[0], confirm: true }).then((x) => x.status));
+    out.cspBeforeProbe = csps.length;
+    out.fetch = await page.evaluate(() => fetch('/api/data').then(() => 'allowed', () => 'blocked'));
+    tag = 'stdio action';
+    await page.evaluate(() => { location.hash = '#settings/aws'; }); await sleep(1000);
+    await page.locator('#settings button', { hasText: /disconnect/i }).first().click(); await sleep(300);
+    out.runDisabled = await page.evaluate(() => [...document.querySelectorAll('dialog.confirm button')].find((b) => b.textContent === 'Run')?.disabled);
+    await page.locator('dialog.confirm input[type=checkbox]').check();
+    await page.click('dialog.confirm button:has-text("Run")');
+    for (let i = 0; i < 100; i++) { const t = await page.evaluate(() => document.querySelector('#action-drawer .srow-head')?.innerText || ''); if (/exit \d+|refused/.test(t)) { out.actionResult = t.replace(/\s+/g, ' ').slice(0, 120); break; } await sleep(300); }
+    out.connectionFileGone = !existsSync(join(home, '.prism', 'aws.json'));
+    await page.screenshot({ path: join(SHOTS, 'stdio-action-done.png') });
+    out.listen = execFileSync('sh', ['-c', `ss -ltnp 2>/dev/null | grep 'pid=${child.pid},' || true`], { encoding: 'utf8' }).trim();
+    await ctx.close();
+    child.stdin.end();
+    out.exitedOnStdinClose = await new Promise((ok) => { child.on('exit', () => ok(true)); setTimeout(() => ok(false), 5000); });
+    const callLog = join(home, 'aws-calls.log');
+    out.fakeAwsCalls = existsSync(callLog) ? readFileSync(callLog, 'utf8').trim().split('\n').filter(Boolean) : [];
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -1408,6 +1504,18 @@ function verdicts(R) {
       const reason = k === 'cb-month' ? /codeburn: no data directory found/.test(t) : /Earlier weeks unavailable: codeburn: history store is locked/.test(t);
       add('B5 ' + k, 'a codeburn failure shows codeburn\'s own line, no argv or paths', reason && !leaks.length, leaks.length ? 'leaks ' + leaks.join(', ') : t.slice(0, 300));
     }
+  }
+  if (S.stdio) {
+    const U = S.stdio;
+    add('U1', 'dashboard --serve-stdio says hello (api 1, the dist/ui bundle) and the bundle draws the Dashboard through the embedded transport',
+      U.hello?.hello === 'prism.dashboard.stdio' && U.hello.api === 1 && U.hello.ui && U.kind === 'vscode' && U.dashboard?.cards === 4 && U.dashboard.repos >= 3, JSON.stringify({ h: U.hello, k: U.kind, d: U.dashboard }));
+    add('U2', 'a Security Agent findings page reads /api/security-run over stdio', U.findings > 0 && U.relayed.includes('get /api/security-run'), JSON.stringify({ f: U.findings, r: U.relayed.slice(-5) }));
+    add('U3', 'a report link asks the host (no navigation) and /api/report answers its HTML, without script, and its Markdown',
+      U.reports.length === 1 && U.reportHashAfter === '' && U.report?.status === 200 && U.report.html && !U.report.script && U.report.md, JSON.stringify({ r: U.reports, h: U.reportHashAfter, rep: U.report }));
+    add('U4', 'the same refusals as over HTTP: confirm needed (400), the AWS write gate (409)', U.noConfirm?.status === 400 && /confirm: true/.test(U.noConfirm.error) && U.writeGate === 409, JSON.stringify({ n: U.noConfirm, w: U.writeGate }));
+    add('U5', 'a confirmed action runs over stdio: Run disabled until the checkbox, exit 0, the saved connection file removed', U.runDisabled === true && /exit 0/.test(U.actionResult || '') && U.connectionFileGone, JSON.stringify({ d: U.runDisabled, a: U.actionResult, g: U.connectionFileGone }));
+    add('U6', 'the embedded page cannot fetch (connect-src none), breaks no CSP rule before that probe, and only allowlisted routes were relayed', U.fetch === 'blocked' && U.cspBeforeProbe === 0 && !U.dropped.length, JSON.stringify({ f: U.fetch, c: U.cspBeforeProbe, d: U.dropped }));
+    add('U7', 'the stdio child listens on no port, exits when stdin closes, and the fake aws saw no write call', !U.listen && U.exitedOnStdinClose && U.fakeAwsCalls.every((c) => READ_ONLY_AWS.test(c)), JSON.stringify({ l: U.listen, e: U.exitedOnStdinClose, a: U.fakeAwsCalls }));
   }
   return out;
 }

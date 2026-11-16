@@ -19,7 +19,9 @@ export const THEME_BOOT = `(function(){try{var t=localStorage.getItem('prism-the
 /** The header toggle: Light, Dark (the default) or System (follows prefers-color-scheme). Saved in localStorage only. */
 export const THEME_SCRIPT = `
 const THEME_KEY = 'prism-theme';
-function storedTheme() { try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' || t === 'system' ? t : 'dark'; } catch (e) { return 'dark'; } }
+/** No saved choice: the theme the document starts with (dark on the browser page; the editor's or Kiro Crew's in an embedding host). */
+const THEME_DEFAULT = ((t) => (t === 'light' || t === 'system' ? t : 'dark'))(document.documentElement.getAttribute('data-theme'));
+function storedTheme() { try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' || t === 'system' ? t : THEME_DEFAULT; } catch (e) { return THEME_DEFAULT; } }
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   for (const b of document.querySelectorAll('[data-theme-set]')) b.setAttribute('aria-pressed', String(b.getAttribute('data-theme-set') === t));
@@ -81,7 +83,34 @@ const ACTION_PANEL = el('div', { class: 'drawer', id: 'action-drawer', role: 're
 DRAWER_CLOSE.addEventListener('click', () => { ACTION_PANEL.hidden = true; });
 document.body.append(ACTION_PANEL);
 
-/** GET, or POST JSON with the CSRF header. referrerPolicy same-origin so the browser sends this page's Origin. */
+/**
+ * The Transport every read and action goes through: get(path, query) and act(path, body), each
+ * resolving to { ok, status, json }. The browser page uses this one: a same-origin GET, or a POST
+ * of JSON with the CSRF header (referrerPolicy same-origin so the browser sends this page's Origin).
+ * A host with no server (the VS Code webview, the Kiro Crew app page) sets window.PRISM_TRANSPORT
+ * from bridge.js before this script runs; it relays the same { path, query, body } to the same
+ * handlers through prism-cli dashboard --serve-stdio. There reports is false and openReport(id) asks the host
+ * to show the report (from GET /api/report), since the embedded page has no /report/<id> page to link to.
+ */
+async function fetchAnswer(res) {
+  let json = null;
+  try { json = await res.json(); } catch (e) { json = null; }
+  return { ok: res.ok, status: res.status, json: json || { error: 'HTTP ' + res.status } };
+}
+const BROWSER_TRANSPORT = {
+  kind: 'browser', reports: true,
+  get: async (path, query) => {
+    const q = new URLSearchParams(query || {}).toString();
+    return fetchAnswer(await fetch(path + (q ? '?' + q : ''), { credentials: 'same-origin', cache: 'no-store' }));
+  },
+  act: async (path, body) => fetchAnswer(await fetch(path, {
+    method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-Prism-CSRF': CSRF }, body: JSON.stringify(body),
+  })),
+};
+const TRANSPORT = window.PRISM_TRANSPORT || BROWSER_TRANSPORT;
+
+/** GET, or an action (POST) when there is a body. The path may carry its query string; it is split off for the transport. */
 async function api(path, body) {
   // A static snapshot answers the two reads it embeds and refuses everything else; it never fetches.
   if (SNAPSHOT) {
@@ -89,14 +118,10 @@ async function api(path, body) {
     if (body === undefined && path === '/api/action/status') return { ok: true, status: 200, json: { state: 'idle' } };
     return { ok: false, status: 0, json: { error: 'this is a static snapshot: nothing runs from it' } };
   }
-  const init = body === undefined ? { credentials: 'same-origin', cache: 'no-store' } : {
-    method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'X-Prism-CSRF': CSRF }, body: JSON.stringify(body),
-  };
-  const res = await fetch(path, init);
-  let json = null;
-  try { json = await res.json(); } catch (e) { json = null; }
-  return { ok: res.ok, status: res.status, json: json || { error: 'HTTP ' + res.status } };
+  const q = path.indexOf('?');
+  const pathname = q < 0 ? path : path.slice(0, q);
+  const query = q < 0 ? {} : Object.fromEntries(new URLSearchParams(path.slice(q + 1)));
+  return body === undefined ? TRANSPORT.get(pathname, query) : TRANSPORT.act(pathname, body);
 }
 
 function ago(iso) {
