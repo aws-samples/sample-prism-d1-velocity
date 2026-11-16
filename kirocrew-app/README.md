@@ -166,6 +166,9 @@ How it works:
   to 20 KB, and passes them to `prism-cli dashboard --serve-stdio`, which checks each one again with
   the browser dashboard's own code: exact route names, the action allowlist, `confirm: true` where
   needed, and the Security Agent check before an AWS upload.
+- Every link inside the frame changes only its own fragment (one click handler in the shared UI):
+  a srcdoc frame resolves `#security` against the PRISM page's own URL, so following it would load
+  that page into the sandboxed frame. A link to another site opens outside it or not at all.
 - The report is untrusted HTML. It is shown in an `<iframe sandbox="">` (no scripts at all) with a
   CSP that allows only its inline styles.
 
@@ -175,7 +178,8 @@ The `--serve-stdio` child:
   exit, so the CLI keeps its caches and a running action;
 - is restarted when it exits, with backoff (1 s doubling to 60 s);
 - is restarted before the next request when the installed prism-cli changed (an npm update, or a
-  new `cliPath`);
+  new `cliPath`); an open PRISM tab then redraws itself from the new prism-cli's UI on its next
+  request (every answer carries the CLI's version), back on the Dashboard view;
 - is one per gateway: a pid file in the app's data folder (`serve-stdio.pid`) lets the next gateway
   stop one an earlier gateway left behind;
 - stops with the gateway: its stdin is a pipe from the gateway, which the system closes when the

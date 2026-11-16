@@ -254,7 +254,7 @@ const SCAN_LABEL = { ok: ['ok', 'ok'], 'not-scanned': ['warn', 'not scanned'], '
 function reportLink(id, label) {
   // A host with no /report pages (VS Code, Kiro Crew) opens the report itself, from GET /api/report.
   if (!SNAPSHOT && typeof TRANSPORT.openReport === 'function') {
-    const b = el('a', { href: '#', class: 'rlink', role: 'button' }, label);
+    const b = el('a', { href: '#', class: 'rlink', role: 'button', 'data-own-click': '' }, label);
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); TRANSPORT.openReport(id); });
     return b;
   }
@@ -299,7 +299,7 @@ function commitsList(c) {
 }
 
 /** Opens the repo's own view (#repo/<id>); the browser's Back returns here. */
-const openRepo = (id) => { location.hash = '#repo/' + id; };
+const openRepo = (id) => { navigate('#repo/' + id); };
 
 function codewatchRow(r, cur) {
   const repo = el('a', { href: '#repo/' + r.id }, labelOf(r));

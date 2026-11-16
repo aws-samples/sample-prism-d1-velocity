@@ -1,7 +1,7 @@
 // The page's pure parts, with a stub createElement; run with `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkMessage, errorBody, relay, renderReport, renderUpdate, srcdocFor, UPDATE_CMD, withReportCsp } from '../ui/index.mjs';
+import { bundleOutdated, checkMessage, errorBody, relay, renderReport, renderUpdate, srcdocFor, UPDATE_CMD, withReportCsp } from '../ui/index.mjs';
 
 const h = (tag, props, ...children) => ({ tag, props: props || {}, children: children.flat() });
 const walk = (n, f) => { if (n && typeof n === 'object') { f(n); n.children.forEach((c) => walk(c, f)); } };
@@ -38,9 +38,9 @@ test('relay: reads by GET with the query as JSON, actions by POST, an SDK error 
     get: async (u) => { calls.push(['GET', u]); return { status: 200, json: { ok: 1 } }; },
     post: async (u, b) => { calls.push(['POST', u, b]); return { status: 400, json: { error: 'this action needs confirm: true' } }; },
   };
-  assert.deepEqual(await relay(api, { op: 'get', path: '/api/security-run', query: { repo: 'a', run: 'b&c' } }), { status: 200, json: { ok: 1 } });
+  assert.deepEqual(await relay(api, { op: 'get', path: '/api/security-run', query: { repo: 'a', run: 'b&c' } }), { status: 200, json: { ok: 1 }, version: '' });
   assert.equal(calls[0][1], '/api/apps/prism/ui/get?path=%2Fapi%2Fsecurity-run&query=%7B%22repo%22%3A%22a%22%2C%22run%22%3A%22b%26c%22%7D');
-  assert.deepEqual(await relay(api, { op: 'act', path: '/api/action', body: { action: 'aws-disconnect' } }), { status: 400, json: { error: 'this action needs confirm: true' } });
+  assert.deepEqual(await relay(api, { op: 'act', path: '/api/action', body: { action: 'aws-disconnect' } }), { status: 400, json: { error: 'this action needs confirm: true' }, version: '' });
   assert.deepEqual(calls[1], ['POST', '/api/apps/prism/ui/act', { path: '/api/action', body: { action: 'aws-disconnect' } }]);
   const denied = { get: async () => { throw Object.assign(new Error('API 403'), { status: 403, body: '{"error":"owner only"}' }); } };
   assert.deepEqual(await relay(denied, { op: 'get', path: '/api/data', query: {} }), { status: 403, json: { error: 'owner only' } });
@@ -66,4 +66,14 @@ test('report overlay: an empty sandbox and the report CSP first in head', () => 
   assert.equal(frame.props.sandbox, '');
   assert.match(frame.props.srcDoc, /^<html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">/);
   assert.match(withReportCsp('plain'), /^<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy"/);
+});
+
+test('an answer from another prism-cli version means the bundle on screen is outdated', async () => {
+  const api = { get: async () => ({ status: 200, json: {}, version: '1.21.3' }) };
+  const a = await relay(api, { op: 'get', path: '/api/data', query: {} });
+  assert.equal(a.version, '1.21.3');
+  assert.equal(bundleOutdated('1.21.2', a.version), true);
+  assert.equal(bundleOutdated('1.21.3', a.version), false);
+  assert.equal(bundleOutdated('', '1.21.3'), false, 'no bundle drawn yet');
+  assert.equal(bundleOutdated('1.21.2', ''), false, 'an answer without a version (a refusal from the gateway) is not an update');
 });

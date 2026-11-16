@@ -164,7 +164,7 @@ function saStart(a, repo) {
   if (!SA_FORCE[a.id] || (!g.running && !g.reviewed)) { saConfirm(a, repo); return; }
   saDialog();
   const cancel = el('button', { type: 'button' }, 'Cancel');
-  const go = (hash) => { DIALOG.close(); location.hash = hash; };
+  const go = (hash) => { DIALOG.close(); navigate(hash); };
   const kids = [el('h2', { id: 'confirm-title' }, a.label)];
   if (g.running) {
     const r = g.running, force = actionDef(SA_FORCE[a.id]);
@@ -218,7 +218,7 @@ function saSelect(repo) {
     if (r.id === repo.id) o.setAttribute('selected', '');
     sel.append(o);
   }
-  sel.addEventListener('change', () => { SA_PICK = sel.value; location.hash = '#security/' + sel.value; });
+  sel.addEventListener('change', () => { SA_PICK = sel.value; navigate('#security/' + sel.value); });
   return sel;
 }
 

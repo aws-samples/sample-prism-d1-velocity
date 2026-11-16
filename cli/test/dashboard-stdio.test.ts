@@ -135,3 +135,15 @@ test('serveStdio answers a last line with no newline, and stops serving when std
   out2.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
   await d2; // resolves instead of throwing
 });
+
+test('every in-app navigation goes through navigate(): one capture-phase link handler, no raw location.hash writes', () => {
+  const js = uiBundle().js;
+  assert.match(js, /document\.addEventListener\('click', routeLinkClick, true\)/);
+  assert.match(js, /document\.addEventListener\('auxclick', routeLinkClick, true\)/);
+  // The one write is inside navigate(); any other would bypass it.
+  assert.equal((js.match(/location\.hash\s*=[^=]/g) || []).length, 1);
+  assert.ok(!/window\.open\(|location\.(href|assign|replace)\b\s*[=(]/.test(js), 'nothing else navigates the document');
+  assert.ok(!/<form\b|el\('form'/.test(js + uiBundle().body), 'no form can submit and navigate the frame');
+  // A link with its own click handler (the report buttons) is left to it.
+  assert.match(js, /'data-own-click': ''/);
+});
