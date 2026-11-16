@@ -8,6 +8,7 @@
 //   (cd tests/e2e && npm ci) && node tests/e2e/run.mjs        the local build (../cli/dist; npm run build in cli/ first)
 //   PRISM_CLI=/path/to/prism-cli          another prism-cli, e.g. one installed from npm
 //   PRISM_CLI_OLD=/path/to/old/prism-cli  also checks the update page against an older prism-cli
+//   PRISM_CLI_OTHER=/path/to/prism-cli    another 1.21.0+ version: an open tab redraws from its bundle by itself
 //   KC_PYTHON=/path/to/python3            a Python with aiohttp (default: python3)
 //   PRISM_E2E_THEME=light                 Kiro Crew's light theme (default: dark)
 // Writes results.json and shots/*.png to $PRISM_E2E_OUT (default: <tmp>/prism-kirocrew-e2e); exits 1 when a verdict fails.
@@ -26,6 +27,8 @@ const OUT = process.env.PRISM_E2E_OUT || join(tmpdir(), 'prism-kirocrew-e2e');
 const SHOTS = join(OUT, 'shots');
 mkdirSync(SHOTS, { recursive: true });
 const PY = process.env.KC_PYTHON || 'python3';
+/** The origin the page is served from, as the real gateway serves it (https, page under /apps/prism). */
+const HOST = 'https://kirocrew.test';
 /** PRISM_E2E_THEME=light: the host page and the PRISM page in Kiro Crew's light theme. */
 const THEME = process.env.PRISM_E2E_THEME === 'light' ? 'light' : 'dark';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -93,7 +96,20 @@ try {
   page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) csp.push(m.text().slice(0, 200)); });
   page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)));
   page.on('request', (q) => { const u = new URL(q.url()); if (u.pathname.startsWith('/api/apps/prism/ui/')) relayed.push(`${q.method()} ${u.pathname}${u.searchParams.get('path') ? ' ' + u.searchParams.get('path') : ''}${q.postData() ? ' ' + q.postData().slice(0, 120) : ''}`); });
-  await page.goto(url);
+  // Hosted the way the real gateway hosts it: the page at an https URL under /apps/prism, the bundle in a
+  // sandboxed srcdoc iframe whose base URL is that https URL. Every request to the https origin is answered
+  // by the stand-in gateway (with its session cookie, and its own Origin on a POST).
+  const gw = new URL(url), token = gw.searchParams.get('token');
+  await page.route(`${HOST}/**`, async (route) => {
+    const q = new URL(route.request().url());
+    const target = new URL((q.pathname === '/apps/prism' ? '/' : q.pathname) + q.search, gw.origin);
+    const headers = { ...route.request().headers(), cookie: `kc_stand_in=${token}` };
+    if (headers.origin) headers.origin = gw.origin;
+    try { await route.fulfill({ response: await route.fetch({ url: target.href, headers }) }); } catch { await route.abort(); }
+  });
+  let pageNavigations = 0;
+  page.on('framenavigated', (fr) => { if (fr === page.mainFrame()) pageNavigations++; });
+  await page.goto(`${HOST}/apps/prism`);
   await page.waitForSelector('iframe[title=PRISM]', { timeout: 60000 });
   const frame = () => page.frames().find((f) => f !== page.mainFrame() && f.parentFrame() === page.mainFrame() && f.name() !== 'report');
   let f = frame();
@@ -102,6 +118,40 @@ try {
   R.checks.K1 = { kind: await f.evaluate(() => TRANSPORT.kind), cards: await f.$$eval('#summary .scard', (n) => n.length), repos: await f.$$eval('#codewatch tbody tr', (n) => n.length),
     sandbox: await page.$eval('iframe[title=PRISM]', (x) => x.getAttribute('sandbox')) };
   await page.screenshot({ path: join(SHOTS, 'page-dashboard.png') });
+
+  // Real clicks on every kind of in-app link. The frame must stay on its own document (about:srcdoc),
+  // the view must change, and the page must not be blank; no new tab may open.
+  const clicks = [];
+  const state = async () => {
+    const fr = frame();
+    if (!fr) return { url: 'no frame' };
+    return { url: fr.url(), ...(await fr.evaluate(() => {
+      const shown = [...document.querySelectorAll('main')].find((m) => !m.hidden && getComputedStyle(m).display !== 'none');
+      return { hash: location.hash, view: shown ? shown.id : null, text: shown ? shown.innerText.trim().length : 0, bg: getComputedStyle(document.body).backgroundColor };
+    }).catch((e) => ({ error: String(e).slice(0, 120) }))) };
+  };
+  const tabsBefore = ctx.pages().length;
+  const click = async (name, selector, opts = {}, how = 'click') => {
+    const fr = frame();
+    const loc = fr.locator(selector).first();
+    if (!(await loc.count())) { clicks.push({ name, missing: selector }); return; }
+    if (how === 'enter') { await loc.focus(); await page.keyboard.press('Enter'); } else await loc.click(opts);
+    await sleep(900);
+    clicks.push({ name, ...(await state()), tabs: ctx.pages().length - tabsBefore });
+  };
+  await click('nav: Security Agent', 'nav.tabs a[data-view="security"]');
+  await click('nav: AccountGuard', 'nav.tabs a[data-view="accountguard"]');
+  await click('nav: Settings', 'nav.tabs a[data-view="settings"]');
+  await click('Settings tab: AWS', '#settings a[data-tab="aws"]');
+  await click('nav: Dashboard', 'nav.tabs a[data-view="dashboard"]');
+  await click('repo link', '#codewatch tbody a[href^="#repo/"]');
+  await click('crumb back to Dashboard', '#repo .crumbs a[href="#"]');
+  await click('findings link', '#main a[href^="#security/run/"]');
+  await click('nav: Settings by keyboard (Enter)', 'nav.tabs a[data-view="settings"]', {}, 'enter');
+  await click('nav: Security Agent by middle click (stays in the frame)', 'nav.tabs a[data-view="security"]', { button: 'middle' });
+  await click('nav: Dashboard by ctrl+click (stays in the frame)', 'nav.tabs a[data-view="dashboard"]', { modifiers: ['Control'] });
+  R.checks.K12 = clicks;
+  await page.screenshot({ path: join(SHOTS, 'page-after-clicks.png') });
 
   // A report link: the page reads /api/report and shows it in an empty-sandbox overlay.
   await f.locator('#codewatch a.rlink').first().click();
@@ -161,6 +211,30 @@ try {
   await f.waitForSelector('#summary', { timeout: 60000 }).catch(() => {});
   R.checks.K9 = { before: prev, after: childPid(d), prevGone: !alive(prev), drawn: !!(await f.$('#summary')), children: serveStdioChildren(g.gw.pid) };
 
+  // prism-cli updated while the tab is open: the next answer carries the new version and the page redraws from
+  // the new bundle by itself (no reload of the tab).
+  if (process.env.PRISM_CLI_OTHER) {
+    const navBefore = pageNavigations;
+    // The bundle on screen, not the data: the version pill follows /api/data, which the new CLI answers either way.
+    const srcdoc = () => page.$eval('iframe[title=PRISM]', (x) => x.getAttribute('srcdoc') || '').catch(() => '');
+    const docBefore = await srcdoc();
+    const shownBefore = await f.evaluate(() => document.querySelector('.verpill')?.textContent || '');
+    writeFileSync(join(d.data, 'config.json'), JSON.stringify({ cliPath: process.env.PRISM_CLI_OTHER }));
+    const want = execFileSync(process.env.PRISM_CLI_OTHER, ['--version'], { env: d.env, encoding: 'utf8' }).trim();
+    await f.click('#refresh');
+    let shownAfter = '';
+    for (let i = 0; i < 60; i++) {
+      await sleep(500);
+      const fr = frame();
+      shownAfter = fr ? await fr.evaluate(() => document.querySelector('.verpill')?.textContent || '').catch(() => '') : '';
+      if (shownAfter.includes(want) && (await srcdoc()) !== docBefore) break;
+    }
+    const docAfter = await srcdoc();
+    f = frame();
+    R.checks.K13 = { shownBefore, want, shownAfter, url: f ? f.url() : null, tabReloads: pageNavigations - navBefore, bundleRedrawn: docAfter !== docBefore && docAfter.length > 1000 };
+    await page.screenshot({ path: join(SHOTS, 'page-after-cli-update.png') });
+  }
+
   // An older prism-cli: the page shows only how to update.
   if (process.env.PRISM_CLI_OLD) {
     writeFileSync(join(d.data, 'config.json'), JSON.stringify({ cliPath: process.env.PRISM_CLI_OLD }));
@@ -186,7 +260,7 @@ try {
 }
 
 const C = R.checks, v = [];
-const add = (id, name, pass, why) => v.push({ id, name, pass: !!pass, why: pass ? '' : JSON.stringify(why).slice(0, 400) });
+const add = (id, name, pass, why) => v.push({ id, name, pass: !!pass, why: pass ? '' : String(JSON.stringify(why)).slice(0, 400) });
 add('K1', 'the page draws the Dashboard from prism-cli\'s own bundle in an allow-scripts-only sandbox', C.K1 && C.K1.kind === 'embedded' && C.K1.cards === 4 && C.K1.repos >= 3 && C.K1.sandbox === 'allow-scripts', C.K1);
 add('K2', 'a Security Agent findings page', C.K2?.findings > 0, C.K2);
 add('K3', 'a report link opens the report in an empty-sandbox overlay with its CSP and no script, no navigation', C.K3?.overlay?.sandbox === '' && C.K3.overlay.csp && !C.K3.overlay.script && C.K3.hash === '', C.K3);
@@ -197,6 +271,14 @@ add('K6', 'the frame cannot fetch, read the parent or the cookie; 0 CSP violatio
 add('K7', 'on_startup starts the one child before any request', C.K7?.childBeforeFirstRequest && C.K7.children === '1', C.K7);
 add('K8', 'a crashed child is restarted and the page draws again, still one child', C.K8 && C.K8.after && C.K8.after !== C.K8.before && C.K8.drawn && C.K8.children === '1', C.K8);
 add('K9', 'a new prism-cli is picked up before the next request: the old child stops, one new child', C.K9 && C.K9.after !== C.K9.before && C.K9.prevGone && C.K9.drawn && C.K9.children === '1', C.K9);
+if (process.env.PRISM_CLI_OTHER) add('K13', 'after prism-cli changes version, the open tab redraws from the new bundle on its next request, without a reload of the tab',
+  C.K13 && C.K13.shownAfter.includes(C.K13.want) && !C.K13.shownBefore.includes(C.K13.want) && /^about:srcdoc/.test(C.K13.url || '') && C.K13.tabReloads === 0 && C.K13.bundleRedrawn, C.K13);
+const EXPECT_VIEW = { 'nav: Security Agent': 'security', 'nav: AccountGuard': 'accountguard', 'nav: Settings': 'settings', 'Settings tab: AWS': 'settings', 'nav: Dashboard': 'main',
+  'repo link': 'repo', 'crumb back to Dashboard': 'main', 'findings link': 'security', 'nav: Settings by keyboard (Enter)': 'settings',
+  'nav: Security Agent by middle click (stays in the frame)': 'security', 'nav: Dashboard by ctrl+click (stays in the frame)': 'main' };
+const badClick = (c) => c.missing || !/^about:srcdoc/.test(c.url || '') || c.view !== EXPECT_VIEW[c.name] || !(c.text > 50) || /rgba?\(255, 255, 255/.test(c.bg || '') || c.tabs !== 0;
+add('K12', 'clicking every kind of in-app link (top nav, a Settings tab, a repo, a crumb, a findings link; Enter, middle and ctrl click) keeps the frame on about:srcdoc, changes the view and opens no tab',
+  Array.isArray(C.K12) && C.K12.length === Object.keys(EXPECT_VIEW).length && !C.K12.some(badClick), (C.K12 || []).filter(badClick));
 add('K11', 'on_shutdown stops the child and removes its pid file', C.K11?.stopped && !C.K11.pidFile, C.K11);
 add('aws', 'the fake aws saw read-only calls only', Array.isArray(C.aws) && C.aws.every((x) => READ_ONLY_AWS.test(x)), C.aws);
 if (process.env.PRISM_CLI_OLD) add('K10', 'an older prism-cli: only "Update prism-cli to 1.21.0 or later" and the npm command, no frame',

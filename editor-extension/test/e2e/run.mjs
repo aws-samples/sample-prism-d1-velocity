@@ -90,11 +90,55 @@ try {
     post: (msg) => page.evaluate((x) => window.dispatchEvent(new MessageEvent('message', { data: x })), msg),
   }));
   await page.addInitScript(() => { let used = false; window.acquireVsCodeApi = () => { if (used) throw new Error('acquireVsCodeApi called twice'); used = true; return { postMessage: (m) => window.__vscodePost(m), getState: () => undefined, setState: () => {} }; }; });
+  // VS Code's webview host script handles link clicks itself (a window click listener, after the page's own
+  // handlers): an href="#x" only scrolls to the element and is cancelled, any other link is cancelled and
+  // handed to the editor ("did-click-link"). Modelled here so an in-app link that relies on the default
+  // fragment navigation fails in the harness as it does in VS Code.
+  // shortcut: a model of VS Code's handleInnerClick written from its documented behaviour; check it if VS Code changes it.
+  const external = [];
+  await page.exposeBinding('__vscodeDidClickLink', (_s, href) => { external.push(href); });
+  await page.addInitScript(() => {
+    window.addEventListener('click', (e) => {
+      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!a || e.defaultPrevented) return;
+      const href = a.getAttribute('href');
+      if (href === '#') window.scrollTo(0, 0);
+      else if (href.startsWith('#')) document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView();
+      else window.__vscodeDidClickLink(a.href);
+      e.preventDefault();
+    });
+  });
   await page.goto(WEBVIEW);
   await page.waitForSelector('#summary', { timeout: 60000 });
   await sleep(1500);
   R.checks.V1 = { hello: { api: hello.api, version: hello.version }, kind: await page.evaluate(() => TRANSPORT.kind), cards: await page.$$eval('#summary .scard', (n) => n.length), repos: await page.$$eval('#codewatch tbody tr', (n) => n.length) };
   await page.screenshot({ path: join(SHOTS, 'panel-dashboard.png') });
+
+  // Real clicks on every kind of in-app link: the webview stays on its document, the view changes, nothing opens outside.
+  const clicks = [];
+  const tabsBefore = ctx.pages().length;
+  const click = async (name, selector, opts = {}, how = 'click') => {
+    const loc = page.locator(selector).first();
+    if (!(await loc.count())) { clicks.push({ name, missing: selector }); return; }
+    if (how === 'enter') { await loc.focus(); await page.keyboard.press('Enter'); } else await loc.click(opts);
+    await sleep(900);
+    clicks.push({ name, url: page.url().split('#')[0], ...(await page.evaluate(() => {
+      const shown = [...document.querySelectorAll('main')].find((m) => !m.hidden && getComputedStyle(m).display !== 'none');
+      return { hash: location.hash, view: shown ? shown.id : null, text: shown ? shown.innerText.trim().length : 0 };
+    })), tabs: ctx.pages().length - tabsBefore, external: external.length });
+  };
+  await click('nav: Security Agent', 'nav.tabs a[data-view="security"]');
+  await click('nav: AccountGuard', 'nav.tabs a[data-view="accountguard"]');
+  await click('nav: Settings', 'nav.tabs a[data-view="settings"]');
+  await click('Settings tab: AWS', '#settings a[data-tab="aws"]');
+  await click('nav: Dashboard', 'nav.tabs a[data-view="dashboard"]');
+  await click('repo link', '#codewatch tbody a[href^="#repo/"]');
+  await click('crumb back to Dashboard', '#repo .crumbs a[href="#"]');
+  await click('findings link', '#main a[href^="#security/run/"]');
+  await click('nav: Settings by keyboard (Enter)', 'nav.tabs a[data-view="settings"]', {}, 'enter');
+  await click('nav: Security Agent by middle click (stays in the panel)', 'nav.tabs a[data-view="security"]', { button: 'middle' });
+  await click('nav: Dashboard by ctrl+click (stays in the panel)', 'nav.tabs a[data-view="dashboard"]', { modifiers: ['Control'] });
+  R.checks.V9 = clicks;
 
   // A report link: the panel asks the extension, which reads /api/report and shows it with scripts off.
   await page.locator('#codewatch a.rlink').first().click();
@@ -168,7 +212,7 @@ try {
 }
 
 const C = R.checks, v = [];
-const add = (id, name, pass, why) => v.push({ id, name, pass: !!pass, why: pass ? '' : JSON.stringify(why).slice(0, 400) });
+const add = (id, name, pass, why) => v.push({ id, name, pass: !!pass, why: pass ? '' : String(JSON.stringify(why)).slice(0, 400) });
 add('V1', 'the panel draws the Dashboard from prism-cli\'s own bundle over --serve-stdio (1.21.0 or later)', C.V1 && host.cliIsCurrent(C.V1.hello.version) && C.V1.kind === 'vscode' && C.V1.cards === 4 && C.V1.repos >= 3, C.V1);
 add('V2', 'a Security Agent findings page', C.V2?.findings > 0, C.V2);
 add('V3', 'a report link opens the report in the extension (no navigation), HTML without script', C.V3?.reports === 1 && C.V3.html && !C.V3.script && C.V3.hash === '', C.V3);
@@ -176,6 +220,12 @@ add('V4', 'a local confirm action: the panel dialog only, Run disabled until the
 add('V5', 'an AWS write asks the native modal first; declined, it never reaches prism-cli and the drawer says so',
   C.V5?.asked.length === 1 && /Start a code review of this branch\? This writes to AWS/.test(C.V5.asked[0]) && /Cancelled in VS Code/.test(C.V5.drawer) && C.V5.relayed === 0, C.V5);
 add('V6', 'no CSP violation before the fetch probe, no page error, fetch blocked, the child listens on no port', C.V6 && C.V6.csp === 0 && !C.V6.errors.length && C.V6.fetch === 'blocked' && !C.V6.listen, C.V6);
+const EXPECT_VIEW = { 'nav: Security Agent': 'security', 'nav: AccountGuard': 'accountguard', 'nav: Settings': 'settings', 'Settings tab: AWS': 'settings', 'nav: Dashboard': 'main',
+  'repo link': 'repo', 'crumb back to Dashboard': 'main', 'findings link': 'security', 'nav: Settings by keyboard (Enter)': 'settings',
+  'nav: Security Agent by middle click (stays in the panel)': 'security', 'nav: Dashboard by ctrl+click (stays in the panel)': 'main' };
+const badClick = (c) => c.missing || c.url !== WEBVIEW || c.view !== EXPECT_VIEW[c.name] || !(c.text > 50) || c.tabs !== 0 || c.external !== 0;
+add('V9', 'clicking every kind of in-app link (top nav, a Settings tab, a repo, a crumb, a findings link; Enter, middle and ctrl click) keeps the webview on its document, changes the view and hands nothing to the editor',
+  Array.isArray(C.V9) && C.V9.length === Object.keys(EXPECT_VIEW).length && !C.V9.some(badClick), (C.V9 || []).filter(badClick));
 add('V7', 'closing the panel stops the child', C.V7?.exited, C.V7);
 add('aws', 'the fake aws saw read-only calls only', Array.isArray(C.aws) && C.aws.every((x) => READ_ONLY_AWS.test(x)), C.aws);
 if (process.env.PRISM_CLI_OLD) add('V8', 'an older prism-cli: the panel shows only "Update prism-cli to 1.21.0 or later" and the npm command',

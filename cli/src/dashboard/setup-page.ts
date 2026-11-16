@@ -109,6 +109,42 @@ const BROWSER_TRANSPORT = {
   })),
 };
 const TRANSPORT = window.PRISM_TRANSPORT || BROWSER_TRANSPORT;
+/** True in a host with no server (VS Code, Kiro Crew): the page must never navigate its own frame. */
+const EMBEDDED = TRANSPORT !== BROWSER_TRANSPORT;
+
+/**
+ * Every in-app navigation goes through here: it only ever changes the fragment of this document.
+ * In a srcdoc iframe the document's base URL is its PARENT's, so a plain href="#x" resolves to
+ * <gateway>/apps/prism#x and following it loads that page into the sandboxed frame (white). Setting
+ * location.hash keeps the frame on its own document in every host.
+ */
+function navigate(hash) {
+  location.hash = txt(hash).replace(/^#?/, '#');
+}
+/**
+ * One capture-phase handler for every link click, so no link reaches the browser's default
+ * navigation with a relative fragment. A plain click on an in-app link (href starting with #) is
+ * routed through navigate(). In the browser a modifier or middle click keeps its default (a new
+ * tab of the same dashboard). In an embedded host it is kept in this frame, and any other link
+ * that would load into this frame (no target=_blank) is refused: the frame never leaves its document.
+ * Links that handle their own click (data-own-click, the report buttons) are left to their handler.
+ */
+function routeLinkClick(e) {
+  const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+  if (!a || a.hasAttribute('data-own-click')) return;
+  const href = a.getAttribute('href') || '';
+  const plain = e.type === 'click' && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+  if (href.startsWith('#')) {
+    if (!plain && !EMBEDDED) return;
+    e.preventDefault();
+    navigate(href);
+    return;
+  }
+  // An external link opens outside the frame (target=_blank); anything else would replace the frame's document.
+  if (EMBEDDED && a.getAttribute('target') !== '_blank') e.preventDefault();
+}
+document.addEventListener('click', routeLinkClick, true);
+document.addEventListener('auxclick', routeLinkClick, true);
 
 /** GET, or an action (POST) when there is a body. The path may carry its query string; it is split off for the transport. */
 async function api(path, body) {

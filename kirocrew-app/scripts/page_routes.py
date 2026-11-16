@@ -11,8 +11,9 @@ no process with a port: requests go to one `prism-cli dashboard --serve-stdio` c
   GET  /ui/get?path=&query=   a read route of the dashboard API (query: a JSON object of strings)
   POST /ui/act {path, body}   an action route of the dashboard API
 
-/ui/get and /ui/act answer 200 with the CLI's own {status, json}, so a refusal (a missing
-confirm, the AWS write gate) reaches the page as an answer. prism-cli missing or older than
+/ui/get and /ui/act answer 200 with the CLI's own {status, json} and its version, so a refusal (a
+missing confirm, the AWS write gate) reaches the page as an answer, and a page whose bundle came
+from another prism-cli version reloads it. prism-cli missing or older than
 1.21.0: 503 with {"error": ..., "update": true, "command": ...}, and the page says only that.
 """
 from __future__ import annotations
@@ -124,7 +125,8 @@ async def _relay(ctx: Any, op: str, path: Any, query: Any, body: Any) -> web.Res
     msg = ub.check_request(op, path, query, body, hello)
     if msg is None:
         return _err(400, "not a PRISM page request")
-    return web.json_response(await ub.SUPERVISOR.request(msg))
+    # The CLI's version rides along, so a page drawn from an older bundle reloads it after an update.
+    return web.json_response({**(await ub.SUPERVISOR.request(msg)), "version": str(hello.get("version", ""))})
 
 
 async def handle_ui_get(request: web.Request, ctx: Any) -> web.Response:

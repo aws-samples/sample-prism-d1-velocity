@@ -53,12 +53,15 @@ export async function relay(api, r) {
     const a = r.op === 'get'
       ? await api.get(`${API}/ui/get?path=${encodeURIComponent(r.path)}&query=${encodeURIComponent(JSON.stringify(r.query))}`)
       : await api.post(`${API}/ui/act`, { path: r.path, body: r.body });
-    return { status: a && typeof a.status === 'number' ? a.status : 502, json: a ? a.json : { error: 'no answer' } };
+    return { status: a && typeof a.status === 'number' ? a.status : 502, json: a ? a.json : { error: 'no answer' }, version: a && typeof a.version === 'string' ? a.version : '' };
   } catch (e) {
     const j = errorBody(e);
     return { status: e && typeof e.status === 'number' ? e.status : 0, json: { error: str(j ? j.error : e && (e.body || e.message)) || 'the gateway refused the request' } };
   }
 }
+
+/** True when an answer came from another prism-cli than the bundle on screen: reload the bundle. */
+export const bundleOutdated = (shown, answered) => !!shown && !!answered && shown !== answered;
 
 /** The report HTML with its CSP first in <head>. */
 export function withReportCsp(html) {
@@ -110,6 +113,8 @@ export default function PrismPage() {
   const api = sdk.useAppApi();
   const theme = typeof sdk.useTheme === 'function' ? sdk.useTheme() : null;
   const frame = useRef(null);
+  /** The prism-cli version of the bundle on screen. */
+  const shownVersion = useRef('');
   const [doc, setDoc] = useState('');
   const [error, setError] = useState('');
   const [update, setUpdate] = useState(null);
@@ -120,13 +125,15 @@ export default function PrismPage() {
   const load = useCallback(() => {
     setError(''); setUpdate(null);
     api.get(API + '/ui/bundle')
-      .then((b) => setDoc(srcdocFor(b, dark ? 'dark' : 'light')))
+      .then((b) => { shownVersion.current = str(b.version); setDoc(srcdocFor(b, dark ? 'dark' : 'light')); })
       .catch((e) => {
         const j = errorBody(e);
         if (j && j.update) setUpdate({ reason: str(j.error).replace(/\s*Update prism-cli to [\s\S]*$/, ''), command: str(j.command) });
         else setError(str(j ? j.error : e && (e.body || e.message)) || 'could not load the PRISM page');
       });
   }, [api, dark]);
+  const loadRef = useRef(load);
+  loadRef.current = load;
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
@@ -141,6 +148,8 @@ export default function PrismPage() {
         return;
       }
       const a = await relay(api, m);
+      // prism-cli was updated while this page was open: the backend already runs the new one; redraw from its bundle.
+      if (bundleOutdated(shownVersion.current, a.version)) { shownVersion.current = a.version; loadRef.current(); return; }
       // The iframe's origin is opaque ("null"), so '*' is the only target that reaches it; the window itself is the target.
       if (frame.current && frame.current.contentWindow) frame.current.contentWindow.postMessage({ type: 'prism-ui:response', id: m.id, status: a.status, json: a.json }, '*');
     };
