@@ -942,6 +942,7 @@ try {
     await phone.page.locator('[data-branch-review]').screenshot({ path: join(SHOTS, 'branch-nothing-card-390.png') }).catch(() => {});
     out.log.push(...phone.log);
     await phone.ctx.close();
+  }
   // ---------- 17. codewatch reviewer and model (1.20): your default in Settings, a repo's override, the team file; a fake claude on PATH ----------
   if (want('reviewer')) {
     const out = { steps: [] };
@@ -1269,6 +1270,7 @@ function verdicts(R) {
     add('BR3', 'a branch review that finds nothing: the drawer shows a neutral "nothing to review", the next step and the whole-repo offer; the CLI says to use --full and uploads nothing',
       B.drawer?.pill === 'nothing to review' && !/s-error|s-ok/.test(B.drawer.pillClass) && B.drawer.hint && B.drawer.offer
       && /No changes against origin\/feat\/receiver-tool-usage; nothing to review\. To review the whole repo at HEAD, run with --full\./.test(B.drawer.out) && !writes.length, JSON.stringify({ ...B.drawer, out: (B.drawer?.out || '').slice(-300) }) + ' writes ' + writes.join('; '));
+  }
   if (S.reviewer) {
     const V = S.reviewer;
     const st = (n) => (V.steps || []).find((x) => x.step === n) || {};
@@ -1280,7 +1282,7 @@ function verdicts(R) {
       && /Reviewer Claude Code.*Model for Claude Code sonnet/.test(V.settingsAfterDefault || '') && [V.shopFollows, V.payFollows].every((c) => /Reviewer Claude Code claude installed From your default .*Model sonnet From your default.*This repo follows your default/.test(c || '')),
       JSON.stringify({ s: st('default'), shop: V.shopFollows, pay: V.payFollows }).slice(0, 500));
     add('CWR3', 'override one repo (git config --local): its card says overridden, Settings lists it with a link',
-      ok('clone') && /--scope clone --model haiku/.test(V.cloneDialog || '') && /claudeModel = haiku/.test(V.localConfig || '') && /Model haiku From overridden for this repo.*This repo overrides your default/.test(V.afterClone || '')
+      ok('clone') && /--scope clone --reviewer claude --model haiku/.test(V.cloneDialog || '') && /claudeModel = haiku/.test(V.localConfig || '') && /Model haiku From overridden for this repo.*This repo overrides your default/.test(V.afterClone || '')
       && /Repos that override it 1 of \d+/i.test(V.settingsWithOverride || '') && V.overrideLink, JSON.stringify({ d: V.cloneDialog, c: V.afterClone, s: V.settingsWithOverride }).slice(0, 500));
     add('CWR4', 'team default: a repo-file warning and a diff before saving, a checkbox in the dialog; other keys kept; the card says team file',
       V.teamWarn && (V.teamDiff || []).some((l) => l === 'add|+    "reviewer": "claude",') && (V.teamDiff || []).some((l) => l.startsWith('del|')) && V.teamDialog?.diff && V.teamDialog.runDisabled

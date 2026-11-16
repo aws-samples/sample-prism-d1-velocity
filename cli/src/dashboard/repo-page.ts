@@ -222,9 +222,8 @@ function cwForm(repo, d, e) {
   save.addEventListener('click', () => {
     if (!a || bad()) return;
     if (e.scope === 'default') { confirmRun(a, { repo: repo.id, where: repo.path, command: 'cd ' + txt(tildePath(repo.path)) + ' && ' + a.command }); return; }
-    // An empty model is the tool's default (auto). This clone's reviewer is written only when it changes.
-    const same = e.scope === 'clone' && e.reviewer === (v.wanted.id || v.reviewer);
-    const body = { repo: repo.id, where: repo.path, reviewer: same ? undefined : e.reviewer, model: m || 'auto' };
+    // An empty model is the tool's default (auto). The reviewer is always sent, so the model is stored for the tool picked here.
+    const body = { repo: repo.id, where: repo.path, reviewer: e.reviewer, model: m || 'auto' };
     body.command = 'cd ' + txt(tildePath(repo.path)) + ' && ' + a.command + (body.reviewer ? ' --reviewer ' + body.reviewer : '') + (body.model !== undefined ? ' --model ' + body.model : '');
     if (e.scope === 'team' && p && p.diff) body.diff = p.diff;
     confirmRun(a, body);
