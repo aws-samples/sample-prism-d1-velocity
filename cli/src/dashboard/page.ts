@@ -15,7 +15,7 @@ import { SETTINGS_SCRIPT, SETTINGS_STYLE } from './settings-page.js';
 import { SECURITY_SCRIPT, SECURITY_STYLE } from './security-page.js';
 import { SECURITY_RUNS_SCRIPT, SECURITY_RUNS_STYLE } from './security-runs-page.js';
 import { ACCOUNTGUARD_SCRIPT, ACCOUNTGUARD_STYLE } from './accountguard-page.js';
-import { REPO_SCRIPT } from './repo-page.js';
+import { REPO_SCRIPT, REPO_STYLE } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
 
 /** Colour tokens. Dark is the default; Light, and System on a light OS, switch to the light set. Light text colours keep at least 4.5:1 on --card, --bg, --raised and --accent-soft. */
@@ -130,6 +130,7 @@ ${SETUP_STYLE}
 ${SETTINGS_STYLE}
 ${SECURITY_STYLE}
 ${SECURITY_RUNS_STYLE}
+${REPO_STYLE}
 ${ACCOUNTGUARD_STYLE}
 `;
 

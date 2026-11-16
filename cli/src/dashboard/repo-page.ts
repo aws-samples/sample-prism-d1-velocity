@@ -6,6 +6,15 @@
 
 import { MAX_SCANS, REVIEW_WINDOW_DAYS } from './codewatch.js';
 
+export const REPO_STYLE = `
+.cwrev fieldset { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; min-width:0; }
+.cwrev legend { font-size:12px; color:var(--muted); padding:0 4px; }
+.cwrev label.opt { display:block; margin:3px 0; overflow-wrap:anywhere; }
+.cwrev input[type=text], .cwrev select { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); max-width:100%; min-width:0; }
+.cwrev input[type=text] { width:22ch; }
+pre.diff span.add { color:var(--ok); } pre.diff span.del { color:var(--bad); }
+`;
+
 export const REPO_SCRIPT = `
 /** Reviews per repo in the payload (codewatch.ts MAX_SCANS); the chart shows all of them. */
 const SCANS_LOADED = ${MAX_SCANS};
@@ -99,11 +108,134 @@ function repoSetup(repo) {
   const label = { ok: 'on', warn: 'bypassed', missing: 'off', 'opted-out': 'opted out' };
   s.append(kv([
     ['Codewatch', sevPill(st.status === 'ok' ? 'ok' : st.status === 'warn' ? 'medium' : 'zero', (label[st.status] || txt(st.status)) + (st.global ? ' (global)' : ''))],
-    ['Reviewer', st.reviewer ? txt(st.reviewer) + (st.model ? ' · ' + st.model : '') : '-'],
     ['Hooks', txt(st.detail || '-')],
   ]));
   if (st.fix) s.append(el('div', { class: 'fix' }, 'Fix: ', el('code', {}, st.fix)));
+  s.append(cwReviewerBlock(repo));
   return s;
+}
+
+/** GET /api/codewatch/reviewer answers per repo id, and the Change form's state (kept across the minute refresh). */
+const CW_REV = new Map();
+let CW_REV_LOADING = null;
+let CW_EDIT = { id: null, open: false, scope: 'clone', reviewer: '', model: '', proposal: null, asked: '' };
+const CW_SCOPES = [['clone', 'Override for this repo', 'just you: git config --local', null], ['default', 'Use my default', 'removes this repo\\'s override; set the default in Settings › Repos', null], ['team', 'Team default', '.prism/config.json, a repo file to commit; the CI eval gate reads it too', 'Reset the team default']];
+
+/** An action finished (the drawer's poll): the settings may have changed, so read them again and close the form. */
+function cwRevInvalidate() { CW_REV.clear(); CW_EDIT = { id: null, open: false }; }
+
+async function cwRevLoad(id) {
+  if (SNAPSHOT || CW_REV_LOADING === id) return;
+  CW_REV_LOADING = id;
+  let r;
+  try { r = await api('/api/codewatch/reviewer?repo=' + id); } catch (e) { r = { ok: false, json: { error: e.message } }; }
+  CW_REV_LOADING = null;
+  CW_REV.set(id, r.ok ? r.json : { error: txt((r.json || {}).error) || 'could not read the reviewer settings' });
+  if (repoRoute() === id) renderRepo(id);
+}
+
+/** Asks the server what the proposed change means: the team pin warning and, for the team scope, the file diff. Read-only. */
+async function cwPropose(id) {
+  const e = CW_EDIT;
+  if (e.scope === 'default') { e.proposal = null; e.asked = ''; return; }
+  const q = '&scope=' + encodeURIComponent(e.scope) + (e.reviewer ? '&reviewer=' + encodeURIComponent(e.reviewer) : '') + (e.model.trim() ? '&model=' + encodeURIComponent(e.model.trim()) : '');
+  if (q === e.asked) return;
+  e.asked = q;
+  let r;
+  try { r = await api('/api/codewatch/reviewer?repo=' + id + q); } catch (x) { r = { ok: false, json: { error: x.message } }; }
+  if (CW_EDIT !== e || e.asked !== q) return;
+  e.proposal = r.ok ? r.json.proposal || null : { error: txt((r.json || {}).error) };
+  if (repoRoute() === id) renderRepo(id);
+}
+
+const CW_FROM = (d, k) => (d.labels && d.labels[k]) || k;
+
+/** The reviewer and model a push uses here, where each comes from, and the Change form. */
+function cwReviewerBlock(repo) {
+  const box = el('div', { class: 'cwrev', 'data-cwrev': '' }, el('h3', {}, 'Reviewer and model'));
+  if (SNAPSHOT) { const st = repo.setup || {}; box.append(el('p', { class: 'fix' }, st.reviewer ? txt(st.reviewer) + ' · ' + txt(st.model) : 'no reviewer')); return box; }
+  const d = CW_REV.get(repo.id);
+  if (!d) { cwRevLoad(repo.id); box.append(el('p', { class: 'loading' }, 'loading...')); return box; }
+  if (d.error) { box.append(el('p', { class: 'fix' }, pill('error'), ' ', txt(d.error))); return box; }
+  const v = d.view, tool = (id) => (d.tools || []).find((t) => t.id === id) || {};
+  const inst = (id) => (tool(id).installed ? pill('ok', tool(id).binary + ' installed') : pill('missing', tool(id).binary + ' not installed'));
+  box.append(kv([
+    ['Reviewer', v.reviewer ? el('span', {}, el('b', {}, txt(tool(v.reviewer).name || v.reviewer)), ' ', inst(v.reviewer)) : el('span', { class: 's-missing' }, 'none installed')],
+    ['From', txt(CW_FROM(d, v.reviewerFrom))],
+    ['Model', el('span', {}, el('code', {}, txt(v.model)))],
+    ['From', txt(CW_FROM(d, v.modelFrom))],
+  ]));
+  if (v.fallback) box.append(el('div', { class: 'callout warn', role: 'note', 'data-fallback': '' }, txt(v.wanted.id ? tool(v.wanted.id).name + ' was chosen (' + CW_FROM(d, v.wanted.from) + '), but ' : ''), txt(v.fallback), v.reviewer ? '. Pushes here use ' + txt(tool(v.reviewer).name) + ' instead.' : '. Pushes here run no review until one is installed.'));
+  if (v.modelNote) box.append(el('p', { class: 'fix' }, 'Note: ' + txt(v.modelNote)));
+  if (v.teamPin) box.append(el('p', { class: 'fix' }, 'The team pins model ' + txt(v.teamPin) + ' in ' + txt(d.teamFile) + ': it wins over personal model settings.'));
+  const overridden = !!(v.clone.reviewer || Object.values(v.clone.models || {}).some(Boolean));
+  box.append(el('p', { class: 'fix', 'data-cw-follow': overridden ? 'override' : 'default' }, overridden ? 'This repo overrides your default. ' : 'This repo follows your default. ',
+    el('a', { href: '#settings/repos', class: 'rlink' }, 'Your default reviewer and model →')));
+  const edit = CW_EDIT.id === repo.id ? CW_EDIT : null;
+  if (!edit || !edit.open) {
+    const b = el('button', { type: 'button', 'data-cw-change': '' }, 'Change');
+    b.addEventListener('click', () => { CW_EDIT = { id: repo.id, open: true, scope: 'clone', reviewer: v.reviewer || v.wanted.id || 'kiro', model: '', proposal: null, asked: '' }; renderRepo(repo.id); cwPropose(repo.id); });
+    const back = overridden ? runButton('codewatch-reviewer-clone-reset', { repo: repo.id, where: repo.path, label: 'Reset to my default' }) : null;
+    box.append(el('div', { class: 'srow-ctl' }, b, back));
+    return box;
+  }
+  box.append(cwForm(repo, d, edit));
+  return box;
+}
+
+function cwForm(repo, d, e) {
+  const v = d.view, form = el('div', { 'data-cw-form': '' });
+  const redraw = () => { renderRepo(repo.id); cwPropose(repo.id); };
+  const scopes = el('fieldset', {}, el('legend', {}, 'Who it applies to'), ...CW_SCOPES.map(([id, label, how]) => {
+    const r = el('input', { type: 'radio', name: 'cw-scope', value: id, checked: e.scope === id ? '' : null });
+    r.addEventListener('change', () => { e.scope = id; redraw(); });
+    return el('label', { class: 'opt' }, r, ' ', el('b', {}, label), el('span', { class: 'fix' }, ' ' + how));
+  }));
+  const sel = el('select', { id: 'cw-reviewer', 'aria-label': 'Reviewer' }, ...(d.tools || []).map((t) => el('option', { value: t.id, selected: t.id === e.reviewer ? '' : null }, t.name + (t.installed ? '' : ' (not installed)'))));
+  sel.addEventListener('change', () => { e.reviewer = sel.value; redraw(); });
+  const t = (d.tools || []).find((x) => x.id === e.reviewer) || {};
+  const list = el('datalist', { id: 'cw-models' }, el('option', { value: 'auto' }), ...(t.suggestions || []).map((m) => el('option', { value: m })));
+  const model = el('input', { type: 'text', id: 'cw-model', list: 'cw-models', value: e.model, placeholder: 'auto (the tool\\'s default)', 'aria-label': 'Model', autocomplete: 'off', spellcheck: 'false' });
+  const re = new RegExp(d.modelPattern);
+  const bad = () => e.model.trim() !== '' && !re.test(e.model.trim());
+  const msg = el('span', { class: 'fix', role: 'status' }, bad() ? 'A model id is letters, digits and . _ : / -, not starting with -.' : '');
+  model.addEventListener('input', () => { e.model = model.value; msg.textContent = bad() ? 'A model id is letters, digits and . _ : / -, not starting with -.' : ''; });
+  model.addEventListener('change', () => { e.model = model.value; renderRepo(repo.id); if (!bad()) cwPropose(repo.id); });
+  form.append(scopes);
+  if (e.scope !== 'default') form.append(el('div', { class: 'srow-ctl' }, el('label', { for: 'cw-reviewer' }, 'Reviewer'), sel),
+    el('div', { class: 'srow-ctl' }, el('label', { for: 'cw-model' }, 'Model'), model, list, msg),
+    el('p', { class: 'fix' }, (t.suggestions || []).length ? 'Suggestions are ' + t.name + '\\'s documented aliases; any model id works.' : t.name + ' has no model list that is sure to work offline, so type the id (empty or auto: its default).'));
+  if (d.precedence) form.append(el('details', {}, el('summary', {}, 'Which setting wins'), el('p', { class: 'fix' }, 'Reviewer: ' + txt(d.precedence.reviewer)), el('p', { class: 'fix' }, 'Model: ' + txt(d.precedence.model))));
+  if (e.scope === 'team') form.append(el('div', { class: 'callout warn', role: 'note' }, el('strong', {}, txt(d.teamFile) + ' is a repo file. '), 'Commit it to share the change; the CI eval gate reads it from the base branch too.'));
+  const p = e.proposal;
+  if (p && p.error) form.append(el('p', { class: 'fix' }, pill('error'), ' ', txt(p.error)));
+  if (p && p.warning) {
+    const toTeam = el('button', { type: 'button' }, 'Use the team default instead');
+    toTeam.addEventListener('click', () => { e.scope = 'team'; redraw(); });
+    form.append(el('div', { class: 'callout warn', role: 'note', 'data-pin-warning': '' }, txt(p.warning), el('div', { class: 'srow-ctl' }, toTeam)));
+  }
+  if (e.scope === 'team' && p && p.diff) form.append(el('p', { class: 'fix' }, 'This change to ' + txt(d.teamFile) + (p.created ? ' (a new file)' : '') + ':'), diffBlock(p.diff));
+  // The command the server will run: the action's fixed argv plus the two checked values.
+  const ids = { clone: 'codewatch-reviewer-clone', team: 'codewatch-reviewer-team', default: 'codewatch-reviewer-clone-reset' };
+  const a = actionDef(ids[e.scope]), m = e.model.trim();
+  const save = el('button', { type: 'button', class: 'run' + (a && a.confirm ? ' danger' : ''), 'data-cw-save': '', disabled: !a || bad() ? '' : null }, 'Save');
+  save.addEventListener('click', () => {
+    if (!a || bad()) return;
+    if (e.scope === 'default') { confirmRun(a, { repo: repo.id, where: repo.path, command: 'cd ' + txt(tildePath(repo.path)) + ' && ' + a.command }); return; }
+    // An empty model is the tool's default (auto). This clone's reviewer is written only when it changes.
+    const same = e.scope === 'clone' && e.reviewer === (v.wanted.id || v.reviewer);
+    const body = { repo: repo.id, where: repo.path, reviewer: same ? undefined : e.reviewer, model: m || 'auto' };
+    body.command = 'cd ' + txt(tildePath(repo.path)) + ' && ' + a.command + (body.reviewer ? ' --reviewer ' + body.reviewer : '') + (body.model !== undefined ? ' --model ' + body.model : '');
+    if (e.scope === 'team' && p && p.diff) body.diff = p.diff;
+    confirmRun(a, body);
+  });
+  const cancel = el('button', { type: 'button' }, 'Cancel');
+  cancel.addEventListener('click', () => { CW_EDIT = { id: null, open: false }; renderRepo(repo.id); });
+  const ra = e.scope === 'team' ? actionDef('codewatch-reviewer-team-reset') : null;
+  const reset = ra ? el('button', { type: 'button', 'data-cw-reset': '' }, (CW_SCOPES.find((s) => s[0] === e.scope) || [])[3]) : null;
+  if (reset) reset.addEventListener('click', () => confirmRun(ra, { repo: repo.id, where: repo.path, command: 'cd ' + txt(tildePath(repo.path)) + ' && ' + ra.command }));
+  form.append(el('div', { class: 'srow-ctl' }, save, cancel, reset));
+  return form;
 }
 
 /** Security Agent: setup state, then this repo's cached code review and threat model, if any. */
@@ -138,6 +270,7 @@ function repoFindings(cw) {
 /** Draws #repo/<id> from the last loaded payload. */
 function renderRepo(id) {
   const root = document.getElementById('repo');
+  if (CW_EDIT.id && CW_EDIT.id !== id) CW_EDIT = { id: null, open: false };
   const repo = LAST && (LAST.repos || []).find((r) => r.id === id);
   if (!repo) {
     root.replaceChildren(el('div', { class: 'crumbs' }, el('a', { href: '#' }, 'Dashboard'), ' / not found'),

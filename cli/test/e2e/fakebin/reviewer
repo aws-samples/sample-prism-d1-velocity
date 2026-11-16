@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake reviewer tool (kiro-cli or claude) for the dashboard e2e run: it only exists so the dashboard
+# finds the tool on PATH. It never reviews anything; a call is logged to $HOME/reviewer-calls.log.
+echo "$(basename "$0") $*" >> "$HOME/reviewer-calls.log"
+exit 1

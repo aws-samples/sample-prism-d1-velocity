@@ -13,12 +13,14 @@ export const ENTRY = join(CLI, 'dist', 'bin', 'prism-cli.js');
 
 /** <home>/bin with node and the fakes; `noCodeburn` leaves codeburn out (the "not installed" state). */
 export function binDir(home, opt = {}) {
-  const bin = join(home, opt.noCodeburn ? 'bin-nocb' : 'bin');
+  const bin = join(home, opt.noCodeburn ? 'bin-nocb' : opt.reviewers ? 'bin-rev' : 'bin');
   mkdirSync(bin, { recursive: true });
   const link = (target, name) => { if (!existsSync(join(bin, name))) symlinkSync(target, join(bin, name)); };
   link(process.execPath, 'node');
   link(join(HERE, 'fakebin', 'aws'), 'aws');
   if (!opt.noCodeburn) link(join(HERE, 'fakebin', 'codeburn'), 'codeburn');
+  // opt.reviewers: fake reviewer tools on PATH (fakebin/reviewer: logs and exits 1, never reviews).
+  for (const r of opt.reviewers || []) link(join(HERE, 'fakebin', 'reviewer'), r);
   return bin;
 }
 

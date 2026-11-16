@@ -942,6 +942,133 @@ try {
     await phone.page.locator('[data-branch-review]').screenshot({ path: join(SHOTS, 'branch-nothing-card-390.png') }).catch(() => {});
     out.log.push(...phone.log);
     await phone.ctx.close();
+  // ---------- 17. codewatch reviewer and model (1.20): your default in Settings, a repo's override, the team file; a fake claude on PATH ----------
+  if (want('reviewer')) {
+    const out = { steps: [] };
+    R.suites.reviewer = out;
+    // The team picked kiro, which is not installed here: the card must say claude runs instead.
+    const team = (h) => { const p = join(h, 'src', 'demo-shop', '.prism', 'config.json'); writeFileSync(p, JSON.stringify({ team_id: 'demo', eval: { reviewer: 'kiro' } }, null, 2) + '\n'); };
+    const srv = await live('reviewer', 'full', { PRISM_NO_UPDATE_CHECK: '1' }, team, { reviewers: ['claude'] });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
+    const shop = data.repos.find((r) => r.path.endsWith('/src/demo-shop'));
+    const pay = data.repos.find((r) => r.path.endsWith('/src/payments-api'));
+    const shopDir = join(srv.home, 'src', 'demo-shop'), payDir = join(srv.home, 'src', 'payments-api');
+    const card = () => page.evaluate(() => (document.querySelector('[data-cwrev]')?.innerText || '').replace(/\s+/g, ' '));
+    const waitFor = (sel, re) => page.waitForFunction(([s, src]) => new RegExp(src).test((document.querySelector(s)?.innerText || '').replace(/\s+/g, ' ')), [sel, re.source], { timeout: 30000 }).catch(() => {});
+    const waitCard = (re) => waitFor('[data-cwrev]', re);
+    const runConfirmed = async () => {
+      const cb = page.locator('dialog.confirm input[type=checkbox]');
+      if (await cb.count()) await cb.check();
+      await page.click('dialog.confirm button:has-text("Run")');
+      await page.waitForFunction(() => /exit/.test(document.querySelector('#action-drawer .srow-head .pill')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});
+      const r = await page.evaluate(() => ({ pill: document.querySelector('#action-drawer .srow-head .pill')?.textContent || '', out: document.querySelector('#action-drawer pre')?.innerText || '' }));
+      await page.click('#action-drawer button:has-text("Close")').catch(() => {});
+      return r;
+    };
+    const repoCard = async (r, re) => { await page.goto(srv.base + '/#repo/' + r.id); await waitCard(re || /Reviewer/); return card(); };
+    const openForm = async (scope, model) => {
+      await page.click('[data-cwrev] [data-cw-change]');
+      await page.waitForSelector('[data-cw-form]');
+      await page.check(`[data-cwrev] input[name=cw-scope][value=${scope}]`);
+      await sleep(300);
+      if (model !== undefined) { await page.fill('#cw-model', model); await page.press('#cw-model', 'Tab'); await sleep(500); }
+    };
+    const settings = async () => { await page.goto(srv.base + '/#settings/repos'); await waitFor('#cw-defaults', /Repos that override it/); return page.evaluate(() => (document.getElementById('cw-defaults')?.innerText || '').replace(/\s+/g, ' ')); };
+
+    out.initial = await repoCard(shop, /Reviewer Claude Code/);
+    // 1. Your default, in Settings › Repos: claude with sonnet. Every repo card follows it.
+    await settings();
+    await page.click('#cw-defaults [data-cwd-change]');
+    await page.selectOption('#cwd-reviewer', 'claude');
+    await page.fill('#cwd-model', 'sonnet');
+    await page.click('#cw-defaults [data-cwd-save]'); await sleep(300);
+    out.defaultDialog = await page.evaluate(() => document.querySelector('dialog.confirm pre.cmd')?.textContent || '');
+    out.steps.push({ step: 'default', ...(await runConfirmed()) });
+    out.settingsAfterDefault = await settings();
+    out.globalConfig = existsSync(join(srv.home, '.gitconfig')) ? readFileSync(join(srv.home, '.gitconfig'), 'utf8') : '';
+    out.shopFollows = await repoCard(shop, /Model sonnet From your default/);
+    out.payFollows = await repoCard(pay, /Model sonnet From your default/);
+    // 2. Override demo-shop: haiku for this repo only.
+    await repoCard(shop, /Change/);
+    await openForm('clone', 'haiku');
+    await page.click('[data-cwrev] [data-cw-save]'); await sleep(300);
+    out.cloneDialog = await page.evaluate(() => document.querySelector('dialog.confirm pre.cmd')?.textContent || '');
+    out.steps.push({ step: 'clone', ...(await runConfirmed()) });
+    await waitCard(/Model haiku From overridden for this repo/);
+    out.afterClone = await card();
+    out.localConfig = readFileSync(join(shopDir, '.git', 'config'), 'utf8');
+    out.settingsWithOverride = await settings();
+    out.overrideLink = await page.evaluate((id) => !!document.querySelector(`#cw-defaults [data-cwd-repo="${id}"][href="#repo/${id}"]`), shop.id);
+    await page.locator('#cw-defaults').screenshot({ path: join(SHOTS, 'reviewer-settings-default-1280.png') }).catch(() => {});
+    // 3. The team default: a diff first, a checkbox in the dialog, then the file.
+    await repoCard(shop, /Change/);
+    await openForm('team', 'opus');
+    await page.waitForSelector('[data-cwrev] [data-diff]', { timeout: 15000 }).catch(() => {});
+    out.teamDiff = await page.evaluate(() => [...document.querySelectorAll('[data-cwrev] [data-diff] span')].map((s) => s.className + '|' + s.textContent.trimEnd()));
+    out.teamWarn = await page.evaluate(() => /is a repo file\. Commit it to share the change; the CI eval gate reads it/.test(document.querySelector('[data-cwrev]')?.innerText || ''));
+    await page.locator('[data-cwrev]').screenshot({ path: join(SHOTS, 'reviewer-team-diff-1280.png') }).catch(() => {});
+    const phone = await openCtx(srv, { width: 390, height: 844 });
+    await phone.page.goto(srv.base + '/#repo/' + shop.id);
+    await phone.page.waitForSelector('[data-cwrev] [data-cw-change]', { timeout: 30000 }).catch(() => {});
+    await phone.page.click('[data-cwrev] [data-cw-change]').catch(() => {});
+    await phone.page.check('[data-cwrev] input[name=cw-scope][value=team]').catch(() => {});
+    await phone.page.fill('#cw-model', 'claude-sonnet-4-5-20250929').catch(() => {});
+    await phone.page.press('#cw-model', 'Tab').catch(() => {});
+    await phone.page.waitForSelector('[data-cwrev] [data-diff]', { timeout: 15000 }).catch(() => {});
+    out.phoneScroll = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await phone.page.locator('[data-cwrev]').screenshot({ path: join(SHOTS, 'reviewer-team-diff-390.png') }).catch(() => {});
+    await phone.page.goto(srv.base + '/#settings/repos');
+    await phone.page.waitForFunction(() => /Repos that override it/.test(document.getElementById('cw-defaults')?.innerText || ''), null, { timeout: 30000 }).catch(() => {});
+    out.phoneSettingsScroll = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    out.log.push(...phone.log);
+    await phone.ctx.close();
+    await page.click('[data-cwrev] [data-cw-save]'); await sleep(300);
+    out.teamDialog = await page.evaluate(() => ({ cmd: document.querySelector('dialog.confirm pre.cmd')?.textContent || '', diff: !!document.querySelector('dialog.confirm [data-diff]'), runDisabled: !![...document.querySelectorAll('dialog.confirm button')].find((b) => b.textContent === 'Run')?.disabled }));
+    out.steps.push({ step: 'team', ...(await runConfirmed()) });
+    await waitCard(/Model opus From team file/);
+    out.afterTeam = await card();
+    out.teamFile = JSON.parse(readFileSync(join(shopDir, '.prism', 'config.json'), 'utf8'));
+    // 4. A personal model under the team pin: said plainly, with the team scope offered.
+    await openForm('clone', 'mine-1');
+    await page.waitForSelector('[data-cwrev] [data-pin-warning]', { timeout: 15000 }).catch(() => {});
+    out.pinWarning = await page.evaluate(() => document.querySelector('[data-cwrev] [data-pin-warning]')?.textContent || '');
+    // 5. Reset the team default: this repo's override applies again.
+    await page.check('[data-cwrev] input[name=cw-scope][value=team]'); await sleep(300);
+    await page.click('[data-cwrev] [data-cw-reset]'); await sleep(300);
+    out.steps.push({ step: 'team-reset', ...(await runConfirmed()) });
+    await waitCard(/Model haiku From overridden for this repo/);
+    out.afterTeamReset = await card();
+    out.teamFileAfterReset = readFileSync(join(shopDir, '.prism', 'config.json'), 'utf8');
+    // 6. Reset to my default on the card.
+    await page.click('[data-cwrev] button:has-text("Reset to my default")'); await sleep(300);
+    out.steps.push({ step: 'reset-to-default', ...(await runConfirmed()) });
+    await waitCard(/Model sonnet From your default/);
+    out.afterResetToDefault = await card();
+    await page.locator('[data-cwrev]').screenshot({ path: join(SHOTS, 'reviewer-card-1280.png') }).catch(() => {});
+    // 7. Override two repos, then Apply my default to all repos: the dialog lists them; both follow the default.
+    for (const r of [shop, pay]) {
+      await repoCard(r, /Change/);
+      await openForm('clone', 'haiku');
+      await page.click('[data-cwrev] [data-cw-save]'); await sleep(300);
+      out.steps.push({ step: 'override-' + r.name, ...(await runConfirmed()) });
+      await waitCard(/From overridden for this repo/);
+    }
+    await settings();
+    await page.click('#cw-defaults [data-cwd-apply-all]'); await sleep(300);
+    out.applyDialog = await page.evaluate(() => ({ list: [...document.querySelectorAll('dialog.confirm [data-confirm-list] li')].map((l) => l.textContent), runDisabled: !![...document.querySelectorAll('dialog.confirm button')].find((b) => b.textContent === 'Run')?.disabled }));
+    out.steps.push({ step: 'apply-all', ...(await runConfirmed()) });
+    out.settingsAfterApply = await settings();
+    out.shopAfterApply = await repoCard(shop, /Model sonnet From your default/);
+    out.payAfterApply = await repoCard(pay, /Model sonnet From your default/);
+    out.teamFileAfterApply = readFileSync(join(shopDir, '.prism', 'config.json'), 'utf8');
+    out.payLocal = readFileSync(join(payDir, '.git', 'config'), 'utf8');
+    await page.goto(srv.base + '/#settings/repos'); await sleep(900);
+    out.settingsLink = await page.evaluate((id) => !!document.querySelector(`[data-cw-link][href="#repo/${id}"]`), shop.id);
+    out.reviewerCalls = existsSync(join(srv.home, 'reviewer-calls.log')) ? readFileSync(join(srv.home, 'reviewer-calls.log'), 'utf8').trim().split('\n').filter(Boolean) : [];
+    out.awsCalls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').trim().split('\n').filter(Boolean) : [];
+    await ctx.close();
   }
 } catch (e) {
   R.fatal = String(e.stack || e);
@@ -1142,6 +1269,35 @@ function verdicts(R) {
     add('BR3', 'a branch review that finds nothing: the drawer shows a neutral "nothing to review", the next step and the whole-repo offer; the CLI says to use --full and uploads nothing',
       B.drawer?.pill === 'nothing to review' && !/s-error|s-ok/.test(B.drawer.pillClass) && B.drawer.hint && B.drawer.offer
       && /No changes against origin\/feat\/receiver-tool-usage; nothing to review\. To review the whole repo at HEAD, run with --full\./.test(B.drawer.out) && !writes.length, JSON.stringify({ ...B.drawer, out: (B.drawer?.out || '').slice(-300) }) + ' writes ' + writes.join('; '));
+  if (S.reviewer) {
+    const V = S.reviewer;
+    const st = (n) => (V.steps || []).find((x) => x.step === n) || {};
+    const ok = (...n) => n.every((x) => /exit 0/.test(st(x).pill || ''));
+    add('CWR1', 'the card names the reviewer that runs and why: the team chose kiro, kiro-cli is not installed, claude runs instead',
+      /Reviewer Claude Code claude installed From the installed tool/.test(V.initial || '') && /kiro-cli was chosen \(team file \(\.prism\/config\.json\)\), but kiro-cli is not on PATH; used claude instead/.test(V.initial || ''), V.initial);
+    add('CWR2', 'your default in Settings › Repos (git config --global prism.reviewer and prism.claudeModel): every repo card follows it',
+      ok('default') && /prism-cli codewatch reviewer --scope global --reviewer claude --model sonnet/.test(V.defaultDialog || '') && /reviewer = claude/.test(V.globalConfig || '') && /claudeModel = sonnet/.test(V.globalConfig || '')
+      && /Reviewer Claude Code.*Model for Claude Code sonnet/.test(V.settingsAfterDefault || '') && [V.shopFollows, V.payFollows].every((c) => /Reviewer Claude Code claude installed From your default .*Model sonnet From your default.*This repo follows your default/.test(c || '')),
+      JSON.stringify({ s: st('default'), shop: V.shopFollows, pay: V.payFollows }).slice(0, 500));
+    add('CWR3', 'override one repo (git config --local): its card says overridden, Settings lists it with a link',
+      ok('clone') && /--scope clone --model haiku/.test(V.cloneDialog || '') && /claudeModel = haiku/.test(V.localConfig || '') && /Model haiku From overridden for this repo.*This repo overrides your default/.test(V.afterClone || '')
+      && /Repos that override it 1 of \d+/i.test(V.settingsWithOverride || '') && V.overrideLink, JSON.stringify({ d: V.cloneDialog, c: V.afterClone, s: V.settingsWithOverride }).slice(0, 500));
+    add('CWR4', 'team default: a repo-file warning and a diff before saving, a checkbox in the dialog; other keys kept; the card says team file',
+      V.teamWarn && (V.teamDiff || []).some((l) => l === 'add|+    "reviewer": "claude",') && (V.teamDiff || []).some((l) => l.startsWith('del|')) && V.teamDialog?.diff && V.teamDialog.runDisabled
+      && ok('team') && V.teamFile?.team_id === 'demo' && V.teamFile?.eval?.reviewer === 'claude' && V.teamFile?.eval?.model === 'opus' && /Model opus From team file/.test(V.afterTeam || ''),
+      JSON.stringify({ diff: V.teamDiff, dlg: V.teamDialog, file: V.teamFile, card: V.afterTeam }).slice(0, 500));
+    add('CWR5', 'a personal model under the team pin: the card says the team pin wins and offers the team default',
+      /The team pins model opus for claude in \.prism\/config\.json, and that wins over a personal model/.test(V.pinWarning || '') && /Use the team default instead/.test(V.pinWarning || ''), V.pinWarning);
+    add('CWR6', 'reset the team default (other keys kept), then Reset to my default on the card: back to your default',
+      ok('team-reset', 'reset-to-default') && /"team_id": "demo"/.test(V.teamFileAfterReset || '') && !/"model"|"reviewer"/.test(V.teamFileAfterReset || '')
+      && /Model haiku From overridden for this repo/.test(V.afterTeamReset || '') && /Model sonnet From your default/.test(V.afterResetToDefault || ''), JSON.stringify({ t: V.teamFileAfterReset, a: V.afterTeamReset, b: V.afterResetToDefault }).slice(0, 400));
+    add('CWR7', 'Apply my default to all repos: the dialog lists the overriding repos; afterwards none override and both cards follow; the team file is untouched',
+      ok('apply-all') && (V.applyDialog?.list || []).length === 2 && V.applyDialog.runDisabled && /None: every repo follows your default/.test(V.settingsAfterApply || '')
+      && [V.shopAfterApply, V.payAfterApply].every((c) => /Model sonnet From your default/.test(c || '')) && V.teamFileAfterApply === V.teamFileAfterReset && !/claudeModel/.test(V.payLocal || ''),
+      JSON.stringify({ s: st('apply-all'), d: V.applyDialog, after: V.settingsAfterApply }).slice(0, 500));
+    add('CWR8', 'at 390 px the open form with the team diff and Settings › Repos do not scroll sideways; Settings › Repos links each repo; no review ran and no AWS call',
+      V.phoneScroll <= 1 && V.phoneSettingsScroll <= 1 && V.settingsLink && !(V.reviewerCalls || []).length && !(V.awsCalls || []).filter((c) => !/^(--version|configure )/.test(c)).length,
+      JSON.stringify({ scroll: V.phoneScroll, s2: V.phoneSettingsScroll, link: V.settingsLink, rev: V.reviewerCalls, aws: V.awsCalls }).slice(0, 300));
   }
   if (S.fixes) {
     const F = S.fixes;

@@ -36,15 +36,19 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
 import { EXIT_PENDING } from '../security/errors.js';
+import { settingError, type Scope } from '../codewatch/reviewer-settings.js';
 import { maskHome, redact } from '../utils/redact.js';
 import { tildeHome } from './payload.js';
 import { runWrittenSince, type RunStatus } from './security-runs.js';
 
-export type ActionId = 'codewatch-repo' | 'codewatch-global' | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
+export type ActionId = 'codewatch-repo' | 'codewatch-global'
+  | 'codewatch-reviewer-clone' | 'codewatch-reviewer-team' | 'codewatch-reviewer-global'
+  | 'codewatch-reviewer-clone-reset' | 'codewatch-reviewer-team-reset' | 'codewatch-reviewer-global-reset' | 'codewatch-reviewer-apply-all'
+  | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
   | 'codeburn-remove' | 'codeburn-status' | 'team-info'
   | 'aws-connect' | 'aws-connect-status' | 'aws-disconnect' | 'accountguard-check' | 'accountguard-recommend'
   | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
@@ -80,6 +84,13 @@ export interface ActionDef {
   note?: string;
   /** Takes `profile` and `region` from the request, each checked against the server's own lists (RunnerDeps.awsChoices). */
   choose?: true;
+  /**
+   * Takes `reviewer` and/or `model` from the request for `prism-cli codewatch reviewer` at this scope, checked
+   * server side (settingError: REVIEWER_IDS, MODEL_ID_RE, no leading '-') and appended as --reviewer / --model.
+   */
+  pick?: Scope;
+  /** Appends every repo of the server's scan list (absolute paths it found itself), one argument each. */
+  allRepos?: true;
   /** Appends --profile/--region of the connected account (RunnerDeps.connectionArgs); refused when none is connected. */
   connected?: true;
   /** Runs in the home directory, so account-level results land in ~/.prism/results/. */
@@ -104,6 +115,25 @@ const hooks = (client: 'kiro' | 'claude', global: boolean, remove: boolean): Act
 export const ACTIONS: Record<ActionId, ActionDef> = {
   'codewatch-repo': { label: 'Enable codewatch in this repo', args: ['enable', 'codewatch'], repo: true, timeoutMs: 2 * MIN },
   'codewatch-global': { label: 'Enable codewatch for every repo', args: ['enable', 'codewatch', '--global'], timeoutMs: 2 * MIN },
+  // The repo page's reviewer and model: git config or .prism/config.json only, in the picked repo. No AWS, no network.
+  'codewatch-reviewer-clone': { label: 'Override the reviewer and model for this repo', args: ['codewatch', 'reviewer', '--scope', 'clone'], repo: true, pick: 'clone', timeoutMs: MIN,
+    note: 'Writes git config --local prism.reviewer and prism.<tool>Model in this repo only (just you; nothing to commit). It wins over your default and the team file\'s reviewer.' },
+  'codewatch-reviewer-team': { label: 'Set the team default reviewer and model', args: ['codewatch', 'reviewer', '--scope', 'team'], repo: true, pick: 'team', confirm: true, timeoutMs: MIN,
+    confirmLabel: 'Yes, change .prism/config.json (a repo file I will commit; the CI eval gate reads it too)',
+    note: 'Writes eval.reviewer / eval.model in .prism/config.json and keeps every other key. Commit it to share the change.' },
+  'codewatch-reviewer-global': { label: 'Set my default reviewer and model for all repos', args: ['codewatch', 'reviewer', '--scope', 'global'], pick: 'global', timeoutMs: MIN,
+    note: 'Writes git config --global prism.reviewer and prism.<tool>Model. A repo\'s own override wins over it, and a team eval.model set for that reviewer wins over the model.' },
+  // "Apply to all repos": the server appends every repo of its own scan list (never a path from the request).
+  'codewatch-reviewer-apply-all': { label: 'Apply my default to all repos', args: ['codewatch', 'reviewer', '--clear-overrides'], allRepos: true, confirm: true, timeoutMs: 2 * MIN,
+    confirmLabel: 'Yes, remove these repos\' own reviewer and model settings',
+    note: 'Removes git config --local prism.reviewer and prism.<tool>Model in every repo listed, so all of them follow your default. Team files (.prism/config.json) are not touched.' },
+  'codewatch-reviewer-clone-reset': { label: 'Reset this repo to my default', args: ['codewatch', 'reviewer', '--scope', 'clone', '--reset'], repo: true, timeoutMs: MIN,
+    note: 'Unsets prism.reviewer and prism.<tool>Model in this clone\'s git config.' },
+  'codewatch-reviewer-team-reset': { label: 'Reset the team default reviewer and model', args: ['codewatch', 'reviewer', '--scope', 'team', '--reset'], repo: true, confirm: true, timeoutMs: MIN,
+    confirmLabel: 'Yes, remove eval.reviewer and eval.model from .prism/config.json (a repo file I will commit)',
+    note: 'Removes eval.reviewer and eval.model from .prism/config.json and keeps every other key.' },
+  'codewatch-reviewer-global-reset': { label: 'Remove my default reviewer and model', args: ['codewatch', 'reviewer', '--scope', 'global', '--reset'], timeoutMs: MIN,
+    note: 'Unsets git config --global prism.reviewer, prism.kiroModel and prism.claudeModel.' },
   'codeburn-local': { label: 'Keep usage local', args: ['enable', 'codeburn', '--local'], timeoutMs: 2 * MIN },
   'codeburn-systemd': { label: 'Schedule with a systemd user timer', args: ['enable', 'codeburn', '--schedule', 'systemd'], systemd: true, timeoutMs: 5 * MIN },
   // codeburn sync setup opens a browser to sign in, so this one gets longer.
@@ -257,7 +287,7 @@ const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats
 const BRANCH_REVIEW = new Set<ActionId>(['security-code-review', 'security-code-review-force']);
 
 const MAX_OUTPUT = 256 * 1024;
-const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region']);
+const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region', 'reviewer', 'model']);
 /** A value the CLI accepts as a profile or region name (aws/connection.ts) that cannot be read as a flag. */
 const argValue = (v: string, re: RegExp) => re.test(v) && !v.startsWith('-');
 
@@ -324,6 +354,13 @@ export class ActionRunner {
       if (typeof b.region !== 'string' || !lists.regions.includes(b.region) || !argValue(b.region, REGION_RE)) return bad('region must be one of the regions listed on the page');
       chosen = ['--profile', b.profile, '--region', b.region];
     } else if (b.profile !== undefined || b.region !== undefined) return bad('this action does not take a profile or region');
+    // codewatch reviewer: a reviewer id and a model id, checked here; nothing else from the request reaches the argv.
+    let picked: string[] = [];
+    if (def.pick) {
+      const err = settingError({ scope: def.pick, reviewer: b.reviewer, model: b.model });
+      if (err) return bad(err);
+      picked = [...(b.reviewer !== undefined ? ['--reviewer', b.reviewer as string] : []), ...(b.model !== undefined ? ['--model', (b.model as string).trim()] : [])];
+    } else if (b.reviewer !== undefined || b.model !== undefined) return bad('this action does not take a reviewer or model');
     if (def.confirm && b.confirm !== true) return bad('this action needs confirm: true');
     if (b.confirm !== undefined && typeof b.confirm !== 'boolean') return bad('confirm must be true or false');
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
@@ -343,7 +380,11 @@ export class ActionRunner {
     // Only the two flag names, and values that cannot be read as a flag (no leading '-').
     if (![...target, ...chosen].every((a) => a === '--profile' || a === '--region' || argValue(a, PROFILE_RE))) return bad('the resolved AWS profile or region is not valid');
 
-    const args = [...def.args, ...chosen, ...target, ...(def.url ? [b.url as string] : [])];
+    // Repo paths the server discovered itself; each is absolute, so none can read as a flag.
+    const every = def.allRepos ? (await this.d.repos()).map((r) => r.path) : [];
+    if (!every.every((p) => isAbsolute(p) && !p.startsWith('-'))) return bad('a discovered repo path is not absolute');
+    if (def.allRepos && !every.length) return bad('no repos in the scan list');
+    const args = [...def.args, ...chosen, ...picked, ...target, ...every, ...(def.url ? [b.url as string] : [])];
     const cwd = repo ? repo.path : def.inHome ? this.d.home : this.d.cwd;
     const now = this.d.now ?? (() => new Date());
     this.busy = true;
