@@ -1,39 +1,31 @@
-"""The PRISM page's backend: in-gateway routes (app.json backend.hooks.routes).
+"""The PRISM page's backend: in-gateway routes and lifecycle hooks (app.json backend.hooks).
 
-They are served by the gateway at /api/apps/prism/<path>, behind its token
-middleware (a dashboard session or an app token scoped to this app's
-permissions.api). Each handler also requires the dashboard owner, or this app's
-own token. No port, no process of our own. Everything is read-only: the routes
-run `prism-cli dashboard --json`, `prism-cli --version`, `git log -1` and
-`prism-cli codewatch report` (argv lists, no shell, timeouts).
+The page is prism-cli's own dashboard UI (dist/ui), drawn in a sandboxed iframe. Its reads and
+actions come here, at /api/apps/prism/ui/<route>, behind the gateway's token middleware (a
+dashboard session or an app token scoped to this app's permissions.api) and its Origin/CSRF
+check for POST; each handler also requires the dashboard owner, or this app's own token. No port,
+no process with a port: requests go to one `prism-cli dashboard --serve-stdio` child
+(ui_bridge.SUPERVISOR), which checks them with the browser dashboard's own code.
 
-The page sends only indexes; paths come from this module's own last result.
+  GET  /ui/bundle             the UI files from the installed prism-cli, with their CSP hashes
+  GET  /ui/get?path=&query=   a read route of the dashboard API (query: a JSON object of strings)
+  POST /ui/act {path, body}   an action route of the dashboard API
+
+/ui/get and /ui/act answer 200 with the CLI's own {status, json}, so a refusal (a missing
+confirm, the AWS write gate) reaches the page as an answer. prism-cli missing or older than
+1.21.0: 503 with {"error": ..., "update": true, "command": ...}, and the page says only that.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from aiohttp import web
 
-from . import page_model as pm
+from . import ui_bridge as ub
 from .prism_cli_path import cli_env, load_config, resolve_cli
-
-DASHBOARD_TIMEOUT_S = 110
-REAP_TIMEOUT_S = 180
-VERSION_TIMEOUT_S = 10
-GIT_TIMEOUT_S = 10
-REPORT_TIMEOUT_S = 60
-MAX_JSON_BYTES = 64 * 1024 * 1024
-MAX_REPORT_BYTES = 5 * 1024 * 1024
-
-_state: Dict[str, Any] = {"targets": [], "gen": None}
-_lock = asyncio.Lock()
-_reaping: Set["asyncio.Task[None]"] = set()
 
 
 class _Route:
@@ -42,11 +34,34 @@ class _Route:
 
 
 def register_routes(ctx: Any) -> List[_Route]:
-    return [_Route("GET", "/data", handle_data), _Route("GET", "/report", handle_report)]
+    _configure(ctx)
+    return [_Route("GET", "/ui/bundle", handle_ui_bundle), _Route("GET", "/ui/get", handle_ui_get), _Route("POST", "/ui/act", handle_ui_act)]
 
 
-def _err(status: int, msg: str) -> web.Response:
-    return web.json_response({"error": msg}, status=status)
+async def on_startup(ctx: Any) -> None:
+    """The app was enabled (or the gateway started): start the --serve-stdio child and keep it running."""
+    _configure(ctx)
+    await ub.SUPERVISOR.start()
+
+
+async def on_shutdown(ctx: Any) -> None:
+    """The app was disabled, its trust revoked, or the gateway is stopping: stop the child (and any action it runs)."""
+    await ub.SUPERVISOR.stop()
+
+
+def _configure(ctx: Any) -> None:
+    data_dir = Path(ctx.data_dir)
+
+    def resolver() -> Tuple[Optional[str], str, Dict[str, str]]:
+        setting = load_config(data_dir).get("cliPath")
+        cli, reason = resolve_cli(setting if isinstance(setting, str) else None, os.environ)
+        return cli, reason, cli_env(cli, os.environ) if cli else dict(os.environ)
+
+    ub.SUPERVISOR.configure(resolver, data_dir)
+
+
+def _err(status: int, msg: str, **extra: Any) -> web.Response:
+    return web.json_response({"error": msg, **extra}, status=status)
 
 
 async def _gate(request: web.Request, ctx: Any, op: str) -> Optional[web.Response]:
@@ -61,181 +76,67 @@ async def _gate(request: web.Request, ctx: Any, op: str) -> Optional[web.Respons
     return await gate(request, op)
 
 
-def _data_dir(ctx: Any) -> Path:
-    return Path(ctx.data_dir)
-
-
-def _cli(ctx: Any) -> Tuple[Optional[str], str]:
-    setting = load_config(_data_dir(ctx)).get("cliPath")
-    return resolve_cli(setting if isinstance(setting, str) else None, os.environ)
-
-
-async def _run(argv: List[str], cwd: str, env: Dict[str, str], timeout: float) -> Tuple[int, bytes]:
-    proc = await asyncio.create_subprocess_exec(*argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
-                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+async def _hello(ctx: Any) -> Any:
+    """The running child's hello; a web.Response when it cannot be served."""
+    _configure(ctx)
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise
-    return proc.returncode or 0, out
+        return await ub.SUPERVISOR.ensure()
+    except ub.BridgeError as e:
+        if e.update:
+            return _err(503, str(e), update=True, command=ub.UPDATE_CMD)
+        return _err(503, str(e))
 
 
-async def _reap(proc: "asyncio.subprocess.Process") -> None:
-    async def drain() -> None:
-        assert proc.stdout is not None
-        while await proc.stdout.read(65536):
-            pass
-        await proc.wait()
-
-    try:
-        await asyncio.wait_for(drain(), REAP_TIMEOUT_S)  # one deadline for the whole tail
-    except Exception:  # timeout or a broken pipe: make sure the child does not outlive us
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-
-
-async def _dashboard(cli: str, env: Dict[str, str]) -> Dict[str, Any]:
-    """`dashboard --json`, returned as soon as the document is printed.
-
-    With a stale usage cache the CLI prints the cached data, then waits for
-    its background codeburn refresh before exiting; that tail is left to
-    finish in the background (and killed after REAP_TIMEOUT_S).
-    """
-    proc = await asyncio.create_subprocess_exec(cli, "dashboard", "--json", cwd=str(Path.home()), env=env,
-                                                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.DEVNULL)
-    assert proc.stdout is not None
-    chunks: List[bytes] = []
-
-    async def read_doc() -> None:
-        size = 0
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                return
-            size += len(line)
-            if size > MAX_JSON_BYTES:
-                raise ValueError("prism-cli dashboard --json output is too large")
-            chunks.append(line)
-            if line == b"}\n":  # the document is pretty-printed; this closes it
-                return
-
-    try:
-        await asyncio.wait_for(read_doc(), DASHBOARD_TIMEOUT_S)
-    except BaseException:
-        proc.kill()
-        await proc.wait()
-        raise
-    task = asyncio.ensure_future(_reap(proc))
-    _reaping.add(task)
-    task.add_done_callback(_reaping.discard)
-    payload = json.loads(b"".join(chunks).decode("utf-8"))
-    if not isinstance(payload, dict) or not str(payload.get("schema", "")).startswith("prism.dashboard."):
-        raise ValueError("prism-cli dashboard --json returned an unexpected document")
-    return payload
-
-
-async def _version(cli: str, env: Dict[str, str]) -> str:
-    try:
-        rc, out = await _run([cli, "--version"], str(Path.home()), env, VERSION_TIMEOUT_S)
-    except (OSError, asyncio.TimeoutError):
-        return "unknown"
-    return out.decode("utf-8", "replace").strip().splitlines()[0] if rc == 0 and out.strip() else "unknown"
-
-
-async def _commits(paths: List[str]) -> Dict[str, Optional[Dict[str, str]]]:
-    sem = asyncio.Semaphore(pm.COMMIT_LOOKUP_CONCURRENCY)
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-
-    async def one(path: str) -> Optional[Dict[str, str]]:
-        async with sem:
-            try:
-                rc, out = await _run(pm.last_commit_args(path), path, env, GIT_TIMEOUT_S)
-            except (OSError, asyncio.TimeoutError):
-                return None
-            return pm.parse_last_commit(out.decode("utf-8", "replace")) if rc == 0 else None
-
-    found = await asyncio.gather(*(one(p) for p in paths))
-    return dict(zip(paths, found))
-
-
-async def handle_data(request: web.Request, ctx: Any) -> web.Response:
-    denied = await _gate(request, ctx, "data")
+async def handle_ui_bundle(request: web.Request, ctx: Any) -> web.Response:
+    denied = await _gate(request, ctx, "ui")
     if denied is not None:
         return denied
-    cli, reason = _cli(ctx)
-    if not cli:
-        return _err(503, reason)
-    # Never start a cold codeburn export on our own: only the page's explicit button sets allowExport.
-    if request.query.get("allowExport") != "1" and not pm.usage_cached_today(Path.home()):
-        return web.json_response({"needsUsageCache": True})
-    env = cli_env(cli, os.environ)
-    async with _lock:
-        try:
-            payload = await _dashboard(cli, env)
-        except (OSError, ValueError, asyncio.TimeoutError) as e:
-            return _err(502, "prism-cli dashboard --json failed: " + pm.plain(e, 200))
-        version, commits = await asyncio.gather(_version(cli, env), _commits(pm.commit_lookup_paths(payload)))
-        try:
-            model, targets = pm.build_model(payload, commits, version, pm.read_digest(_data_dir(ctx)))
-        except (ValueError, TypeError, KeyError) as e:
-            return _err(502, "prism-cli dashboard --json returned data this page cannot read: " + pm.plain(e, 200))
-        # The page sends this back with each index, so an index always means the list it was drawn from.
-        _state["gen"] = model["gen"] = uuid.uuid4().hex
-        _state["targets"] = targets
-    return web.json_response(model)
-
-
-async def handle_report(request: web.Request, ctx: Any) -> web.Response:
-    denied = await _gate(request, ctx, "report")
-    if denied is not None:
-        return denied
-    if request.query.get("gen") != _state.get("gen"):
-        return _err(409, "the data changed since this page loaded; refresh and try again")
-    target = pm.target_for(_state["targets"], request.query.get("repoIndex"))
-    if target is None:
-        return _err(400, "unknown repo; refresh the page")
-    cli, reason = _cli(ctx)
-    if not cli:
-        return _err(503, reason)
-    report_dir = _data_dir(ctx) / "reports"
+    hello = await _hello(ctx)
+    if isinstance(hello, web.Response):
+        return hello
     try:
-        report_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return web.json_response(ub.read_bundle(hello["uiDir"], str(hello.get("version", ""))))
     except OSError as e:
-        return _err(502, "could not create the report folder: " + pm.plain(e, 200))
-    pm.cleanup_reports(report_dir)
-    out = report_dir / f"report-{uuid.uuid4().hex}.html"
-    plan = pm.report_plan(target, str(out))
-    env = cli_env(cli, os.environ)
-    attempts = [(plan["primary"], plan["primaryNote"])] + ([(plan["fallback"], plan["fallbackNote"])] if plan["fallback"] else [])
-    causes: List[str] = []
-    for args, note in attempts:
-        try:
-            rc, _ = await _run([cli, *args], target["path"], env, REPORT_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            causes.append(f"timed out after {REPORT_TIMEOUT_S} s")
-            continue
-        except OSError as e:
-            causes.append(pm.plain(e, 200))
-            continue
-        if rc != 0 or not out.is_file():
-            causes.append(f"exit {rc}")
-            continue
-        try:
-            if out.stat().st_size > MAX_REPORT_BYTES:
-                return _err(502, "the report is too large to show here; run prism-cli codewatch report in a terminal")
-            html = out.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            return _err(502, "could not read the report: " + pm.plain(e, 200))
-        finally:
-            # Read once, then gone; cleanup_reports catches files a crash left behind.
-            try:
-                out.unlink()
-            except OSError:
-                pass
-        return web.json_response({"repo": target["name"], "note": note, "html": pm.with_report_csp(html)})
-    ctx.logger.warning("prism report for %s failed: %s", target["name"], "; ".join(causes))
-    return _err(502, f"prism-cli codewatch report found no review for {target['name']} ({'; '.join(causes)})")
+        return _err(502, f"prism-cli's UI files could not be read ({e.__class__.__name__}); reinstall prism-cli")
+
+
+async def _relay(ctx: Any, op: str, path: Any, query: Any, body: Any) -> web.Response:
+    hello = await _hello(ctx)
+    if isinstance(hello, web.Response):
+        return hello
+    msg = ub.check_request(op, path, query, body, hello)
+    if msg is None:
+        return _err(400, "not a PRISM page request")
+    return web.json_response(await ub.SUPERVISOR.request(msg))
+
+
+async def handle_ui_get(request: web.Request, ctx: Any) -> web.Response:
+    denied = await _gate(request, ctx, "ui")
+    if denied is not None:
+        return denied
+    raw = request.query.get("query", "{}")
+    if len(raw) > ub.MAX_MESSAGE:
+        return _err(400, "query too large")
+    try:
+        query = json.loads(raw)
+    except ValueError:
+        return _err(400, "query must be JSON")
+    return await _relay(ctx, "get", request.query.get("path"), query, None)
+
+
+async def handle_ui_act(request: web.Request, ctx: Any) -> web.Response:
+    denied = await _gate(request, ctx, "ui-act")
+    if denied is not None:
+        return denied
+    if request.content_type != "application/json":
+        return _err(415, "expected application/json")
+    raw = await request.content.read(ub.MAX_MESSAGE + 1)  # read at most this much: a longer body is refused, not buffered
+    if len(raw) > ub.MAX_MESSAGE:
+        return _err(413, "request too large")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return _err(400, "invalid JSON")
+    if not isinstance(data, dict) or set(data) - {"path", "body"}:
+        return _err(400, "expected {path, body}")
+    return await _relay(ctx, "act", data.get("path"), None, data.get("body"))

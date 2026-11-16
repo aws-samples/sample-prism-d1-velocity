@@ -1,269 +1,171 @@
-// PRISM page for Kiro Crew. Loaded by the dashboard with import('/apps/prism/ui/index.mjs');
+// PRISM page for Kiro Crew: prism-cli's own dashboard UI (the same pages, Run buttons and confirm
+// dialogs as `prism-cli dashboard`). Loaded by the dashboard with import('/apps/prism/ui/index.mjs');
 // React and the App SDK come from the host (window.__kirocrew_modules), so there is no build step.
 //
-// Every value from the backend is recorded text (repo names, finding messages written by a
-// reviewer model). It is only ever passed to React as a text child, which React escapes:
-// nothing here sets innerHTML, builds a URL or an event handler from data. The report HTML
-// goes into an iframe with an empty sandbox (no scripts, no same-origin, no forms, no popups)
-// and carries a CSP that blocks script and every remote load.
-// The page sends only indexes (repoIndex) to the backend, never a path.
+// The UI bundle comes from the installed prism-cli (GET /api/apps/prism/ui/bundle) and runs in an
+// iframe with sandbox="allow-scripts" and no allow-same-origin: an opaque origin with no access to
+// the gateway's cookies, storage or DOM, and its own CSP (scripts and style by sha256 only,
+// connect-src none). Its one way out is postMessage to this page, which accepts messages from that
+// iframe only and relays them through useAppApi (scoped to /api/apps/prism/*, gateway-authenticated)
+// to the app's /ui/get and /ui/act routes; prism-cli checks every request again. A report opens in
+// a second iframe with an empty sandbox (no scripts at all) and a CSP that allows its inline styles only.
 
-export const REFRESH_MS = 5 * 60 * 1000;
-/** How often the page checks whether a refresh is due (it only refreshes while visible). */
-const VISIBILITY_POLL_MS = 30 * 1000;
-/** How long a download's blob URL stays valid. */
-const BLOB_URL_TTL_MS = 10 * 1000;
 export const API = '/api/apps/prism';
-
-const v = (name, fallback) => `var(--${name}, ${fallback})`;
-const S = {
-  page: { padding: '16px', maxWidth: '1100px', color: v('text', 'inherit'), fontSize: '14px', lineHeight: 1.45, boxSizing: 'border-box', width: '100%' },
-  head: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' },
-  h1: { fontSize: '22px', fontWeight: 700, margin: 0, color: v('text-strong', 'inherit') },
-  h2: { fontSize: '15px', fontWeight: 600, margin: '0 0 8px', color: v('text-strong', 'inherit') },
-  muted: { color: v('muted', 'GrayText'), fontSize: '13px', margin: '2px 0', overflowWrap: 'anywhere' },
-  small: { color: v('muted', 'GrayText'), fontSize: '12px' },
-  cards: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', margin: '12px 0' },
-  card: { background: v('card', 'transparent'), border: `1px solid ${v('border', 'GrayText')}`, borderRadius: '8px', padding: '10px 12px', minWidth: 0 },
-  cardTitle: { color: v('muted', 'GrayText'), fontSize: '12px', textTransform: 'uppercase', letterSpacing: '.04em' },
-  cardValue: { fontSize: '20px', fontWeight: 700, margin: '4px 0 2px', overflowWrap: 'anywhere' },
-  block: { background: v('card', 'transparent'), border: `1px solid ${v('border', 'GrayText')}`, borderRadius: '8px', padding: '12px', margin: '12px 0', minWidth: 0 },
-  two: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px' },
-  ul: { listStyle: 'none', margin: 0, padding: 0 },
-  li: { borderTop: `1px solid ${v('border', 'GrayText')}`, padding: '8px 0', minWidth: 0 },
-  row: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '4px 12px', overflowWrap: 'anywhere' },
-  btn: { border: `1px solid ${v('border', 'GrayText')}`, background: v('bg-elevated', 'transparent'), color: v('text', 'inherit'), borderRadius: '6px', padding: '4px 10px', fontSize: '13px', cursor: 'pointer' },
-  code: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px', background: v('bg-elevated', 'transparent'), padding: '2px 6px', borderRadius: '4px', overflowWrap: 'anywhere' },
-  pre: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '13px', margin: '6px 0 0' },
-  frame: { width: '100%', height: '70vh', minHeight: '320px', border: `1px solid ${v('border', 'GrayText')}`, borderRadius: '6px', background: '#fff' },
-  error: { color: v('danger-text', 'red'), overflowWrap: 'anywhere' },
-};
-const TONE = { ok: v('ok', 'green'), warn: v('warn', 'orange'), error: v('danger', 'red'), none: v('border', 'GrayText') };
-const STATUS_TONE = { ok: 'ok', info: 'none', warn: 'warn', missing: 'error' };
-const SEV_TONE = { high: 'error', medium: 'warn', low: 'none' };
+export const UPDATE_TITLE = 'Update prism-cli to 1.21.0 or later';
+export const UPDATE_CMD = 'npm install -g @prism-d1/cli@latest';
+const BLOB_URL_TTL_MS = 10 * 1000;
+/** server.ts REPORT_ROUTE: a result id, never a path. */
+const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
+export const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:";
 const str = (x) => (typeof x === 'string' ? x : x == null ? '' : String(x));
+const v = (name, fallback) => `var(--${name}, ${fallback})`;
 
-/** An ISO timestamp inside recorded text (e.g. a setup item's "last sync log write <ISO>"). */
-const ISO_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
-/** The digest cron's schedule in app.json ("0 9 * * *", local time). */
-export const DIGEST_HOUR = 9;
-
-/** "just now", "5 min ago", "3 h ago", "2 d ago". */
-export function ago(iso, now) {
-  const t = Date.parse(str(iso));
-  if (Number.isNaN(t)) return 'unknown';
-  const min = Math.max(0, Math.round((now - t) / 60000));
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min} min ago`;
-  const hr = Math.round(min / 60);
-  return hr < 48 ? `${hr} h ago` : `${Math.round(hr / 24)} d ago`;
+/** The iframe document. The bundle's text is the CLI's own; a file that could close its element early is refused. */
+export function srcdocFor(b, theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  const csp = `default-src 'none'; script-src '${b.hashes.bridge}' '${b.hashes.js}'; style-src '${b.hashes.css}'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'`;
+  const safe = (s) => { if (/<\/(script|style)/i.test(str(s))) throw new Error('the PRISM UI files cannot be inlined; reinstall prism-cli'); return str(s); };
+  for (const k of ['bridge', 'js', 'css']) if (!/^sha256-[A-Za-z0-9+/]+=*$/.test(str(b.hashes && b.hashes[k]))) throw new Error('the PRISM UI files came without valid hashes');
+  return `<!DOCTYPE html><html lang="en" data-theme="${t}"><head><meta charset="utf-8">`
+    + `<meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1">`
+    + `<style>${safe(b.css)}</style></head><body><div class="wrap">${str(b.body)}</div>`
+    + `<script>${safe(b.bridge)}</script><script>${safe(b.js)}</script></body></html>`;
 }
 
-/** A relative time with the full local time as its tooltip. */
-function stamp(h, iso, now) {
-  const t = Date.parse(str(iso));
-  return h('span', { title: Number.isNaN(t) ? '' : new Date(t).toLocaleString() }, ago(iso, now));
+/** The iframe's message: a request, a report to open, or null. Shape only: the app route and prism-cli check again. */
+export function checkMessage(m) {
+  if (!m || typeof m !== 'object') return null;
+  if (m.type === 'prism-ui:open-report') return typeof m.id === 'string' && REPORT_ID.test(m.id) ? { report: m.id } : null;
+  if (m.type !== 'prism-ui:request' || !Number.isSafeInteger(m.id)) return null;
+  if ((m.op !== 'get' && m.op !== 'act') || typeof m.path !== 'string' || !m.path.startsWith('/api/') || m.path.length > 200) return null;
+  if (m.op === 'get') return { id: m.id, op: 'get', path: m.path, query: m.query && typeof m.query === 'object' && !Array.isArray(m.query) ? m.query : {} };
+  return m.body && typeof m.body === 'object' && !Array.isArray(m.body) ? { id: m.id, op: 'act', path: m.path, body: m.body } : null;
 }
 
-/** Text children with every ISO timestamp in it replaced by a relative stamp. */
-export function withTimes(h, text, now) {
-  const s = str(text);
-  const out = [];
-  let last = 0;
-  for (const m of s.matchAll(ISO_RE)) {
-    if (Number.isNaN(Date.parse(m[0]))) continue;
-    out.push(s.slice(last, m.index), stamp(h, m[0], now));
-    last = m.index + m[0].length;
+/** An SDK error's JSON body (the route's {error, update, command}), or null. */
+export function errorBody(e) {
+  try { const j = JSON.parse(str(e && e.body)); return j && typeof j === 'object' ? j : null; } catch { return null; }
+}
+
+/** One relayed request: the route answers 200 with prism-cli's own { status, json }. */
+export async function relay(api, r) {
+  try {
+    const a = r.op === 'get'
+      ? await api.get(`${API}/ui/get?path=${encodeURIComponent(r.path)}&query=${encodeURIComponent(JSON.stringify(r.query))}`)
+      : await api.post(`${API}/ui/act`, { path: r.path, body: r.body });
+    return { status: a && typeof a.status === 'number' ? a.status : 502, json: a ? a.json : { error: 'no answer' } };
+  } catch (e) {
+    const j = errorBody(e);
+    return { status: e && typeof e.status === 'number' ? e.status : 0, json: { error: str(j ? j.error : e && (e.body || e.message)) || 'the gateway refused the request' } };
   }
-  out.push(s.slice(last));
-  return out.filter((x) => x !== '');
 }
 
-/**
- * 'today' or 'tomorrow': the digest's next 09:00 in this browser's time zone.
- * shortcut: assumes the default schedule and that the browser and the gateway share a zone;
- * an edit on the Schedule page is not seen here (read the job through the cron API to fix).
- */
-export function nextDigestDay(now) {
-  const nine = new Date(now);
-  nine.setHours(DIGEST_HOUR, 0, 0, 0);
-  return now < nine.getTime() ? 'today' : 'tomorrow';
+/** The report HTML with its CSP first in <head>. */
+export function withReportCsp(html) {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">`;
+  const s = str(html);
+  const m = /<head[^>]*>/i.exec(s);
+  return m ? s.slice(0, m.index + m[0].length) + meta + s.slice(m.index + m[0].length) : `<!DOCTYPE html><html><head>${meta}</head><body>${s}</body></html>`;
 }
 
-/** The 'Last digest' line (children) and the message to show under it. */
-export function digestParts(h, d, now) {
-  const first = `${nextDigestDay(now)} at 0${DIGEST_HOUR}:00`;
-  if (!d || !d.recorded) return { parts: [`Not run yet. First run: ${first}.`], message: '' };
-  if (!d.lastRunAt) return { parts: [`Last run: time not recorded (state from v0.1). Next run: ${first}.`], message: '' };
-  // digest.py writes the same stamp to lastRunAt and lastNotifiedAt when a run notifies.
-  const notified = !!d.lastNotifiedAt && d.lastNotifiedAt === d.lastRunAt;
-  return { parts: ['Last run ', stamp(h, d.lastRunAt, now), notified ? ' · notified:' : ' · nothing new'], message: notified ? str(d.lastMessage) : '' };
-}
+const S = {
+  page: { padding: '16px', color: v('text', 'inherit'), fontSize: '14px', lineHeight: 1.45, maxWidth: '760px' },
+  h1: { fontSize: '20px', fontWeight: 700, margin: '0 0 8px', color: v('text-strong', 'inherit') },
+  muted: { color: v('muted', 'GrayText'), overflowWrap: 'anywhere' },
+  code: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '13px', background: v('bg-elevated', 'transparent'), padding: '4px 8px', borderRadius: '4px', overflowWrap: 'anywhere', userSelect: 'all' },
+  btn: { border: `1px solid ${v('border', 'GrayText')}`, background: v('bg-elevated', 'transparent'), color: v('text', 'inherit'), borderRadius: '6px', padding: '4px 10px', fontSize: '13px', cursor: 'pointer' },
+  error: { color: v('danger-text', 'red'), overflowWrap: 'anywhere' },
+  frame: { width: '100%', height: 'calc(100vh - 24px)', minHeight: '480px', border: 0, display: 'block' },
+  overlay: { position: 'fixed', inset: '24px', background: v('card', '#fff'), border: `1px solid ${v('border', 'GrayText')}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', zIndex: 10, boxShadow: '0 10px 30px rgb(0 0 0 / .35)' },
+  bar: { display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'flex-end', padding: '8px 12px' },
+  report: { flex: 1, border: 0, background: '#fff', borderRadius: '0 0 8px 8px' },
+};
 
-function badge(h, text, tone, title) {
-  return h('span', { title: title || undefined, style: { display: 'inline-block', fontSize: '12px', fontWeight: 600, padding: '0 8px', borderRadius: '999px', border: `1px solid ${TONE[tone] || TONE.none}`, color: TONE[tone] || 'inherit' } }, str(text));
-}
-
-function list(h, title, rows) {
-  return h('section', { style: S.block },
-    h('h2', { style: S.h2 }, title),
-    rows.length ? h('ul', { style: S.ul }, ...rows.map((r, i) => h('li', { key: i, style: S.li }, h('div', { style: S.row }, h('span', null, str(r.name)), h('span', { style: S.muted }, str(r.value))))))
-      : h('p', { style: S.muted }, 'No data yet.'));
-}
-
-/**
- * The page body for one model. Pure: `h` is React.createElement (or a stub in tests),
- * `ui` holds the view state and callbacks. Exported for tests.
- */
-export function renderModel(h, m, ui) {
-  const repos = Array.isArray(m.repos) ? m.repos : [];
-  const now = typeof ui.now === 'number' ? ui.now : Date.now();
-  const out = [];
-  out.push(h('div', { key: 'head', style: S.head },
-    h('h1', { style: S.h1 }, 'PRISM'),
-    h('button', { type: 'button', style: S.btn, onClick: ui.refresh, disabled: ui.loading }, ui.loading ? 'Refreshing…' : 'Refresh')));
-  out.push(h('p', { key: 'meta', style: S.muted },
-    'updated ', stamp(h, m.generatedAt, now),
-    ' · usage cached ', m.usageUpdatedAt ? stamp(h, m.usageUpdatedAt, now) : 'unknown',
-    m.usageStale ? ' (refreshing in the background)' : '',
-    ` · prism-cli ${str(m.version)}`));
-  out.push(h('section', { key: 'cards', style: S.cards }, ...(m.cards || []).map((c, i) =>
-    h('div', { key: i, style: S.card }, h('div', { style: S.cardTitle }, str(c.title)), h('div', { style: S.cardValue }, str(c.value)), h('div', { style: S.muted }, ...withTimes(h, c.detail, now))))));
-  out.push(h('div', { key: 'lists', style: S.two }, list(h, 'Top models this month', m.topModels || []), list(h, 'Top projects this month', m.topProjects || [])));
-
-  out.push(h('section', { key: 'repos', style: S.block },
-    h('h2', { style: S.h2 }, 'Repositories with codewatch'),
-    m.reposNote ? h('p', { style: S.muted }, str(m.reposNote)) : null,
-    repos.length ? null : h('p', { style: S.muted }, 'No repository has codewatch yet.'),
-    h('ul', { style: S.ul }, ...repos.map((r, repoIndex) => {
-      const b = r.badge || { text: 'no review', tone: 'none' };
-      const c = r.commit;
-      return h('li', { key: repoIndex, style: { ...S.li, borderLeft: `3px solid ${TONE[b.tone] || TONE.none}`, paddingLeft: '10px' } },
-        h('div', { style: S.row },
-          h('strong', null, str(r.name)),
-          h('span', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-            badge(h, b.text, b.tone, 'Latest review: ' + str(r.review)),
-            h('span', { style: S.small }, str(r.hooks)),
-            r.hasReport ? h('button', { type: 'button', style: S.btn, onClick: () => ui.openReport(repoIndex) }, 'Open report') : null)),
-        h('p', { style: S.muted }, ...(c ? [str(c.sha), ' · ', stamp(h, c.at, now), ' · ', str(c.subject)] : ['last commit: unknown'])),
-        h('p', { style: S.muted }, ...(r.reviewAt ? ['Latest review: ', str(r.review), ' · ', stamp(h, r.reviewAt, now)] : [str(r.review)])),
-        Array.isArray(r.findings) && r.findings.length ? h('details', null,
-          h('summary', { style: { cursor: 'pointer', fontSize: '13px' } }, `Findings (${r.findings.length}${r.more ? '+' : ''})`),
-          h('ul', { style: S.ul }, ...r.findings.map((f, fi) => h('li', { key: fi, style: S.li },
-            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' } },
-              badge(h, f.severity, SEV_TONE[f.severity] || 'none'), h('code', { style: S.code }, str(f.location)), h('span', { style: S.muted }, 'branch ' + str(f.branch))),
-            h('div', { style: { marginTop: '4px', overflowWrap: 'anywhere' } }, str(f.message))))),
-          r.more ? h('p', { style: S.muted }, str(r.more)) : null) : null,
-        ui.report && ui.report.index === repoIndex ? reportView(h, ui.report, ui) : null);
-    }))));
-
-  const dg = digestParts(h, m.digest, now);
-  out.push(h('section', { key: 'digest', style: S.block },
-    h('h2', { style: S.h2 }, 'Last digest'),
-    h('p', { style: S.muted }, ...dg.parts),
-    dg.message ? h('pre', { style: S.pre }, dg.message) : null));
-
-  out.push(h('section', { key: 'setup', style: S.block },
-    h('h2', { style: S.h2 }, 'Setup checklist'),
-    h('p', { style: S.muted }, 'Commands are copy-only: paste them into a terminal to run them yourself.'),
-    h('ul', { style: S.ul }, ...(m.checklist || []).map((c, i) => h('li', { key: i, style: S.li },
-      h('div', { style: S.row }, h('strong', null, str(c.label)), badge(h, c.status, STATUS_TONE[c.status] || 'none')),
-      h('p', { style: S.muted }, ...withTimes(h, c.detail, now)),
-      c.fix ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' } },
-        h('code', { style: S.code }, str(c.fix)),
-        h('button', { type: 'button', style: S.btn, onClick: () => ui.copy(str(c.fix)) }, ui.copied === str(c.fix) ? 'Copied' : 'Copy')) : null)))));
-  return h('div', { style: S.page }, ...out);
-}
-
-function reportView(h, rep, ui) {
-  if (rep.loading) return h('p', { style: S.muted }, 'Building the report…');
-  if (rep.error) return h('p', { style: S.error }, str(rep.error));
-  return h('div', { style: { marginTop: '8px' } },
-    h('div', { style: S.row },
-      h('span', { style: S.muted }, str(rep.note)),
-      h('span', { style: { display: 'flex', gap: '6px' } },
-        h('button', { type: 'button', style: S.btn, onClick: ui.downloadReport }, 'Download'),
-        h('button', { type: 'button', style: S.btn, onClick: ui.closeReport }, 'Close'))),
-    // sandbox="" : no scripts, opaque origin, no forms, no popups, no top navigation.
-    h('iframe', { title: 'Codewatch report for ' + str(rep.repo), sandbox: '', referrerPolicy: 'no-referrer', srcDoc: str(rep.html), style: S.frame }));
-}
-
-/** The notice shown instead of data when no usage is cached for today. Exported for tests. */
-export function renderNeedsCache(h, ui) {
+/** The page when prism-cli is missing or older than 1.21.0: the message and the command, nothing else. Exported for tests. */
+export function renderUpdate(h, u, ui) {
   return h('div', { style: S.page },
-    h('div', { style: S.head }, h('h1', { style: S.h1 }, 'PRISM')),
-    h('section', { style: S.block },
-      h('h2', { style: S.h2 }, 'No AI usage cached for today yet'),
-      h('p', { style: S.muted }, 'This page reads the usage cache that prism-cli dashboard keeps, so it never starts a codeburn export by itself. Open prism-cli dashboard once, or load now: that runs the codeburn export and can take a minute.'),
-      h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
-        h('button', { type: 'button', style: S.btn, onClick: ui.refresh, disabled: ui.loading }, 'Check again'),
-        h('button', { type: 'button', style: S.btn, onClick: ui.loadWithExport, disabled: ui.loading }, ui.loading ? 'Loading…' : 'Load now (runs codeburn export)'))));
+    h('h1', { style: S.h1 }, UPDATE_TITLE),
+    u.reason ? h('p', { style: S.muted }, str(u.reason)) : null,
+    h('p', null, 'Run this in a terminal on the Kiro Crew machine, then reload this page:'),
+    h('p', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+      h('code', { style: S.code }, str(u.command || UPDATE_CMD)),
+      h('button', { type: 'button', style: S.btn, onClick: () => ui.copy(str(u.command || UPDATE_CMD)) }, ui.copied ? 'Copied' : 'Copy'),
+      h('button', { type: 'button', style: S.btn, onClick: ui.reload }, 'Check again')));
+}
+
+/** The report overlay (sandbox="": no scripts, no same-origin, no forms, no popups). Exported for tests. */
+export function renderReport(h, rep, ui) {
+  return h('div', { style: S.overlay, role: 'dialog', 'aria-label': 'Codewatch report' },
+    h('div', { style: S.bar },
+      rep.error ? h('span', { style: { ...S.error, marginRight: 'auto' } }, str(rep.error)) : h('span', { style: { ...S.muted, marginRight: 'auto' } }, 'Codewatch report'),
+      rep.html ? h('button', { type: 'button', style: S.btn, onClick: ui.downloadReport }, 'Download') : null,
+      h('button', { type: 'button', style: S.btn, onClick: ui.closeReport }, 'Close')),
+    rep.html ? h('iframe', { title: 'Codewatch report', sandbox: '', referrerPolicy: 'no-referrer', srcDoc: withReportCsp(rep.html), style: S.report }) : null);
 }
 
 export default function PrismPage() {
   const React = window.__kirocrew_modules.react;
-  const { useAppApi } = window.__kirocrew_modules['@kirocrew/app-sdk'];
-  const { useState, useEffect, useCallback, useRef, createElement: h } = React;
-  const api = useAppApi();
-  const [model, setModel] = useState(null);
-  const [needsCache, setNeedsCache] = useState(false);
+  const sdk = window.__kirocrew_modules['@kirocrew/app-sdk'];
+  const { useState, useEffect, useRef, useCallback, createElement: h } = React;
+  const api = sdk.useAppApi();
+  const theme = typeof sdk.useTheme === 'function' ? sdk.useTheme() : null;
+  const frame = useRef(null);
+  const [doc, setDoc] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [update, setUpdate] = useState(null);
+  const [copied, setCopied] = useState(false);
   const [report, setReport] = useState(null);
-  const [copied, setCopied] = useState('');
-  const [now, setNow] = useState(Date.now());
-  const lastLoad = useRef(0);
+  const dark = !theme || (typeof theme === 'object' ? theme.mode !== 'light' && theme.resolved !== 'light' : theme !== 'light');
 
-  const load = useCallback((allowExport) => {
-    setLoading(true);
-    lastLoad.current = Date.now();
-    api.get(API + '/data' + (allowExport ? '?allowExport=1' : ''))
-      .then((d) => {
-        if (d && d.needsUsageCache) { setNeedsCache(true); return; }
-        setNeedsCache(false); setModel(d); setError(''); setReport(null); setNow(Date.now());
-      })
-      .catch((e) => setError(str(e && e.body ? e.body : e && e.message)))
-      .finally(() => setLoading(false));
-  }, [api]);
+  const load = useCallback(() => {
+    setError(''); setUpdate(null);
+    api.get(API + '/ui/bundle')
+      .then((b) => setDoc(srcdocFor(b, dark ? 'dark' : 'light')))
+      .catch((e) => {
+        const j = errorBody(e);
+        if (j && j.update) setUpdate({ reason: str(j.error).replace(/\s*Update prism-cli to [\s\S]*$/, ''), command: str(j.command) });
+        else setError(str(j ? j.error : e && (e.body || e.message)) || 'could not load the PRISM page');
+      });
+  }, [api, dark]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    load(false);
-    // Auto-refresh every 5 minutes while the page is visible; catch up when it becomes visible again.
-    // Each tick also moves the clock, so "3 min ago" stays current between refreshes.
-    const tick = () => {
-      if (document.visibilityState !== 'visible') return;
-      setNow(Date.now());
-      if (Date.now() - lastLoad.current >= REFRESH_MS) load(false);
+    const onMessage = async (e) => {
+      const f = frame.current;
+      if (!f || e.source !== f.contentWindow) return;
+      const m = checkMessage(e.data);
+      if (!m) return;
+      if (m.report) {
+        const a = await relay(api, { op: 'get', path: '/api/report', query: { id: m.report } });
+        setReport(a.status === 200 && a.json && typeof a.json.html === 'string' ? { html: a.json.html } : { error: 'No report for that review (' + str(a.json && a.json.error) + ').' });
+        return;
+      }
+      const a = await relay(api, m);
+      // The iframe's origin is opaque ("null"), so '*' is the only target that reaches it; the window itself is the target.
+      if (frame.current && frame.current.contentWindow) frame.current.contentWindow.postMessage({ type: 'prism-ui:response', id: m.id, status: a.status, json: a.json }, '*');
     };
-    const timer = setInterval(tick, VISIBILITY_POLL_MS);
-    document.addEventListener('visibilitychange', tick);
-    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', tick); };
-  }, [load]);
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [api]);
 
   const ui = {
-    loading, copied, report, now,
-    refresh: () => load(false),
-    loadWithExport: () => load(true),
-    copy: (text) => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => setCopied(text), () => setCopied('')); },
-    openReport: (index) => {
-      setReport({ index, loading: true });
-      api.get(API + '/report?repoIndex=' + encodeURIComponent(String(index)) + '&gen=' + encodeURIComponent(str(model && model.gen)))
-        .then((r) => setReport({ index, repo: str(r.repo), note: str(r.note), html: str(r.html) }))
-        .catch((e) => setReport({ index, error: str(e && e.body ? e.body : e && e.message) }));
-    },
+    copied,
+    copy: (text) => { navigator.clipboard && navigator.clipboard.writeText(text).then(() => setCopied(true), () => setCopied(false)); },
+    reload: () => { setDoc(''); load(); },
     closeReport: () => setReport(null),
     downloadReport: () => {
       if (!report || !report.html) return;
       const url = URL.createObjectURL(new Blob([report.html], { type: 'text/html' }));
       const a = document.createElement('a');
-      a.href = url;
-      a.download = 'prism-codewatch-report.html';
-      a.click();
+      a.href = url; a.download = 'prism-codewatch-report.html'; a.click();
       setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
     },
   };
 
-  if (needsCache) return renderNeedsCache(h, ui);
-  if (!model) return h('div', { style: S.page }, h('h1', { style: S.h1 }, 'PRISM'), error ? h('p', { style: S.error }, error) : h('p', { style: S.muted }, 'Loading PRISM data…'));
-  return h(React.Fragment, null, error ? h('p', { style: { ...S.error, padding: '8px 16px 0' } }, error) : null, renderModel(h, model, ui));
+  if (update) return renderUpdate(h, update, ui);
+  if (error) return h('div', { style: S.page }, h('h1', { style: S.h1 }, 'PRISM'), h('p', { style: S.error }, error), h('button', { type: 'button', style: S.btn, onClick: ui.reload }, 'Try again'));
+  if (!doc) return h('p', { style: { ...S.page, ...S.muted } }, 'Loading PRISM…');
+  return h(React.Fragment, null,
+    h('iframe', { ref: frame, title: 'PRISM', sandbox: 'allow-scripts', referrerPolicy: 'no-referrer', srcDoc: doc, style: S.frame }),
+    report ? renderReport(h, report, ui) : null);
 }

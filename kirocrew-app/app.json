@@ -1,30 +1,30 @@
 {
   "name": "prism",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "displayName": "PRISM",
-  "description": "Codewatch findings, AI spend and setup status from your local prism-cli for Kiro Crew agents, and a daily digest that speaks only when something changed.",
+  "description": "The PRISM dashboard inside Kiro Crew (the same pages and actions as prism-cli dashboard), codewatch findings, AI spend and setup status for Kiro Crew agents, and a daily digest that speaks only when something changed. Needs prism-cli 1.21.0 or later.",
   "author": "aws-samples",
   "license": "MIT",
   "minKiroCrewVersion": "0.12.1",
   "iconPath": "assets/icon.png",
-  "screenshots": ["assets/screenshots/page-light.png", "assets/screenshots/report-light.png"],
-  "screenshotsDark": ["assets/screenshots/page-dark.png", "assets/screenshots/report-dark.png"],
+  "screenshots": ["assets/screenshots/page-light.png", "assets/screenshots/findings-light.png"],
+  "screenshotsDark": ["assets/screenshots/page-dark.png", "assets/screenshots/findings-dark.png"],
   "tags": ["code-review", "developer-tools", "code-quality"],
   "highlights": [
-    "PRISM page: spend, setup checklist, repos with codewatch newest commit first, their findings and a sandboxed scan report, all read-only",
+    "PRISM page: prism-cli's own dashboard (Dashboard, Security Agent, AccountGuard, Settings) with its Run buttons and confirm dialogs, in a sandboxed frame, from your installed prism-cli",
     "The prism MCP server: prism_status, prism_findings, prism_spend, prism_report and prism_setup, served by your own prism-cli mcp",
     "Finds prism-cli installed with nvm or Volta even when Kiro Crew's PATH does not include it",
     "prism-fix-findings skill: an agent checks the latest codewatch review before it finishes, fixes real issues in at most 2 rounds and reports the rest",
     "prism-daily-digest: a script cron with no model call that notifies only on a new high finding, spend over your threshold, or a setup item that broke"
   ],
   "useCases": [
-    "When you start the day, open the PRISM page to see which repos got new codewatch findings since their last commit and open the scan report of the one that needs attention",
+    "When you start the day, open the PRISM page to see which repos got new codewatch findings, open a scan report, or run a setup step or a Security Agent review from Settings without leaving Kiro Crew",
     "When an agent finishes a code change in a repo with codewatch, the prism-fix-findings skill has it call prism_findings and fix the real high and medium findings before it reports done",
     "When you want to know what codewatch flagged across your repos, ask a chat to call prism_findings or prism_status instead of opening the dashboard",
     "When you want a heads-up without watching a page, let prism-daily-digest run at 09:00 and tell you only about new high findings, a setup regression, or spend over your threshold"
   ],
   "configuration": [
-    "Install with prism-cli 1.9.0 or later: npm install -g @prism-d1/cli && prism-cli enable kirocrew (or install this folder; see the README)",
+    "Install with prism-cli 1.21.0 or later: npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew (or install this folder; see the README)",
     "Trust the app when you enable it; Kiro Crew registers nothing from a third-party app until you do",
     "Optional: set spendThreshold and cliPath in the app's data/config.json (see the README)"
   ],
@@ -41,7 +41,9 @@
   },
   "backend": {
     "hooks": {
-      "routes": "scripts.page_routes:register_routes"
+      "routes": "scripts.page_routes:register_routes",
+      "on_startup": "scripts.page_routes:on_startup",
+      "on_shutdown": "scripts.page_routes:on_shutdown"
     }
   },
   "mcpServers": {
