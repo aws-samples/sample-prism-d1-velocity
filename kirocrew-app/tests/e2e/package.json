@@ -1,0 +1,11 @@
+{
+  "name": "prism-kirocrew-app-page-e2e",
+  "private": true,
+  "description": "e2e run for the PRISM Kiro Crew page on a stand-in gateway (node tests/e2e/run.mjs). Demo data, fake aws; not part of CI.",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.65.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

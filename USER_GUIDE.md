@@ -694,25 +694,29 @@ files it read.
 [`kirocrew-app/`](kirocrew-app/README.md) is a [Kiro Crew](https://github.com/kirodotdev/KiroCrew)
 app. It registers the `prism-cli mcp` tools as the `prism` MCP server and finds a `prism-cli`
 installed with nvm or Volta even when Kiro Crew's PATH lacks it. It also adds a **PRISM** sidebar
-page with the same view as the editor extension's machine mode: spend, the setup checklist, repos
-with codewatch and their findings, and sandboxed scan reports. The page is read-only and is served
-through the gateway's own authenticated routes. The app also adds the
+page that is the [local dashboard](#local-dashboard) itself: the same Dashboard, Security Agent,
+AccountGuard and Settings pages with the same Run buttons and confirm dialogs, drawn from the copy of
+the UI that ships with your installed prism-cli in a sandboxed frame. Its reads and actions go
+through the gateway's own authenticated routes to `prism-cli dashboard --serve-stdio`, which checks
+them with the browser dashboard's code; starting a Security Agent code review or threat model (an
+upload to your AWS account) needs the same confirmation as in the browser. The app also adds the
 `prism-fix-findings` skill, which has an agent read the latest codewatch review before it finishes,
 fix the real issues in at most 2 rounds and report the rest. The third part is a daily 09:00 digest
 that runs as a script, with no model call. The digest notifies only on a new high finding, on
 today's spend above a threshold you set (off by default), or on a setup item that went from ok to
-warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.8.0 or later.
+warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.21.0 or later; with an older
+prism-cli the page shows only how to update it.
 
-![PRISM page in Kiro Crew with demo data: spend cards, top models and projects, four repos with codewatch, one expanded with its findings](assets/images/prism-cli/kirocrew-app-page-dark.png)
+![The PRISM page in Kiro Crew with demo data: the dashboard's summary cards and Codewatch table](assets/images/prism-cli/kirocrew-app-page-dark.png)
 
-![The PRISM page's report view with demo data: the checkout-service repo row and its codewatch scan report in a sandboxed frame](assets/images/prism-cli/kirocrew-app-report-light.png)
+![The PRISM page with demo data: a Security Agent code review's findings](assets/images/prism-cli/kirocrew-app-findings-light.png)
 
-*The PRISM page (top) and a repo's scan report opened from it (bottom). Both show made-up demo data.*
+*The PRISM page: the Dashboard (top) and a Security Agent run's findings (bottom). Both show made-up demo data.*
 
-Install it with prism-cli 1.9.0 or later, which bundles the app:
+Install it with prism-cli, which bundles the app:
 
 ```bash
-npm i -g @prism-d1/cli && prism-cli enable kirocrew
+npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew
 ```
 
 The command prints its plan (install, update or already current, with the versions) and asks first (`--yes` skips the question, `--dry-run` only prints

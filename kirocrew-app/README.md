@@ -3,10 +3,10 @@
 A [Kiro Crew](https://github.com/kirodotdev/KiroCrew) app that brings your local PRISM data into
 Kiro Crew. It adds:
 
-- **Page `PRISM`** in the sidebar: spend today and this month, top models and projects, the
-  machine setup checklist, the repos with codewatch (newest commit first, with their findings), a
-  sandboxed view of each repo's scan report, and when the daily digest last ran and what it sent.
-  See [The page](#the-page).
+- **Page `PRISM`** in the sidebar: the [local dashboard](../USER_GUIDE.md#local-dashboard)
+  itself (Dashboard, repo pages, Security Agent, AccountGuard, Settings) with its Run buttons and
+  confirm dialogs, drawn from the copy of the UI that ships with your installed prism-cli, in a
+  sandboxed frame. See [The page](#the-page).
 - **MCP server `prism`**: the `prism-cli mcp` tools (`prism_status`, `prism_findings`,
   `prism_spend`, `prism_report`, `prism_setup`; `prism_snapshot`, `prism_dashboard` and
   `prism_dashboard_stop` from prism-cli 1.10.0, `prism_review` from 1.11.0). The app does not implement them. `scripts/prism_mcp.py` finds your
@@ -29,8 +29,10 @@ Kiro Crew. It adds:
 - Kiro Crew 0.12.1 or later (`minKiroCrewVersion`; script crons in an app manifest and
   `"timezone": "local"` were checked against 0.12.1). Linux or macOS.
 - `python3` on the gateway's PATH. The scripts use only the standard library.
-- [prism-cli](https://www.npmjs.com/package/@prism-d1/cli) 1.8.0 or later
-  (`npm install -g @prism-d1/cli`). The MCP server needs `prism-cli mcp`, which is new in 1.8.0.
+- [prism-cli](https://www.npmjs.com/package/@prism-d1/cli) 1.21.0 or later
+  (`npm install -g @prism-d1/cli@latest`). The page needs `prism-cli dashboard --serve-stdio`, which
+  is new in 1.21.0; with an older or missing prism-cli it shows only **Update prism-cli to 1.21.0 or
+  later** and that command.
 
 ### Finding prism-cli
 
@@ -49,10 +51,10 @@ Before it runs `prism-cli`, the app puts that folder first on `PATH`, so the CLI
 
 ## Install
 
-With prism-cli 1.9.0 or later, which bundles this app:
+With prism-cli, which bundles this app (this version, 0.3.0, ships with the first prism-cli after 1.21.0):
 
 ```bash
-npm i -g @prism-d1/cli && prism-cli enable kirocrew
+npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew
 ```
 
 What the command does, its `--status`, `--dry-run` and `--uninstall` options and the two steps
@@ -92,16 +94,18 @@ What you are trusting. After you enable it, the app can:
   `digest-state.json` in the app's data folder, and it sends a Kiro Crew notification when
   something changed.
 - give your agents the `prism-fix-findings` skill.
-- run `scripts/page_routes.py` inside the gateway process (`backend.hooks.routes`). These are the
-  page's two read-only routes. While the page is open, they run `prism-cli dashboard --json`,
-  `prism-cli --version`, `git log -1` in up to 30 repos, and `prism-cli codewatch report`. Each
-  report is written to `data/reports/` in the app's data folder and deleted as soon as it is read.
-  Any file older than a day that is left over is removed on the next report request. Like every
-  in-gateway app code, these routes run with the gateway's privileges.
+- run `scripts/page_routes.py` inside the gateway process (`backend.hooks.routes`, `on_startup`,
+  `on_shutdown`). While the app is enabled it keeps one `prism-cli dashboard --serve-stdio` child
+  running and relays the page's reads and actions to it. **The page runs actions**: the same Run
+  buttons as `prism-cli dashboard`, including the two Security Agent starts that upload the
+  repository at `HEAD` to your scan bucket and start a job in your AWS account. Each one asks
+  first in the page's confirm dialog, and prism-cli refuses it without that confirmation and
+  without a passing Security Agent check. Like every in-gateway app code, these routes run with the
+  gateway's privileges.
 
 The manifest declares `cron`, `storage` and `api: ["/api/apps/prism/*"]` (the page may call only
-this app's own routes), and sets `network: false`. The app opens no port and runs no backend
-process. It has no install hooks, no `spawn` and no session control.
+this app's own routes), and sets `network: false`. The app opens no port and runs no process with
+a port. It has no install hooks and no session control.
 
 ### Updating from v0.1
 
@@ -109,6 +113,8 @@ process. It has no install hooks, no `spawn` and no session control.
 kirocrew app update prism --source <path-to>/sample-prism-d1-velocity/kirocrew-app
 ```
 
+v0.3 needs prism-cli 1.21.0 or later (update it first) and adds `on_startup` and `on_shutdown`
+hooks; disable and enable the app once after the update if the page still shows the old view.
 v0.2 adds the `api` permission for the page. Per the App Kit, an update that adds an `api` entry
 keeps the app enabled but withholds the new entry until you approve it on the app's detail page
 (**Apps → PRISM**). Until you approve it, the page shows an API error. If the page answers 404 after
@@ -133,47 +139,48 @@ is kept across app updates unless a later version of the app changes the schedul
 
 ## The page
 
-![PRISM page in Kiro Crew with demo data: spend cards, top models and projects, four repos with codewatch, one expanded with its findings](../assets/images/prism-cli/kirocrew-app-page-light.png)
+![The PRISM page in Kiro Crew with demo data: the dashboard's summary cards and Codewatch table inside the Kiro Crew sidebar layout](../assets/images/prism-cli/kirocrew-app-page-light.png)
 
 *The PRISM page, rendered with made-up demo data.*
 
-The **PRISM** sidebar page shows the same data as the editor extension's machine mode:
+The **PRISM** sidebar page is the local dashboard (`prism-cli dashboard`): the same Dashboard,
+repo, Security Agent, AccountGuard and Settings pages, the same Run buttons and confirm dialogs, and
+the same refusals. Report links open the codewatch report over the page, with a Download button.
+The page follows Kiro Crew's light or dark theme when it opens. When the daily digest last ran is on
+the dashboard's **Schedule** page (`prism-daily-digest`).
 
-- spend today and this month (calls, sessions), sync mode, prism-cli version, and when the data
-  and the usage cache were taken;
-- top models and top projects this month (project folder names only);
-- the machine setup checklist, with fix commands you can copy (the page never runs them);
-- the repos with codewatch, newest last commit first (`git log -1` in at most 30 repos, 4 at a
-  time; a repo whose commit is unknown sorts by its last review). Each repo shows a badge from its
-  latest review (red `N high`, amber `N med`, muted `N low`, green `clean`, or `no review`; the row's
-  left border uses the same color), whether its hooks are on, its last commit, the latest review's
-  counts and up to 20 findings, plus an "N more" line. Times on the page are relative ("3 h ago",
-  with the full local time as a tooltip) and update while the page is open;
-- **Open report**: the scan report of the review covering the repo's last commit, or the latest
-  review when none covers it. The page says which. You can also download the report;
-- **Last digest**: when the digest cron last ran and the last message it sent;
-- **Refresh**, plus an automatic refresh every 5 minutes while the page is visible.
+How it works:
 
-How it talks to its backend. The page is `ui/index.mjs`, an ES module that the dashboard loads.
-It calls `GET /api/apps/prism/data` and `GET /api/apps/prism/report?repoIndex=N` through the App
-SDK's `useAppApi()`, which allows only the paths in `permissions.api`. The gateway serves those
-routes from `scripts/page_routes.py` inside its own process. Its token middleware authenticates
-every request (a dashboard session, or an app token scoped to `permissions.api`; loopback is not
-exempt). Each handler then also requires the dashboard owner (`ctx.require_owner`), or this app's
-own token, and refuses everything else.
+- The UI is prism-cli's own `dist/ui` bundle, read from your installed prism-cli by
+  `GET /api/apps/prism/ui/bundle`, so the page and the CLI are always the same version.
+- The page puts it in an `<iframe sandbox="allow-scripts">` with no `allow-same-origin`: an opaque
+  origin that cannot read the gateway's cookies, storage or page, with its own CSP (the scripts and
+  style allowed by their sha256 only, `connect-src 'none'`). Its only way out is `postMessage` to the
+  PRISM page, which takes messages from that frame only.
+- The PRISM page relays each read and action through the App SDK's `useAppApi()` (only the paths in
+  `permissions.api`) to `GET /api/apps/prism/ui/get` and `POST /api/apps/prism/ui/act`. The gateway's
+  token middleware authenticates every request (a dashboard session, or an app token scoped to
+  `permissions.api`; loopback is not exempt), and its Origin check covers the POST. Each handler then
+  also requires the dashboard owner (`ctx.require_owner`), or this app's own token.
+- The handler accepts only routes the CLI listed when it started, string-only queries and bodies up
+  to 20 KB, and passes them to `prism-cli dashboard --serve-stdio`, which checks each one again with
+  the browser dashboard's own code: exact route names, the action allowlist, `confirm: true` where
+  needed, and the Security Agent check before an AWS upload.
+- The report is untrusted HTML. It is shown in an `<iframe sandbox="">` (no scripts at all) with a
+  CSP that allows only its inline styles.
 
-Security:
+The `--serve-stdio` child:
 
-- The page sends only indexes. The backend resolves an index against its own last result and
-  refuses any value that is not a plain number inside that list.
-- Recorded text (repo names, commit subjects, finding messages written by a reviewer model) is
-  rendered only as React text, never as HTML.
-- The report HTML is untrusted. It is shown in an `<iframe sandbox="">` (no scripts, an opaque
-  origin, no forms or popups), and the backend adds a CSP that blocks script and every remote load.
-- Usage comes from the dashboard's 5-minute cache. When nothing is cached for today, the page does
-  not start a codeburn export. It says so and offers a **Load now** button that does. When the cache
-  is stale, the backend returns as soon as `dashboard --json` prints and lets the CLI's background
-  refresh finish on its own.
+- starts when the app is enabled (`on_startup`) and keeps running while it is; there is no idle
+  exit, so the CLI keeps its caches and a running action;
+- is restarted when it exits, with backoff (1 s doubling to 60 s);
+- is restarted before the next request when the installed prism-cli changed (an npm update, or a
+  new `cliPath`);
+- is one per gateway: a pid file in the app's data folder (`serve-stdio.pid`) lets the next gateway
+  stop one an earlier gateway left behind;
+- stops with the gateway: its stdin is a pipe from the gateway, which the system closes when the
+  gateway exits for any reason, and prism-cli then exits (stopping any running action); and
+  `on_shutdown` (app disabled, trust revoked, gateway stopping) stops it first.
 
 ## How the digest decides to notify
 
@@ -228,12 +235,22 @@ python3 -m unittest discover -s kirocrew-app/tests
 node --test kirocrew-app/tests/page.test.mjs
 ```
 
-The tests cover the digest's diff logic, the `prism-cli` lookup, the page model (sorting, caps,
-index checks, report arguments and fallback, digest state) and the page's rendering with fixture
-data. They also check `app.json` against the
+The tests cover the digest's diff logic, the `prism-cli` lookup, the stdio relay (the hello and
+version check, which requests are relayed, the bundle hashes, and the child's lifecycle against
+stand-in CLIs: one child, restart after a crash with backoff, a new prism-cli, an old one, stop, a
+child left by an earlier gateway) and the page's pure parts (the frame document and its CSP, message
+checks, the relay, the update page and the report overlay). They also check `app.json` against the
 [App Kit manifest reference](https://github.com/kirodotdev/KiroCrew/blob/main/docs/app-kit/manifest-reference.md).
 When Kiro Crew is installed, they also run Kiro Crew's own manifest validator. CI runs them in
 `.github/workflows/kirocrew-app.yml`.
 
-Not in v0.2: Windows support (`os.execve` on an npm `.cmd` shim needs a shell), and delivery to a
+`node tests/e2e/run.mjs` (after `npm ci` in `tests/e2e/` and `npm run build` in `cli/`) runs the
+page on a stand-in gateway (`tests/e2e/fake_gateway.py`: 127.0.0.1 only, a token cookie, the Origin
+check, the owner gate) that mounts the app's real routes and hooks, against a real
+`--serve-stdio` child on demo data with the fake `aws` CLI from `cli/test/e2e` first on `PATH`.
+`PRISM_CLI=` tests another prism-cli (for example one installed from npm), `PRISM_CLI_OLD=` checks
+the update page, `KC_PYTHON=` names a Python with aiohttp, and `PRISM_E2E_THEME=light` renders the
+light theme.
+
+Not in v0.3: Windows support (`os.execve` on an npm `.cmd` shim needs a shell), and delivery to a
 channel other than Kiro Crew's default notification.
