@@ -115,6 +115,8 @@ export default function PrismPage() {
   const frame = useRef(null);
   /** The prism-cli version of the bundle on screen. */
   const shownVersion = useRef('');
+  /** True from an action's start until its status says it is done. */
+  const actionRunning = useRef(false);
   const [doc, setDoc] = useState('');
   const [error, setError] = useState('');
   const [update, setUpdate] = useState(null);
@@ -148,10 +150,14 @@ export default function PrismPage() {
         return;
       }
       const a = await relay(api, m);
-      // prism-cli was updated while this page was open: the backend already runs the new one; redraw from its bundle.
-      if (bundleOutdated(shownVersion.current, a.version)) { shownVersion.current = a.version; loadRef.current(); return; }
       // The iframe's origin is opaque ("null"), so '*' is the only target that reaches it; the window itself is the target.
       if (frame.current && frame.current.contentWindow) frame.current.contentWindow.postMessage({ type: 'prism-ui:response', id: m.id, status: a.status, json: a.json }, '*');
+      // Is an action running? Its start answers 202 and the drawer polls /api/action/status until it is done.
+      if (m.op === 'act' && a.status === 202) actionRunning.current = true;
+      else if (m.path === '/api/action/status' && a.json && a.json.state !== 'running') actionRunning.current = false;
+      // prism-cli was updated while this page was open: the backend already runs the new one. Redraw from its
+      // bundle, after the answer above reached the frame and never while an action's output is still coming in.
+      if (!actionRunning.current && bundleOutdated(shownVersion.current, a.version)) { shownVersion.current = a.version; loadRef.current(); }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
