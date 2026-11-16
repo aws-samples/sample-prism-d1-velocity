@@ -12,14 +12,14 @@
   "tags": ["code-review", "developer-tools", "code-quality"],
   "highlights": [
     "PRISM page: prism-cli's own dashboard (Dashboard, Security Agent, AccountGuard, Settings) with its Run buttons and confirm dialogs, in a sandboxed frame, from your installed prism-cli",
-    "The prism MCP server: prism_status, prism_findings, prism_spend, prism_report and prism_setup, served by your own prism-cli mcp",
+    "The prism MCP server: prism_status, prism_findings, prism_spend, prism_report, prism_snapshot, prism_dashboard, prism_dashboard_stop, prism_review and prism_setup, served by your own prism-cli mcp",
     "Finds prism-cli installed with nvm or Volta even when Kiro Crew's PATH does not include it",
     "prism-fix-findings skill: an agent checks the latest codewatch review before it finishes, fixes real issues in at most 2 rounds and reports the rest",
     "prism-daily-digest: a script cron with no model call that notifies only on a new high finding, spend over your threshold, or a setup item that broke"
   ],
   "useCases": [
     "When you start the day, open the PRISM page to see which repos got new codewatch findings, open a scan report, or run a setup step or a Security Agent review from Settings without leaving Kiro Crew",
-    "When an agent finishes a code change in a repo with codewatch, the prism-fix-findings skill has it call prism_findings and fix the real high and medium findings before it reports done",
+    "When an agent finishes a code change in a repo with codewatch, the prism-fix-findings skill has it call prism_review and fix the real high and medium findings before it reports done",
     "When you want to know what codewatch flagged across your repos, ask a chat to call prism_findings or prism_status instead of opening the dashboard",
     "When you want a heads-up without watching a page, let prism-daily-digest run at 09:00 and tell you only about new high findings, a setup regression, or spend over your threshold"
   ],

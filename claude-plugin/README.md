@@ -1,4 +1,4 @@
-# PRISM plugin for Claude Code (v0.3.1)
+# PRISM plugin for Claude Code (v0.3.2)
 
 Brings PRISM's local results into [Claude Code](https://code.claude.com/docs/en/overview): codewatch
 review findings, scan reports, AI spend and the setup checklist. It reads the same local data as
@@ -50,9 +50,13 @@ claude plugin install prism@prism-d1-velocity
 ```
 
 Start a new session (or run `/reload-plugins`), then check that `/mcp` lists
-`plugin:prism:prism` as connected. Select it and choose **View tools** to see its 9 tools (the screenshot below predates `prism_review`):
+`plugin:prism:prism` as connected. Select it and choose **View tools** to see its 9 tools:
 
-![Claude Code /mcp tool list for plugin:prism:prism: prism_status, prism_findings, prism_spend and prism_setup marked read-only, plus prism_report, prism_snapshot, prism_dashboard and prism_dashboard_stop](../assets/images/prism-cli/claude-code-mcp-dark.png)
+![Claude Code /mcp tool list for plugin:prism:prism, 9 tools: prism_status, prism_findings, prism_spend and prism_setup marked read-only, prism_review marked open-world, plus prism_report, prism_snapshot, prism_dashboard and prism_dashboard_stop](../assets/images/prism-cli/claude-code-mcp-dark.png)
+
+`/plugin`, then the installed PRISM entry, shows the version and what it installed:
+
+![Claude Code's /plugin page for PRISM @ prism-d1-velocity: version 0.3.2, enabled, with the skills dashboard, findings, fix, prism, report, review and spend, the hooks SessionStart, Stop, SubagentStop, PreToolUse, PostToolUse and SessionEnd, and the prism MCP server](../assets/images/prism-cli/claude-code-plugin-dark.png)
 
 If you added the MCP server by hand before (`claude mcp add prism -- prism-cli mcp`), remove it with
 `claude mcp remove prism`, so the agent doesn't see the same tools twice.
@@ -154,19 +158,21 @@ finish gate adds up to 3 per session. See [Why local code review](../docs/WHY-LO
 ## The live dashboard
 
 `/prism:dashboard` runs the same server as `prism-cli dashboard`: bound to 127.0.0.1 only, with a
-per-run token in the URL, and Origin and CSRF checks on every Setup action. The MCP server starts it
+per-run token in the URL, and Origin and CSRF checks on every action (POST). The MCP server starts it
 as its own child process, so it stops when the Claude Code session ends (or with
 `/prism:dashboard --stop`). Running the command again returns the same URL instead of a second
 server. Its pid, port and URL are kept in `~/.prism/run/dashboard.json` (mode 0600).
 
-The URL is a per-run secret: anyone with it can use the page, including its Setup Run buttons, so
+The URL is a per-run secret: anyone with it can use the page, including its Run buttons (Settings and the Security Agent page), so
 don't paste it into chats, tickets or logs. Claude prints it once. It is also in this session's
 transcript (Claude Code keeps it on disk), which is why the server listens only on 127.0.0.1 and
 the token stops working when the server stops.
 
-![The live PRISM dashboard on 127.0.0.1 with demo data: summary cards (1 high, 1 medium, 2 low findings, spend today and this month) and the Codewatch panel for four demo repos, checkout-service expanded](../assets/images/prism-cli/claude-code-dashboard-browser-light.png)
+![The prism_dashboard tool result that /prism:dashboard shows: the 127.0.0.1 URL (token replaced by "demo"), the port, reused and opened false, and the notes that the token is the page's only key and that the server stops with the session](../assets/images/prism-cli/claude-code-dashboard-command.png)
 
-*The dashboard that `/prism:dashboard` opens, served from a demo home directory. All data is made up.*
+![The live PRISM dashboard on 127.0.0.1 in the light theme with demo data: summary cards (1 high, 1 medium, 2 low findings, spend today and this month), the Codewatch table for four demo repos, the Spend section and the Get more from PRISM strip](../assets/images/prism-cli/claude-code-dashboard-browser-light.png)
+
+*Top: the `prism_dashboard` tool result behind `/prism:dashboard`. Bottom: the dashboard it opens, served from a demo home directory. All data is made up.*
 
 The browser opens by itself only when there is a display and you are not in an SSH session. Over
 SSH, the command prints the URL and a note: in a VS Code, Kiro or Cursor Remote-SSH terminal the
@@ -263,7 +269,9 @@ claude-plugin/
   .mcp.json                         MCP server "prism" -> ${PRISM_CLI:-prism-cli} mcp
   hooks/hooks.json                  SessionStart -> session-start.mjs; SessionStart, Stop, SubagentStop,
                                     PreToolUse (Bash: git push, and the git config, -c, ref, remote, fetch,
-                                    pull, branch, tag, checkout and switch bypass checks), SessionEnd -> harness-hook.mjs
+                                    pull, branch, tag, checkout and switch bypass checks; tool-window record on
+                                    Write, Edit, MultiEdit, NotebookEdit, Bash, Task and mcp__*), PostToolUse
+                                    (the same tools), SessionEnd -> harness-hook.mjs
   scripts/session-start.mjs
   scripts/harness-hook.mjs          passes hook JSON to prism-cli codewatch hook --client claude
   skills/<name>/SKILL.md            prism, findings, report, fix, review, spend, dashboard

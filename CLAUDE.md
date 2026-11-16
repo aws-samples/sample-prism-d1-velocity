@@ -20,14 +20,19 @@ It provides a workshop-style GitHub repo with bootstrapper code for AI-native so
 ## Repository Structure
 
 ```
-infra/              — AWS CDK stacks (metrics pipeline, dashboards, API)
-dashboards/         — Dashboard-as-code (CloudWatch JSON)
+infra/              — AWS CDK stacks (metrics pipeline with the CloudWatch dashboards, API, Security Agent)
+cli/                — prism-cli (@prism-d1/cli on npm): codewatch, the local dashboard, MCP server, security and AWS commands
 bootstrapper/       — What teams inherit post-workshop (templates, hooks, workflows)
   agent-configs/    — AgentCore Runtime, Memory, Gateway templates
+coding-agent/       — Autonomous coding agent (AgentCore harness, issue -> PR workflow)
+editor-extension/   — PRISM extension for VS Code, Kiro IDE and Cursor
+kirocrew-app/       — PRISM app for Kiro Crew
+claude-plugin/      — PRISM plugin for Claude Code (this repo is its marketplace)
+assessment/         — Assessment guide and customer onboarding
 sample-app/         — Hands-on workshop target application
   agent/            — Strands-based task assistant agent (Python)
   src/mcp/          — MCP server exposing task API as tools (TypeScript)
-docs/               — GitHub Pages site + leader guide
+docs/               — Leader guide, data architecture, CLI reference, design notes
 ```
 
 ## Development Workflow
@@ -37,16 +42,16 @@ docs/               — GitHub Pages site + leader guide
 1. **Always start with a spec** — Write or reference a spec in `specs/` before coding
 2. **Emit metadata** — Any new component must emit structured events via the metrics schema
 3. **AI origin is automatic** — codeburn attribution records it; commit trailers are retired, so do not add `AI-Origin` trailers by hand
-4. **Run eval gates** — Bedrock Evaluations must pass before merging to main
+4. **Run eval gates** — the CI eval gate (kiro-cli review, gitleaks, Security Agent) must pass before merging to main
 
 ### Spec-Driven Development Flow:
 
 ```
 1. Write spec (Kiro format) → specs/<feature-name>.md
 2. Claude Code implements against spec
-3. AI metrics auto-collected via git hooks
+3. AI metrics collected by codeburn attribution (no git hook)
 4. CI emits enhanced DORA event to EventBridge
-5. Bedrock Eval gate validates output quality
+5. Eval gate (kiro-cli review, gitleaks, Security Agent) validates the PR
 6. Dashboard updates automatically
 ```
 
@@ -102,7 +107,6 @@ All events follow this structure:
 | DynamoDB | Raw event storage (`prism-d1-events` table), team metadata, PRISM assessment scores |
 | API Gateway | Metric ingestion endpoint |
 | CloudWatch | All four dashboards (Team Velocity, Executive Readout, CISO Compliance, Developer Productivity) + alarms |
-| CodePipeline | CI/CD with eval gates |
 | CloudTrail | Audit trail for AI actions |
 | S3 | Spec storage, eval artifacts |
 
@@ -118,13 +122,8 @@ npx cdk diff           # Preview changes
 
 ## Workshop Facilitation
 
-Each module in `workshop/` contains:
-- `README.md` — Instructor guide with timing
-- `exercises/` — Hands-on exercises
-- `solutions/` — Reference implementations
-- `checkpoints/` — Validation scripts
-
-Workshop is designed for **4-hour delivery** with optional deep-dive extensions.
+The workshop modules are hosted on AWS Workshop Studio, not in this repo (link and module table in
+`README.md`). It runs about 5 hours (modules 01–06 plus prerequisites) with optional extensions.
 
 ## Bootstrapper Usage (Post-Workshop)
 

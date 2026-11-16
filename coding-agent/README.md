@@ -193,7 +193,12 @@ The image is a single mise-based base (~750 MB, 37% of the 2 GB cap) that includ
 the Strands agent SDK, boto3, and the full orchestrator (`run.py` + `agent.py`). It
 ships a version *manager* and installs whatever a repository pins in `.tool-versions`
 at session start. Default model: `us.anthropic.claude-sonnet-5`, set by `deploy-harness.sh`
-(`--model` changes it); the workflow reads it from SSM (`/prism/d1/harness-model`).
+(`--model` changes it); the workflow reads it from SSM (`/prism/d1/harness-model`) and passes it
+to the agent as `--model-id`, which wins over `.coding-agent/config.json`. The `model_id` that
+`install-coding-agent` writes there (`--model`, default
+`us.anthropic.claude-sonnet-4-5-20250929-v1:0`, the model workshop accounts have enabled) is used
+only when no `--model-id` is passed: a local run, or a workflow that found no model in SSM or the
+harness.
 
 Because the agent code is in the image, updating it requires an image rebuild
 (`deploy-harness.sh --tag v2`). This is a trade-off for simplicity: the workflow has
@@ -813,7 +818,7 @@ Deployed, through the harness (v13, Claude Sonnet 5):
 ```
 outcome     patched
 verified    True              npm test passes in the microVM
-model       us.anthropic.claude-sonnet-4-5-20250929-v1:0
+model       us.anthropic.claude-sonnet-5
 tokens      ~95K in / ~4.5K out
 cost        ~$0.35 per issue fix
 files       src/routes/tasks.ts + tests/tasks.test.ts

@@ -613,7 +613,7 @@ the absolute path that `command -v prism-cli` prints as the command, for example
 
 ### Claude Code plugin
 
-[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.3.1), and
+[`claude-plugin/`](claude-plugin/README.md) is a Claude Code plugin (v0.3.2), and
 this repository is its plugin marketplace. It runs the [agent harness loop](#agent-harness-loop):
 gitleaks and a PRISM review before Claude runs `git push` (on by default), and optionally before
 Claude finishes (`finish_gate`, off by default). It registers `prism-cli mcp` as the `prism` MCP server
@@ -698,7 +698,10 @@ page that is the [local dashboard](#local-dashboard) itself: the same Dashboard,
 AccountGuard and Settings pages with the same Run buttons and confirm dialogs, drawn from the copy of
 the UI that ships with your installed prism-cli in a sandboxed frame. Its reads and actions go
 through the gateway's own authenticated routes to `prism-cli dashboard --serve-stdio`, which checks
-them with the browser dashboard's code; starting a Security Agent code review or threat model (an
+them with the browser dashboard's code. While the app is enabled, the gateway keeps that one
+`--serve-stdio` process running (restarted with backoff if it exits, and on a prism-cli update) and
+stops it when the app is disabled or the gateway stops; it opens no port. Starting a Security Agent
+code review or threat model (an
 upload to your AWS account) needs the same confirmation as in the browser. The app also adds the
 `prism-fix-findings` skill, which has an agent read the latest codewatch review before it finishes,
 fix the real issues in at most 2 rounds and report the rest. The third part is a daily 09:00 digest
@@ -869,8 +872,8 @@ The pre-push review picks the model for the tool that actually runs, in this ord
 3. The reviewer's default: `auto` for kiro-cli, Claude Code's own default for claude.
 
 An invalid value at either level is ignored, with a note in the hook output. The hook prints the
-model (`reviewing work against origin/work with kiro-cli, model auto ...`), and the dashboard's Setup
-tab and the `prism_setup` MCP tool show it beside the reviewer.
+model (`reviewing work against origin/work with kiro-cli, model auto ...`), and the dashboard's
+Settings › Repos tab, each repo's page and the `prism_setup` MCP tool show it beside the reviewer.
 
 The CI eval gate uses its own order: the `PRISM_REVIEW_MODEL` repository variable, then `eval.model`
 from the **base branch's** `.prism/config.json` (so a PR cannot change the model that reviews it),
@@ -917,6 +920,8 @@ that breaks the model id rule is refused on the page and again on the server.
 repos it changes; team files are never touched. Each row in the repos table links to that repo's
 page to change it. Every change runs `prism-cli codewatch reviewer` as a fixed command, with the
 reviewer and model checked by the server.
+
+![Settings › Repos with demo data: Codewatch default reviewer and model (Claude Code, sonnet for Claude Code, tool default for kiro-cli) with Change my default and Remove my default, one repo that overrides it with Reset to default, and Apply my default to all repos](assets/images/prism-cli/dashboard-settings-repos-reviewer-dark.png)
 
 ### What the Hooks Do
 
@@ -1284,9 +1289,9 @@ and links straight to it as `#settings/<tab>`:
   Claude Code plugin and run `prism-cli enable kirocrew` after an update; and the versions of the
   plugin, the Kiro Crew app, gitleaks and codeburn.
 
-![The Agent hooks tab with demo data: kiro and claude, project and global, with Install and Remove buttons, and a Claude Code plugin 0.2.0 flagged as needing 0.3.0 or newer](assets/images/prism-cli/dashboard-settings-agent-hooks-dark.png)
+![The Agent hooks tab with demo data: kiro and claude, project and global, with Install buttons, the Claude Code plugin card with its update commands, and the Kiro Crew app card](assets/images/prism-cli/dashboard-settings-agent-hooks-dark.png)
 
-![The Updates tab with demo data: installed 1.13.0, latest 1.13.1 with its publish time, the Update prism-cli, Check now and Release notes controls, and the components table](assets/images/prism-cli/dashboard-settings-updates-dark.png)
+![The Updates tab with demo data: installed 1.21.2 and a newer made-up release on npm with its publish time, the Update prism-cli, Check now and Release notes controls, and the components table](assets/images/prism-cli/dashboard-settings-updates-dark.png)
 
 Every Run first shows the exact command in a confirm dialog. The page sends only an action id; the
 server maps it to a fixed argument list for this CLI's own binary (or for npm, for the update), runs
@@ -1342,7 +1347,7 @@ The **AWS** tab is only about which AWS account the AWS commands use, the one
 
 ### AccountGuard
 
-![AccountGuard with demo data: the connected account ••••3333 in us-west-2 with Run aws check again and Run aws recommend, tiles for 10 failing (3 high), 16 passing, 4 could not check and +2 / -2 since the baseline, the checks by area on the left and the ranked fixes on the right](assets/images/prism-cli/dashboard-accountguard-dark.png)
+![AccountGuard with demo data: the connected account ••••3333 in us-west-2 with Run aws check again and Run aws recommend, tiles for 10 failing (3 high), 14 passing, 6 could not check and +1 / -2 since the baseline, the checks by area on the left and the ranked fixes on the right](assets/images/prism-cli/dashboard-accountguard-dark.png)
 
 **AccountGuard** in the header (`#accountguard`) shows the read-only account checks of the account
 connected on Settings › AWS. Loading it makes no AWS call: it reads the cached `prism-cli aws check`
@@ -1526,6 +1531,8 @@ step.
   still finds nothing, the output drawer shows a neutral **nothing to review** (no job, no upload)
   with the same offer.
 
+  ![The Action output drawer with demo data after a branch review found nothing: the amber nothing to review pill, "no job was started and nothing was uploaded", Review the whole repo instead, and the CLI's own lines ending in nothing to review](assets/images/prism-cli/dashboard-security-nothing-to-review-dark.png)
+
   Before that dialog, a code review checks the repo's own results. If a review of the repo is still
   running, it says so and offers **View it →** or **Start another anyway**. If HEAD already has a
   finished review, it offers **Open those findings →** first, then **Review it again**. A job
@@ -1536,7 +1543,7 @@ step.
 
   ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png) `security pentest`, `--dry-run` and
   `--status` are Copy only (`--status` tears the test environment down once the job has finished).
-  ![The confirm dialog for Start code review with demo data: it names demo-shop, the scan bucket prism-d1-scan-demo, account ••••3333 and us-west-2, shows the exact command, and has Cancel focused next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
+  ![The confirm dialog for Start full review with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
 - **Setup.** One folded card for the whole machine, **Set up Security Agent on this machine**
   (the setup check above leads when something is missing). Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
   CDK app's npm packages into prism-cli's own folder), `prism-cli enable security` to copy, with no
@@ -2016,7 +2023,9 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
    `/prism/continuum/code-review-id/<repo-slug>` (never overwritten). `security findings` before
    that first run says so and makes no change.
 3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
-   upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
+   upstream, else `origin`'s default branch (`origin/HEAD`). With neither it stops before any upload:
+   `This branch has no upstream and the remote has no default branch to diff against. Push the
+   branch, or review the whole repo with --full.` Only committed
    changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing
    and exits 0, saying `No changes against <base>; nothing to review. To review the whole repo at
    HEAD, run with --full.`
@@ -2653,9 +2662,9 @@ in `needs`.
 
 | `reason` | Meaning | Advice |
 |---|---|---|
-| `access-denied` | `AccessDenied`, `AccessDeniedException`, `UnauthorizedOperation` or "not authorized" | Grant the named read-only action (from the error message when it names one) |
-| `not-available` | `OptInRequired`, `SubscriptionRequired…`, a service not enabled for the account, or no support in the region ("Could not connect to the endpoint URL" is `other`: it also means offline) | Nothing to grant: turn the service on if you use it, or check a region where it is offered |
-| `throttled` | `Throttling`, `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded` | Nothing to grant: wait a minute and re-run |
+| `access-denied` | `AccessDenied`, `AccessDeniedException`, `UnauthorizedOperation`, `AuthorizationError` or "not authorized" | Grant the named read-only action (from the error message when it names one) |
+| `not-available` | `OptInRequired`, `SubscriptionRequired…`, a service not enabled for the account (Cost Explorer that is switched off answers AccessDenied and still counts here), or no support in the region ("Could not connect to the endpoint URL" is `other`: it also means offline) | Nothing to grant: turn the service on if you use it, or check a region where it is offered |
+| `throttled` | `Throttling`, `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded`, `Rate exceeded`, `SlowDown` | Nothing to grant: wait a minute and re-run |
 | `no-credential-report` | No IAM credential report yet (`ReportNotPresent`) | Create one first; `aws check` never generates it |
 | `prerequisite` | The check waits on another fix (budget alerts need a budget) | Do that fix first |
 | `not-integrated` | The Startup Advisor placeholder | Nothing to do yet |
