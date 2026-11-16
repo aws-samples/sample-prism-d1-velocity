@@ -236,7 +236,7 @@ export class StdioClient {
       if (r.op === 'get') msg.query = r.query ?? {}; else msg.body = r.body;
       try { proc.stdin!.write(JSON.stringify(msg) + '\n'); } catch (e) {
         this.pending.delete(id); clearTimeout(timer);
-        done({ status: 503, json: { error: `prism-cli stopped (${(e as Error).message}); it restarts on the next request` } });
+        done({ status: 503, json: { error: `prism-cli stopped (${e instanceof Error ? e.message : String(e)}); it restarts on the next request` } });
       }
     });
   }
