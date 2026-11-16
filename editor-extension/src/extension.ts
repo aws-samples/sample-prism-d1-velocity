@@ -197,18 +197,27 @@ class Prism implements vscode.Disposable {
       return;
     }
     if (this.panel !== entry) { client.dispose(); return; }
-    const ui = vscode.Uri.file(hello.uiDir);
-    const w = view.webview;
-    w.options = { enableScripts: true, localResourceRoots: [ui] };
-    const uri = (f: string) => w.asWebviewUri(vscode.Uri.joinPath(ui, f)).toString();
-    const kind = vscode.window.activeColorTheme.kind;
-    w.html = uiHtml({
-      nonce: randomBytes(16).toString('base64'), cspSource: w.cspSource,
-      cssUri: uri('prism-ui.css'), bridgeUri: uri('bridge.js'), jsUri: uri('prism-ui.js'),
-      body: await readFile(join(hello.uiDir, 'body.html'), 'utf8'),
-      theme: kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight ? 'light' : 'dark',
-    });
-    w.onDidReceiveMessage((m) => this.onPanelMessage(entry, client, m));
+    try {
+      const ui = vscode.Uri.file(hello.uiDir);
+      const w = view.webview;
+      const body = await readFile(join(hello.uiDir, 'body.html'), 'utf8');
+      w.options = { enableScripts: true, localResourceRoots: [ui] };
+      const uri = (f: string) => w.asWebviewUri(vscode.Uri.joinPath(ui, f)).toString();
+      const kind = vscode.window.activeColorTheme.kind;
+      w.html = uiHtml({
+        nonce: randomBytes(16).toString('base64'), cspSource: w.cspSource,
+        cssUri: uri('prism-ui.css'), bridgeUri: uri('bridge.js'), jsUri: uri('prism-ui.js'), body,
+        theme: kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight ? 'light' : 'dark',
+      });
+      w.onDidReceiveMessage((m) => this.onPanelMessage(entry, client, m).catch((e) => {
+        vscode.window.showErrorMessage(`PRISM: ${e instanceof Error ? e.message : String(e)}`);
+      }));
+    } catch (e) {
+      // The bundle could not be read (a broken install): stop the child and say how to reinstall.
+      client.dispose();
+      entry.client = null;
+      notCurrent(`prism-cli's panel files could not be read (${e instanceof Error ? e.message : String(e)}). Reinstall it.`);
+    }
   }
 
   /** One webview message (ui-host.ts handlePanelMessage); answers go back only while this panel is open. */

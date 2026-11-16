@@ -163,3 +163,15 @@ test('panel messages: an AWS write waits for the native modal; declined, nothing
     assert.equal(posted.length, 3, 'a request off the route list gets no answer');
   } finally { c.dispose(); }
 });
+
+test('stdio client: an answer line past the cap stops the child instead of growing memory', async () => {
+  const flood = `
+    process.stdout.write(JSON.stringify({ hello: 'prism.dashboard.stdio', api: 1, version: '1.21.0', uiDir: '/opt/ui', routes: { get: ['/api/data'], act: [] } }) + '\\n');
+    process.stdin.once('data', () => { const chunk = 'x'.repeat(1 << 20); const w = () => { while (process.stdout.write(chunk)); process.stdout.once('drain', w); }; w(); });`;
+  const c = new StdioClient('/fake', process.cwd(), process.env, fake(flood));
+  try {
+    await c.start();
+    const a = await c.request({ op: 'get', path: '/api/data', query: {} });
+    assert.equal(a.status, 503);
+  } finally { c.dispose(); }
+});

@@ -23,6 +23,10 @@ export const UPDATE_TEXT = `Update prism-cli to ${MIN_CLI_VERSION} or later: ${U
 export const MAX_MESSAGE = 16 * 1024 + 4096;
 const HELLO_TIMEOUT_MS = 15_000;
 export const REQUEST_TIMEOUT_MS = 125_000;
+/** After stdin closes (the stop signal), how long the child gets to exit before it is killed. */
+const STOP_GRACE_MS = 2000;
+/** The longest answer line accepted from prism-cli (/api/data is the big one); past it the child is stopped. */
+export const MAX_ANSWER_BYTES = 64 * 1024 * 1024;
 /** server.ts REPORT_ROUTE: a result id, never a path. */
 export const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
 
@@ -108,9 +112,9 @@ export function nativeConfirm(r: UiRequest, catalog: Catalog | null): NativeConf
   return {
     title: `PRISM: ${a ? a.label : 'run an action'}? This writes to AWS.`,
     detail: [
-      a ? `prism-cli runs: ${a.command}` : `Action: ${typeof id === 'string' ? id.slice(0, 80) : 'unknown'}`,
+      a ? `prism-cli runs: ${a.command}` : `Action: ${typeof id === 'string' ? id.slice(0, 80) : 'unknown'} (not in prism-cli's action list, so it may write to AWS)`,
       repo ? `In: ${repo}` : null,
-      'It uploads the repository at HEAD to the Security Agent scan bucket and starts a job in your AWS account. The dialog in the panel named the account and region.',
+      a ? 'It uploads the repository at HEAD to the Security Agent scan bucket and starts a job in your AWS account. The dialog in the panel named the account and region.' : null,
     ].filter(Boolean).join('\n'),
     button: 'Start in AWS',
   };
@@ -138,6 +142,7 @@ export interface PanelDeps {
 export async function handlePanelMessage(m: unknown, client: StdioClient, deps: PanelDeps): Promise<void> {
   const reportId = parseOpenReport(m);
   if (reportId) {
+    if (!client.hello?.routes.get.includes('/api/report')) return;
     const a = await client.request({ op: 'get', path: '/api/report', query: { id: reportId } });
     const html = a.status === 200 && plain(a.json) && typeof a.json.html === 'string' ? a.json.html : null;
     if (html) deps.showReport(html); else deps.noReport(a.status);
@@ -175,8 +180,11 @@ export class StdioClient {
       const fail = (e: Error) => { this.starting = null; reject(e); };
       const timer = setTimeout(() => { if (first) { fail(new Error(UPDATE_TEXT)); p.kill(); } }, HELLO_TIMEOUT_MS);
       p.stderr?.on('data', () => { /* diagnostics only */ });
+      // A write after the child exited: the exit handler answers the pending requests.
+      p.stdin?.on('error', () => {});
       p.stdout?.on('data', (b: Buffer) => {
         buf += b.toString('utf8');
+        if (buf.length > MAX_ANSWER_BYTES) { buf = ''; p.kill(); return; }
         for (let i; (i = buf.indexOf('\n')) >= 0;) {
           const line = buf.slice(0, i);
           buf = buf.slice(i + 1);
@@ -226,7 +234,10 @@ export class StdioClient {
       this.pending.set(id, { done, timer });
       const msg: Record<string, unknown> = { id, op: r.op, path: r.path };
       if (r.op === 'get') msg.query = r.query ?? {}; else msg.body = r.body;
-      proc.stdin!.write(JSON.stringify(msg) + '\n');
+      try { proc.stdin!.write(JSON.stringify(msg) + '\n'); } catch {
+        this.pending.delete(id); clearTimeout(timer);
+        done({ status: 503, json: { error: 'prism-cli stopped; it restarts on the next request' } });
+      }
     });
   }
 
@@ -243,7 +254,7 @@ export class StdioClient {
     const p = this.proc;
     this.proc = null;
     // Closing stdin is the stop signal: the CLI stops a running action and exits. Killed if it has not after 2 s.
-    if (p) { p.stdin?.end(); setTimeout(() => { if (p.exitCode === null && p.signalCode === null) p.kill(); }, 2000).unref(); }
+    if (p) { p.stdin?.end(); setTimeout(() => { if (p.exitCode === null && p.signalCode === null) p.kill(); }, STOP_GRACE_MS).unref(); }
   }
 }
 
