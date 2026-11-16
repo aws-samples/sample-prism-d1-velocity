@@ -107,8 +107,10 @@ function lines(input: Readable, onLine: (line: string) => void, onOversized: () 
       b = b.subarray(nl + 1);
     }
   });
-  input.on('end', onEnd);
-  input.on('close', onEnd);
+  // A last request with no newline is still a request.
+  const end = () => { if (!dropping && size) { const line = Buffer.concat(parts).toString('utf8'); parts = []; size = 0; onLine(line); } onEnd(); };
+  input.on('end', end);
+  input.on('close', end);
 }
 
 /** Serves until `input` ends. stdout carries the protocol only; diagnostics go to stderr. */
@@ -121,6 +123,8 @@ export function serveStdio(api: DashboardApi, input: Readable, output: Writable,
   const inflight = new Set<Promise<void>>();
   return new Promise((resolve) => {
     let ended = false;
+    // The host closed our stdout (EPIPE): nobody can read answers any more, so stop serving instead of crashing.
+    output.on('error', () => { if (!ended) { ended = true; resolve(); } });
     lines(input, (line) => {
       if (!line.trim()) return;
       let msg: unknown;

@@ -15,6 +15,11 @@
  * shape and relays it to `prism-cli dashboard --serve-stdio`, which looks the
  * path up in the same route table as the browser server. Nothing here holds
  * a token: the page has none to leak.
+ *
+ * The Kiro Crew target origin is '*' because a sandboxed iframe's own origin is
+ * opaque and the parent's is not known to it. The message only ever goes to
+ * window.parent, the page that embedded this document (the PRISM app page), and
+ * carries the same route, query and action body the page would send itself.
  */
 export const BRIDGE_SCRIPT = `(function () {
   'use strict';

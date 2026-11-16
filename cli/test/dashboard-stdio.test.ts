@@ -107,3 +107,31 @@ test('bridge.js relays by id, ignores strangers, and sends only result ids to op
   t.openReport('../x'); t.openReport('abc_123');
   assert.deepEqual(plainOf(posted.slice(1)), [{ type: 'prism-ui:open-report', id: 'abc_123' }]);
 });
+
+test('serveStdio answers a last line with no newline, and stops serving when stdout errors', async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  let out = '';
+  output.on('data', (b) => { out += b; });
+  const done = serveStdio(api(), input, output, { version: '1' });
+  input.end('{"id":7,"op":"get","path":"/api/data"}');
+  await done;
+  assert.ok(out.trim().split('\n').map((l) => JSON.parse(l)).some((l) => l.id === 7 && l.status === 200));
+  const in2 = new PassThrough(), out2 = new PassThrough();
+  const d2 = serveStdio(api(), in2, out2, { version: '1' });
+  out2.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  await d2; // resolves instead of throwing
+});
+
+test('serveStdio answers a last line with no newline, and stops serving when stdout errors', async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  let out = '';
+  output.on('data', (b) => { out += b; });
+  const done = serveStdio(api(), input, output, { version: '1' });
+  input.end('{"id":7,"op":"get","path":"/api/data"}');
+  await done;
+  assert.ok(out.trim().split('\n').map((l) => JSON.parse(l)).some((l) => l.id === 7 && l.status === 200));
+  const in2 = new PassThrough(), out2 = new PassThrough();
+  const d2 = serveStdio(api(), in2, out2, { version: '1' });
+  out2.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  await d2; // resolves instead of throwing
+});
