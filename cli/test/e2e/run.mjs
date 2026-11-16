@@ -1071,6 +1071,77 @@ try {
     out.awsCalls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').trim().split('\n').filter(Boolean) : [];
     await ctx.close();
   }
+  // ---------- 18. a threat model's drill-down (1.20.1): header fields, the overview card, 18 threats ----------
+  if (want('tmdetail')) {
+    const out = {};
+    R.suites.tmdetail = out;
+    const { makeResult, writeResult } = await import(join(CLI, 'dist', 'src', 'codewatch', 'results.js'));
+    let runId = null;
+    // Shaped like a real result: a long markdown overview (headings, lists, a table, hostile markup) and 7 critical, 10 high, 1 medium.
+    const seedTm = (h) => {
+      const shop = join(h, 'src', 'demo-shop');
+      const commit = execFileSync('git', ['-C', shop, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const sev = [...Array(7).fill('CRITICAL'), ...Array(10).fill('HIGH'), 'MEDIUM'];
+      const overview = ['# Demo Shop', '', 'A demo web shop with a `payments` webhook and an **admin** console.', '', '## Purpose', '',
+        ...Array.from({ length: 40 }, (_, i) => `- Component ${i}: handles part ${i} of the checkout <img src=x onerror=alert(1)> [docs](javascript:alert(1))`), '',
+        '## Data flows', '', ...Array.from({ length: 20 }, (_, i) => `${i + 1}. Flow ${i} from the browser to the API`), '', '| Asset | Owner |', '| --- | --- |', '| orders | shop |', '',
+        ...Array.from({ length: 60 }, (_, i) => `Paragraph ${i} describes the system at length so the overview is long, as a real one is.`)].join('\n');
+      const p = writeResult(shop, makeResult({ kind: 'security-threat-model', hook: 'manual', tool: 'security-agent', status: 'findings', commit, branch: 'main', started_at: new Date(Date.now() - 5 * 3600e3).toISOString(), finished_at: new Date(Date.now() - 4 * 3600e3).toISOString(),
+        summary: '18 threats: 7 critical, 10 high, 1 medium, 0 low, 0 info',
+        findings: sev.map((s, i) => ({ severity: s === 'MEDIUM' ? 'medium' : 'high', category: 'security', rule: 'TAMPERING', file: '', line: null, message: `Threat ${i}: statement`, description: `The full threat statement number ${i}, which is long enough to wrap across lines on a phone screen without scrolling sideways.`,
+          risk_level: s, title: `Demo threat ${i}`, threat_id: `t-${i}`, stride: ['TAMPERING'], recommendation: `Recommendation ${i}.`, evidence: [`src/file${i}.ts`], ...(i < 3 ? { assets: ['payments webhook', 'admin console'] } : {}) })),
+        threat_model: { job_id: 'tj-demo-18', threat_model_id: 'tm-demo', agent_space_id: 'as-0demo0000000001', region: 'us-west-2', account: '111122223333', job_status: 'COMPLETED',
+          counts: { CRITICAL: 7, HIGH: 10, MEDIUM: 1, LOW: 0, INFO: 0 }, stride_counts: { TAMPERING: 18 }, scope_docs: [], system_overview: overview,
+          service_created_at: new Date(Date.now() - 5 * 3600e3).toISOString(), service_updated_at: new Date(Date.now() - 4 * 3600e3).toISOString(), service_duration_s: 3869, wall_s: null } }));
+      runId = p.split('/').pop().replace(/\.json$/, '');
+    };
+    const srv = await live('tmdetail', 'full', { PRISM_NO_UPDATE_CHECK: '1' }, seedTm);
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
+    const shop = data.repos.find((r) => r.path.endsWith('/src/demo-shop'));
+    const hash = '#security/run/' + shop.id + '/' + runId;
+    const state = () => page.evaluate(() => {
+      const sec = document.getElementById('security');
+      const dl = sec.querySelector('.rundl');
+      const dts = [...(dl?.querySelectorAll('dt') || [])];
+      const ov = sec.querySelector('[data-run-overview]');
+      return {
+        dts: dts.map((d) => d.textContent), dds: [...(dl?.querySelectorAll('dd') || [])].map((d) => d.innerText.replace(/\s+/g, ' ')),
+        // Every header row sits close under the previous one: the bug spread them over the overview's height.
+        spread: dts.length ? dts[dts.length - 1].getBoundingClientRect().top - dts[0].getBoundingClientRect().top : -1,
+        ov: ov ? { mode: ov.getAttribute('data-run-overview'), text: ov.innerText.slice(0, 300), lis: ov.querySelectorAll('li').length, tags: [...new Set([...ov.querySelectorAll('*')].map((e) => e.tagName))], attrs: [...ov.querySelectorAll('*')].some((e) => e.attributes.length) } : null,
+        findings: sec.querySelectorAll('details[data-fid]').length, chips: [...sec.querySelectorAll('[data-sev]')].map((b) => b.textContent),
+        scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    await page.goto(srv.base + '/' + hash);
+    await page.waitForSelector('[data-run-findings]', { timeout: 15000 }).catch(() => {});
+    out.before = await state();
+    await page.screenshot({ path: join(SHOTS, 'tm-drilldown-1280-dark.png'), fullPage: false });
+    await page.click('[data-overview-toggle]'); await sleep(300);
+    out.full = await state();
+    await page.click('[data-overview-toggle]'); await sleep(200);
+    out.collapsedAgain = (await state()).ov?.mode;
+    await page.click('[data-sev="critical"]'); await sleep(200);
+    out.critical = (await state()).findings;
+    await page.click('[data-sev=""]'); await sleep(200);
+    out.firstThreat = await page.evaluate(() => document.querySelector('details[data-fid]')?.innerText.replace(/\s+/g, ' ') || '');
+    await setTheme(page, 'light');
+    await page.goto(srv.base + '/' + hash); await page.waitForSelector('[data-run-findings]', { timeout: 15000 }).catch(() => {});
+    out.contrast = (await layoutCheck(page)).lowContrast;
+    await page.screenshot({ path: join(SHOTS, 'tm-drilldown-1280-light.png'), fullPage: false });
+    await setTheme(page, 'dark');
+    await ctx.close();
+    const phone = await openCtx(srv, { width: 390, height: 844 });
+    await phone.page.goto(srv.base + '/' + hash);
+    await phone.page.waitForSelector('[data-run-findings]', { timeout: 15000 }).catch(() => {});
+    await phone.page.click('[data-overview-toggle]').catch(() => {}); await sleep(300);
+    out.phone = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await phone.page.screenshot({ path: join(SHOTS, 'tm-drilldown-390-dark.png'), fullPage: false });
+    out.log.push(...phone.log);
+    await phone.ctx.close();
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -1300,6 +1371,20 @@ function verdicts(R) {
     add('CWR8', 'at 390 px the open form with the team diff and Settings › Repos do not scroll sideways; Settings › Repos links each repo; no review ran and no AWS call',
       V.phoneScroll <= 1 && V.phoneSettingsScroll <= 1 && V.settingsLink && !(V.reviewerCalls || []).length && !(V.awsCalls || []).filter((c) => !/^(--version|configure )/.test(c)).length,
       JSON.stringify({ scroll: V.phoneScroll, s2: V.phoneSettingsScroll, link: V.settingsLink, rev: V.reviewerCalls, aws: V.awsCalls }).slice(0, 300));
+  }
+  if (S.tmdetail) {
+    const T = S.tmdetail, b = T.before || {};
+    add('TM1', 'threat-model drill-down header: repo, branch and commit, masked account and region, started, duration, job with Copy, all at the top',
+      JSON.stringify(b.dts) === '["Repo","Branch, commit","Account, region","Started","Duration","Job"]' && /^main @ [0-9a-f]{12}$/.test(b.dds?.[1] || '') && b.dds?.[2] === 'account ••••3333 / us-west-2'
+      && b.dds?.[4] === '1 h 4 min' && /tj-demo-18/.test(b.dds?.[5] || '') && b.spread >= 0 && b.spread < 200, JSON.stringify({ dts: b.dts, dds: b.dds, spread: b.spread }));
+    add('TM2', 'the overview is its own card, collapsed to the first paragraph, expandable, and drawn as text (no links, images or attributes)',
+      b.ov?.mode === 'short' && /^A demo web shop with a payments webhook and an admin console\.$/.test(b.ov.text) && T.full?.ov?.mode === 'full' && T.full.ov.lis === 60
+      && T.full.ov.tags.every((t) => ['H3', 'H4', 'P', 'UL', 'OL', 'LI', 'CODE', 'STRONG', 'PRE'].includes(t)) && !T.full.ov.attrs && /<img src=x onerror=alert\(1\)> docs/.test(T.full.ov.text) && T.collapsedAgain === 'short',
+      JSON.stringify({ b: b.ov, f: T.full?.ov, again: T.collapsedAgain }).slice(0, 500));
+    add('TM3', 'all 18 threats are listed with the counts 7 critical, 10 high, 1 medium; the filter works; a threat shows statement, recommendation, assets and evidence',
+      b.findings === 18 && JSON.stringify(b.chips) === '["All 18","Critical 7","High 10","Medium 1"]' && T.critical === 7
+      && /The full threat statement number 0.*Recommendation 0\..*payments webhook, admin console.*src\/file0\.ts/.test(T.firstThreat || ''), JSON.stringify({ n: b.findings, chips: b.chips, crit: T.critical, first: (T.firstThreat || '').slice(0, 300) }));
+    add('TM4', 'no sideways scroll at 1280 or 390 px (overview open), and the light theme keeps 4.5:1', b.scroll <= 1 && T.phone <= 1 && !(T.contrast || []).length, JSON.stringify({ s: b.scroll, phone: T.phone, c: T.contrast }).slice(0, 300));
   }
   if (S.fixes) {
     const F = S.fixes;

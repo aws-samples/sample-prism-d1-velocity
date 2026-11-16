@@ -54,10 +54,12 @@ table.runs .rgo { text-align:right; white-space:nowrap; } .rgo a { font-weight:6
   table.runs .rrepo small, table.runs .rwhen small { display:inline; margin-left:6px; }
   .runfilters .count { margin-left:0; flex-basis:100%; }
 }
-.rundl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 18px; font-size:13px; margin:0; }
+.rundl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 18px; font-size:13px; margin:0; align-content:start; }
 .rundl dt { color:var(--muted); } .rundl dd { margin:0; overflow-wrap:anywhere; }
 .runhead h3 { margin-top:0; }
-.runhead { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:18px; }
+.runhead { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:18px; align-items:start; }
+.runov { overflow-wrap:anywhere; } .runov h3, .runov h4, .runov h5, .runov h6 { margin:14px 0 6px; } .runov p, .runov li { font-size:13px; } .runov ul, .runov ol { padding-left:20px; margin:4px 0 8px; }
+.runov pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; background:var(--raised); border-radius:6px; padding:8px 10px; }
 @media (max-width: 860px) { .runhead { grid-template-columns:minmax(0,1fr); } }
 .sevboxes { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 2px; }
 .sevbox { border:1px solid var(--line); border-radius:10px; padding:6px 12px; min-width:84px; background:var(--raised); }
@@ -205,14 +207,14 @@ const RUN_RE = new RegExp('^#security/run/([a-f0-9]{16})/([A-Za-z0-9_-]{1,200})$
 function runRoute() { const m = RUN_RE.exec(location.hash); return m ? { repo: m[1], run: m[2] } : null; }
 let RUN_DETAIL = null, RUN_KEY = null, RUN_FETCH = null, RUN_SHOWN = null;
 /** What the person chose on the run's page (severity filter, open findings): kept across a refresh's repaint, dropped on leaving. */
-let RUN_UI = { key: null, pick: '', open: null };
+let RUN_UI = { key: null, pick: '', open: null, overview: false };
 /**
  * Only a run without a verdict yet can change under the page: its copy is read again on every draw
  * (route entry, the minute refresh). A finished run and a server's not found (404) are final.
  */
 const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict');
 /** Leaving the drill-down (the router calls this) drops its copy, so coming back always reads the run again. */
-function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null }; }
+function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null, overview: false }; }
 
 /** Draws the cached copy (when there is one and it is not on screen), then reads the run again if it may have changed. */
 async function drawRunDetail(root, route) {
@@ -248,7 +250,7 @@ async function drawRunDetail(root, route) {
 function paintRunDetail(root, d, key) {
   // Keep which findings are open across a repaint of the same run.
   if (RUN_UI.key === key && RUN_SHOWN === key) RUN_UI.open = new Set([...root.querySelectorAll('details[data-fid]')].filter((x) => x.open).map((x) => x.getAttribute('data-fid')));
-  else if (RUN_UI.key !== key) RUN_UI = { key, pick: '', open: null };
+  else if (RUN_UI.key !== key) RUN_UI = { key, pick: '', open: null, overview: false };
   RUN_SHOWN = key;
   const back = el('a', { href: '#security' }, 'Back to Security runs');
   if (!d.found) {
@@ -277,9 +279,9 @@ function runDetail(d) {
         ...kv('Job', r.job_id ? copyButton(txt(r.job_id)) : null)),
       el('div', {},
         el('h3', {}, r.type === 'threat-model' ? 'Threats by severity' : 'Findings by severity'),
-        el('div', { class: 'sevboxes' }, ...RUN_SEVS.map((s) => el('div', { class: 'sevbox ' + ((c[s] || 0) ? s : 'zero') }, el('b', {}, String(c[s] || 0)), el('span', {}, s)))),
-        d.overview ? el('p', { class: 'fix' }, 'Overview: ' + txt(d.overview)) : null)));
+        el('div', { class: 'sevboxes' }, ...RUN_SEVS.map((s) => el('div', { class: 'sevbox ' + ((c[s] || 0) ? s : 'zero') }, el('b', {}, String(c[s] || 0)), el('span', {}, s)))))));
   const out = [crumbs, head];
+  if (d.overview) out.push(runOverview(d));
   if (r.status === 'failed') out.push(el('section', { class: 'card' }, el('h2', {}, 'Why there is no verdict'), el('p', {}, txt(r.reason) || 'The job did not complete.')));
   if (r.status === 'running' || r.status === 'noverdict') out.push(el('section', { class: 'card' }, el('h2', {}, r.status === 'running' ? 'Still running' : 'No verdict fetched yet'),
     el('p', { class: 'fix' }, (r.status === 'running' ? 'Findings appear here when the job finishes. ' : 'The job most likely finished. ') + 'Fetch them on the ', el('a', { href: '#security/' + txt(r.repo_id) }, 'Security Agent page'), ', or run the command below.')));
@@ -289,6 +291,24 @@ function runDetail(d) {
     el('li', {}, el('b', {}, 'Same run in a terminal: '), copyButton(txt(d.cli))),
     el('li', {}, el('b', {}, 'Security Agent console: '), el('span', { class: 'fix' }, 'prism-cli has no direct link to this run yet. Open the Security Agent web application and find the job id above.')))));
   return out;
+}
+
+/**
+ * The run's overview (a threat model's system overview, a pentest's), its own full-width card: the first
+ * paragraph, then the whole document on Show full overview. Untrusted markdown, drawn by mdBlocks (text only).
+ */
+function runOverview(d) {
+  const body = el('div', { class: 'runov' }), toggle = el('button', { type: 'button', 'data-overview-toggle': '' });
+  const draw = () => {
+    const full = !!RUN_UI.overview;
+    body.setAttribute('data-run-overview', full ? 'full' : 'short');
+    body.replaceChildren(...mdBlocks(d.overview, !full));
+    toggle.textContent = full ? 'Show less' : 'Show full overview';
+    toggle.setAttribute('aria-expanded', String(full));
+  };
+  toggle.addEventListener('click', () => { RUN_UI.overview = !RUN_UI.overview; draw(); });
+  draw();
+  return el('section', { class: 'card', 'data-run-overview-card': '' }, el('h2', {}, 'Overview', el('span', { class: 'sub' }, d.run.type === 'threat-model' ? 'the system as Security Agent described it' : 'from Security Agent')), body, el('div', { class: 'srow-ctl' }, toggle));
 }
 
 function runFindingsCard(d) {
@@ -323,6 +343,7 @@ function runFinding(f, d, open, id) {
     el('div', { class: 'body' },
       el('h4', {}, thr ? 'Threat' : 'Description'), el('p', {}, txt(f.description) || 'No description saved.'),
       el('h4', {}, thr ? 'Recommendation' : 'Remediation'), el('p', { class: f.remediation ? null : 'fix' }, f.remediation ? txt(f.remediation) : txt(d.no_remediation) || 'None given.'),
+      thr ? [el('h4', {}, 'Affected components and assets'), (f.assets || []).length ? el('p', {}, ...f.assets.flatMap((x, i) => i ? [', ', el('code', {}, txt(x))] : [el('code', {}, txt(x))])) : el('p', { class: 'fix' }, 'Not saved for this run (results from prism-cli 1.20.1 on save them).')] : null,
       (f.evidence || []).length ? [el('h4', {}, 'Evidence'), el('p', {}, ...f.evidence.flatMap((e, i) => i ? [', ', el('code', {}, txt(e))] : [el('code', {}, txt(e))]))] : null,
       f.finding_id ? el('p', { class: 'fix' }, 'Finding id ', el('code', {}, txt(f.finding_id))) : null));
   if (open) dt.open = true;

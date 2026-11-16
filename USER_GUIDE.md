@@ -1472,9 +1472,15 @@ step.
   amber with no link.
 - **A run's page** (`#security/run/<repo-id>/<run-id>`; the run id is its result file's name). It shows:
   - a header with the type, repo, branch and commit, scope or target, account (last 4 digits),
-    region, start time, duration, status, and the job id with **Copy**;
+    region, start time, duration, status, and the job id with **Copy**, laid out the same for code
+    reviews, threat models and pentests;
+  - for a threat model or pentest, an **Overview** card with the overview Security Agent wrote:
+    the first paragraph, and the whole document on **Show full overview**. It is drawn as plain
+    text with headings, paragraphs, lists, inline code and bold only; links show their text and
+    images their alt text, because the overview comes from AWS and the repo's own docs;
   - the counts by severity, then every finding, most severe first, with a severity filter. Open a
-    finding for its full description. A threat model also shows its recommendation and evidence.
+    finding for its full description. A threat model also shows its recommendation, the components
+    and assets it affects (saved from prism-cli 1.20.1 on) and its evidence.
     Code reviews and pentests show `No remediation provided by this run type.`: Security Agent
     returns no remediation text for them;
   - the result file (shown with `~`) and the same run's `prism-cli security findings` (or `security
