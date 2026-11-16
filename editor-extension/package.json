@@ -1,8 +1,8 @@
 {
   "name": "prism-d1",
   "displayName": "PRISM D1",
-  "description": "PRISM codewatch findings, AI spend and setup checks from prism-cli, in the status bar, the Problems panel and a side panel. Works in VS Code, Kiro and Cursor.",
-  "version": "0.1.1",
+  "description": "PRISM's dashboard in the editor: the same pages and actions as prism-cli dashboard, plus codewatch findings in the Problems panel and the status bar. Works in VS Code, Kiro and Cursor. Needs prism-cli 1.21.0 or later.",
+  "version": "0.2.0",
   "publisher": "prism-d1",
   "license": "MIT",
   "repository": {
@@ -62,6 +62,7 @@
   "scripts": {
     "build": "tsc -p .",
     "test": "npm run build && node --test \"out/test/*.test.js\"",
+    "test:e2e": "npm run build && npm --prefix test/e2e ci --no-audit --no-fund --loglevel=error && node test/e2e/run.mjs",
     "package": "vsce package --no-dependencies",
     "vscode:prepublish": "npm run build"
   },

@@ -1,0 +1,8 @@
+{
+  "name": "prism-editor-extension-webview-e2e",
+  "private": true,
+  "description": "Webview harness for the PRISM panel (npm run test:e2e in editor-extension/). Demo data, fake aws; not part of npm test or CI.",
+  "dependencies": {
+    "playwright-core": "1.65.1"
+  }
+}

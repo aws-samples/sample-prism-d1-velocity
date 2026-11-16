@@ -1,12 +1,11 @@
 """Renders the docs screenshots in assets/images/prism-cli/ from the demo fixture.
 
-    (cd editor-extension && npm ci && npm run build)
     python3 docs/screenshots/render.py [out_dir]
 
 Needs node, prism-cli on PATH, Python Playwright with Chromium, and Pillow.
-The extension panel is its real panel.js and panel.css with VS Code theme
-variables filled in; the app page is its real renderModel() with a small DOM
-createElement in place of React.
+The app page is its real renderModel() with a small DOM createElement in place
+of React. The editor extension's panel is the dashboard's own UI: its screenshot
+comes from the extension's webview harness (editor-extension: npm run test:e2e).
 All data comes from fixtures/dashboard.json and is made up.
 """
 from __future__ import annotations
@@ -21,39 +20,12 @@ from playwright.sync_api import sync_playwright
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-EXT = ROOT / "editor-extension"
 APP = ROOT / "kirocrew-app"
 WIDTH = 1280
 COLORS = 256
 
 sys.path.insert(0, str(APP))
 from scripts import page_model as pm  # noqa: E402
-
-# VS Code's Dark Modern and Light Modern values for the variables panel.css reads.
-VSCODE = {
-    "dark": {
-        "font-family": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Ubuntu, sans-serif", "font-size": "13px",
-        "editor-font-family": "Menlo, Consolas, 'DejaVu Sans Mono', monospace",
-        "foreground": "#cccccc", "editor-background": "#1f1f1f", "descriptionForeground": "#9d9d9d",
-        "button-foreground": "#ffffff", "button-background": "#0078d4", "button-hoverBackground": "#026ec1",
-        "button-secondaryForeground": "#cccccc", "button-secondaryBackground": "#313131", "button-secondaryHoverBackground": "#3c3c3c",
-        "button-border": "#ffffff12", "focusBorder": "#0078d4", "textLink-foreground": "#4daafc", "textLink-activeForeground": "#4daafc",
-        "panel-border": "#2b2b2b", "widget-border": "#313131", "sideBar-background": "#181818",
-        "testing-iconPassed": "#73c991", "editorWarning-foreground": "#cca700", "editorError-foreground": "#f14c4c", "editorInfo-foreground": "#3794ff",
-        "badge-foreground": "#f8f8f8", "badge-background": "#616161", "textBlockQuote-background": "#2b2b2b", "textCodeBlock-background": "#2b2b2b",
-    },
-    "light": {
-        "font-family": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Ubuntu, sans-serif", "font-size": "13px",
-        "editor-font-family": "Menlo, Consolas, 'DejaVu Sans Mono', monospace",
-        "foreground": "#3b3b3b", "editor-background": "#ffffff", "descriptionForeground": "#717171",
-        "button-foreground": "#ffffff", "button-background": "#005fb8", "button-hoverBackground": "#0258a8",
-        "button-secondaryForeground": "#3b3b3b", "button-secondaryBackground": "#e5e5e5", "button-secondaryHoverBackground": "#cccccc",
-        "button-border": "#0000001a", "focusBorder": "#005fb8", "textLink-foreground": "#005fb8", "textLink-activeForeground": "#005fb8",
-        "panel-border": "#e5e5e5", "widget-border": "#e5e5e5", "sideBar-background": "#f8f8f8",
-        "testing-iconPassed": "#388a34", "editorWarning-foreground": "#bf8803", "editorError-foreground": "#e51400", "editorInfo-foreground": "#1a85ff",
-        "badge-foreground": "#3b3b3b", "badge-background": "#cccccc", "textBlockQuote-background": "#f8f8f8", "textCodeBlock-background": "#f0f0f0",
-    },
-}
 
 # Kiro Crew dashboard theme variables that ui/index.mjs reads.
 CREW = {
@@ -66,15 +38,6 @@ CREW = {
 
 def css_vars(prefix: str, theme: dict) -> str:
     return ":root{" + "".join(f"--{prefix}{k}:{v};" for k, v in theme.items()) + "}"
-
-
-def panel_page(theme: str) -> str:
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>{css_vars('vscode-', VSCODE[theme])}</style>
-<link rel="stylesheet" href="{(EXT / 'media/panel.css').as_uri()}">
-<script>window.acquireVsCodeApi = () => ({{ postMessage() {{}} }});</script>
-</head><body><main id="app" hidden></main><p id="loading">Loading</p>
-<script src="{(EXT / 'media/panel.js').as_uri()}"></script></body></html>"""
 
 
 APP_HARNESS = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>%s
@@ -138,23 +101,12 @@ def main() -> None:
             page = ctx.new_page()
 
             def load(html):
-                # A file:// page, so it may load panel.js, panel.css and index.mjs from the repo.
+                # A file:// page, so it may load index.mjs from the repo.
                 harness = out / ".harness.html"
                 harness.write_text(html, encoding="utf-8")
                 page.goto(harness.as_uri(), wait_until="load")
                 harness.unlink()
 
-            def panel(model, name):
-                load(panel_page(theme))
-                page.evaluate("m => window.postMessage({ type: 'model', model: m }, '*')", model)
-                page.wait_for_selector("#app:not([hidden])")
-                if model["mode"] == "machine":
-                    page.evaluate("document.querySelector('details').open = true")
-                page.screenshot(path=str(out / name), full_page=True)
-                shots.append(name)
-
-            panel(data["repoModel"], f"editor-extension-panel-{theme}.png")
-            panel(data["machineModel"], f"editor-extension-machine-mode-{theme}.png")
 
             for name, rep in ((f"kirocrew-app-page-{theme}.png", None), (f"kirocrew-app-report-{theme}.png", report)):
                 load(app_page(theme, {"model": app_model, "report": rep, "now": data["now"], "frameHeight": 760}))

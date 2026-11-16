@@ -1,24 +1,16 @@
-// Builds what the editor extension and the Kiro Crew app would show for the demo
-// fixture (fixtures/dashboard.json), using their own code, and prints it as JSON
-// for render.py. Needs `npm run build` in editor-extension and prism-cli on PATH
-// (for the codewatch report renderer). All data is made up.
+// Builds what the Kiro Crew app would show for the demo fixture (fixtures/dashboard.json)
+// and prints it as JSON for render.py. Needs prism-cli on PATH (for the codewatch report
+// renderer). All data is made up. The editor extension's panel is the dashboard's own UI;
+// its screenshot comes from its webview harness (editor-extension: npm run test:e2e).
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
-const ext = (m) => require(join(here, '../../editor-extension/out/src', m));
-const { panelModel, machinePanelModel } = ext('panel-model.js');
-const { repoView, codewatchOff } = ext('payload.js');
-const { machineRepos } = ext('machine.js');
-const { findingsToDiagnostics } = ext('diagnostics.js');
 
 const fixture = JSON.parse(readFileSync(join(here, 'fixtures/dashboard.json'), 'utf8'));
 const NOW = Date.parse(fixture.generated_at) + 2 * 60_000;
-const fmtTime = (iso) => new Date(iso).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
 
 // Last commits the extension would read with git log, one per repo.
 const COMMITS = {
@@ -29,16 +21,7 @@ const COMMITS = {
 };
 const commits = new Map(fixture.repos.map((r) => [r.path, COMMITS[r.name] ?? null]));
 
-// Repo mode: the window has checkout-service open.
 const repoPath = '/home/dev/src/checkout-service';
-const repoPayload = { ...fixture, scope: { current_repo: repoPath }, repos: fixture.repos.map((r) => ({ ...r, current: r.path === repoPath })) };
-const view = repoView(repoPayload, repoPath, 'main');
-const diags = findingsToDiagnostics(view.findings, repoPath, () => true);
-const repoModel = panelModel(repoPayload, view, diags, codewatchOff(view.repo), fmtTime);
-
-// Machine mode: no folder open. Every finding's file "exists", so its location is a link.
-const mrepos = machineRepos(fixture, commits);
-const { model: machineModel } = machinePanelModel(fixture, mrepos, (repo, file) => `${repo}/${file}`, fmtTime, NOW);
 
 // The codewatch report for checkout-service, drawn by prism-cli's own HTML renderer.
 const cliRoot = join(dirname(realpathSync(execFileSync('sh', ['-c', 'command -v prism-cli'], { encoding: 'utf8' }).trim())), '..');
@@ -72,4 +55,4 @@ const reportHtml = renderReportHtml({
   files, secretScans: commitRows, gitleaksBlocks: [], commits: commitRows,
 });
 
-process.stdout.write(JSON.stringify({ now: NOW, repoModel, machineModel, reportHtml, fixture, commits: Object.fromEntries(commits) }));
+process.stdout.write(JSON.stringify({ now: NOW, reportHtml, fixture, commits: Object.fromEntries(commits) }));

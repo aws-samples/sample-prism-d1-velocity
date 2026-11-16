@@ -1,15 +1,19 @@
 /** Status bar text, tooltip and click command for each extension state. No vscode import. */
 import { codewatchOff, type DashboardPayload, type RepoView } from './payload';
 import { money, plainText } from './text';
-import type { MachineRepo } from './machine';
+import { MIN_CLI_VERSION, UPDATE_CMD } from './ui-host';
 
 export const INSTALL_CMD = 'npm i -g @prism-d1/cli';
+/** The status bar's and the install hint's text for a prism-cli older than MIN_CLI_VERSION. */
+export const updateText = (installed: string | null) => `prism-cli ${installed ?? '(version unknown)'} is older than ${MIN_CLI_VERSION}, which this extension needs.\nUpdate it: ${UPDATE_CMD}`;
 
 export type State =
   | { kind: 'loading' }
   /** No repo in this window: machine-wide data from a home-directory scan. */
-  | { kind: 'machine'; payload: DashboardPayload; repos: MachineRepo[] }
+  | { kind: 'machine'; payload: DashboardPayload }
   | { kind: 'cli-missing'; reason: string; searched?: string[] }
+  /** prism-cli is older than MIN_CLI_VERSION: the extension shows only how to update it. */
+  | { kind: 'cli-old'; installed: string | null }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; payload: DashboardPayload; view: RepoView };
 
@@ -47,6 +51,8 @@ export function statusView(s: State, fmtTime: (iso: string) => string = (iso) =>
         tooltip: cliMissingText(s.reason, s.searched),
         command: 'prism.showInstallHint', tint: 'warning',
       };
+    case 'cli-old':
+      return { text: '$(shield) PRISM: update prism-cli', tooltip: updateText(s.installed), command: 'prism.showInstallHint', tint: 'warning' };
     case 'error':
       return { text: '$(shield) PRISM: error', tooltip: `prism-cli failed: ${one(s.message, 500)}\nClick to retry.`, command: 'prism.refresh', tint: 'warning' };
     case 'ready':
