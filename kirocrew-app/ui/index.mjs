@@ -14,6 +14,10 @@ export const API = '/api/apps/prism';
 export const UPDATE_TITLE = 'Update prism-cli to 1.21.0 or later';
 export const UPDATE_CMD = 'npm install -g @prism-d1/cli@latest';
 const BLOB_URL_TTL_MS = 10 * 1000;
+/** POST /api/action answers 202 when an action started (actions.ts ActionRunner.start). */
+const ACTION_STARTED = 202;
+/** Longer than the longest action timeout (10 min): a redraw waits for a running action at most this long. */
+const ACTION_WAIT_MAX_MS = 15 * 60 * 1000;
 /** server.ts REPORT_ROUTE: a result id, never a path. */
 const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
 export const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:";
@@ -115,8 +119,8 @@ export default function PrismPage() {
   const frame = useRef(null);
   /** The prism-cli version of the bundle on screen. */
   const shownVersion = useRef('');
-  /** True from an action's start until its status says it is done. */
-  const actionRunning = useRef(false);
+  /** When the running action started (0: none), from its start until its status says it is done. */
+  const actionRunning = useRef(0);
   const [doc, setDoc] = useState('');
   const [error, setError] = useState('');
   const [update, setUpdate] = useState(null);
@@ -153,8 +157,10 @@ export default function PrismPage() {
       // The iframe's origin is opaque ("null"), so '*' is the only target that reaches it; the window itself is the target.
       if (frame.current && frame.current.contentWindow) frame.current.contentWindow.postMessage({ type: 'prism-ui:response', id: m.id, status: a.status, json: a.json }, '*');
       // Is an action running? Its start answers 202 and the drawer polls /api/action/status until it is done.
-      if (m.op === 'act' && a.status === 202) actionRunning.current = true;
-      else if (m.path === '/api/action/status' && a.json && a.json.state !== 'running') actionRunning.current = false;
+      if (m.op === 'act' && a.status === ACTION_STARTED) actionRunning.current = Date.now();
+      else if (m.path === '/api/action/status' && a.json && a.json.state !== 'running') actionRunning.current = 0;
+      // The drawer polls until the action ends; past the longest action timeout, stop waiting for it.
+      if (actionRunning.current && Date.now() - actionRunning.current > ACTION_WAIT_MAX_MS) actionRunning.current = 0;
       // prism-cli was updated while this page was open: the backend already runs the new one. Redraw from its
       // bundle, after the answer above reached the frame and never while an action's output is still coming in.
       if (!actionRunning.current && bundleOutdated(shownVersion.current, a.version)) { shownVersion.current = a.version; loadRef.current(); }
