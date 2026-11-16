@@ -1,6 +1,7 @@
 """stdio MCP entry point for the PRISM app: finds prism-cli and execs `prism-cli mcp`.
 
 The tools (prism_status, prism_findings, prism_spend, prism_report,
+prism_snapshot, prism_dashboard, prism_dashboard_stop, prism_review and
 prism_setup) are prism-cli's own; this file only fixes the lookup. It replaces
 itself with prism-cli (argv list, no shell), so stdin and stdout go straight
 to the CLI and nothing here sits in the protocol stream.

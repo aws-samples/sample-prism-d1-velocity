@@ -352,9 +352,9 @@ Please make sure every attendee has completed these items before the workshop:
 - [ ] [PRE_WORK_ITEM_4]
 
 [IF_TRACK_B_OR_HIGHER]:
-- [ ] AWS account access confirmed (EventBridge, Timestream, CloudWatch)
+- [ ] AWS account access confirmed (CDK deploy, EventBridge, DynamoDB, CloudWatch)
 - [ ] CI/CD pipeline identified for instrumentation
-- [ ] GitHub webhook integration approved
+- [ ] CI-to-AWS OIDC role approved (GitHub Actions or GitLab CI)
 
 **What to Expect**
 
@@ -671,29 +671,35 @@ The metrics pipeline requires the following AWS services. Confirm your account h
 
 | Service | Required Permissions | Purpose |
 |---------|---------------------|---------|
-| Amazon EventBridge | `events:PutEvents`, `events:CreateRule`, `events:PutTargets` | Ingest metrics events |
-| Amazon Timestream | `timestream:WriteRecords`, `timestream:CreateTable`, `timestream:DescribeEndpoints` | Store time-series metrics |
-| Amazon CloudWatch | `cloudwatch:PutMetricData`, `cloudwatch:GetMetricData`, `logs:CreateLogGroup` | Monitoring and alerting |
+| AWS CloudFormation / CDK | A CDK-bootstrapped account (`npx cdk bootstrap`) and rights to deploy the PRISM stacks | Deploy the metrics pipeline (`npx cdk deploy --all`) |
+| Amazon EventBridge | `events:PutEvents` on the `prism-d1-metrics` bus (the CI role gets it from `setup-github-oidc`) | Ingest metrics events from CI |
+| Amazon DynamoDB | Created by the stack: `prism-d1-events`, `prism-team-metadata`, `prism-d1-ai-usage` | Store events and the codeburn attribution data |
+| Amazon CloudWatch | `cloudwatch:GetMetricData`, `logs:CreateLogGroup` | The four PRISM dashboards and alarms |
 
 **How to verify**:
 
 ```bash
+aws sts get-caller-identity
 aws events list-rules --region us-west-2
-aws timestream-write describe-endpoints --region us-west-2
+aws dynamodb list-tables --region us-west-2
 aws cloudwatch list-metrics --region us-west-2 --max-items 1
 ```
 
 If any of these fail, work with your AWS administrator to grant access before the workshop.
 
-##### 8. Approve GitHub Webhook Integration
+##### 8. Approve the CI-to-AWS OIDC Role
 
-The metrics pipeline uses a GitHub webhook to capture commit and PR events. Before the workshop:
+PRISM uses no GitHub webhook. The CI workflows (`prism-ai-metrics.yml` and the eval gate) send their
+events to EventBridge themselves, signed in to AWS through OIDC with no stored AWS keys. Before the
+workshop:
 
-1. Confirm you have admin access to the target GitHub organization or repository
-2. Approve the creation of a webhook that will send events to an EventBridge API destination
-3. Note any network restrictions (VPC, IP allowlists) that might block webhook delivery
+1. Confirm you can add a repository secret and workflows to the target repository
+2. Approve the IAM OIDC provider and role that `prism-cli bootstrapper setup-github-oidc` (or
+   `setup-gitlab-oidc`) creates; it shows the plan before it writes
+3. Note any restriction on GitHub Actions or GitLab CI runners reaching AWS APIs
 
-If your organization uses GitHub Enterprise Server (not github.com), let your SA know — the webhook configuration differs.
+If your organization uses GitHub Enterprise Server (not github.com), let your SA know: the OIDC
+provider URL differs.
 
 #### For the Engineering Manager
 
@@ -721,9 +727,9 @@ Share the sponsor's name and email with your SA so they can be included in reado
 | Identify 2 workshop features | Team lead | 3 days before | [ ] |
 | Identify CI/CD pipeline to instrument | Team lead | 1 week before | [ ] |
 | Verify EventBridge access | Platform/DevOps lead | 1 week before | [ ] |
-| Verify Timestream access | Platform/DevOps lead | 1 week before | [ ] |
+| Verify DynamoDB access | Platform/DevOps lead | 1 week before | [ ] |
 | Verify CloudWatch access | Platform/DevOps lead | 1 week before | [ ] |
-| Approve GitHub webhook integration | Engineering manager | 1 week before | [ ] |
+| Approve the CI-to-AWS OIDC role | Engineering manager | 1 week before | [ ] |
 | Designate executive sponsor | Engineering manager | 1 week before | [ ] |
 
 ---
@@ -770,17 +776,20 @@ If your top gaps include CI/CD, Eval & Quality, or Testing Maturity:
 2. Prepare a test branch where we can add an eval gate step during the workshop
 3. Confirm the pipeline can be triggered manually for testing
 
-##### 4. Identify the Production Endpoint for Bedrock Evaluation
+##### 4. Prepare the Eval Gate's Reviewer and Model Access
 
 If your gaps include Eval & Quality or AI Observability:
 
-1. Identify the Bedrock model endpoint your team uses in production
-2. Confirm the endpoint supports evaluation API calls
+1. The CI eval gate reviews each PR with kiro-cli headless: get a Kiro API key for the
+   `KIRO_API_KEY` repository secret
+2. Agent evaluation (`prism-agent-eval.yml`) scores agent output with a Bedrock model: confirm the
+   account has access to the model in `.prism/eval-harness/eval-config.json` (Claude Haiku 4.5 by
+   default) in your region
 3. Note any rate limits or access restrictions that might affect eval runs
-4. Prepare a sample prompt/response pair we can use for testing
+4. Prepare a sample agent input and output we can use for testing
 
 ```bash
-aws bedrock list-evaluation-jobs --region us-west-2
+aws bedrock list-foundation-models --region us-west-2 --by-provider anthropic --query 'modelSummaries[].modelId'
 ```
 
 #### For the Engineering Manager
@@ -802,5 +811,5 @@ If governance is one of your top gaps:
 | Share gap prioritization with SA | Team lead | 3 days before | [ ] |
 | Schedule Week 2 executive readout | Team lead | Before workshop | [ ] |
 | Prepare CI/CD pipeline access | Platform/DevOps lead | Before workshop | [ ] |
-| Identify Bedrock eval endpoint | Platform/DevOps lead | Before workshop | [ ] |
+| Prepare the eval gate's reviewer and model access | Platform/DevOps lead | Before workshop | [ ] |
 | Confirm governance stakeholders | Engineering manager | Before workshop | [ ] |

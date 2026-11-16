@@ -436,7 +436,7 @@ TOKEN = re.compile(r"token=[A-Za-z0-9_-]+")
 
 
 def optimize(path: Path) -> None:
-    """256-colour palette PNG, as render.py does."""
+    """256-colour palette PNG, to keep the files small."""
     img = Image.open(path).convert("RGB")
     img.quantize(colors=COLORS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).save(path, optimize=True)
 
@@ -475,10 +475,13 @@ def main() -> None:
             page = ctx.new_page()
             page.goto(url, wait_until="load")
             page.wait_for_timeout(5000)  # the page loads its panels with fetch and keeps polling
+            # The page opens dark whatever the OS scheme; its own toggle picks the light theme.
+            page.get_by_role("button", name="Light", exact=True).click()
+            page.wait_for_timeout(500)
             name = "claude-code-dashboard-browser-light.png"
             # The top of the page: the summary cards and the Codewatch panel with checkout-service open.
             bottom = page.evaluate("""() => {
-              const h = [...document.querySelectorAll('h1,h2,h3')].find((e) => e.textContent.trim() === 'Codewatch');
+              const h = [...document.querySelectorAll('h1,h2,h3')].find((e) => (e.firstChild?.textContent || '').trim() === 'Codewatch');  // the h2 also holds a subtitle span
               let card = h; while (card.parentElement && card.parentElement.getBoundingClientRect().width < innerWidth - 8) card = card.parentElement;
               return card.getBoundingClientRect().bottom + 12; }""")
             page.screenshot(path=str(out / name), full_page=True, clip={"x": 0, "y": 0, "width": 1280, "height": bottom})
