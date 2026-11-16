@@ -142,7 +142,7 @@ export interface PanelDeps {
 export async function handlePanelMessage(m: unknown, client: StdioClient, deps: PanelDeps): Promise<void> {
   const reportId = parseOpenReport(m);
   if (reportId) {
-    if (!client.hello?.routes.get.includes('/api/report')) return;
+    if (!client.hello?.routes.get.includes('/api/report')) { deps.noReport(404); return; }
     const a = await client.request({ op: 'get', path: '/api/report', query: { id: reportId } });
     const html = a.status === 200 && plain(a.json) && typeof a.json.html === 'string' ? a.json.html : null;
     if (html) deps.showReport(html); else deps.noReport(a.status);
@@ -234,9 +234,9 @@ export class StdioClient {
       this.pending.set(id, { done, timer });
       const msg: Record<string, unknown> = { id, op: r.op, path: r.path };
       if (r.op === 'get') msg.query = r.query ?? {}; else msg.body = r.body;
-      try { proc.stdin!.write(JSON.stringify(msg) + '\n'); } catch {
+      try { proc.stdin!.write(JSON.stringify(msg) + '\n'); } catch (e) {
         this.pending.delete(id); clearTimeout(timer);
-        done({ status: 503, json: { error: 'prism-cli stopped; it restarts on the next request' } });
+        done({ status: 503, json: { error: `prism-cli stopped (${(e as Error).message}); it restarts on the next request` } });
       }
     });
   }

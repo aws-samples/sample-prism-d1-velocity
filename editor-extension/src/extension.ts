@@ -213,10 +213,10 @@ class Prism implements vscode.Disposable {
         vscode.window.showErrorMessage(`PRISM: ${e instanceof Error ? e.message : String(e)}`);
       }));
     } catch (e) {
-      // The bundle could not be read (a broken install): stop the child and say how to reinstall.
+      // Most likely a broken install (the bundle could not be read): stop the child and say so.
       client.dispose();
       entry.client = null;
-      notCurrent(`prism-cli's panel files could not be read (${e instanceof Error ? e.message : String(e)}). Reinstall it.`);
+      notCurrent(`The PRISM panel could not be set up from prism-cli's files (${e instanceof Error ? e.message : String(e)}). Reinstalling prism-cli usually fixes this.`);
     }
   }
 
