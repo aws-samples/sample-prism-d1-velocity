@@ -50,7 +50,7 @@ async def on_shutdown(ctx: Any) -> None:
     await ub.SUPERVISOR.stop()
 
 
-#: How long one prism-cli lookup is reused: the page polls, and a lookup can list nvm's folders.
+#: How long one prism-cli lookup is reused while config.json is unchanged: the page polls, and a lookup can list nvm's folders.
 RESOLVE_TTL_S = 5.0
 
 
@@ -60,12 +60,17 @@ def _configure(ctx: Any) -> None:
 
     def resolver() -> Tuple[Optional[str], str, Dict[str, str]]:
         now = time.monotonic()
-        if cache.get("at") is not None and now - cache["at"] < RESOLVE_TTL_S:
+        try:
+            stamp: Any = (data_dir / "config.json").stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        # Reused for RESOLVE_TTL_S, and never after config.json changed (a new cliPath applies at once).
+        if cache.get("at") is not None and now - cache["at"] < RESOLVE_TTL_S and cache.get("stamp") == stamp:
             return cache["value"]
         setting = load_config(data_dir).get("cliPath")
         cli, reason = resolve_cli(setting if isinstance(setting, str) else None, os.environ)
         value = (cli, reason, cli_env(cli, os.environ) if cli else dict(os.environ))
-        cache.update(at=now, value=value)
+        cache.update(at=now, stamp=stamp, value=value)
         return value
 
     ub.SUPERVISOR.configure(resolver, data_dir, getattr(ctx, "logger", None))
