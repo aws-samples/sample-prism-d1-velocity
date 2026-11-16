@@ -135,6 +135,8 @@ function repoRowCells(r) {
   const ids = SETUP.repoIds || {}, cp = SETUP.copy || {};
   const cw = el('div', {}, pill(CW_PILL[r.status] || 'missing', r.status === 'opted-out' ? 'opted out' : r.status + (r.status === 'ok' && r.global ? ' (global)' : '')), ' ',
     el('span', { class: 'fix' }, r.status === 'ok' ? 'reviewer ' + txt(r.reviewer || 'none') + (r.reviewer && r.model ? ', model ' + txt(r.model) : '') : txt(r.detail)));
+  // The reviewer and model are changed on the repo page (one place); link there.
+  if (ids[r.path]) cw.append(el('div', {}, el('a', { href: '#repo/' + ids[r.path], class: 'rlink', 'data-cw-link': '' }, 'Change reviewer or model →')));
   if ((r.status === 'missing' || r.status === 'warn') && ids[r.path]) cw.append(el('div', { class: 'srow-ctl' }, runButton('codewatch-repo', { repo: ids[r.path], where: r.path, label: 'Enable codewatch' })));
   const sec = r.security || { status: 'missing' };
   const sc = el('div', {}, pill(sec.status === 'missing' ? 'missing' : 'ok', sec.status === 'in-use' ? 'in use' : sec.source === 'machine' ? 'machine setup' : sec.source === 'repo' ? 'repo override' : sec.status));
@@ -142,6 +144,96 @@ function repoRowCells(r) {
   if (sec.status === 'missing') sc.append(copyOnly(sec.fix || cp.enableSecurity, 'AWS'));
   if (ids[r.path]) sc.append(el('div', {}, el('a', { href: '#security/' + ids[r.path], class: 'rlink' }, 'Open in Security Agent →')));
   return [repoName(r), cw, sc];
+}
+
+/** GET /api/codewatch/defaults (your default and the repos that override it), and the default's edit form. */
+let CW_DEF = null, CW_DEF_LOADING = false, CW_DEF_EDIT = null;
+async function cwDefaultsLoad() {
+  if (SNAPSHOT || CW_DEF_LOADING) return;
+  CW_DEF_LOADING = true;
+  let r;
+  try { r = await api('/api/codewatch/defaults'); } catch (e) { r = { ok: false, json: { error: e.message } }; }
+  CW_DEF_LOADING = false;
+  CW_DEF = r.ok ? r.json : { error: txt((r.json || {}).error) || 'could not read the codewatch defaults' };
+  cwDefaultsDraw();
+}
+/** Read again after any action (the drawer's poll calls cwRevInvalidate). */
+function cwDefaultsInvalidate() { CW_DEF = null; CW_DEF_EDIT = null; }
+
+function cwDefaultsSection() {
+  const s = section('Codewatch default reviewer and model', 'yours, for every repo on this machine');
+  s.setAttribute('id', 'cw-defaults');
+  if (SNAPSHOT) { s.append(el('p', { class: 'empty' }, 'Shown on the live dashboard only.')); return s; }
+  if (!CW_DEF) { s.append(el('p', { class: 'loading' }, 'loading...')); cwDefaultsLoad(); return s; }
+  cwDefaultsFill(s);
+  return s;
+}
+function cwDefaultsDraw() {
+  const s = document.getElementById('cw-defaults');
+  if (!s) return;
+  s.replaceChildren(el('h2', {}, 'Codewatch default reviewer and model', el('span', { class: 'sub' }, 'yours, for every repo on this machine')));
+  cwDefaultsFill(s);
+}
+
+function cwDefaultsFill(s) {
+  const d = CW_DEF;
+  if (d.error) { s.append(el('p', { class: 'fix' }, pill('error'), ' ', txt(d.error))); return; }
+  const tool = (id) => (d.tools || []).find((t) => t.id === id) || {};
+  const g = d.global || {}, models = g.models || {};
+  const modelOf = (id) => (models[id] ? txt(models[id]) : 'tool default');
+  s.append(kv([
+    ['Reviewer', g.reviewer ? txt(tool(g.reviewer).name || g.reviewer) + (tool(g.reviewer).installed ? '' : ' (' + txt(tool(g.reviewer).binary) + ' not installed)') : 'not set: the team file, else whichever tool is installed'],
+    ...(d.tools || []).map((t) => ['Model for ' + t.name, modelOf(t.id)]),
+  ]));
+  s.append(el('details', {}, el('summary', {}, 'Which setting wins'), el('p', { class: 'fix' }, 'Reviewer: ' + txt(d.precedence.reviewer)), el('p', { class: 'fix' }, 'Model: ' + txt(d.precedence.model))));
+  const e = CW_DEF_EDIT;
+  if (!e) {
+    const change = el('button', { type: 'button', 'data-cwd-change': '' }, 'Change my default');
+    change.addEventListener('click', () => { CW_DEF_EDIT = { reviewer: g.reviewer || (d.tools.find((t) => t.installed) || d.tools[0]).id, model: models[g.reviewer] || '' }; cwDefaultsDraw(); });
+    const clear = g.reviewer || Object.values(models).some(Boolean) ? runButton('codewatch-reviewer-global-reset', { label: 'Remove my default' }) : null;
+    s.append(el('div', { class: 'srow-ctl' }, change, clear));
+  } else {
+    const sel = el('select', { id: 'cwd-reviewer', 'aria-label': 'Default reviewer' }, ...(d.tools || []).map((t) => el('option', { value: t.id, selected: t.id === e.reviewer ? '' : null }, t.name + (t.installed ? '' : ' (not installed)'))));
+    sel.addEventListener('change', () => { e.reviewer = sel.value; e.model = models[sel.value] || ''; cwDefaultsDraw(); });
+    const t = tool(e.reviewer);
+    const list = el('datalist', { id: 'cwd-models' }, el('option', { value: 'auto' }), ...(t.suggestions || []).map((m) => el('option', { value: m })));
+    const model = el('input', { type: 'text', id: 'cwd-model', list: 'cwd-models', value: e.model, placeholder: 'auto (the tool default)', 'aria-label': 'Default model', autocomplete: 'off', spellcheck: 'false' });
+    const re = new RegExp(d.modelPattern);
+    const msg = el('span', { class: 'fix', role: 'status' });
+    const save = el('button', { type: 'button', class: 'run', 'data-cwd-save': '' }, 'Save');
+    const check = () => { const bad = e.model.trim() !== '' && !re.test(e.model.trim()); msg.textContent = bad ? 'A model id is letters, digits and . _ : / -, not starting with -.' : ''; save.disabled = bad; return !bad; };
+    model.addEventListener('input', () => { e.model = model.value; check(); });
+    check();
+    save.addEventListener('click', () => {
+      const a = actionDef('codewatch-reviewer-global');
+      if (!a || !check()) return;
+      const m = e.model.trim() || 'auto';
+      confirmRun(a, { reviewer: e.reviewer, model: m, command: a.command + ' --reviewer ' + e.reviewer + ' --model ' + m });
+    });
+    const cancel = el('button', { type: 'button' }, 'Cancel');
+    cancel.addEventListener('click', () => { CW_DEF_EDIT = null; cwDefaultsDraw(); });
+    s.append(el('div', { class: 'cwrev', 'data-cwd-form': '' },
+      el('div', { class: 'srow-ctl' }, el('label', { for: 'cwd-reviewer' }, 'Reviewer'), sel),
+      el('div', { class: 'srow-ctl' }, el('label', { for: 'cwd-model' }, 'Model'), model, list, msg),
+      el('p', { class: 'fix' }, 'Writes git config --global prism.reviewer and ' + txt(t.modelKey) + '. A repo override wins over it; a team eval.model for this reviewer wins over the model.'),
+      el('div', { class: 'srow-ctl' }, save, cancel)));
+  }
+  const ov = d.overrides || [];
+  s.append(el('h3', {}, 'Repos that override it', el('span', { class: 'sub' }, ' ' + ov.length + ' of ' + d.repoCount)));
+  if (!ov.length) { s.append(el('p', { class: 'empty', 'data-cwd-none': '' }, 'None: every repo follows your default (or its team file).')); return; }
+  // The dashboard's label (a parent path when two repos share a name), as on every other page.
+  const name = (o) => { const own = ((LAST && LAST.repos) || []).find((x) => x.id === o.id); return own ? labelOf(own) : txt(o.name); };
+  const rows = ov.map((o) => [
+    el('a', { href: '#repo/' + o.id, 'data-cwd-repo': o.id }, name(o)),
+    el('span', { class: 'fix' }, [o.reviewer ? 'reviewer ' + txt(o.reviewer) : null, ...(d.tools || []).filter((t) => o.models[t.id]).map((t) => t.id + ' model ' + txt(o.models[t.id]))].filter(Boolean).join(', ')),
+    runButton('codewatch-reviewer-clone-reset', { repo: o.id, where: o.path, label: 'Reset to default' })]);
+  s.append(table(['Repo', 'Its own setting', ''], rows));
+  const all = actionDef('codewatch-reviewer-apply-all');
+  if (all && all.available) {
+    const b = el('button', { type: 'button', class: 'run danger', 'data-cwd-apply-all': '' }, 'Apply my default to all repos');
+    b.addEventListener('click', () => confirmRun(all, { list: ov.map((o) => name(o) + ' (' + txt(o.path) + ')'), command: all.command + ' <the ' + d.repoCount + ' repos the dashboard found>' }));
+    s.append(el('div', { class: 'srow-ctl' }, b, el('span', { class: 'fix' }, 'Removes the ' + ov.length + ' override' + (ov.length === 1 ? '' : 's') + ' above. Team files (.prism/config.json) are not touched.')));
+  }
 }
 
 /** Info (or warn) callout for the global install. */
@@ -159,6 +251,7 @@ function suggestionCallout(sg) {
 
 /** Repos with codewatch in a table; the rest collapsed behind one "enable for every repo" item. */
 function reposPane(data) {
+  const cwDefault = cwDefaultsSection();
   const rows = data.overview.setup || [];
   const on = rows.filter((r) => r.status === 'ok' || r.status === 'warn'), off = rows.filter((r) => r.status !== 'ok' && r.status !== 'warn');
   const head = ['Repo', 'Codewatch', 'Security Agent'];
@@ -167,11 +260,11 @@ function reposPane(data) {
   const withCw = section('Repos with codewatch', on.length + ' of ' + data.overview.counts.repos + ' repos under ' + txt(data.scope.root_display),
     el('div', { class: 'srow-ctl' }, recheck, el('span', { class: 'fix' }, 'Codewatch hooks and Security Agent setup per repo, from local files.')),
     on.length ? table(head, on.map(repoRowCells)) : el('p', { class: 'empty' }, rows.length ? 'None yet.' : 'No git repositories found under ' + txt(data.scope.root_display) + '.'));
-  if (!off.length) return [withCw];
+  if (!off.length) return [cwDefault, withCw];
   const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
   const elsewhere = (data.machine.globalHooks || {}).state === 'elsewhere';
   const all = elsewhere ? copyOnly('prism-cli enable codewatch --global --force', 'replaces another global hooks path') : runButton('codewatch-global', { label: 'Enable for every repo' });
-  return [withCw, section('Repos without codewatch', off.length + ' repo' + (off.length === 1 ? '' : 's'),
+  return [cwDefault, withCw, section('Repos without codewatch', off.length + ' repo' + (off.length === 1 ? '' : 's'),
     sg ? suggestionCallout(sg) : null, all ? el('div', { class: 'srow-ctl' }, all) : null,
     el('details', { class: 'missing-group', 'data-key': 'settings:repos-off' }, el('summary', {}, 'Show the ' + off.length + ' repo' + (off.length === 1 ? '' : 's')), table(head, off.map(repoRowCells))))];
 }

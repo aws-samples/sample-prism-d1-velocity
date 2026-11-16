@@ -190,6 +190,13 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
   const expected: Record<ActionId, { args: string[]; cwd: string; body?: Record<string, unknown>; npm?: true }> = {
     'codewatch-repo': { args: ['enable', 'codewatch'], cwd: REPO_A, body: { repo: repoId(REPO_A) } },
     'codewatch-global': { args: ['enable', 'codewatch', '--global'], cwd: '/work' },
+    'codewatch-reviewer-clone': { args: ['codewatch', 'reviewer', '--scope', 'clone', '--reviewer', 'claude', '--model', 'sonnet'], cwd: REPO_A, body: { repo: repoId(REPO_A), reviewer: 'claude', model: 'sonnet' } },
+    'codewatch-reviewer-team': { args: ['codewatch', 'reviewer', '--scope', 'team', '--model', 'auto'], cwd: REPO_A, body: { repo: repoId(REPO_A), model: 'auto', confirm: true } },
+    'codewatch-reviewer-global': { args: ['codewatch', 'reviewer', '--scope', 'global', '--reviewer', 'kiro', '--model', 'claude-sonnet-4.5'], cwd: '/work', body: { reviewer: 'kiro', model: 'claude-sonnet-4.5' } },
+    'codewatch-reviewer-apply-all': { args: ['codewatch', 'reviewer', '--clear-overrides', ...REPOS.map((r) => r.path)], cwd: '/work', body: { confirm: true } },
+    'codewatch-reviewer-clone-reset': { args: ['codewatch', 'reviewer', '--scope', 'clone', '--reset'], cwd: REPO_A, body: { repo: repoId(REPO_A) } },
+    'codewatch-reviewer-team-reset': { args: ['codewatch', 'reviewer', '--scope', 'team', '--reset'], cwd: REPO_A, body: { repo: repoId(REPO_A), confirm: true } },
+    'codewatch-reviewer-global-reset': { args: ['codewatch', 'reviewer', '--scope', 'global', '--reset'], cwd: '/work' },
     'codeburn-local': { args: ['enable', 'codeburn', '--local'], cwd: '/work' },
     'codeburn-systemd': { args: ['enable', 'codeburn', '--schedule', 'systemd'], cwd: '/work' },
     'codeburn-team': { args: ['enable', 'codeburn', '--url', 'https://collector.example.com/otel?x=1'], cwd: '/work', body: { url: 'https://collector.example.com/otel?x=1' } },

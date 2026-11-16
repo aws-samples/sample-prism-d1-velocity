@@ -179,6 +179,11 @@ function confirmRun(a, o) {
     el('p', { class: 'note' }, a.readOnlyAws ? 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.'
       : a.installs ? 'Installs software from the npm registry on this machine. No AWS calls.' : a.note ? null : 'Changes setup on this machine only. No AWS calls.'),
     a.note ? el('p', { class: 'note' }, txt(a.note)) : null,
+    // o.diff: the file change the run makes (the repo page's team default), as - and + lines.
+    o.diff ? diffBlock(o.diff) : null,
+    // o.list: what the run changes, named (the Apply to all repos dialog lists the repos).
+    o.list ? el('p', {}, 'It changes these repos:') : null,
+    o.list ? el('ul', { 'data-confirm-list': '' }, ...o.list.map((x) => el('li', {}, txt(x)))) : null,
     el('p', { class: 'note' }, 'It runs without a terminal, so it cannot ask questions; it is stopped after ' + Math.max(1, Math.round(a.timeoutSec / 60)) + ' min.')];
   if (a.confirm) {
     const cb = el('input', { type: 'checkbox' });
@@ -194,11 +199,17 @@ function confirmRun(a, o) {
   cancel.focus();
 }
 
+/** A small line diff ([' x', '-y', '+z']) as a pre with one span per line, marked by class. */
+function diffBlock(lines) {
+  return el('pre', { class: 'cmd diff', 'data-diff': '' }, ...lines.map((l) => el('span', { class: l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : null }, txt(l) + '\\n')));
+}
+
 async function startAction(a, o) {
   const body = { action: a.id };
   if (a.repo) body.repo = o.repo;
   if (a.url) body.url = o.url;
   if (a.choose) { body.profile = o.profile; body.region = o.region; }
+  if (a.pick) { if (o.reviewer) body.reviewer = o.reviewer; if (o.model !== undefined) body.model = o.model; }
   if (a.confirm) body.confirm = true;
   ACTION_PANEL.hidden = false;
   OUT.status.replaceChildren(pill('warn', 'starting'), el('code', {}, a.command));
@@ -236,7 +247,7 @@ function poll() {
     try {
       const r = await api('/api/action/status');
       if (r.ok) showStatus(r.json);
-      if (r.ok && r.json.state !== 'running') { load(); return; }
+      if (r.ok && r.json.state !== 'running') { if (typeof cwRevInvalidate === 'function') cwRevInvalidate(); if (typeof cwDefaultsInvalidate === 'function') cwDefaultsInvalidate(); load(); return; }
     } catch (e) { /* retry */ }
     poll();
   }, 1000);

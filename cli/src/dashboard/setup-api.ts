@@ -11,6 +11,8 @@
  *   GET  /api/security-agent/gate?repo=<id>  the gate card's re-check for one repo (local files only, no git)
  *   GET  /api/security-agent/scope?repo=<id> what a branch code review would review there (local git only)
  *   POST /api/security-agent/spaces  {repo, refresh?}: the read-only agent-space lookup
+ *   GET  /api/codewatch/reviewer?repo=<id>[&scope=&reviewer=&model=&reset=1]  the repo page's reviewer and model (git config, .prism/config.json; read-only)
+ *   GET  /api/codewatch/defaults     your default reviewer and model (git config --global) and the repos that override it
  *   GET  /api/security-run?repo=<id>&run=<id>  one security run's findings (local result files; security-runs.ts)
  * Account ids and ARNs appear only here and in the page, never in `dashboard --json`.
  */
@@ -23,6 +25,7 @@ import type { VersionInfo } from './update-check.js';
 import { securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
 import { securityRunDetail } from './security-runs.js';
 import { ApiAnswer } from './server.js';
+import { codewatchDefaults, codewatchReviewer } from './codewatch-reviewer.js';
 
 /** Commands the page shows as Copy only: each writes to AWS, needs a terminal, or both. */
 export const COPY_ONLY = {
@@ -59,7 +62,7 @@ export function setupApi(d: SetupApiDeps) {
     const a = ACTIONS[id];
     return {
       id, label: a.label, command: displayCommand(a.args, a.program), repo: !!a.repo, url: !!a.url, confirm: !!a.confirm,
-      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, choose: !!a.choose, connected: !!a.connected, inHome: !!a.inHome, confirmLabel: a.confirmLabel ?? null, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
+      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, choose: !!a.choose, connected: !!a.connected, inHome: !!a.inHome, confirmLabel: a.confirmLabel ?? null, pick: a.pick ?? null, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
     };
   });
   return {
@@ -91,6 +94,11 @@ export function setupApi(d: SetupApiDeps) {
         const s = d.securityAgent ? securityAgentScope(d.securityAgent, url.searchParams.get('repo')) : null;
         return s ?? new ApiAnswer(404, { error: 'not a repo from the last Security Agent answer' });
       },
+      '/api/codewatch/reviewer': async (url: URL) => {
+        const r = await codewatchReviewer({ repoPaths: d.repoPaths }, url.searchParams);
+        return r.status === 200 ? r.json : new ApiAnswer(r.status, r.json);
+      },
+      '/api/codewatch/defaults': async () => codewatchDefaults({ repoPaths: d.repoPaths, home: d.identity.home }),
       '/api/accountguard': async () => (d.accountGuard ? accountGuardView(d.accountGuard) : null),
       // Ids only: the repo id is matched against the scan list and the run id against that repo's result files.
       // No such run answers 404 (the page shows Run not found and stops asking); any other failure is retried.

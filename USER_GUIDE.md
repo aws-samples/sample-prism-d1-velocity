@@ -803,8 +803,9 @@ twice.
 
 The pre-push hook picks a reviewer in this order:
 
-1. `git config prism.reviewer <kiro|claude>`: a per-clone override for one developer. It is never
-   committed. With `--global --reviewer`, the same key is set in your global git config.
+1. `git config prism.reviewer <kiro|claude>`: git reads it from the clone first (`--local`, an
+   override for this repo, never committed), then from your global git config (`--global`, your
+   default for every repo). Either one wins over the team file.
 2. `eval.reviewer` in `.prism/config.json`: the team default, set by `enable codewatch`.
 3. Whichever of kiro-cli and claude is on PATH.
 
@@ -857,7 +858,8 @@ The pre-push review picks the model for the tool that actually runs, in this ord
 1. `eval.model` in `.prism/config.json`, when it was set for this tool (or `eval.reviewer` is
    unset): the team's pin. `auto` or `default` here also stops the search, with the reviewer's
    default.
-2. `git config prism.<tool>Model`: your own default (usually `--global`) for repos that pin none.
+2. `git config prism.<tool>Model`: this clone's value (`--local`), else your default (`--global`),
+   for repos that pin none.
 3. The reviewer's default: `auto` for kiro-cli, Claude Code's own default for claude.
 
 An invalid value at either level is ignored, with a note in the hook output. The hook prints the
@@ -869,6 +871,46 @@ from the **base branch's** `.prism/config.json` (so a PR cannot change the model
 then `auto`. CI always runs kiro-cli and reads `eval.model` whichever tool it was set for, so a team
 whose `eval.reviewer` is claude should set `PRISM_REVIEW_MODEL` for CI. It never reads
 `prism.<tool>Model`. See [Kiro-CLI Eval Gate](#kiro-cli-eval-gate).
+
+### Changing the Reviewer and Model
+
+```bash
+prism-cli codewatch reviewer                                        # what a push here uses, and where each value comes from
+prism-cli codewatch reviewer --reviewer claude --model sonnet        # override for this repo (git config --local)
+prism-cli codewatch reviewer --scope global --reviewer claude --model sonnet   # your default for every repo (git config --global)
+prism-cli codewatch reviewer --scope team --model auto               # the team file (.prism/config.json eval); commit it
+prism-cli codewatch reviewer --reset                                 # this repo follows your default again
+```
+
+`--reset` removes the settings at its scope (`--scope global --reset` removes your default).
+`--clear-overrides <dir...>` removes each listed repo's own `prism.reviewer` and `prism.<tool>Model`
+so they follow your default; it never touches `.prism/config.json`. The same rules apply as above:
+the reviewer comes from this repo's override, then your default, then the team file, then the
+installed tool; the model comes from the team's `eval.model` (when it was set for the reviewer that
+runs), then this repo's override, then your default, then the tool's default. kiro-cli's
+`chat --list-models` answers from your account, so neither the CLI nor the dashboard offers it
+offline; the dashboard suggests Claude Code's documented aliases.
+
+In the dashboard, a repo's page has a **Reviewer and model** block in its Repo settings card. It
+shows the reviewer and model a push there uses, where each comes from (**overridden for this
+repo**, **your default**, **team file** or **tool default**), whether that tool is installed, and,
+when the chosen tool is missing, the one that runs instead. **Change** offers **Override for this
+repo** (the default choice), **Use my default** (removes the override) and **Team default**. The
+team default warns that `.prism/config.json` is a repo file to commit, which the CI eval gate reads
+too, and shows the diff before saving and again in the confirm dialog. Picking a personal model
+while the team pins one for the same reviewer says that the pin wins and offers the team default.
+**Which setting wins** spells out the order. The model field takes an id or `auto`, and a value
+that breaks the model id rule is refused on the page and again on the server.
+
+![The Reviewer and model block of the demo repo with the team default chosen: the repo-file warning and the .prism/config.json diff before saving](assets/images/prism-cli/dashboard-codewatch-reviewer-dark.png)
+
+**Settings › Repos** starts with **Codewatch default reviewer and model**: your default
+(`git config --global prism.reviewer` and `prism.<tool>Model`) with **Change my default** and
+**Remove my default**, then the repos that override it, each with a link and **Reset to default**.
+**Apply my default to all repos** removes every override, after a confirm dialog that lists the
+repos it changes; team files are never touched. Each row in the repos table links to that repo's
+page to change it. Every change runs `prism-cli codewatch reviewer` as a fixed command, with the
+reviewer and model checked by the server.
 
 ### What the Hooks Do
 
