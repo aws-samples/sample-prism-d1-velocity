@@ -157,6 +157,7 @@ try {
   const prev = childPid(d);
   const moved = wrapper(d.bin, 'prism-cli-new', d.cli);
   writeFileSync(join(d.data, 'config.json'), JSON.stringify({ cliPath: moved }));
+  await sleep(5500); // page_routes reuses a prism-cli lookup for RESOLVE_TTL_S (5 s)
   await page.reload(); await page.waitForSelector('iframe[title=PRISM]', { timeout: 60000 }); f = frame();
   await f.waitForSelector('#summary', { timeout: 60000 }).catch(() => {});
   R.checks.K9 = { before: prev, after: childPid(d), prevGone: !alive(prev), drawn: !!(await f.$('#summary')), children: serveStdioChildren(g.gw.pid) };
@@ -164,6 +165,7 @@ try {
   // An older prism-cli: the page shows only how to update.
   if (process.env.PRISM_CLI_OLD) {
     writeFileSync(join(d.data, 'config.json'), JSON.stringify({ cliPath: process.env.PRISM_CLI_OLD }));
+    await sleep(5500);
     await page.reload();
     await page.waitForSelector('text=Update prism-cli to 1.21.0 or later', { timeout: 30000 }).catch(() => {});
     R.checks.K10 = { text: (await page.innerText('#root')).replace(/\s+/g, ' ').slice(0, 300), iframe: !!(await page.$('iframe[title=PRISM]')) };

@@ -174,13 +174,13 @@ The `--serve-stdio` child:
 - starts when the app is enabled (`on_startup`) and keeps running while it is; there is no idle
   exit, so the CLI keeps its caches and a running action;
 - is restarted when it exits, with backoff (1 s doubling to 60 s);
-- is restarted before the next request when the installed prism-cli changed (another path, or an
-  npm update);
+- is restarted before the next request when the installed prism-cli changed (an npm update), or
+  within 5 seconds when `cliPath` names another prism-cli;
 - is one per gateway: a pid file in the app's data folder (`serve-stdio.pid`) lets the next gateway
   stop one an earlier gateway left behind;
-- stops with the gateway: its stdin is a pipe from the gateway and prism-cli exits (stopping any
-  running action) when it closes; on Linux it also gets SIGTERM when the gateway dies; and
-  `on_shutdown` (app disabled, trust revoked, gateway stopping) stops it.
+- stops with the gateway: its stdin is a pipe from the gateway, which the system closes when the
+  gateway exits for any reason, and prism-cli then exits (stopping any running action); and
+  `on_shutdown` (app disabled, trust revoked, gateway stopping) stops it first.
 
 ## How the digest decides to notify
 

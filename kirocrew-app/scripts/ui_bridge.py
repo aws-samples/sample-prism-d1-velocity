@@ -18,8 +18,8 @@ Lifecycle (Supervisor):
   - one child per gateway process: one Supervisor, every start under one lock; a pid file in the
     app's data dir lets the next gateway stop a child an earlier gateway left behind;
   - dies with the gateway: its stdin is a pipe from the gateway, and the CLI stops (and stops a
-    running action) when stdin closes; on Linux it also gets SIGTERM if the gateway dies
-    (PR_SET_PDEATHSIG); on_shutdown (app disabled, trust revoked, gateway stopping) stops it.
+    running action) when stdin closes, which the kernel does when the gateway exits for any reason;
+    on_shutdown (app disabled, trust revoked, gateway stopping) stops it first.
 No idle timeout on purpose: the page polls, and the CLI keeps its caches and a running action.
 """
 from __future__ import annotations
@@ -28,6 +28,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import signal
 import sys
@@ -138,16 +139,6 @@ def cli_fingerprint(cli: str) -> Tuple[str, float]:
     return real, 0.0
 
 
-def _deathsig() -> None:  # pragma: no cover - runs in the child between fork and exec
-    """Linux: SIGTERM to the child when the gateway that forked it dies."""
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:
-        pass
-
-
 def _looks_like_ours(pid: int) -> bool:
     """True when `pid` is a live `prism-cli dashboard --serve-stdio` of this user."""
     try:
@@ -186,6 +177,7 @@ class Supervisor:
         self._seq = 0
         self._pending: Dict[int, "asyncio.Future[Dict[str, Any]]"] = {}
         self.starts = 0  # for tests and the log
+        self._log: logging.Logger = logging.getLogger("prism-app")
         self._wake = False
 
     def _prime(self) -> None:
@@ -204,8 +196,13 @@ class Supervisor:
 
     # -- lifecycle -------------------------------------------------------
 
-    def configure(self, resolver: Resolver, data_dir: Path) -> None:
+    def configure(self, resolver: Resolver, data_dir: Path, logger: Optional[logging.Logger] = None) -> None:
         self._resolver, self._data_dir = resolver, data_dir
+        if logger is not None:
+            self._log = logger
+
+    def configured(self) -> bool:
+        return self._resolver is not None
 
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -250,9 +247,11 @@ class Supervisor:
                 # Kept without its traceback: that would hold this loop's own frame, and a caller that
                 # clears a traceback's frames (unittest's assertRaises does) would kill the loop.
                 self.error = BridgeError(str(e), update=e.update)
+                self._log.warning("prism: prism-cli dashboard --serve-stdio did not start: %s", e)
                 self._settled.set()  # a failed start: requests get its reason at once (an old prism-cli)
             except Exception as e:  # spawn failures (no such file, permission) and the like
                 self.error = BridgeError(f"prism-cli could not start: {e}")
+                self._log.warning("prism: prism-cli could not start: %s", e)
                 self._settled.set()
             self._ready.clear()
             self._fail_pending("prism-cli stopped; it is restarting")
@@ -276,7 +275,7 @@ class Supervisor:
         proc = await asyncio.create_subprocess_exec(
             cli, "dashboard", "--serve-stdio", cwd=str(Path.home()), env=env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            limit=MAX_LINE, preexec_fn=_deathsig if sys.platform.startswith("linux") else None)
+            limit=MAX_LINE)
         self.proc = proc
         self._write_pid(proc.pid)
         assert proc.stdout is not None
@@ -345,16 +344,18 @@ class Supervisor:
         try:
             p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             p.write_text(str(pid), encoding="utf-8")
-        except OSError:
-            pass
+        except OSError as e:
+            self._log.warning("prism: could not write %s (a later gateway cannot stop this child): %s", p, e)
 
     def _clear_pid(self) -> None:
         p = self._pid_path()
         try:
             if p is not None:
                 p.unlink()
-        except OSError:
+        except FileNotFoundError:
             pass
+        except OSError as e:
+            self._log.warning("prism: could not remove %s: %s", p, e)
 
     def _reap_left_behind(self) -> None:
         """A child an earlier gateway left running (it should have exited with its stdin): stop it."""
@@ -364,6 +365,7 @@ class Supervisor:
         except (OSError, ValueError):
             return
         if pid > 1 and (self.proc is None or self.proc.pid != pid) and _looks_like_ours(pid):
+            self._log.warning("prism: stopping a prism-cli --serve-stdio (pid %d) an earlier gateway left running", pid)
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:

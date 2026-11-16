@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -49,15 +50,25 @@ async def on_shutdown(ctx: Any) -> None:
     await ub.SUPERVISOR.stop()
 
 
+#: How long one prism-cli lookup is reused: the page polls, and a lookup can list nvm's folders.
+RESOLVE_TTL_S = 5.0
+
+
 def _configure(ctx: Any) -> None:
     data_dir = Path(ctx.data_dir)
+    cache: Dict[str, Any] = {}
 
     def resolver() -> Tuple[Optional[str], str, Dict[str, str]]:
+        now = time.monotonic()
+        if cache.get("at") is not None and now - cache["at"] < RESOLVE_TTL_S:
+            return cache["value"]
         setting = load_config(data_dir).get("cliPath")
         cli, reason = resolve_cli(setting if isinstance(setting, str) else None, os.environ)
-        return cli, reason, cli_env(cli, os.environ) if cli else dict(os.environ)
+        value = (cli, reason, cli_env(cli, os.environ) if cli else dict(os.environ))
+        cache.update(at=now, value=value)
+        return value
 
-    ub.SUPERVISOR.configure(resolver, data_dir)
+    ub.SUPERVISOR.configure(resolver, data_dir, getattr(ctx, "logger", None))
 
 
 def _err(status: int, msg: str, **extra: Any) -> web.Response:
@@ -78,7 +89,8 @@ async def _gate(request: web.Request, ctx: Any, op: str) -> Optional[web.Respons
 
 async def _hello(ctx: Any) -> Any:
     """The running child's hello; a web.Response when it cannot be served."""
-    _configure(ctx)
+    if not ub.SUPERVISOR.configured():
+        _configure(ctx)
     try:
         return await ub.SUPERVISOR.ensure()
     except ub.BridgeError as e:
@@ -96,7 +108,7 @@ async def handle_ui_bundle(request: web.Request, ctx: Any) -> web.Response:
         return hello
     try:
         return web.json_response(ub.read_bundle(hello["uiDir"], str(hello.get("version", ""))))
-    except OSError as e:
+    except (OSError, ValueError, KeyError) as e:  # missing, unreadable or not UTF-8
         return _err(502, f"prism-cli's UI files could not be read ({e.__class__.__name__}); reinstall prism-cli")
 
 
@@ -130,9 +142,18 @@ async def handle_ui_act(request: web.Request, ctx: Any) -> web.Response:
         return denied
     if request.content_type != "application/json":
         return _err(415, "expected application/json")
-    raw = await request.content.read(ub.MAX_MESSAGE + 1)  # read at most this much: a longer body is refused, not buffered
-    if len(raw) > ub.MAX_MESSAGE:
-        return _err(413, "request too large")
+    # Read the whole body in chunks, but never more than the limit: a longer body is refused, not buffered.
+    chunks: List[bytes] = []
+    size = 0
+    while True:
+        chunk = await request.content.read(ub.MAX_MESSAGE + 1 - size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+        if size > ub.MAX_MESSAGE:
+            return _err(413, "request too large")
+    raw = b"".join(chunks)
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
