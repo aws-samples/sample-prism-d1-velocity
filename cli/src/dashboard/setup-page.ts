@@ -215,11 +215,15 @@ function showStatus(s) {
   ACTION_PANEL.hidden = false;
   // outcome pending: the Security Agent job has no verdict yet (exit 2). That is not a failure, so it is not red.
   const pending = s.state === 'done' && s.outcome === 'pending';
-  const p = s.state === 'running' ? pill('warn', 'running') : s.exitCode === 0 ? pill('ok', 'exit 0')
+  // outcome nothing: a branch code review found no changes against its base and started nothing. Neither red nor green.
+  const nothing = s.state === 'done' && s.outcome === 'nothing';
+  const p = s.state === 'running' ? pill('warn', 'running') : nothing ? pill('info', 'nothing to review') : s.exitCode === 0 ? pill('ok', 'exit 0')
     : pending ? pill('warn', 'still running (exit ' + s.exitCode + ')') : pill('error', s.timedOut ? 'timed out' : 'exit ' + s.exitCode);
   // replaceChildren would print a null as text: only nodes go in.
   OUT.status.replaceChildren(...[p, el('code', {}, txt(s.command)), el('span', { class: 'fix' }, (s.repo ? 'in ' + txt(s.repo) + ' · ' : '') + 'started ' + when(s.startedAt)),
     pending ? el('span', { class: 'fix', 'data-pending-hint': '' }, 'The job is still running in AWS; nothing failed. Check back later, or run the same command with --wait.') : null,
+    nothing ? el('span', { class: 'fix', 'data-nothing-hint': '' }, 'No changes against the branch\\'s base, so no job was started and nothing was uploaded. Uncommitted changes are never reviewed.') : null,
+    nothing && typeof saFullOffer === 'function' ? saFullOffer(s.repoId) : null,
     // A Security Agent action that saved a finished run: the server read its id from the result file.
     s.state === 'done' && typeof runDoneBar === 'function' ? runDoneBar(s.result) : null].filter(Boolean));
   OUT.pre.textContent = txt(s.output) || (s.state === 'running' ? '(no output yet)' : '(no output)');

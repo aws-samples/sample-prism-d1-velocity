@@ -232,8 +232,13 @@ export interface ActionStatus {
   cwd?: string;
   output?: string;
   exitCode?: number | null;
-  /** When done: ok (exit 0), pending (the action's pendingExit: the job is still running), else failed. */
-  outcome?: 'ok' | 'pending' | 'failed';
+  /**
+   * When done: ok (exit 0), pending (the action's pendingExit: the job is still running), nothing (a branch
+   * code review that exited 0 and saved no run: its diff was empty, so it started nothing), else failed.
+   */
+  outcome?: 'ok' | 'pending' | 'nothing' | 'failed';
+  /** The repo's id (from the scan list) for a repo action, so the drawer can offer the next action there. */
+  repoId?: string | null;
   timedOut?: boolean;
   startedAt?: string;
   finishedAt?: string | null;
@@ -247,6 +252,9 @@ export interface ActionStatus {
 
 /** Actions that write a Security Agent result file in their repo. */
 const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model', 'security-code-review-force', 'security-code-review-full-force']);
+
+/** Branch code reviews: the only actions that can exit 0 having started nothing (no changes against the base). */
+const BRANCH_REVIEW = new Set<ActionId>(['security-code-review', 'security-code-review-force']);
 
 const MAX_OUTPUT = 256 * 1024;
 const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region']);
@@ -341,7 +349,7 @@ export class ActionRunner {
     this.busy = true;
     const runId = ++this.seq;
     const st = this.cur = {
-      state: 'running' as const, runId, action: id, repo: repo?.name ?? null, command: displayCommand(args, def.program), cwd,
+      state: 'running' as const, runId, action: id, repo: repo?.name ?? null, repoId: repo?.id ?? null, command: displayCommand(args, def.program), cwd,
       buf: '', exitCode: null, timedOut: false, startedAt: now().toISOString(), finishedAt: null,
     } as ActionStatus & { buf: string };
     const add = (chunk: Buffer | string) => {
@@ -410,7 +418,10 @@ export class ActionRunner {
         process.stderr.write(`prism dashboard: could not read the run ${logSafe(st.action ?? '')} wrote in ${logSafe(wrote.name)}: ${redact((e as Error).message)}\n`);
       }
     }
-    st.outcome = code === 0 ? 'ok' : !st.timedOut && code === ACTIONS[st.action!].pendingExit ? 'pending' : 'failed';
+    // A started job always saves its pending record first, so exit 0 with no run saved is the empty-diff case.
+    // shortcut: a pending record that could not be written (a warning, exit 0) also reads as "nothing"; give the CLI its own exit code if that ever matters.
+    const nothing = code === 0 && !!wrote && BRANCH_REVIEW.has(st.action!) && !st.result;
+    st.outcome = nothing ? 'nothing' : code === 0 ? 'ok' : !st.timedOut && code === ACTIONS[st.action!].pendingExit ? 'pending' : 'failed';
     st.state = 'done';
     st.finishedAt = (this.d.now ?? (() => new Date()))().toISOString();
     this.busy = false;

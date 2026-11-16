@@ -340,7 +340,7 @@ test('an empty diff starts nothing', async () => {
   const h = harness(state(), { patch: '' });
   try {
     assert.equal(await securityCodeReview(cr(), h.deps), 0);
-    assert.match(h.out(), /No changes against origin\/main; nothing to review\./);
+    assert.match(h.out(), /No changes against origin\/main; nothing to review\. To review the whole repo at HEAD, run with --full\./);
     assert.deepEqual(h.writes(), []);
     assert.ok(!h.gitCalls.some((g) => g.includes('archive')), 'no context zip for an empty diff');
   } finally { h.cleanup(); }

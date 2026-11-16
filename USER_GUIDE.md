@@ -1464,6 +1464,14 @@ step.
   the credentials still point to the same account, before it runs. The job keeps running in AWS;
   fetch its result here later.
 
+  The branch review's card says what it diffs against, by the same rule as the CLI: the branch's
+  upstream, else the remote's default branch. It reads this from local git only. When the branch has
+  nothing new since that base, or there is no base at all, the card says so, disables **Start code
+  review** and offers **Review the whole repo instead** (the full review, with its own guards). It
+  also counts uncommitted changes, which no review includes: commit them first. If a branch review
+  still finds nothing, the output drawer shows a neutral **nothing to review** (no job, no upload)
+  with the same offer.
+
   Before that dialog, a code review checks the repo's own results. If a review of the repo is still
   running, it says so and offers **View it →** or **Start another anyway**. If HEAD already has a
   finished review, it offers **Open those findings →** first, then **Review it again**. A job
@@ -1941,7 +1949,9 @@ prism-cli security findings --job <id> --wait     # a specific job, waiting if i
    that first run says so and makes no change.
 3. Builds the scope. By default this is `git diff <base>...HEAD`, where the base is the branch's
    upstream, else the remote's default branch, as in the codewatch pre-push review. Only committed
-   changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing.
+   changes are included. `--full` takes `git archive HEAD` instead. An empty diff starts nothing
+   and exits 0, saying `No changes against <base>; nothing to review. To review the whole repo at
+   HEAD, run with --full.`
 4. Uploads to the scan bucket, skipping any upload whose object's ETag already matches. Both scopes
    first refresh the code review's own source, `repo/<repo-slug>/latest.zip`, to `git archive
    HEAD` and print `Review context: updated ... to HEAD <sha>`. A diff job reads that zip as the

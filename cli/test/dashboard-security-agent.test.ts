@@ -708,3 +708,45 @@ test('GET /api/security-agent/gate: one known repo, local files only: no git pro
   assert.equal(((await api.getApi['/api/security-agent/gate'](new URL('http://x/api/security-agent/gate?repo=' + repoId(path)))) as { gate: { state: string } }).gate.state, 'profile');
   assert.equal(((await api.getApi['/api/security-agent/gate'](new URL('http://x/api/security-agent/gate?repo=nope'))) as { status: number }).status, 404);
 });
+
+test('branch card: nothing new since the upstream disables the branch Start and offers the whole-repo review (with its guards)', async () => {
+  const p = await pagePayload();
+  const scopeUrl = '/api/security-agent/scope?repo=' + p.repos[0].id;
+  const empty = { branch: 'feat/receiver-tool-usage', base: { upstream: 'origin/feat/receiver-tool-usage', fromUpstream: true, commit: 'd0975a99cf85' }, empty: true, dirty: 3 };
+  const running = { run_id: 'run-r1', job_id: 'job-r1', started_at: '2026-11-15T11:40:00Z', commit: 'aaaaaaaaaaaa', branch: 'main' };
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD, 0, true, gate('ready'), { running, reviewed: null }), [scopeUrl]: { repo: p.repos[0].id, scope: empty } });
+  await page.settle();
+  const sec = page.dom.byId.security;
+  const item = sec.all().find((e) => e.getAttribute('data-branch-review'))!;
+  assert.equal(item.getAttribute('data-branch-review'), 'blocked');
+  assert.match(item.textContent, /Nothing new on feat\/receiver-tool-usage since origin\/feat\/receiver-tool-usage; a branch review would have nothing to check\./);
+  assert.match(item.textContent, /It diffs against the upstream, origin\/feat\/receiver-tool-usage\./);
+  assert.match(item.textContent, /3 uncommitted changes here will not be reviewed: commit them first\./);
+  const start = item.querySelectorAll('button').find((b) => b.textContent === 'Start code review')!;
+  assert.ok(start.hasAttribute('disabled'), 'the branch Start is disabled');
+  assert.equal(start.listeners.click, undefined);
+  const full = item.querySelectorAll('button').find((b) => b.textContent === 'Review the whole repo instead')!;
+  full.listeners.click();
+  const dlg = dialogOf(page);
+  assert.match(dlg.textContent, /Start a code review of the whole repo/);
+  assert.deepEqual(buttons(dlg).map((b) => b.textContent), ['Cancel', 'View it →', 'Start another anyway'], 'the running guard still applies to --full');
+
+  // No upstream and no default branch: say so; the same offer.
+  const none = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD), [scopeUrl]: { repo: p.repos[0].id, scope: { branch: 'spike', base: null, empty: false, dirty: 0 } } });
+  await none.settle();
+  const nt = none.dom.byId.security.textContent;
+  assert.match(nt, /No upstream for spike and no default branch on the remote, so there is nothing to diff against\./);
+  assert.match(nt, /Uncommitted changes are never reviewed\./);
+  assert.ok(btn(none.dom.byId.security, 'Review the whole repo instead'));
+  // No upstream, a default branch, new commits: the usual Start, and what it diffs against.
+  const fb = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD), [scopeUrl]: { repo: p.repos[0].id, scope: { branch: 'spike', base: { upstream: 'origin/trunk', fromUpstream: false, commit: 'abc' }, empty: false, dirty: 0 } } });
+  await fb.settle();
+  assert.match(fb.dom.byId.security.textContent, /No upstream for spike: it diffs against origin\/trunk, the remote's default branch\./);
+  const s2 = btn(fb.dom.byId.security, 'Start code review')!;
+  assert.ok(!s2.hasAttribute('disabled') && s2.listeners.click, 'something to review: the usual Start');
+  assert.equal(btn(fb.dom.byId.security, 'Review the whole repo instead'), undefined);
+  // The check unknown (it failed): the usual Start; the CLI decides.
+  const unknown = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
+  await unknown.settle();
+  assert.ok(btn(unknown.dom.byId.security, 'Start code review')!.listeners.click);
+});
