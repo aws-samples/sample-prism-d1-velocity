@@ -50,6 +50,8 @@ export interface Finding {
   stride?: string[];
   recommendation?: string;
   evidence?: string[];
+  /** security-threat-model only: the components and assets the threat affects (impactedAssets). Absent before 1.20.1. */
+  assets?: string[];
   /** security-pentest only: the agent's confidence (HIGH | MEDIUM | LOW | FALSE_POSITIVE). */
   confidence?: string;
 }

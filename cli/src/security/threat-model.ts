@@ -456,6 +456,7 @@ export function toThreatModelResult(o: TmBase & { job: TmJob; threats: ThreatRow
     ...(t.statement ? { description: redact(t.statement) } : {}),
     risk_level: t.severity, title: t.title, threat_id: t.threatId, stride: t.stride,
     recommendation: redact(t.recommendation), evidence: t.evidence,
+    ...(t.impactedAssets.length ? { assets: t.impactedAssets.map(redact) } : {}),
   }));
   return makeResult({
     kind: 'security-threat-model', hook: 'manual', tool: 'security-agent',

@@ -165,6 +165,8 @@ export interface RunFinding {
   /** null: this run type gives none (code review and pentest findings carry no remediation text). */
   remediation: string | null;
   evidence: string[];
+  /** Threat models: the affected components and assets (saved since 1.20.1). */
+  assets: string[];
   finding_id: string | null;
 }
 
@@ -219,7 +221,7 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
     cwe: f.cwe ?? null, stride: f.stride || [], confidence: f.confidence ?? null,
     description: fullText(f),
     remediation: type === 'threat-model' && f.recommendation ? f.recommendation : null,
-    evidence: f.evidence || [], finding_id: f.finding_id || f.threat_id || null,
+    evidence: f.evidence || [], assets: f.assets || [], finding_id: f.finding_id || f.threat_id || null,
   }));
   const where = shellWord(tilde(repo.path, home));
   const job = shellWord(jobKey(r)!);

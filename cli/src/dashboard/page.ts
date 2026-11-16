@@ -15,6 +15,7 @@ import { SETTINGS_SCRIPT, SETTINGS_STYLE } from './settings-page.js';
 import { SECURITY_SCRIPT, SECURITY_STYLE } from './security-page.js';
 import { SECURITY_RUNS_SCRIPT, SECURITY_RUNS_STYLE } from './security-runs-page.js';
 import { ACCOUNTGUARD_SCRIPT, ACCOUNTGUARD_STYLE } from './accountguard-page.js';
+import { MARKDOWN_SCRIPT } from './markdown-lite.js';
 import { REPO_SCRIPT, REPO_STYLE } from './repo-page.js';
 import { getAssetPath } from '../utils/root.js';
 
@@ -588,6 +589,7 @@ async function render() {
   return data;
 }
 ${SETUP_SCRIPT}
+${MARKDOWN_SCRIPT}
 ${SECURITY_RUNS_SCRIPT}
 ${SECURITY_SCRIPT}
 ${ACCOUNTGUARD_SCRIPT}
