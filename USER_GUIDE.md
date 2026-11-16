@@ -497,10 +497,10 @@ them read the same local data as `prism-cli dashboard` and make no AWS calls.
 
 | Feature | VS Code family (VS Code, Kiro IDE, Cursor) | Kiro Crew | Claude Code plugin |
 |---|---|---|---|
-| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page (the dashboard's own pages) | Yes: `/prism:findings`, and a summary of the branch's open findings at session start |
+| Codewatch findings | Yes: Problems markers, status bar counts, PRISM panel | Yes: PRISM sidebar page | Yes: `/prism:findings`, and a summary of the branch's open findings at session start |
 | Open a review report | Yes: quick fix and panel button | Yes: on the page (sandboxed) | Yes: `/prism:report` |
 | AI spend | Yes: status bar (today), panel (today, month, top models) | Yes: on the page | Yes: `/prism:spend`, and the [status line](#claude-code-status-line) |
-| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page (Settings), with the dashboard's Run buttons and confirm dialogs | Yes: `/prism` lists failing items with fix commands |
+| Setup checklist | Yes: panel, with fix commands to copy | Yes: on the page | Yes: `/prism` lists failing items with fix commands |
 | MCP tools (`prism-cli mcp`) | No, not from the extension (Kiro IDE can add the MCP server in its own settings) | Yes: the `prism` MCP server, plus the `prism-fix-findings` skill | Yes: the plugin's `prism` MCP server |
 | Agent harness loop | Kiro CLI V3 / Kiro IDE: hooks from `prism-cli enable agent-hooks --client kiro` (push gate on, finish gate opt-in, one fix round per prompt; [Kiro CLI and Kiro IDE](#kiro-cli-and-kiro-ide)). Not in the extension | No hooks (Kiro Crew does not load project hooks): the `prism-fix-findings` skill runs `prism_review` | Yes: push gate on by default (blocks secrets and hook tampering, reports other findings); finish gate opt-in ([Agent Harness Loop](#agent-harness-loop)) |
 | Notifications / digest | No | Yes: a daily digest, only when something changed | Planned |
