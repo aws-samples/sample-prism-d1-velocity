@@ -403,13 +403,16 @@ export async function writeGateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache
 /** The repos the last full answer listed, per deps: the only ids the light gate re-check accepts. */
 const KNOWN = new WeakMap<object, Map<string, ScanRepo>>();
 
+/** A repo the last full answer named, by its id; undefined for any other id. Local only. */
+export const knownRepo = (d: object, id: string | null): ScanRepo | undefined => (id && /^[a-f0-9]{16}$/.test(id) ? KNOWN.get(d)?.get(id) : undefined);
+
 /**
  * GET /api/security-agent/gate?repo=<id>: the gate for one repo the last full
  * answer named, with no git, no result-file read and no repo scan. null when
  * the id is not one of them (the page then loads the full answer).
  */
 export function securityAgentGate(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, id: string | null): { repo: string; gate: Gate } | null {
-  const r = id && /^[a-f0-9]{16}$/.test(id) ? KNOWN.get(d)?.get(id) : undefined;
+  const r = knownRepo(d, id);
   return r ? { repo: r.id, gate: gateIn(d, r.path, r.name, true) } : null;
 }
 
@@ -421,7 +424,7 @@ export function securityAgentGate(d: Pick<SecurityAgentDeps, 'identity' | 'cache
  * no AWS call. null when the id is not one of them.
  */
 export function securityAgentScope(d: Pick<SecurityAgentDeps, 'identity' | 'cache'>, id: string | null): { repo: string; scope: BranchScope } | null {
-  const r = id && /^[a-f0-9]{16}$/.test(id) ? KNOWN.get(d)?.get(id) : undefined;
+  const r = knownRepo(d, id);
   return r ? { repo: r.id, scope: branchScope((a) => run('git', a), r.path) } : null;
 }
 
