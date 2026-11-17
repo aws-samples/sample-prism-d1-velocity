@@ -33,7 +33,7 @@ Kiro Crew. It adds:
   which command is missing, when one of the three is not found.
 - [prism-cli](https://www.npmjs.com/package/@prism-d1/cli) 1.21.3 or later. An App Store install
   sets it up (see [What the install does](#what-the-install-does)); otherwise run
-  `npm install -g @prism-d1/cli@latest`. The page draws `prism-cli dashboard --serve-stdio` and
+  `npm install -g @prism-d1/cli@^1.21.3`. The page draws `prism-cli dashboard --serve-stdio` and
   checks pending Security Agent runs by itself from 1.21.3; with an older or missing prism-cli it
   shows only **Update prism-cli to 1.21.3 or later** and that command.
 

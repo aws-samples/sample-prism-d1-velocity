@@ -13,7 +13,8 @@
 export const API = '/api/apps/prism';
 /** The minimum version comes from the gateway's answer (ui_bridge.MIN_CLI_VERSION), not from here. */
 export const updateTitle = (min) => (/^\d+\.\d+\.\d+$/.test(str(min)) ? `Update prism-cli to ${min} or later` : 'Update prism-cli');
-export const UPDATE_CMD = 'npm install -g @prism-d1/cli@latest';
+/** The gateway sends the command (ui_bridge.UPDATE_CMD); this is only for an answer without one. */
+export const updateCmd = (min) => `npm install -g @prism-d1/cli@^${/^\d+\.\d+\.\d+$/.test(str(min)) ? min : '1'}`;
 const BLOB_URL_TTL_MS = 10 * 1000;
 /** POST /api/action answers 202 when an action started (actions.ts ActionRunner.start). */
 const ACTION_STARTED = 202;
@@ -96,8 +97,8 @@ export function renderUpdate(h, u, ui) {
     u.reason ? h('p', { style: S.muted }, str(u.reason)) : null,
     h('p', null, 'Run this in a terminal on the Kiro Crew machine, then reload this page:'),
     h('p', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-      h('code', { style: S.code }, str(u.command || UPDATE_CMD)),
-      h('button', { type: 'button', style: S.btn, onClick: () => ui.copy(str(u.command || UPDATE_CMD)) }, ui.copied ? 'Copied' : 'Copy'),
+      h('code', { style: S.code }, str(u.command || updateCmd(u.min))),
+      h('button', { type: 'button', style: S.btn, onClick: () => ui.copy(str(u.command || updateCmd(u.min))) }, ui.copied ? 'Copied' : 'Copy'),
       h('button', { type: 'button', style: S.btn, onClick: ui.reload }, 'Check again')));
 }
 

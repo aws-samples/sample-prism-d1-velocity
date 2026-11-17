@@ -43,7 +43,9 @@ MIN_UI_API = 1
 #: and the README say the same and that cli/package.json is not older (the store installs from main).
 MIN_CLI_VERSION = (1, 21, 3)
 MIN_CLI_TEXT = ".".join(map(str, MIN_CLI_VERSION))
-UPDATE_CMD = "npm install -g @prism-d1/cli@latest"
+#: The same range the install script installs: the newest release of this major, never a 2.x.
+CLI_SPEC = f"@prism-d1/cli@^{MIN_CLI_TEXT}"
+UPDATE_CMD = f"npm install -g {CLI_SPEC}"
 UPDATE_TEXT = f"Update prism-cli to {MIN_CLI_TEXT} or later: {UPDATE_CMD}"
 HELLO_TIMEOUT_S = 15
 REQUEST_TIMEOUT_S = 125

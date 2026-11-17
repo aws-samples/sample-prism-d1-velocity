@@ -51,7 +51,7 @@ class ChecksTest(unittest.TestCase):
             with self.assertRaises(ub.BridgeError) as e:
                 ub.check_hello(bad)
             self.assertFalse(e.exception.update)
-        self.assertEqual(ub.UPDATE_TEXT, "Update prism-cli to 1.21.3 or later: npm install -g @prism-d1/cli@latest")
+        self.assertEqual(ub.UPDATE_TEXT, "Update prism-cli to 1.21.3 or later: npm install -g @prism-d1/cli@^1.21.3")
 
     def test_requests_only_listed_routes_and_plain_shapes(self):
         self.assertEqual(ub.check_request("get", "/api/data", {"fresh": "1"}, None, HELLO), {"op": "get", "path": "/api/data", "query": {"fresh": "1"}})

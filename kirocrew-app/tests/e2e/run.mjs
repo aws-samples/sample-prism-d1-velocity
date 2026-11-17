@@ -285,7 +285,7 @@ add('K12', 'clicking every kind of in-app link (top nav, a Settings tab, a repo,
 add('K11', 'on_shutdown stops the child and removes its pid file', C.K11?.stopped && !C.K11.pidFile, C.K11);
 add('aws', 'the fake aws saw read-only calls only', Array.isArray(C.aws) && C.aws.every((x) => READ_ONLY_AWS.test(x)), C.aws);
 if (process.env.PRISM_CLI_OLD) add('K10', 'an older prism-cli: only "Update prism-cli to 1.21.3 or later" and the npm command, no frame',
-  C.K10 && /Update prism-cli to 1\.21\.3 or later/.test(C.K10.text) && /npm install -g @prism-d1\/cli@latest/.test(C.K10.text) && !C.K10.iframe, C.K10);
+  C.K10 && /Update prism-cli to 1\.21\.3 or later/.test(C.K10.text) && /npm install -g @prism-d1\/cli@\^1\.21\.3/.test(C.K10.text) && !C.K10.iframe, C.K10);
 R.verdicts = v;
 writeFileSync(join(OUT, 'results.json'), JSON.stringify(R, null, 2));
 for (const x of v) console.log((x.pass ? 'PASS ' : 'FAIL ') + x.id + ' ' + x.name + (x.pass ? '' : ': ' + x.why));

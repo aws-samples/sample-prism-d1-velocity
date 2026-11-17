@@ -21,13 +21,9 @@ from typing import List, Mapping, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prism_cli_path import cli_env, resolve_cli  # noqa: E402
-from ui_bridge import MIN_CLI_VERSION, version_tuple  # noqa: E402
+from ui_bridge import CLI_SPEC as SPEC, MIN_CLI_TEXT as MIN_TEXT, MIN_CLI_VERSION, UPDATE_CMD as HAND_CMD, version_tuple  # noqa: E402
 
-PACKAGE = "@prism-d1/cli"
 NODE_MIN = (22, 0, 0)
-MIN_TEXT = ".".join(map(str, MIN_CLI_VERSION))
-SPEC = f"{PACKAGE}@^{MIN_TEXT}"
-HAND_CMD = f"npm install -g {SPEC}"
 VERSION_TIMEOUT_S = 20
 #: Well under the 300 s onInstall limit, so a stalled npm ends with our message, not Crew's kill.
 NPM_TIMEOUT_S = 240
@@ -38,12 +34,14 @@ def say(msg: str) -> None:
 
 
 def run(argv: List[str], env: Mapping[str, str], timeout: int) -> Tuple[int, str]:
-    """(exit code, stdout+stderr); 127 when the program is missing, 124 on a timeout."""
+    """(exit code, stdout+stderr); 127 when the program is missing, 126 when it cannot run, 124 on a timeout."""
     try:
         p = subprocess.run(argv, env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, timeout=timeout)
     except FileNotFoundError:
         return 127, f"{argv[0]}: not found"
+    except OSError as e:  # PermissionError (no exec bit), ENOEXEC, ...
+        return 126, f"{argv[0]}: cannot run it ({e.strerror or e})"
     except subprocess.TimeoutExpired:
         return 124, f"{' '.join(argv)} did not finish in {timeout} s"
     return p.returncode, p.stdout or ""
@@ -73,6 +71,8 @@ def main(env: Mapping[str, str] = os.environ) -> int:
     code, out = run(["node", "--version"], env, VERSION_TIMEOUT_S)
     node = version_tuple(out.strip().lstrip("v")) if code == 0 else None
     if not node:
+        if code == 126:
+            return fail(f"{out.strip()} (prism-cli needs Node.js 22 or later)")
         return fail("node was not found on PATH (prism-cli needs Node.js 22 or later)")
     if node < NODE_MIN:
         return fail(f"node {'.'.join(map(str, node))} is too old: prism-cli needs Node.js 22 or later; update Node.js first")

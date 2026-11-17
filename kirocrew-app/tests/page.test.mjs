@@ -1,7 +1,7 @@
 // The page's pure parts, with a stub createElement; run with `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bundleOutdated, checkMessage, errorBody, relay, renderReport, renderUpdate, srcdocFor, UPDATE_CMD, withReportCsp } from '../ui/index.mjs';
+import { bundleOutdated, checkMessage, errorBody, relay, renderReport, renderUpdate, srcdocFor, updateCmd, withReportCsp } from '../ui/index.mjs';
 
 const h = (tag, props, ...children) => ({ tag, props: props || {}, children: children.flat() });
 const walk = (n, f) => { if (n && typeof n === 'object') { f(n); n.children.forEach((c) => walk(c, f)); } };
@@ -49,14 +49,16 @@ test('relay: reads by GET with the query as JSON, actions by POST, an SDK error 
 
 test('update page: the title, the reason, the npm command and a Copy button, nothing else', () => {
   const copied = [];
-  const tree = renderUpdate(h, { reason: 'prism-cli was not found (not on PATH).', command: UPDATE_CMD, min: '1.21.3' }, { copied: false, copy: (t) => copied.push(t), reload() {} });
+  const tree = renderUpdate(h, { reason: 'prism-cli was not found (not on PATH).', command: 'npm install -g @prism-d1/cli@^1.21.3', min: '1.21.3' }, { copied: false, copy: (t) => copied.push(t), reload() {} });
   const t = texts(tree);
   assert.ok(t.includes('Update prism-cli to 1.21.3 or later'), 'the minimum comes from the gateway answer');
-  assert.ok(texts(renderUpdate(h, { command: UPDATE_CMD, min: '<b>' }, { copied: false, copy() {}, reload() {} })).includes('Update prism-cli'), 'no version, or a garbled one: a plain title');
-  assert.ok(t.includes('npm install -g @prism-d1/cli@latest'));
+  assert.ok(texts(renderUpdate(h, { min: '<b>' }, { copied: false, copy() {}, reload() {} })).includes('Update prism-cli'), 'no version, or a garbled one: a plain title');
+  assert.ok(t.includes('npm install -g @prism-d1/cli@^1.21.3'), 'the range the install script uses, never @latest');
   assert.ok(t.includes('prism-cli was not found (not on PATH).'));
   walk(tree, (n) => { if (n.tag === 'button' && n.children.includes('Copy')) n.props.onClick(); });
-  assert.deepEqual(copied, [UPDATE_CMD]);
+  assert.deepEqual(copied, ['npm install -g @prism-d1/cli@^1.21.3']);
+  assert.equal(updateCmd('1.21.3'), 'npm install -g @prism-d1/cli@^1.21.3');
+  assert.equal(updateCmd(''), 'npm install -g @prism-d1/cli@^1', 'no minimum in the answer: still major 1, not @latest');
   walk(tree, (n) => assert.notEqual(n.tag, 'iframe'));
 });
 
