@@ -191,7 +191,7 @@ function securityRunsCard() {
 
 /** The Security Agent page's full table: filters, 25 rows, Show more. */
 const allRunsCard = () => runsTable({ id: 'security-runs-all', limit: 25, step: 25, filters: true, title: 'Security runs',
-  sub: 'every repo, newest first; from each repo\\'s .prism/results; a pending run is checked with AWS (read-only) while this page is open' });
+  sub: 'every repo, newest first; from each repo\\'s .prism/results; a pending run is checked with AWS while this page is open (read-only, except that a finished pentest\\'s environment is torn down)' });
 
 /** The repo page's table: that repo only. */
 const repoRunsCard = (repoId) => runsTable({ repoId, limit: 10, step: 25, filters: true, title: 'Security runs', sub: 'this repo, newest first' });
@@ -240,10 +240,11 @@ let RUN_DETAIL = null, RUN_KEY = null, RUN_FETCH = null, RUN_SHOWN = null;
 /** What the person chose on the run's page (severity filter, open findings): kept across a refresh's repaint, dropped on leaving. */
 let RUN_UI = { key: null, pick: '', open: null, overview: false };
 /**
- * Only a run without a verdict yet can change under the page: its copy is read again on every draw
- * (route entry, the minute refresh). A finished run and a server's not found (404) are final.
+ * Only a run without a verdict yet, or one whose environment is still up (Clean up changes it), can change under
+ * the page: its copy is read again on every draw (route entry, the minute refresh). Any other finished run and a
+ * server's not found (404) are final.
  */
-const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict');
+const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict' || !!d.cleanup);
 /** Leaving the drill-down (the router calls this) drops its copy, so coming back always reads the run again. */
 function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null, overview: false }; }
 
@@ -272,8 +273,9 @@ async function drawRunDetail(root, route) {
       el('p', { class: 'fix' }, txt(r.json && r.json.error) || 'The dashboard did not answer.'), el('div', { class: 'srow-ctl' }, retry, el('a', { href: '#security' }, 'Back to Security runs'))));
     return;
   }
-  // Nothing changed (a running job on the minute refresh): leave the page exactly as it is.
-  if (cached && RUN_SHOWN === key && JSON.stringify(cached) === JSON.stringify(r.json)) return;
+  // Nothing changed (a running job on the minute refresh): leave the page exactly as it is. A Clean up card also
+  // depends on the action list and the Security Agent answer, which load on their own: repaint it.
+  if (cached && RUN_SHOWN === key && !cached.cleanup && JSON.stringify(cached) === JSON.stringify(r.json)) return;
   RUN_KEY = key; RUN_DETAIL = r.json;
   paintRunDetail(root, RUN_DETAIL, key);
 }
@@ -314,10 +316,13 @@ function runDetail(d) {
   const out = [crumbs, head];
   if (d.overview) out.push(runOverview(d));
   if (r.status === 'failed') out.push(el('section', { class: 'card' }, el('h2', {}, 'Why there is no verdict'), el('p', {}, txt(r.reason) || 'The job did not complete.')));
+  if (d.cleanup) out.push(runCleanupCard(d));
   if (r.status === 'running' || r.status === 'noverdict') {
     const e = runCheckErr(r), c = r.check;
     out.push(el('section', { class: 'card', 'data-run-check': c ? txt(c.state) : null }, el('h2', {}, r.status === 'running' ? 'Still running' : 'No verdict fetched yet'),
-      c && c.state === 'running' && c.at ? el('p', {}, 'The dashboard checked the job with AWS ' + ago(c.at) + ' (read-only): still running. It checks again about every minute while this page is open, and saves the findings here when the job has finished.') : null,
+      c && c.state === 'running' && c.at ? el('p', {}, r.type === 'pentest'
+        ? 'The dashboard checked the job with AWS ' + ago(c.at) + ' (prism-cli security pentest --status): still running. It checks again about every 5 minutes while a dashboard page is open; when the job has finished, it saves the findings here and tears the environment down.'
+        : 'The dashboard checked the job with AWS ' + ago(c.at) + ' (read-only): still running. It checks again about every minute while this page is open, and saves the findings here when the job has finished.') : null,
       e ? el('p', {}, 'The dashboard could not check the job with AWS: ' + txt(e.reason)) : null,
       el('p', { class: 'fix' }, (r.status === 'running' ? 'Findings appear here when the job finishes. ' : 'The job most likely finished. ') + 'Fetch them on the ', el('a', { href: '#security/' + txt(r.repo_id) }, 'Security Agent page'), ', or run the command below.')));
   }
@@ -327,6 +332,17 @@ function runDetail(d) {
     el('li', {}, el('b', {}, 'Same run in a terminal: '), copyButton(txt(d.cli))),
     el('li', {}, el('b', {}, 'Security Agent console: '), el('span', { class: 'fix' }, 'prism-cli has no direct link to this run yet. Open the Security Agent web application and find the job id above.')))));
   return out;
+}
+
+/** A pentest whose environment is still up: why (the teardown's reason, redacted by the server), Clean up, and the command for a terminal. */
+function runCleanupCard(d) {
+  const c = d.cleanup, failed = c.kind === 'teardown_failed';
+  return el('section', { class: 'card', 'data-run-cleanup': txt(c.kind) }, el('h2', {}, failed ? 'Teardown failed' : 'Environment still up'),
+    el('p', {}, failed ? 'The last teardown left this run\\'s environment up. It may cost money until it is removed.'
+      : 'The job has finished, but this run still records its environment (started with --keep, or the app never became healthy). It may cost money until it is removed.'),
+    c.reason ? el('p', { class: 'fix', 'data-cleanup-reason': '' }, 'Reason: ' + txt(c.reason)) : null,
+    el('div', { class: 'srow-ctl' }, saCleanupButton(d.run, c)),
+    c.command ? el('div', {}, el('div', { class: 'fix' }, 'Or in a terminal:'), copyOnly(txt(c.command), 'AWS write')) : null);
 }
 
 /**

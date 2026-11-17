@@ -9,7 +9,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { makeResult, readResultEntries, writeResult, type PrismResult } from '../src/codewatch/results.js';
-import { CHECK_EVERY_MS, checkArgs, checkReason, MAX_IN_FLIGHT, SecurityAutoCheck, type CheckRun, type PendingJob } from '../src/dashboard/security-autocheck.js';
+import { CHECK_EVERY_MS, checkArgs, checkReason, MAX_IN_FLIGHT, PENTEST_CHECK_EVERY_MS, SecurityAutoCheck, type CheckRun, type PendingJob } from '../src/dashboard/security-autocheck.js';
 import { collectSecurityRuns } from '../src/dashboard/security-runs.js';
 import { collectSecurity } from '../src/dashboard/security.js';
 import { dispatch } from '../src/dashboard/stdio.js';
@@ -160,13 +160,13 @@ test('bounded: one check in flight per job, MAX_IN_FLIGHT overall, none while an
 
 test('the fetch command per run type; a pentest that never started a job is not checked', async () => {
   assert.deepEqual(checkArgs('threat-model', 'tm-1'), ['security', 'threats', '--job', 'tm-1']);
-  assert.deepEqual(checkArgs('pentest', 'ptj-1'), ['security', 'findings', '--pentest', 'ptj-1']);
+  assert.deepEqual(checkArgs('pentest', 'ptj-1'), ['security', 'pentest', '--status', '--job', 'ptj-1']);
   const pt = (job: string) => makeResult({ kind: 'security-pentest', hook: 'manual', tool: 'security-agent', status: 'pending', commit: 'abc', branch: 'main', started_at: hoursAgo(1), finished_at: hoursAgo(1),
     pentest: { job_id: job, stack: 'PrismPentest-demo', pentest_id: 'pt', agent_space_id: 'as', agent_space_dedicated: true, region: 'us-west-2', account: ACCOUNT, target_host: 'app.internal', job_status: 'RUNNING', counts: {} } } as any);
   const r = rig([pt(''), pt('ptj-1')]);
   try {
     await r.c.kick();
-    assert.deepEqual(r.calls.map((x) => x.args), [['security', 'findings', '--pentest', 'ptj-1']]);
+    assert.deepEqual(r.calls.map((x) => x.args), [['security', 'pentest', '--status', '--job', 'ptj-1']]);
   } finally { r.cleanup(); }
 });
 
@@ -264,4 +264,79 @@ test('a result file that cannot be read after a check, or before one, is a faile
     assert.match(c.stateOf('code-review', 'job-1')!.reason!, /could not read the repo's results: EACCES/);
     assert.deepEqual(await c.kick(), { pending: 1, checking: 0, due: 0, generation: 1 });
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- 1.21.6: pentests through security pentest --status
+
+function pentestRecord(job: string, status: PrismResult['status'] = 'pending', started = hoursAgo(1)): PrismResult {
+  return makeResult({ kind: 'security-pentest', hook: 'manual', tool: 'security-agent', status, commit: 'abc', branch: 'main', started_at: started, finished_at: started,
+    pentest: { job_id: job, stack: status === 'pending' ? `PrismPentest-${job}` : null, pentest_id: 'pt', agent_space_id: 'as', agent_space_dedicated: true, region: 'us-west-2', account: ACCOUNT, target_host: 'app.internal', job_status: status === 'pending' ? 'IN_PROGRESS' : 'COMPLETED', counts: {} } } as any);
+}
+
+test('pentest: checked with pentest --status --job (an AWS write once finished), every 5 min; exit 0 while pending reads running; torn down once', async () => {
+  const r = rig([pentestRecord('ptj-1')]);
+  try {
+    await r.c.kick();
+    assert.deepEqual(r.calls.map((x) => x.args), [['security', 'pentest', '--status', '--job', 'ptj-1']]);
+    assert.equal(r.c.pentestRunning(), true, 'Start and Clean up wait while it runs');
+    // Still running: --status prints "Still running" and exits 0; the record stays pending.
+    r.calls[0].answer({ code: 0, output: 'Now:         IN_PROGRESS (PENTEST)\nStill running; check back later.', timedOut: false });
+    await r.settle();
+    assert.equal(r.c.pentestRunning(), false);
+    assert.equal(r.c.stateOf('pentest', 'ptj-1')?.state, 'running');
+    assert.equal(r.c.stateOf('pentest', 'ptj-1')?.command, 'prism-cli security pentest --status --job ptj-1');
+    r.tick(CHECK_EVERY_MS);
+    await r.c.kick();
+    assert.equal(r.calls.length, 1, 'a pentest is not checked every minute');
+    r.tick(PENTEST_CHECK_EVERY_MS - CHECK_EVERY_MS);
+    await r.c.kick();
+    assert.equal(r.calls.length, 2, 'checked again after 5 min');
+    // The job finished: --status saves the verdict (and tears the environment down) in place; the run leaves the queue.
+    writeResult(r.root, pentestRecord('ptj-1', 'findings'), r.ids[0]);
+    r.calls[1].answer({ code: 0, output: 'The job has finished; tearing the environment down:\nEnvironment torn down; the result record is kept.', timedOut: false });
+    await r.settle();
+    assert.equal(r.c.stateOf('pentest', 'ptj-1'), null);
+    r.tick(PENTEST_CHECK_EVERY_MS * 10);
+    assert.deepEqual(await r.c.kick(), { pending: 0, checking: 0, due: 0, generation: r.c.generation });
+    assert.equal(r.calls.length, 2, 'never run again: the teardown happens once');
+  } finally { r.cleanup(); }
+});
+
+test('pentest: one --status at a time; code reviews and threat models keep their read-only fetch and run beside it; none while an action runs', async () => {
+  const tm = makeResult({ kind: 'security-threat-model', hook: 'manual', tool: 'security-agent', status: 'pending', commit: 'abc', branch: 'main', started_at: hoursAgo(1), finished_at: hoursAgo(1),
+    threat_model: { job_id: 'tm-1', threat_model_id: 'tm', agent_space_id: 'as', region: 'us-west-2', account: ACCOUNT, job_status: 'IN_PROGRESS', counts: {}, stride_counts: {}, scope_docs: [], system_overview: '' } } as any);
+  const r = rig([pentestRecord('ptj-1', 'pending', hoursAgo(2)), pentestRecord('ptj-2', 'pending', hoursAgo(1.5)), review('job-1', hoursAgo(1)), tm]);
+  try {
+    r.setBusy(true);
+    assert.equal((await r.c.kick()).due, 4);
+    assert.equal(r.calls.length, 0, 'an action holds the lock: nothing starts');
+    r.setBusy(false);
+    await r.c.kick();
+    const args = r.calls.map((x) => x.args.join(' '));
+    assert.equal(args.filter((a) => a.startsWith('security pentest --status')).length, 1, 'never two pentest checks at once');
+    assert.ok(args.length <= MAX_IN_FLIGHT);
+    // Whatever runs for a review or a threat model is its read-only fetch, never pentest --status.
+    for (const k of ['code-review', 'threat-model'] as const) assert.ok(!checkArgs(k, 'x').includes('pentest'));
+    r.calls[0].answer({ code: 0, output: 'Still running', timedOut: false });
+    await r.settle();
+    await r.c.kick();
+    const later = r.calls.slice(1).map((x) => x.args.join(' '));
+    assert.equal(later.filter((a) => a.startsWith('security pentest --status')).length <= 1, true);
+  } finally { r.cleanup(); }
+});
+
+test('pentest: a check that cannot find the job in this account fails visibly (backoff), and a timeout names 90 min', async () => {
+  const r = rig([pentestRecord('ptj-1')]);
+  try {
+    await r.c.kick();
+    r.calls[0].answer({ code: 1, output: `Error: no pentest record for job ptj-1 in account ${ACCOUNT}, region us-west-2.`, timedOut: false });
+    await r.settle();
+    const st = r.c.stateOf('pentest', 'ptj-1')!;
+    assert.equal(st.state, 'error');
+    assert.equal(st.reason, 'no pentest record for job ptj-1 in account ••••3333, region us-west-2.');
+    r.tick(PENTEST_CHECK_EVERY_MS);
+    await r.c.kick();
+    assert.equal(r.calls.length, 1, 'backing off: 5 min doubled');
+    assert.match(checkReason('', '/h', true, 'pentest'), /did not finish in 90 min/);
+  } finally { r.cleanup(); }
 });

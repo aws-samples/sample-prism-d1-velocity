@@ -1,19 +1,30 @@
 /**
  * Auto-check of pending Security Agent runs: while a code review, threat model
  * or pentest is recorded as pending in a repo's .prism/results/, the dashboard
- * asks AWS about that job, read-only, by running the same fetch command a user
- * would (`security findings --job`, `security threats --job`, `security
- * findings --pentest <job>`), without --wait, in that repo, with the profile
- * and region the server resolves there (the actions' awsArgs: AWS_PROFILE
- * beats a saved aws connect). So the account and setup checks, the result
- * file it completes in place and its redaction are exactly the command's own;
- * this module only decides when to run it and reads back what it wrote.
+ * asks AWS about that job by running the same command a user would, without
+ * --wait, in that repo, with the profile and region the server resolves there
+ * (the actions' awsArgs: AWS_PROFILE beats a saved aws connect). So the account
+ * and setup checks, the result file it completes in place and its redaction
+ * are exactly the command's own; this module only decides when to run it and
+ * reads back what it wrote.
+ *
+ *   - code review: `security findings --job <job>` (read-only);
+ *   - threat model: `security threats --job <job>` (read-only);
+ *   - pentest: `security pentest --status --job <job>`. This one writes to AWS:
+ *     once the job has finished it saves the findings and tears down the
+ *     environment that run recorded (its own stack, by name; never another
+ *     run's), unless the run was started with --keep. The command checks the
+ *     account itself (sts get-caller-identity) and only finds a record made in
+ *     the account and region it runs in; a job it cannot find there exits 1 and
+ *     shows as a failed check. One pentest check at a time, every
+ *     PENTEST_CHECK_EVERY_MS, stopped after PENTEST_CHECK_TIMEOUT_MS.
  *
  * Driven by the open page: GET /api/security-check (page.ts, after each load
  * of the data and while a check runs) calls kick(). Nothing runs when nothing
  * is pending, or in a static snapshot (no server). Bounded: one check in flight
- * per job, MAX_IN_FLIGHT overall, a job checked again CHECK_EVERY_MS after AWS
- * said it is still running, and with a doubling backoff after a failed check.
+ * per job, MAX_IN_FLIGHT overall, no check while a dashboard action holds the
+ * lock, a job checked again its interval after AWS said it is still running,
+ * and with a doubling backoff after a failed check.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { readResultEntries, type ResultEntry } from '../codewatch/results.js';
@@ -41,20 +52,30 @@ export const MAX_BACKOFF_MS = 30 * 60_000;
 export const MAX_IN_FLIGHT = 2;
 /** A check is stopped after this long (the fetch actions' own timeout). */
 export const CHECK_TIMEOUT_MS = 3 * 60_000;
+/** A pentest runs for hours (the reference runs took about 2 h 50 min): its job is checked every 5 min. */
+export const PENTEST_CHECK_EVERY_MS = 5 * 60_000;
+/**
+ * A pentest check that finds the job finished tears the environment down: up to 10 min for the agent's network
+ * interfaces, up to 30 min for the stack deletion, then both once more (pentest.ts). Stopping it earlier would leave
+ * the stack half deleted with no teardown_failed marker.
+ */
+export const PENTEST_CHECK_TIMEOUT_MS = 90 * 60_000;
+const everyMs = (t: RunType) => (t === 'pentest' ? PENTEST_CHECK_EVERY_MS : CHECK_EVERY_MS);
+export const checkTimeoutMs = (t: RunType) => (t === 'pentest' ? PENTEST_CHECK_TIMEOUT_MS : CHECK_TIMEOUT_MS);
 const MAX_OUTPUT = 64 * 1024;
 const MAX_REASON = 300;
-/** The fetch commands' own --job rule. */
-const FETCH_JOB = /^[A-Za-z0-9_-]{1,128}$/;
+/** The fetch commands' own --job rule, with no leading "-" (it follows --job on the command line). */
+const FETCH_JOB = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/;
 
 export interface PendingJob { key: string; type: RunType; jobId: string; repo: ScanRepo }
 
 export const checkKey = (type: RunType, jobId: string) => `${type}:${jobId}`;
 
-/** The fetch command's arguments for one job (after the CLI entry; the server appends --profile/--region). */
+/** The check command's arguments for one job (after the CLI entry; the server appends --profile/--region). */
 export function checkArgs(type: RunType, jobId: string): string[] {
   return type === 'code-review' ? ['security', 'findings', '--job', jobId]
     : type === 'threat-model' ? ['security', 'threats', '--job', jobId]
-      : ['security', 'findings', '--pentest', jobId];
+      : ['security', 'pentest', '--status', '--job', jobId];
 }
 
 /** The job id the fetch command takes; null when the record has none it accepts (a pentest that never started a job). */
@@ -77,8 +98,8 @@ export function pendingJobsIn(repos: ScanRepo[], read: (root: string) => ResultE
 }
 
 /** The reason a failed check gives: the command's last `Error:` line (else its last line), redacted, home as ~. */
-export function checkReason(output: string, home: string, timedOut: boolean): string {
-  if (timedOut) return `the check did not finish in ${Math.round(CHECK_TIMEOUT_MS / 60_000)} min`;
+export function checkReason(output: string, home: string, timedOut: boolean, type: RunType = 'code-review'): string {
+  if (timedOut) return `the check did not finish in ${Math.round(checkTimeoutMs(type) / 60_000)} min`;
   const lines = output.split('\n').map((l) => l.trim()).filter(Boolean);
   const err = [...lines].reverse().find((l) => l.startsWith('Error: '));
   const line = (err ?? lines[lines.length - 1] ?? 'the check failed with no output').replace(/^Error:\s*/, '');
@@ -121,6 +142,11 @@ export class SecurityAutoCheck {
 
   private changed() { this.generation++; this.d.onChange(); }
 
+  /** True while a pentest check runs: it may be tearing an environment down, so the pentest actions wait for it. */
+  pentestRunning(): boolean {
+    return [...this.jobs.values()].some((e) => e.inFlight && e.job.type === 'pentest');
+  }
+
   /** Starts the checks that are due (never more than one per job), and answers at once. */
   async kick(): Promise<KickAnswer> {
     let pending: PendingJob[];
@@ -132,6 +158,7 @@ export class SecurityAutoCheck {
     for (const k of [...this.jobs.keys()]) if (!keys.has(k) && !this.jobs.get(k)!.inFlight) this.jobs.delete(k);
     const now = this.now();
     let inFlight = [...this.jobs.values()].filter((e) => e.inFlight).length, due = 0;
+    let pentests = this.pentestRunning();
     for (const job of pending) {
       let e = this.jobs.get(job.key);
       if (!e) {
@@ -140,8 +167,10 @@ export class SecurityAutoCheck {
       }
       e.job = job;
       if (e.inFlight || now < e.nextAt) continue;
-      if (inFlight >= MAX_IN_FLIGHT || this.d.busy?.()) { due++; continue; }
+      // A pentest check can write to AWS (a teardown): one at a time.
+      if (inFlight >= MAX_IN_FLIGHT || this.d.busy?.() || (job.type === 'pentest' && pentests)) { due++; continue; }
       inFlight++;
+      if (job.type === 'pentest') pentests = true;
       this.start(e);
     }
     return { pending: pending.length, checking: inFlight, due, generation: this.generation };
@@ -162,16 +191,17 @@ export class SecurityAutoCheck {
       }
       if (!still) { this.jobs.delete(job.key); this.changed(); return; }
       const before = e.state.state, at = new Date(now).toISOString();
-      if (r.code === EXIT_PENDING) {
+      // pentest --status exits 0 while the job runs (it prints "Still running"); the record still being pending says so.
+      if (r.code === EXIT_PENDING || (job.type === 'pentest' && r.code === 0 && !r.timedOut)) {
         e.failures = 0;
-        e.nextAt = now + CHECK_EVERY_MS;
+        e.nextAt = now + everyMs(job.type);
         e.state = { ...e.state, state: 'running', at, reason: null };
         if (before !== 'running') this.changed();
         return;
       }
       e.failures++;
-      e.nextAt = now + Math.min(CHECK_EVERY_MS * 2 ** e.failures, MAX_BACKOFF_MS);
-      const reason = checkReason(r.output, this.d.home, r.timedOut);
+      e.nextAt = now + Math.min(everyMs(job.type) * 2 ** e.failures, MAX_BACKOFF_MS);
+      const reason = checkReason(r.output, this.d.home, r.timedOut, job.type);
       const same = before === 'error' && e.state.reason === reason;
       e.state = { ...e.state, state: 'error', at, reason };
       if (!same) this.changed();
@@ -183,7 +213,7 @@ export class SecurityAutoCheck {
 /**
  * The default runner: this CLI's own binary with fixed arguments, the job id
  * (checked by FETCH_JOB) and the server's --profile/--region for the repo; in
- * the repo, no shell, stdin closed, stopped after CHECK_TIMEOUT_MS. `stop()`
+ * the repo, no shell, stdin closed, stopped after checkTimeoutMs. `stop()`
  * ends every running check (the stdio host went away).
  */
 export function spawnCheck(o: { execPath: string; entry: string; awsArgs: (repo: ScanRepo) => string[]; spawn?: SpawnFn }) {
@@ -203,7 +233,7 @@ export function spawnCheck(o: { execPath: string; entry: string; awsArgs: (repo:
       timedOut = true;
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 5000).unref();
-    }, CHECK_TIMEOUT_MS);
+    }, checkTimeoutMs(job.type));
     timer.unref();
     child.on('error', (e) => { add(`Error: could not run the check: ${e.message}\n`); finish(1); });
     // 'close': after the output pipes have drained, so the last Error: line is read.

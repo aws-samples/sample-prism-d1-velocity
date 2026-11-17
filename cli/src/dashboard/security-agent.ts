@@ -27,9 +27,10 @@
  * its class (credentials, access denied, other), and never reused as an answer.
  * It runs under the action runner's lock, so it never overlaps a Run.
  *
- * The kept lookup also gates the two AWS-writing actions (code-review and
- * threat-model): the confirm dialog names the account, region and scan bucket
- * from it, and the server refuses those actions unless the gate passes.
+ * The kept lookup also gates the AWS-writing actions (code-review,
+ * threat-model, and the pentest start and clean up): the confirm dialog names
+ * the account and region (and the scan bucket) from it, and the server refuses
+ * those actions unless the gate passes.
  *
  * Account ids leave this module as their last 4 digits only.
  */
@@ -47,6 +48,7 @@ import { resolveAwsIdentity, type AwsIdentityView, type IdentityDeps } from './a
 import { tildeHome } from './payload.js';
 import { computeGate, type Gate } from './security-gate.js';
 import { startGuard, type StartGuard } from './security-runs.js';
+import { pendingPentestIn } from './security-pentest.js';
 
 export const LOOKUP_TIMEOUT_MS = 20_000;
 /** Pages of list-agent-spaces read at most (a page holds many spaces; this only bounds a runaway nextToken). */
@@ -61,6 +63,7 @@ export const SECURITY_ACTIONS = [
   'security-status', 'security-dry-run', 'security-findings', 'security-threats', 'security-pentest-findings',
   'security-code-review', 'security-code-review-full', 'security-threat-model',
   'security-code-review-force', 'security-code-review-full-force',
+  'security-pentest-plan', 'security-pentest-start', 'security-pentest-cleanup',
 ] as const satisfies readonly ActionId[];
 
 /** Where an AWS call goes: the profile only when one was chosen (else the AWS CLI's own chain), always a region. */
@@ -290,10 +293,11 @@ export class LookupCache {
   }
 }
 
-export type WriteKind = 'code review' | 'threat model';
+export type WriteKind = 'code review' | 'threat model' | 'pentest' | 'pentest cleanup';
 export const WRITE_KIND: Partial<Record<ActionId, WriteKind>> = {
   'security-code-review': 'code review', 'security-code-review-full': 'code review', 'security-threat-model': 'threat model',
   'security-code-review-force': 'code review', 'security-code-review-full-force': 'code review',
+  'security-pentest-start': 'pentest', 'security-pentest-cleanup': 'pentest cleanup',
 };
 
 /**
@@ -302,6 +306,13 @@ export const WRITE_KIND: Partial<Record<ActionId, WriteKind>> = {
  */
 export function writeNotice(kind: WriteKind, repoName: string, l: Lookup | null): { text: string | null; reason: string | null } {
   if (!l || !l.ok) return { text: null, reason: NEED_LOOKUP };
+  // A pentest makes its own agent space for the run and uploads to its own bucket: the shared space and bucket do not matter.
+  if (kind === 'pentest') {
+    return { text: `Deploys a temporary private environment for ${repoName} (a new VPC, the app on Fargate behind an internal load balancer) into account ${l.account4} / ${l.region}. It builds the Docker image on this machine and pushes it, so Docker must be running. Then it starts a penetration test, which runs for hours and costs money while the environment is up. The environment is torn down automatically when the job finishes.`, reason: null };
+  }
+  if (kind === 'pentest cleanup') {
+    return { text: `Tears down this run's pentest environment in account ${l.account4} / ${l.region}: stops the job if it still runs, deletes the pentest, the run's agent space and target domain, and deletes the environment's CloudFormation stack (the stack the run recorded, nothing else).`, reason: null };
+  }
   if (!l.inUse) return { text: null, reason: 'No agent space is set up for prism-cli in this account and region: run enable security first.' };
   if (!l.scanBucket) return { text: null, reason: `SSM ${PARAM_SCAN_BUCKET} is not set in this account and region: run enable security first.` };
   const docs = kind === 'threat model' ? ' Its scope docs at HEAD (default .kiro/specs/*/design.md and requirements.md) are uploaded too.' : '';
@@ -343,11 +354,10 @@ const setupView = (s: ResolvedSetup | null) => (s ? { source: s.source, file: s.
 /** enable security: once per machine, from any directory, so its copy line has no `cd`. */
 export const ENABLE_SECURITY_ARGS = ['enable', 'security'] as const;
 
-/** AWS-writing commands the page shows as Copy only, with the same profile and region the Run actions get. */
+/** The pentest commands the page also shows as Copy, for a terminal, with the same profile and region the Run actions get. */
 export const COPY_ARGS = {
   pentestDryRun: ['security', 'pentest', '--dry-run'],
   pentest: ['security', 'pentest'],
-  pentestStatus: ['security', 'pentest', '--status'],
 } as const;
 
 /** `cd <repo> && prism-cli <args> [--profile p] [--region r]`: what actually runs (or what to paste). */
@@ -400,6 +410,12 @@ export async function writeGateIn(d: Pick<SecurityAgentDeps, 'identity' | 'cache
   return writeNotice(kind, repo.name, d.cache.fresh(t)).reason ?? await d.cache.verify(t);
 }
 
+/** The pending pentest in `repoPath` for the account the kept lookup found there (local files only); null without a lookup. */
+function runningPentestIn(d: Pick<SecurityAgentDeps, 'cache'>, repoPath: string, t: AwsTargetArgs) {
+  const account = d.cache.account(t);
+  return account && t.region ? pendingPentestIn(readResultEntries(repoPath), account, t.region) : null;
+}
+
 /** The repos the last full answer listed, per deps: the only ids the light gate re-check accepts. */
 const KNOWN = new WeakMap<object, Map<string, ScanRepo>>();
 
@@ -445,6 +461,8 @@ export async function securityAgentView(d: SecurityAgentDeps) {
         setup: setupView(setup),
         gate: gateIn(d, r.path, r.name),
         guard: guardIn(r.path),
+        // The Start pentest dialog's warning: a pentest of this repo still pending in the account and region the lookup found.
+        pentestRunning: runningPentestIn(d, r.path, t),
         commands: Object.fromEntries(SECURITY_ACTIONS.map((id) => [id, commandLine(ACTIONS[id].args, r.path, d.identity.home, t)])),
         copy: Object.fromEntries(Object.entries(COPY_ARGS).map(([k, args]) => [k, commandLine(args, r.path, d.identity.home, t)])),
         notices,

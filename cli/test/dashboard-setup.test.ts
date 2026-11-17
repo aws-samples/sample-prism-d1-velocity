@@ -225,11 +225,16 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'security-threat-model': sa(['security', 'threat-model', '--no-wait'], true),
     'security-code-review-force': sa(['security', 'code-review', '--no-wait', '--force'], true),
     'security-code-review-full-force': sa(['security', 'code-review', '--full', '--no-wait', '--force'], true),
+    // The pentest buttons: the flags pentestArgs returns go right after the fixed args, before --profile/--region.
+    'security-pentest-plan': { ...sa(['security', 'pentest', '--dry-run', '--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health']), body: { repo: repoId(REPO_A), dockerfile: 'Dockerfile', port: '8080', health_path: '/health' } },
+    'security-pentest-start': { ...sa(['security', 'pentest', '--yes', '--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health']), body: { repo: repoId(REPO_A), dockerfile: 'Dockerfile', port: '8080', health_path: '/health', confirm: true } },
+    'security-pentest-cleanup': { ...sa(['security', 'pentest', '--cleanup', '--job', 'ptj-1']), body: { repo: repoId(REPO_A), run: 'r1', confirm: true } },
   };
   for (const [id, e] of Object.entries(expected) as [ActionId, typeof expected[ActionId]][]) {
     const calls: Spawned[] = [];
     const home = tmp('ah');
     const r = runner(calls, { home, awsArgs: () => ['--profile', 'dev', '--region', 'us-west-2'], writeGate: () => null,
+      pentestArgs: (pid) => ({ args: pid === 'security-pentest-cleanup' ? ['--job', 'ptj-1'] : ['--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health'] }),
       awsChoices: () => ({ profiles: ['demo'], regions: ['us-west-2'] }), connectionArgs: () => ['--profile', 'demo', '--region', 'us-west-2'] });
     const res = await r.start({ action: id, ...e.body });
     assert.equal(res.status, 202, id);
@@ -241,10 +246,13 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     assert.deepEqual(calls[0].opts.stdio, ['ignore', 'pipe', 'pipe'], `${id}: stdin closed`);
     await until(() => !r.running);
   }
-  // The only AWS-writing commands in the allowlist are the --no-wait uploads (code review also with --force), each behind confirm and the write gate.
+  // The only AWS-writing commands in the allowlist are the --no-wait uploads (code review also with --force) and the pentest
+  // start (--yes, no --wait, no --keep) and clean up, each behind confirm and the write gate.
   for (const [id, a] of Object.entries(ACTIONS)) {
     const line = a.args.join(' ');
-    if (a.writesAws) { assert.match(line, /^security (code-review( --full)? --no-wait( --force)?|threat-model --no-wait)$/, id); assert.equal(a.confirm, true, id); continue; }
+    if (a.writesAws) { assert.match(line, /^security (code-review( --full)? --no-wait( --force)?|threat-model --no-wait|pentest --yes|pentest --cleanup)$/, id); assert.equal(a.confirm, true, id); continue; }
+    // The pentest plan is the one read-only pentest command.
+    if (line === 'security pentest --dry-run') { assert.equal(a.readOnlyAws, true); continue; }
     assert.ok(!/^(security (code-review|threat-model|pentest)|team add-developer)/.test(line), line);
     assert.ok(!/^enable security( |$)/.test(line) || /--(status|dry-run)$/.test(line), line);
   }

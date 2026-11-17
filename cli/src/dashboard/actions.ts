@@ -19,15 +19,18 @@
  *   - output is redacted before it leaves the server, and every run is
  *     appended to ~/.prism/logs/dashboard-actions.log (time, id, repo name,
  *     exit code; never output or URLs);
- *   - only two kinds of action write to AWS, both from the Security Agent
+ *   - only three kinds of action write to AWS, all from the Security Agent
  *     page: security code-review --no-wait (and its --force ids, the dialog's
  *     "Start another anyway" while a review is pending) and security
  *     threat-model --no-wait (an S3 upload of the repo at HEAD and one started
- *     job). They need confirm: true and a passing writeGate (the page's setup
+ *     job), and security pentest --yes / --cleanup (a temporary environment
+ *     deployed and a pentest started, or one run's environment torn down).
+ *     They need confirm: true and a passing writeGate (the page's setup
  *     gate passes in the repo, and the agent-space lookup's account is still
  *     the one the credentials resolve to), and the page's dialog names the
- *     account, region and scan bucket. Every other AWS-writing command
- *     (enable security, security pentest) stays copy-only on the page;
+ *     account and region. The pentest actions' extra arguments (the picker's
+ *     choice, or the run to clean up) are built by RunnerDeps.pentestArgs from
+ *     checked input, never passed through. enable security stays copy-only;
  *   - AWS actions get --profile and --region from the server's own
  *     resolution for that repo (awsArgs), or from the connected account
  *     (connectionArgs, AccountGuard), never from the request; aws-connect is
@@ -56,7 +59,8 @@ export type ActionId = 'codewatch-repo' | 'codewatch-global'
   | 'kirocrew-app' | 'update-cli'
   | 'security-status' | 'security-dry-run' | 'security-findings' | 'security-threats' | 'security-pentest-findings'
   | 'security-code-review' | 'security-code-review-full' | 'security-threat-model'
-  | 'security-code-review-force' | 'security-code-review-full-force';
+  | 'security-code-review-force' | 'security-code-review-full-force'
+  | 'security-pentest-plan' | 'security-pentest-start' | 'security-pentest-cleanup';
 
 export interface ActionDef {
   label: string;
@@ -89,6 +93,11 @@ export interface ActionDef {
    * server side (settingError: REVIEWER_IDS, MODEL_ID_RE, no leading '-') and appended as --reviewer / --model.
    */
   pick?: Scope;
+  /**
+   * A pentest action: `choice` takes the picker's dockerfile, app_dir, port and health_path; `run` takes a run id.
+   * RunnerDeps.pentestArgs checks them and returns the flags to append; absent, the action is refused.
+   */
+  pentest?: 'choice' | 'run';
   /** Appends every repo of the server's scan list (absolute paths it found itself), one argument each. */
   allRepos?: true;
   /** Appends --profile/--region of the connected account (RunnerDeps.connectionArgs); refused when none is connected. */
@@ -176,6 +185,16 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   // "Start another anyway": the same, while a review of this code review is pending (code-review refuses that without --force).
   'security-code-review-force': { label: 'Start another code review of this branch', args: ['security', 'code-review', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-code-review-full-force': { label: 'Start another code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
+  // The pentest buttons (1.21.6), with the picker's --app-dir/--dockerfile/--port/--health-path appended by pentestArgs.
+  'security-pentest-plan': { label: 'Pentest plan (dry run)', args: ['security', 'pentest', '--dry-run'], repo: true, awsTarget: true, readOnlyAws: true, pentest: 'choice', timeoutMs: 10 * MIN,
+    note: 'Runs cdk synth and cdk diff of the pentest environment on this machine; nothing is deployed or started. The first run installs the pentest CDK app\'s npm packages into prism-cli\'s own folder.' },
+  // --yes: no terminal to answer the prompt; the page's dialog is the confirmation. No --wait: the job runs for hours, and
+  // the dashboard's background --status check tears the environment down when it finishes. 45 min: cdk deploy (VPC,
+  // endpoints, internal ALB, Fargate) takes 10-20 min, the first run also installs the CDK app's packages and builds and
+  // pushes the image, then up to 10 min for the ALB health check. Stopping it mid-deploy would leave a stack with no record.
+  'security-pentest-start': { label: 'Start a pentest', args: ['security', 'pentest', '--yes'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'choice', timeoutMs: 45 * MIN },
+  // 90 min: teardown waits up to 10 min for the agent's network interfaces, up to 30 min for the stack deletion, then once more of each.
+  'security-pentest-cleanup': { label: 'Clean up the pentest environment', args: ['security', 'pentest', '--cleanup'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'run', timeoutMs: 90 * MIN },
 };
 
 const isActionId = (x: unknown): x is ActionId => typeof x === 'string' && Object.prototype.hasOwnProperty.call(ACTIONS, x);
@@ -230,6 +249,8 @@ export interface RunnerDeps {
   onDone?: () => void;
   /** --profile/--region for an awsTarget action in `repo`, resolved by the server. Absent: none appended. */
   awsArgs?: (repo: ScanRepo) => string[];
+  /** For a pentest action: the flags to append, from the request's checked choice or run id, else why not. Absent: refused. */
+  pentestArgs?: (id: ActionId, repo: ScanRepo, body: Record<string, unknown>) => { args: string[] } | { error: string; status: number } | Promise<{ args: string[] } | { error: string; status: number }>;
   /** For a writesAws action: null to allow it, else why not (no current lookup, no space, no bucket, another account). Absent: refused. */
   writeGate?: (id: ActionId, repo: ScanRepo) => string | null | Promise<string | null>;
   /** For aws-connect: the profile names and regions the server lists itself, read fresh on each call. Absent: aws-connect is refused. */
@@ -281,13 +302,15 @@ export interface ActionStatus {
 }
 
 /** Actions that write a Security Agent result file in their repo. */
-const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model', 'security-code-review-force', 'security-code-review-full-force']);
+const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model', 'security-code-review-force', 'security-code-review-full-force',
+  'security-pentest-start', 'security-pentest-cleanup']);
 
 /** Branch code reviews: the only actions that can exit 0 having started nothing (no changes against the base). */
 const BRANCH_REVIEW = new Set<ActionId>(['security-code-review', 'security-code-review-force']);
 
 const MAX_OUTPUT = 256 * 1024;
-const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region', 'reviewer', 'model']);
+const ALLOWED_KEYS = new Set(['action', 'repo', 'url', 'confirm', 'profile', 'region', 'reviewer', 'model', 'dockerfile', 'app_dir', 'port', 'health_path', 'run']);
+const PENTEST_KEYS = ['dockerfile', 'app_dir', 'port', 'health_path', 'run'];
 /** A value the CLI accepts as a profile or region name (aws/connection.ts) that cannot be read as a flag. */
 const argValue = (v: string, re: RegExp) => re.test(v) && !v.startsWith('-');
 
@@ -368,8 +391,20 @@ export class ActionRunner {
       if (err) return bad(err);
       picked = [...(b.reviewer !== undefined ? ['--reviewer', b.reviewer as string] : []), ...(b.model !== undefined ? ['--model', (b.model as string).trim()] : [])];
     } else if (b.reviewer !== undefined || b.model !== undefined) return bad('this action does not take a reviewer or model');
+    if (!def.pentest && PENTEST_KEYS.some((k) => b[k] !== undefined)) return bad('this action does not take a pentest target or run');
     if (def.confirm && b.confirm !== true) return bad('this action needs confirm: true');
     if (b.confirm !== undefined && typeof b.confirm !== 'boolean') return bad('confirm must be true or false');
+    if (this.busy) return bad('another action is running; wait for it to finish', 409);
+    // The pentest flags: built server side from the checked choice or the resolved run (local files only).
+    let pentest: string[] = [];
+    if (def.pentest) {
+      if (!repo || !this.d.pentestArgs) return bad('pentest actions are not available here');
+      let r: Awaited<ReturnType<NonNullable<RunnerDeps['pentestArgs']>>>;
+      try { r = await this.d.pentestArgs(id, repo, b); } catch (e) { r = { error: `the pentest check failed: ${redact((e as Error).message)}`, status: 400 }; }
+      if ('error' in r) return bad(r.error, r.status);
+      if (!r.args.every((a) => typeof a === 'string')) return bad('the pentest arguments are not valid');
+      pentest = r.args;
+    }
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
     if (def.writesAws) {
       if (!repo) return bad('an AWS-writing action needs a repo');
@@ -391,7 +426,7 @@ export class ActionRunner {
     const every = def.allRepos ? (await this.d.repos()).map((r) => r.path) : [];
     if (!every.every((p) => isAbsolute(p) && !p.startsWith('-'))) return bad('a discovered repo path is not absolute');
     if (def.allRepos && !every.length) return bad('no repos in the scan list');
-    const args = [...def.args, ...chosen, ...picked, ...target, ...every, ...(def.url ? [b.url as string] : [])];
+    const args = [...def.args, ...pentest, ...chosen, ...picked, ...target, ...every, ...(def.url ? [b.url as string] : [])];
     const cwd = repo ? repo.path : def.inHome ? this.d.home : this.d.cwd;
     const now = this.d.now ?? (() => new Date());
     this.busy = true;

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake docker for the dashboard e2e run: logs each call to $HOME/docker-calls.log and succeeds. It builds and pushes nothing.
+echo "$*" >> "$HOME/docker-calls.log"
+exit 0

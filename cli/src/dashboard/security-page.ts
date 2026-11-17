@@ -22,9 +22,10 @@
  * buttons are drawn only then.
  *
  * Every value from the server is placed with textContent or an attribute.
- * Run buttons send only {action, repo id}; the server maps the id to a fixed
- * argv, appends --profile/--region itself and runs it in that repo.
- * enable security and aws sso login are Copy only.
+ * Run buttons send only {action, repo id} (the pentest ones also the picker's
+ * checked choice, or the run to clean up, which the server checks again); the
+ * server maps the id to a fixed argv, appends --profile/--region itself and
+ * runs it in that repo. enable security and aws sso login are Copy only.
  */
 
 export const SECURITY_STYLE = `
@@ -131,24 +132,43 @@ function saDialog() {
   if (!DIALOG) { DIALOG = el('dialog', { class: 'confirm', 'aria-labelledby': 'confirm-title' }); document.body.append(DIALOG); }
   return DIALOG;
 }
-function saConfirm(a, repo) {
+/** What the confirm dialog says about the AWS side, per action. */
+const SA_WRITE_NOTE = {
+  'security-pentest-start': 'It returns once the job has started; it does not wait for it. While a Security Agent page is open, the dashboard checks the job every 5 minutes with prism-cli security pentest --status, which saves the findings and tears the environment down when the job finishes. If teardown fails, the run shows Clean up.',
+  'security-pentest-cleanup': 'It waits for the teardown: the agent\\'s network interfaces are released first, then the stack is deleted, retried once. That can take over an hour.',
+};
+const SA_RUN_LABEL = { 'security-pentest-start': 'Deploy and start', 'security-pentest-cleanup': 'Tear down' };
+
+/**
+ * The confirm dialog. o.command: the server's exact line when it depends on more than the repo (the pentest
+ * picker's choice, the run to clean up); o.target / o.run go to the server with the action, which checks them again.
+ */
+function saConfirm(a, repo, o) {
   saDialog();
-  const cmd = txt((repo.commands || {})[a.id]);
+  o = o || {};
+  const cmd = txt(o.command || (repo.commands || {})[a.id]);
   const notice = a.writesAws ? (repo.notices || {})[a.id] : null;
-  const run = el('button', { type: 'button', class: 'run' + (a.writesAws ? ' danger' : '') }, a.writesAws ? 'Upload and start' : 'Run');
+  const run = el('button', { type: 'button', class: 'run' + (a.writesAws ? ' danger' : '') }, a.writesAws ? SA_RUN_LABEL[a.id] || 'Upload and start' : 'Run');
   const cancel = el('button', { type: 'button' }, 'Cancel');
   const kids = [el('h2', { id: 'confirm-title' }, a.label)];
   if (a.writesAws) kids.push(el('p', { class: 'sa-notice' }, txt(notice && notice.text)));
   kids.push(el('p', {}, 'This will run:'), cmdWords('pre', 'cmd', cmd));
   kids.push(el('p', { class: 'note' }, a.writesAws
-    ? 'This writes to AWS: an S3 upload and one started job, which may incur cost. It does not wait for the job; fetch the result here later.'
+    ? SA_WRITE_NOTE[a.id] || 'This writes to AWS: an S3 upload and one started job, which may incur cost. It does not wait for the job; fetch the result here later.'
     : 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.'));
   if (a.note) kids.push(el('p', { class: 'note' }, txt(a.note)));
   kids.push(el('p', { class: 'note' }, 'It runs without a terminal, so it cannot ask questions; one action runs at a time and this one is stopped after ' + Math.max(1, Math.round(a.timeoutSec / 60)) + ' min.'));
+  // A pentest is billed for hours: its Deploy and start also needs the box ticked.
+  if (a.id === 'security-pentest-start') {
+    const cb = el('input', { type: 'checkbox', 'data-pt-ack': '' });
+    run.disabled = true;
+    cb.addEventListener('change', () => { run.disabled = !cb.checked; });
+    kids.push(el('label', { class: 'extra' }, cb, 'Yes, deploy into this account and start a pentest that costs money while it runs'));
+  }
   kids.push(el('div', { class: 'actions' }, cancel, run));
   DIALOG.replaceChildren(...kids);
   cancel.addEventListener('click', () => DIALOG.close());
-  run.addEventListener('click', () => { DIALOG.close(); startAction(a, { repo: repo.id }); });
+  run.addEventListener('click', () => { DIALOG.close(); startAction(a, { repo: repo.id, target: o.target, run: o.run }); });
   DIALOG.showModal();
   // Cancel has the focus, so Enter never confirms; the run needs its own click.
   cancel.focus();
@@ -247,8 +267,29 @@ const saSetupTag = (s) => (!s ? 'not set up on this machine' : s.source === 'rep
 /** One result line: its pills and when, or "none saved". */
 function saResultCell(x, levels, link) {
   if (!x) return el('span', { class: 'fix' }, 'none saved');
+  // A pentest whose environment is still up: say so, and the run's page has Clean up.
+  const up = x.stack_up ? el('div', { class: 'callout warn', role: 'note', 'data-pt-up': x.teardown_failed ? 'teardown_failed' : 'still_up' },
+    (x.teardown_failed ? 'Teardown failed: the environment is still up' : 'The environment is still up after the job') + ' and may cost money. Open the run to clean it up.') : null;
   return el('div', {}, el('span', { class: 'pills' }, ...resultPills(x, levels, 'clean')), el('div', { class: 'fix' }, (x.pending ? 'started ' + when(x.started_at) : when(x.finished_at)) + ' · job ' + txt(x.job_id).slice(0, 12)),
-    runningNote(x, null), x.pending ? checkNote(x) : checkNote(x.running), x.pending ? null : link);
+    runningNote(x, null), x.pending ? checkNote(x) : checkNote(x.running), up, x.pending ? null : link);
+}
+
+/**
+ * Clean up for one run (the drill-down): security pentest --cleanup --job <its job>, confirmed, in its repo. The
+ * server resolves the run from the repo's files again and checks the account and region. Needs the Security Agent
+ * answer for the repo (its gate and notice); in a snapshot, nothing (the drill-down is live only).
+ */
+function saCleanupButton(run, c) {
+  const repo = ((SA && SA.repos) || []).find((r) => r.id === run.repo_id);
+  const a = actionDef('security-pentest-cleanup');
+  if (SNAPSHOT || !a || !a.available) return null;
+  if (!c.available) return el('span', { class: 'fix', 'data-cleanup-why': '' }, txt(c.why));
+  if (!repo || !repo.gate || repo.gate.state !== 'ready') return el('span', { class: 'fix' }, 'Open the Security Agent page for ' + txt(run.repo) + ' first: its setup check names the account and region.');
+  const n = (repo.notices || {})[a.id];
+  if (!n || !n.text) return el('span', { class: 'fix' }, txt((n && n.reason) || 'not available'));
+  const b = el('button', { type: 'button', class: 'run danger', 'data-cleanup': '' }, 'Clean up');
+  b.addEventListener('click', () => saConfirm(a, repo, { command: txt(c.command), run: txt(run.run_id) }));
+  return b;
 }
 
 function saResultsCard(repo) {
@@ -425,11 +466,49 @@ function saPtPicker(repo, st) {
   return el('div', { class: 'sa-pt', 'data-pt-repo': id }, ...kids);
 }
 
+/**
+ * A pentest Run button for the picker's checked choice: the server's exact line (chk.run) goes to the dialog and the
+ * checked values to the server, which checks them again. Disabled while the choice is checking or has an error.
+ */
+function saPtRun(id, repo, chk, label) {
+  const a = actionDef(id);
+  if (!a || !a.available) return null;
+  if (a.writesAws) {
+    const n = (repo.notices || {})[id];
+    if (!n || !n.text) return el('span', { class: 'fix' }, txt((n && n.reason) || 'not available'));
+  }
+  const ok = !!(chk && chk.ok && chk.resolved && chk.run && chk.run[id]);
+  const b = el('button', { type: 'button', class: 'run' + (a.writesAws ? ' danger' : ''), 'data-pt-run': id, disabled: ok ? null : '' }, label);
+  if (ok) {
+    const r = chk.resolved;
+    const o = { command: txt(chk.run[id]), target: { dockerfile: txt(r.dockerfile), appDir: txt(r.appDir), port: txt(r.port), healthPath: txt(r.healthPath) } };
+    b.addEventListener('click', () => saPtStart(a, repo, o));
+  }
+  return b;
+}
+
+/** Start pentest while one is pending for this repo and account: say so, with View it; the CLI has no --force, so no Start another. */
+function saPtStart(a, repo, o) {
+  const g = repo.pentestRunning;
+  if (a.id !== 'security-pentest-start' || !g) { saConfirm(a, repo, o); return; }
+  saDialog();
+  const cancel = el('button', { type: 'button' }, 'Cancel');
+  const view = el('button', { type: 'button', class: 'run' }, 'View it →');
+  view.addEventListener('click', () => { DIALOG.close(); navigate('#security/run/' + repo.id + '/' + txt(g.run_id)); });
+  DIALOG.replaceChildren(el('h2', { id: 'confirm-title' }, a.label),
+    el('div', { class: 'callout warn', role: 'note', 'data-pt-running': '' }, el('strong', {}, 'A pentest of ' + txt(repo.name) + ' is already running. '),
+      'Started ' + when(g.started_at) + ' (job ' + txt(g.job_id) + '). Its environment is torn down when the job finishes. A second one would deploy another VPC and be billed separately; prism-cli has no --force for pentests, so start a second one from a terminal if you mean to.'),
+    el('div', { class: 'actions' }, cancel, view));
+  cancel.addEventListener('click', () => DIALOG.close());
+  DIALOG.showModal();
+  cancel.focus();
+}
+
 /** The Pentest plan and Pentest items: with the picker once its listing is in; while loading, a line; if it failed (or in a snapshot), the commands with no flags. */
 function saPentestItems(repo, item) {
   const c = repo.copy || {};
-  const plain = () => [item('Pentest plan', 'Shows the plan, target and cost. Copy only: run it in a terminal.', copyOnly(txt(c.pentestDryRun), SNAPSHOT ? 'snapshot: copy only' : 'terminal')),
-    item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). Copy only.', copyOnly(txt(c.pentest), SNAPSHOT ? 'snapshot: copy only' : 'AWS write'))];
+  const plain = () => [item('Pentest plan', 'Shows the plan, target and cost. ' + (SNAPSHOT ? 'Copy only in a snapshot.' : 'Copy only until the target picker loads: run it in a terminal.'), copyOnly(txt(c.pentestDryRun), SNAPSHOT ? 'snapshot: copy only' : 'terminal')),
+    item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). ' + (SNAPSHOT ? 'Copy only in a snapshot.' : 'Copy only until the target picker loads.'), copyOnly(txt(c.pentest), SNAPSHOT ? 'snapshot: copy only' : 'AWS write'))];
   if (SNAPSHOT) return plain();
   saPtLoad(repo);
   const st = SA_PT.get(repo.id);
@@ -438,20 +517,22 @@ function saPentestItems(repo, item) {
   const chk = st.pending ? null : st.check, ok = !!(chk && chk.ok && chk.copy);
   const status = st.pending ? 'checking…' : ok ? null : chk ? 'fix the choice above' : 'choose a Dockerfile above';
   const head = (label, why, ctl) => el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, label)), el('div', { class: 'fix' }, why), ctl);
+  const ctl = (id, label, key, cmd, badge) => el('div', {}, el('div', { class: 'srow-ctl' }, saPtRun(id, repo, chk, label)),
+    el('div', { class: 'fix' }, 'Or in a terminal:'), saPtCmd(key, ok ? txt(cmd) : null, status || badge));
   return [head('Pentest target', 'Which Dockerfile the pentest builds, from the files git tracks in ' + txt(repo.name) + '.', saPtPicker(repo, st)),
-    head('Pentest plan', 'Shows the plan, target and cost for this choice. Copy only: run it in a terminal.', saPtCmd('pentestDryRun', ok ? txt(chk.copy.pentestDryRun) : null, status || 'terminal')),
-    head('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). Copy only.', saPtCmd('pentest', ok ? txt(chk.copy.pentest) : null, status || 'AWS write'))];
+    head('Pentest plan', 'Shows the plan, target and cost for this choice: cdk synth and diff on this machine, read-only in AWS. Nothing is deployed or started.',
+      ctl('security-pentest-plan', 'Show the plan', 'pentestDryRun', ok && chk.copy.pentestDryRun, 'terminal')),
+    head('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money while it runs). The dashboard tears the environment down when the job finishes.',
+      ctl('security-pentest-start', 'Start pentest', 'pentest', ok && chk.copy.pentest, 'AWS write'))];
 }
 
 function saStartCard(repo) {
-  const c = repo.copy || {};
   const item = (label, why, ctl) => el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, label)), el('div', { class: 'fix' }, why), el('div', { class: 'srow-ctl' }, ctl));
   return saCard('Start new work in ' + txt(repo.name), 'writes to AWS',
     el('ul', { class: 'salist' },
       saBranchItem(repo),
       item('Threat model', 'Uploads the repo and its scope docs at HEAD, creates a threat model and starts a job.', saRun('security-threat-model', repo, 'Start threat model')),
-      ...saPentestItems(repo, item),
-      item('Pentest status', 'Refreshes the job and tears the environment down once it has finished. Copy only.', copyOnly(txt(c.pentestStatus), 'AWS write'))));
+      ...saPentestItems(repo, item)));
 }
 
 /** One folded card for the whole machine: enable security runs once, from any directory, so its command has no cd. */

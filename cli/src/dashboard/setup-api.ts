@@ -24,7 +24,7 @@ import { profileChoices, resolveAwsIdentity, type IdentityDeps } from './aws-ide
 import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountguard.js';
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
-import { securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
+import { commandLine, securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, securityTargetIn, type SecurityAgentDeps } from './security-agent.js';
 import { securityAgentPentest, securityAgentPentestCheck } from './security-pentest.js';
 import { securityRunDetail, type CheckLookup } from './security-runs.js';
 import { ApiAnswer } from './server.js';
@@ -67,7 +67,7 @@ export function setupApi(d: SetupApiDeps) {
     const a = ACTIONS[id];
     return {
       id, label: a.label, command: displayCommand(a.args, a.program), repo: !!a.repo, url: !!a.url, confirm: !!a.confirm,
-      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, choose: !!a.choose, connected: !!a.connected, inHome: !!a.inHome, confirmLabel: a.confirmLabel ?? null, pick: a.pick ?? null, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
+      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, choose: !!a.choose, connected: !!a.connected, inHome: !!a.inHome, confirmLabel: a.confirmLabel ?? null, pick: a.pick ?? null, pentest: a.pentest ?? null, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
     };
   });
   return {
@@ -117,7 +117,10 @@ export function setupApi(d: SetupApiDeps) {
       // Ids only: the repo id is matched against the scan list and the run id against that repo's result files.
       // No such run answers 404 (the page shows Run not found and stops asking); any other failure is retried.
       '/api/security-run': async (url: URL) => {
-        const run = securityRunDetail(d.securityAgent ? await d.securityAgent.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home, new Date(), undefined, d.securityCheck);
+        const sa = d.securityAgent;
+        // Clean up's exact line: the action's args, the run's --job, and the profile and region the commands use in that repo.
+        const line = sa ? (path: string, args: string[]) => commandLine([...ACTIONS['security-pentest-cleanup'].args, ...args], path, sa.identity.home, securityTargetIn(sa, path)) : undefined;
+        const run = securityRunDetail(sa ? await sa.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home, new Date(), undefined, d.securityCheck, line);
         return run.found ? run : new ApiAnswer(404, run);
       },
     },

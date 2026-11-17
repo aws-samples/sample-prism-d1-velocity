@@ -15,6 +15,7 @@ import { join, resolve } from 'node:path';
 import { RESULTS_DIR, readResultEntries, type Finding, type PrismResult, type ResultEntry } from '../codewatch/results.js';
 import { last4 } from '../aws/connection.js';
 import type { CheckState } from './security-autocheck.js';
+import { cleanupArgsFor, pentestCleanupOf, shownReason } from './security-pentest.js';
 
 export type RunType = 'code-review' | 'threat-model' | 'pentest';
 /**
@@ -188,6 +189,12 @@ export type RunDetail =
     found: true; run: SecurityRunRow; findings: RunFinding[];
     account4: string | null; region: string | null; scope: string | null; target_host: string | null; overview: string | null;
     result_file: string; cli: string; no_remediation: string | null;
+    /**
+     * A pentest whose environment may still be up (its teardown failed, or the job finished with the stack
+     * recorded): why, the failure reason (redacted, home as ~), and whether Clean up can target this run
+     * (`why` when it cannot), and the exact line Clean up runs (also the terminal command). null for every other run.
+     */
+    cleanup: { kind: 'teardown_failed' | 'still_up'; reason: string | null; available: boolean; why: string | null; command: string | null } | null;
   };
 
 export const NO_REMEDIATION = 'No remediation provided by this run type.';
@@ -219,7 +226,7 @@ const shellWord = (p: string) => (/^[~A-Za-z0-9_./@%+,:=-]+$/.test(p) ? p : `'${
 
 /** GET /api/security-run?repo=<id>&run=<id>: one run's header and every finding. Local files only. */
 export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runArg: string | null, home: string, now: Date = new Date(),
-  read: (root: string) => ResultEntry[] = readResultEntries, check?: CheckLookup): RunDetail {
+  read: (root: string) => ResultEntry[] = readResultEntries, check?: CheckLookup, cleanupLine?: (repoPath: string, args: string[]) => string): RunDetail {
   if (!repoArg || !REPO_ID.test(repoArg) || !runArg || !RUN_ID.test(runArg)) return { found: false, error: 'not a run id' };
   const repo = repos.find((r) => r.id === repoArg);
   if (!repo) return { found: false, error: 'that repo is not in the scan list' };
@@ -235,6 +242,12 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
     remediation: type === 'threat-model' && f.recommendation ? f.recommendation : null,
     evidence: f.evidence || [], assets: f.assets || [], finding_id: f.finding_id || f.threat_id || null,
   }));
+  const left = pentestCleanupOf(e);
+  const target = left ? cleanupArgsFor(repo.path, e) : null;
+  const cleanup = left ? {
+    kind: left.kind, reason: shownReason(left.reason, home), available: !!target && !('error' in target), why: target && 'error' in target ? target.error : null,
+    command: target && 'args' in target && cleanupLine ? cleanupLine(repo.path, target.args) : null,
+  } : null;
   const where = shellWord(tilde(repo.path, home));
   const job = shellWord(jobKey(r)!);
   const cli = type === 'code-review' ? `prism-cli security findings --job ${job} --path ${where}`
@@ -248,6 +261,7 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
     overview: r.threat_model?.system_overview ?? r.pentest?.overview ?? null,
     result_file: tilde(join(resolve(repo.path, RESULTS_DIR), `${e.id}.json`), home),
     cli, no_remediation: type === 'threat-model' ? null : NO_REMEDIATION,
+    cleanup,
   };
 }
 
