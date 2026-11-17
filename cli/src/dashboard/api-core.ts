@@ -22,6 +22,7 @@ import { emptyUsage } from './usage.js';
 import type { UsageCache } from './usage-cache.js';
 import type { UpdateCheck } from './update-check.js';
 import { findOnPath } from '../utils/tool-check.js';
+import { SecurityAutoCheck, spawnCheck } from './security-autocheck.js';
 
 /** The ids /report/<id> accepts (server.ts REPORT_ROUTE). */
 const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
@@ -46,6 +47,8 @@ export interface DashboardApiOptions {
 
 export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
   const { usageCache, updates } = o;
+  // Pending Security Agent runs: checked read-only while the page asks (GET /api/security-check). Set up below, once repos exist.
+  let checks: SecurityAutoCheck | null = null;
   // The page's first paint never waits for codeburn: it shows the cached usage, or "loading" until /api/usage answers.
   const build = () => buildPayload({
     cwd: o.cwd, root: o.root,
@@ -55,6 +58,7 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
     },
     // Never waits for npm: the cached answer now; a due check runs in the background and the next load shows it.
     version: async () => updates.current(),
+    securityCheck: { lookup: (type, job) => checks?.stateOf(type, job) ?? null, generation: () => checks?.generation ?? 0 },
   });
   const payload = cachedPayload(build);
   if (updates.due()) updates.get().then(() => payload.invalidate(), () => {});
@@ -81,8 +85,15 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
     awsChoices: () => { const c = profileChoices(identity); return { profiles: c.profiles.map((p) => p.name), regions: c.regions }; },
     connectionArgs: () => connectionArgs(identity.home, identity.repoRoot),
   });
+  // The fetch command itself, in the repo, with the same --profile/--region a Fetch button's run gets.
+  const checkRunner = spawnCheck({ execPath: process.execPath, entry: cliEntry(), awsArgs: (repo) => targetArgs(targetIn(repo.path)) });
+  checks = new SecurityAutoCheck({
+    repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
+    run: checkRunner.run, onChange: () => payload.invalidate(), busy: () => runner.running, home: homedir(),
+  });
+  const autoCheck = checks;
   const api = setupApi({
-    runner, cwd: o.cwd,
+    runner, cwd: o.cwd, securityCheck: (type, job) => autoCheck.stateOf(type, job),
     repoPaths: async () => (await repos()).map((r) => r.path),
     identity,
     refresh: () => { payload.invalidate(); return payload(); },
@@ -121,8 +132,9 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
   return {
     getPayload: payload,
     getReport,
-    getApi: { '/api/data': () => payload(), ...api.getApi, '/api/usage': getUsage, '/api/report': getReportJson },
+    // Starts the due checks of pending runs and answers at once; the page redraws when `generation` moves past its payload's.
+    getApi: { '/api/data': () => payload(), ...api.getApi, '/api/usage': getUsage, '/api/report': getReportJson, '/api/security-check': () => autoCheck.kick() },
     postApi: api.postApi,
-    shutdown: () => runner.stop(),
+    shutdown: () => { runner.stop(); checkRunner.stop(); },
   };
 }

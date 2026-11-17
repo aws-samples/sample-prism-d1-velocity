@@ -26,6 +26,13 @@ class ManifestTest(unittest.TestCase):
         self.assertNotIn(MANIFEST["name"], {"system", "library", "registry", "registries", "blob", "install", "register"})
         self.assertRegex(MANIFEST["version"], r"^\d+\.\d+\.\d+")
 
+    def test_icon_is_the_prism_mark(self):
+        # A 512x512 PNG at iconPath, and not the flat gray placeholder of 0.3.1 and earlier (about 2 KB).
+        data = (ROOT / MANIFEST["iconPath"]).read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        self.assertEqual((width, height), (512, 512))
+        self.assertGreater(len(data), 20_000, "a drawn mark, not a two-tone placeholder square")
     def test_skills_have_frontmatter(self):
         for rel in MANIFEST["skills"]:
             self.assertTrue(inside(rel), rel)

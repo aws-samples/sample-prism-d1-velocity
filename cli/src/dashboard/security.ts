@@ -6,9 +6,15 @@
 import { readResults, type PrismResult } from '../codewatch/results.js';
 import { firstParagraph } from '../security/threat-model.js';
 import { PENDING_STALE_MS } from '../security/review.js';
+import type { CheckLookup } from './security-runs.js';
+import type { CheckState } from './security-autocheck.js';
 
 export const MAX_PANEL_FINDINGS = 50;
-/** A pending record older than PENDING_STALE_MS (security/review.ts) is marked `stale?`: results are local, so the dashboard cannot know the job's real state. */
+/**
+ * A pending record older than PENDING_STALE_MS (security/review.ts) is marked `stale?`, unless the live dashboard's
+ * last read-only check (security-autocheck.ts) found the job still running. `check` carries that check, and its
+ * reason when it could not run or failed.
+ */
 export { PENDING_STALE_MS };
 export const PENDING_HINT = 'prism-cli security findings';
 
@@ -30,8 +36,10 @@ export interface SecurityRepoRow {
   reason: string | null;
   /** Started by code-review, no verdict recorded yet. */
   pending: boolean;
-  /** Pending for longer than PENDING_STALE_MS: the job most likely finished and nobody fetched it. */
+  /** Pending for longer than PENDING_STALE_MS, and no check found it still running. */
   stale: boolean;
+  /** The last auto-check of this pending job; null when none ran. */
+  check: CheckState | null;
   /**
    * A newer job that is still pending while this row shows the last completed
    * one, so its findings stay on the page; null when there is none.
@@ -39,7 +47,7 @@ export interface SecurityRepoRow {
   running: RunningJob | null;
 }
 
-export interface RunningJob { job_id: string; scope: string; started_at: string; stale: boolean }
+export interface RunningJob { job_id: string; scope: string; started_at: string; stale: boolean; check: CheckState | null }
 
 /** A pentest runs for hours, so its pending record goes stale later than a review's. */
 export const PENTEST_PENDING_STALE_MS = 6 * 60 * 60 * 1000;
@@ -66,6 +74,7 @@ export interface SecurityPentestRow {
   teardown_failed: { at: string; reason: string } | null;
   pending: boolean;
   stale: boolean;
+  check: CheckState | null;
 }
 
 export interface SecurityPanel {
@@ -108,7 +117,12 @@ export interface ThreatModelRow {
   reason: string | null;
   pending: boolean;
   stale: boolean;
+  check: CheckState | null;
 }
+
+/** Past `windowMs` and not reported running by the last check. */
+const staleAfter = (r: PrismResult, now: Date, windowMs: number, check: CheckState | null) =>
+  r.status === 'pending' && now.getTime() - Date.parse(r.started_at) > windowMs && check?.state !== 'running';
 
 const RANK: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
 
@@ -157,7 +171,8 @@ export function latestPentest(results: PrismResult[]): PrismResult | null {
   return all[0] ?? null;
 }
 
-export function collectSecurity(repos: { name: string; path: string; current: boolean }[], read: (root: string) => PrismResult[] = readResults, now: Date = new Date()): SecurityPanel {
+export function collectSecurity(repos: { name: string; path: string; current: boolean }[], read: (root: string) => PrismResult[] = readResults, now: Date = new Date(), lookup?: CheckLookup): SecurityPanel {
+  const checkOf = (r: PrismResult | null | undefined, type: Parameters<CheckLookup>[0], job: string | undefined) => (r && r.status === 'pending' && job && lookup ? lookup(type, job) : null);
   const rows: SecurityRepoRow[] = [];
   const pentests: SecurityPentestRow[] = [];
   for (const repo of repos) {
@@ -166,11 +181,13 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
     // A pending newest job does not hide the last completed review: show that one, and the running job beside it.
     const done = latest?.status === 'pending' ? latestSecurityReview(all.filter((x) => x.status !== 'pending' && x.security?.job_id !== latest.security!.job_id)) : null;
     const r = done ?? latest;
+    const runCheck = done && latest ? checkOf(latest, 'code-review', latest.security!.job_id) : null;
     const running: RunningJob | null = done && latest ? {
       job_id: latest.security!.job_id, scope: latest.security!.scope, started_at: latest.started_at,
-      stale: now.getTime() - Date.parse(latest.started_at) > PENDING_STALE_MS,
+      stale: staleAfter(latest, now, PENDING_STALE_MS, runCheck), check: runCheck,
     } : null;
     if (r && r.security) {
+      const check = checkOf(r, 'code-review', r.security.job_id);
       const findings = [...(r.findings || [])]
         .sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0) || a.file.localeCompare(b.file))
         .map((f) => ({ risk_level: f.risk_level || f.severity.toUpperCase(), title: f.title || f.message, file: f.file, line: f.line, cwe: f.cwe ?? null }));
@@ -180,12 +197,13 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         started_at: r.started_at, finished_at: r.finished_at, counts: r.security.counts || {},
         findings: findings.slice(0, MAX_PANEL_FINDINGS), truncated: findings.length > MAX_PANEL_FINDINGS, reason: r.reason ?? null,
         pending: r.status === 'pending',
-        stale: r.status === 'pending' && now.getTime() - Date.parse(r.started_at) > PENDING_STALE_MS,
+        stale: staleAfter(r, now, PENDING_STALE_MS, check), check,
         running,
       });
     }
     const p = latestPentest(all);
     if (p && p.pentest) {
+      const pcheck = checkOf(p, 'pentest', p.pentest.job_id);
       const pf = [...(p.findings || [])]
         .sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0) || (a.title || '').localeCompare(b.title || ''))
         .map((f) => ({ risk_level: f.risk_level || f.severity.toUpperCase(), title: f.title || f.message, confidence: f.confidence ?? null }));
@@ -197,7 +215,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         reason: p.reason ?? null, overview: p.pentest.overview ?? null,
         teardown_failed: p.pentest.teardown_failed ?? null,
         pending: p.status === 'pending',
-        stale: p.status === 'pending' && now.getTime() - Date.parse(p.started_at) > PENTEST_PENDING_STALE_MS,
+        stale: staleAfter(p, now, PENTEST_PENDING_STALE_MS, pcheck), check: pcheck,
       });
     }
   }
@@ -205,7 +223,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
   const tms: ThreatModelRow[] = [];
   for (const repo of repos) {
     const r = latestThreatModel(read(repo.path));
-    if (r) tms.push(threatModelRow(repo, r, now));
+    if (r) tms.push(threatModelRow(repo, r, now, checkOf(r, 'threat-model', r.threat_model?.job_id)));
   }
   tms.sort((a, b) => Number(b.current) - Number(a.current) || b.started_at.localeCompare(a.started_at));
   pentests.sort((a, b) => Number(b.current) - Number(a.current) || b.started_at.localeCompare(a.started_at));
@@ -225,7 +243,7 @@ export function latestThreatModel(results: PrismResult[]): PrismResult | null {
   return [...byJob.values()].sort((a, b) => b.started_at.localeCompare(a.started_at))[0] ?? null;
 }
 
-function threatModelRow(repo: { name: string; path: string; current: boolean }, r: PrismResult, now: Date): ThreatModelRow {
+function threatModelRow(repo: { name: string; path: string; current: boolean }, r: PrismResult, now: Date, check: CheckState | null = null): ThreatModelRow {
   const t = r.threat_model!;
   const threats = [...(r.findings || [])]
     .sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0))
@@ -237,6 +255,6 @@ function threatModelRow(repo: { name: string; path: string; current: boolean }, 
     overview: firstParagraph(t.system_overview),
     threats: threats.slice(0, MAX_PANEL_THREATS), more: Math.max(0, threats.length - MAX_PANEL_THREATS), reason: r.reason ?? null,
     pending: r.status === 'pending',
-    stale: r.status === 'pending' && now.getTime() - Date.parse(r.started_at) > PENDING_STALE_MS,
+    stale: staleAfter(r, now, PENDING_STALE_MS, check), check,
   };
 }

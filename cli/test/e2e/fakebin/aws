@@ -8,6 +8,8 @@
 # bucket SSM names exist; slow: the same after 3 s; sso: the SSO sign-in expired; denied: the role may
 # not call securityagent:ListAgentSpaces; nospace: no agent space and no SSM parameters.
 echo "$*" >> "$HOME/aws-calls.log"
+# $HOME/fake-aws-mode, when present, wins over FAKE_AWS: a test switches a running dashboard's answers (in-progress, then complete).
+if [ -f "$HOME/fake-aws-mode" ]; then FAKE_AWS=$(cat "$HOME/fake-aws-mode"); fi
 case "$1" in
   --version) echo "aws-cli/2.36.0-fake Python/3 Linux"; exit 0 ;;
   configure)

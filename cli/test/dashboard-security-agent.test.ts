@@ -427,7 +427,7 @@ test('gate: only the first unmet step, as step n of 3 with a bar; nothing else (
     const bar = sec.all().find((e) => e.getAttribute('role') === 'progressbar')!;
     assert.equal(bar.getAttribute('aria-valuenow'), String(n - 1));
     for (const no of ['Results for', 'Start new work', 'Security runs', 'Agent spaces', 'Security Agent ready']) assert.ok(!t.includes(no), `${state}: no ${no}`);
-    for (const label of ['Start code review', 'Fetch findings', 'Start threat model']) assert.equal(btn(sec, label), undefined, `${state}: no ${label}`);
+    for (const label of ['Review this branch', 'Fetch findings', 'Start threat model']) assert.equal(btn(sec, label), undefined, `${state}: no ${label}`);
   }
 });
 
@@ -552,13 +552,13 @@ test('ready: the strip, which profile and why (AWS_PROFILE over aws connect), th
   assert.match(t, /AWS_PROFILE \(prism-env\) wins over the saved aws connect profile demo/);
   assert.match(t, /demo-shop has its own setup/);
   assert.match(t, /The first run in a repo also creates its code review, as the CI gate does\./);
-  assert.ok(btn(page.dom.byId.security, 'Start code review'));
+  assert.ok(btn(page.dom.byId.security, 'Review this branch'));
 });
 
 test('page: the code review dialog names repo, bucket, masked account and region, with Cancel focused', async () => {
   const p = await pagePayload();
   const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
-  btn(page.dom.byId.security, 'Start code review')!.listeners.click();
+  btn(page.dom.byId.security, 'Review this branch')!.listeners.click();
   const dlg = dialogOf(page);
   assert.ok(dlg.modal);
   const t = dlg.textContent;
@@ -578,7 +578,7 @@ test('start guards: a running review offers View it or Start another anyway (--f
   const running = { run_id: 'run-r1', job_id: 'job-r1', started_at: '2026-11-15T11:40:00Z', commit: 'aaaaaaaaaaaa', branch: 'main' };
   const reviewed = { run_id: 'run-d1', finished_at: '2026-11-15T10:20:00Z', commit: 'aaaaaaaaaaaa', counts: { critical: 1, high: 1, medium: 0, low: 2 }, total: 4 };
   const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD, 0, true, gate('ready'), { running, reviewed }) });
-  btn(page.dom.byId.security, 'Start code review')!.listeners.click();
+  btn(page.dom.byId.security, 'Review this branch')!.listeners.click();
   let dlg = dialogOf(page);
   assert.match(dlg.textContent, new RegExp('A code review of ' + p.repos[0].name + ' is already running\\. Started .* on main @ aaaaaaaaaaaa \\(job job-r1\\)'));
   assert.deepEqual(buttons(dlg).map((b) => b.textContent), ['Cancel', 'View it →', 'Start another anyway']);
@@ -587,7 +587,7 @@ test('start guards: a running review offers View it or Start another anyway (--f
   assert.equal(page.location.hash, '#security/run/' + p.repos[0].id + '/run-r1');
   assert.equal(dlg.modal, false);
   page.go('#security');
-  btn(page.dom.byId.security, 'Start full review')!.listeners.click();
+  btn(page.dom.byId.security, 'Review the whole repo')!.listeners.click();
   dlg = dialogOf(page);
   buttons(dlg).find((b) => b.textContent === 'Start another anyway')!.listeners.click();
   assert.match(dlg.textContent, /prism-cli security code-review --full --no-wait --force --profile demo --region us-west-2/, 'then the usual confirm, for the --force command');
@@ -596,7 +596,7 @@ test('start guards: a running review offers View it or Start another anyway (--f
   assert.deepEqual(page.requests.find((r) => r.url === '/api/action')!.body, { action: 'security-code-review-full-force', repo: p.repos[0].id, confirm: true });
 
   const rev = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD, 0, true, gate('ready'), { running: null, reviewed }) });
-  btn(rev.dom.byId.security, 'Start code review')!.listeners.click();
+  btn(rev.dom.byId.security, 'Review this branch')!.listeners.click();
   const d2 = dialogOf(rev);
   assert.match(d2.textContent, /This commit already has a finished review\. aaaaaaaaaaaa was reviewed .*: 1 critical, 1 high, 0 medium, 2 low\./);
   assert.deepEqual(buttons(d2).map((b) => b.textContent), ['Cancel', 'Open those findings →', 'Review it again']);
@@ -613,7 +613,7 @@ test('page: copy-only for enable security and every pentest command; Run for the
   const p = await pagePayload();
   const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
   const labels = buttons(page.dom.byId.security).map((b) => b.textContent);
-  for (const l of ['Fetch findings', 'Fetch threats', 'Fetch pentest findings', 'Start code review', 'Start full review', 'Start threat model', 'Run status check', 'Dry run']) assert.ok(labels.includes(l), l);
+  for (const l of ['Fetch findings', 'Fetch threats', 'Fetch pentest findings', 'Review this branch', 'Review the whole repo', 'Start threat model', 'Run status check', 'Dry run']) assert.ok(labels.includes(l), l);
   assert.ok(!labels.some((l) => /pentest/i.test(l) && !/Fetch/.test(l)), 'no Run for pentest');
   const t = page.dom.byId.security.textContent;
   assert.match(t, /prism-cli enable security --profile demo --region us-west-2Copy/);
@@ -670,7 +670,7 @@ test('Settings > AWS points to the Security Agent page; the Dashboard\'s securit
   assert.doesNotMatch(aws.textContent, /Security Agent runs/, 'the copy-only Security Agent rows moved to the page');
   const q = JSON.parse(JSON.stringify(p)) as DashboardPayload;
   q.security_runs = [{ repo_id: q.repos[1].id, run_id: 'abc123456789-20261115T120000000Z-manual-security-review', repo: q.repos[1].label, type: 'code-review', status: 'complete', started_at: '2026-11-15T12:00:00Z',
-    duration_s: 600, branch: 'main', commit: 'abc123456789', counts: { critical: 0, high: 1, medium: 0, low: 0 }, total: 1, top_title: 'x', reason: null, job_id: 'job-1' }];
+    duration_s: 600, branch: 'main', commit: 'abc123456789', counts: { critical: 0, high: 1, medium: 0, low: 0 }, total: 1, top_title: 'x', reason: null, job_id: 'job-1', check: null }];
   const dash = await runPage([q]);
   const link = dash.dom.byId.main.querySelectorAll('a').find((a) => a.textContent === 'View findings →');
   assert.equal(link?.getAttribute('href'), '#security/run/' + q.repos[1].id + '/abc123456789-20261115T120000000Z-manual-security-review');
@@ -709,7 +709,7 @@ test('GET /api/security-agent/gate: one known repo, local files only: no git pro
   assert.equal(((await api.getApi['/api/security-agent/gate'](new URL('http://x/api/security-agent/gate?repo=nope'))) as { status: number }).status, 404);
 });
 
-test('branch card: nothing new since the upstream disables the branch Start and offers the whole-repo review (with its guards)', async () => {
+test('code review item: one item, branch first then whole repo; nothing new since the upstream disables the branch Start, the whole-repo Start keeps its guards', async () => {
   const p = await pagePayload();
   const scopeUrl = '/api/security-agent/scope?repo=' + p.repos[0].id;
   const empty = { branch: 'feat/receiver-tool-usage', base: { upstream: 'origin/feat/receiver-tool-usage', fromUpstream: true, commit: 'd0975a99cf85' }, empty: true, dirty: 3 };
@@ -720,12 +720,19 @@ test('branch card: nothing new since the upstream disables the branch Start and 
   const item = sec.all().find((e) => e.getAttribute('data-branch-review'))!;
   assert.equal(item.getAttribute('data-branch-review'), 'blocked');
   assert.match(item.textContent, /Nothing new on feat\/receiver-tool-usage since origin\/feat\/receiver-tool-usage; a branch review would have nothing to check\./);
-  assert.match(item.textContent, /It diffs against the upstream, origin\/feat\/receiver-tool-usage\./);
+  assert.match(item.textContent, /The branch review diffs against the upstream, origin\/feat\/receiver-tool-usage\./);
+  assert.equal(item.querySelectorAll('b')[0].textContent, 'Code review');
+  assert.deepEqual(item.querySelectorAll('button').map((b) => b.textContent), ['Review this branch', 'Review the whole repo'], 'two choices, branch first');
+  // The whole-repo review is no longer its own item in the Start card.
+  assert.doesNotMatch(sec.textContent, /Code review of the whole repo|Code review of this branch|Start full review/);
+  assert.equal(btn(sec, 'Review the whole repo instead'), undefined, 'the drawer keeps that offer; the card has the item\'s own button');
+  assert.equal(sec.all().filter((e) => e.getAttribute('data-branch-review')).length, 1);
   assert.match(item.textContent, /3 uncommitted changes here will not be reviewed: commit them first\./);
-  const start = item.querySelectorAll('button').find((b) => b.textContent === 'Start code review')!;
+  const start = item.querySelectorAll('button').find((b) => b.textContent === 'Review this branch')!;
   assert.ok(start.hasAttribute('disabled'), 'the branch Start is disabled');
   assert.equal(start.listeners.click, undefined);
-  const full = item.querySelectorAll('button').find((b) => b.textContent === 'Review the whole repo instead')!;
+  const full = item.querySelectorAll('button').find((b) => b.textContent === 'Review the whole repo')!;
+  assert.ok(full.hasAttribute('data-full-start') && !full.hasAttribute('disabled'));
   full.listeners.click();
   const dlg = dialogOf(page);
   assert.match(dlg.textContent, /Start a code review of the whole repo/);
@@ -737,16 +744,17 @@ test('branch card: nothing new since the upstream disables the branch Start and 
   const nt = none.dom.byId.security.textContent;
   assert.match(nt, /No upstream for spike and no default branch on the remote, so there is nothing to diff against\./);
   assert.match(nt, /Uncommitted changes are never reviewed\./);
-  assert.ok(btn(none.dom.byId.security, 'Review the whole repo instead'));
+  assert.ok(btn(none.dom.byId.security, 'Review this branch')!.hasAttribute('disabled'));
+  assert.ok(btn(none.dom.byId.security, 'Review the whole repo')!.listeners.click);
   // No upstream, a default branch, new commits: the usual Start, and what it diffs against.
   const fb = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD), [scopeUrl]: { repo: p.repos[0].id, scope: { branch: 'spike', base: { upstream: 'origin/trunk', fromUpstream: false, commit: 'abc' }, empty: false, dirty: 0 } } });
   await fb.settle();
-  assert.match(fb.dom.byId.security.textContent, /No upstream for spike: it diffs against origin\/trunk, the remote's default branch\./);
-  const s2 = btn(fb.dom.byId.security, 'Start code review')!;
+  assert.match(fb.dom.byId.security.textContent, /No upstream for spike: the branch review diffs against origin\/trunk, the remote's default branch\./);
+  const s2 = btn(fb.dom.byId.security, 'Review this branch')!;
   assert.ok(!s2.hasAttribute('disabled') && s2.listeners.click, 'something to review: the usual Start');
-  assert.equal(btn(fb.dom.byId.security, 'Review the whole repo instead'), undefined);
+  assert.ok(btn(fb.dom.byId.security, 'Review the whole repo')!.listeners.click, 'both choices offered');
   // The check unknown (it failed): the usual Start; the CLI decides.
   const unknown = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
   await unknown.settle();
-  assert.ok(btn(unknown.dom.byId.security, 'Start code review')!.listeners.click);
+  assert.ok(btn(unknown.dom.byId.security, 'Review this branch')!.listeners.click);
 });

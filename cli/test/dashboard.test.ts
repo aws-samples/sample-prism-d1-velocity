@@ -463,7 +463,7 @@ test('--json payload shape', async () => {
   const p = await buildPayload({ cwd: repo, home, exporter: fixtureExporter, pathEnv: tmp('p3'), machineDeps: { home: tmp('h4'), env: {}, scheduleExists: () => false } });
   assert.equal(p.schema, PAYLOAD_SCHEMA);
   assert.deepEqual(p.overview.counts, { repos: 2, codewatch: 0 });
-  assert.deepEqual(Object.keys(p).sort(), ['agentHooks', 'aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'security_runs', 'suggestions', 'summary', 'timing', 'usage', 'version']);
+  assert.deepEqual(Object.keys(p).sort(), ['agentHooks', 'aws', 'generated_at', 'machine', 'overview', 'repos', 'schema', 'scope', 'security', 'security_check_gen', 'security_runs', 'suggestions', 'summary', 'timing', 'usage', 'version']);
   assert.deepEqual(Object.keys(p.timing).sort(), ['cacheHit', 'scan', 'setup', 'total', 'usage']);
   assert.equal(p.timing.cacheHit, false);
   assert.deepEqual(p.aws.accounts, [], 'no aws check results in the fixtures');

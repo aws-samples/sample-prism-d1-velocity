@@ -109,9 +109,17 @@ function runDur(s) {
 }
 /** Four labeled chips, highest first; a zero is greyed out. */
 const runChips = (c) => el('span', { class: 'runchips' }, ...RUN_SEVS.map((s) => { const n = (c || {})[s] || 0; return sevPill(n ? s : 'zero', n + ' ' + s); }));
+/** The auto-check's last answer for a pending run (security-autocheck.ts): checked when, or why it could not check. */
+const runCheckErr = (r) => r.check && r.check.state === 'error' ? r.check : null;
 function runSummary(r) {
-  if (r.status === 'running') return [el('div', {}, 'Running in Security Agent'), el('div', { class: 'fix' }, 'Findings appear when it finishes')];
-  if (r.status === 'noverdict') return [el('div', {}, 'Started, but no result was fetched'), el('div', { class: 'fix' }, 'Fetch its findings on the Security Agent page')];
+  if (r.status === 'running') return [el('div', {}, 'Running in Security Agent'), el('div', { class: 'fix', 'data-run-check': r.check ? txt(r.check.state) : null },
+    r.check && r.check.at && r.check.state === 'running' ? 'Checked with AWS ' + ago(r.check.at) + '; findings appear when it finishes' : 'Findings appear when it finishes')];
+  if (r.status === 'noverdict') {
+    const e = runCheckErr(r);
+    if (e) return [el('div', {}, 'No verdict yet: could not check with AWS'), el('div', { class: 'fix', 'data-run-check': 'error' }, txt(e.reason)), el('div', { class: 'fix' }, 'Fetch by hand in the repo: ', el('code', {}, txt(e.command)))];
+    if (r.check && r.check.state === 'checking') return [el('div', {}, 'Checking with AWS…'), el('div', { class: 'fix', 'data-run-check': 'checking' }, 'Its findings are saved here when the job has finished')];
+    return [el('div', {}, 'Started, but no result was fetched'), el('div', { class: 'fix' }, 'Fetch its findings on the Security Agent page')];
+  }
   if (r.status === 'failed') return [el('div', {}, 'No verdict'), r.reason ? el('div', { class: 'fix' }, txt(r.reason)) : null];
   return [runChips(r.counts), el('div', { class: 'fix' }, r.total ? 'Top: ' + txt(r.top_title) : 'No findings')];
 }
@@ -183,7 +191,7 @@ function securityRunsCard() {
 
 /** The Security Agent page's full table: filters, 25 rows, Show more. */
 const allRunsCard = () => runsTable({ id: 'security-runs-all', limit: 25, step: 25, filters: true, title: 'Security runs',
-  sub: 'every repo, newest first; from each repo\\'s .prism/results, no AWS call' });
+  sub: 'every repo, newest first; from each repo\\'s .prism/results; a pending run is checked with AWS (read-only) while this page is open' });
 
 /** The repo page's table: that repo only. */
 const repoRunsCard = (repoId) => runsTable({ repoId, limit: 10, step: 25, filters: true, title: 'Security runs', sub: 'this repo, newest first' });
@@ -201,6 +209,29 @@ function runDoneBar(r, summary) {
 }
 /** The results card cell's link for the newest run of a type. */
 const runCellLink = (repoId, type) => { const r = latestRunOf(repoId, type); return r ? runDoneBar({ repo: r.repo_id, run: r.run_id, status: r.status }) : null; };
+
+// ---------------------------------------------------------------- auto-check of pending runs
+/**
+ * While a run is pending, the page asks the server to check it with AWS (GET /api/security-check, read-only:
+ * the fetch command, server side): after each load of the data (page load, the minute refresh), then every
+ * CHECK_POLL_MS while a check is in flight or held back. When the server's generation moves past the payload's, the
+ * page loads the data again (the usual redraw). Never in a snapshot, never with nothing pending, never in a hidden tab.
+ */
+const CHECK_POLL_MS = 5000, CHECK_POLL_MAX = 40;
+let CHECK_TIMER = null, CHECK_POLLS = 0, CHECK_ASKING = false, CHECK_LOADED_FOR = null;
+const runsPending = () => runRows().some((r) => (r.status === 'running' || r.status === 'noverdict') && r.job_id);
+async function securityCheck() {
+  if (SNAPSHOT || CHECK_ASKING || !runsPending() || document.visibilityState !== 'visible') return;
+  CHECK_ASKING = true;
+  let a = null;
+  try { const r = await api('/api/security-check'); a = r.ok ? r.json : null; } catch (e) { a = null; } finally { CHECK_ASKING = false; }
+  clearTimeout(CHECK_TIMER); CHECK_TIMER = null;
+  if (!a) return;
+  // Once per generation: a payload that still lags (built while the check landed) waits for the next poll or refresh.
+  if (LAST && a.generation !== LAST.security_check_gen && a.generation !== CHECK_LOADED_FOR) { CHECK_LOADED_FOR = a.generation; CHECK_POLLS = 0; load(false); return; }
+  if ((a.checking > 0 || a.due > 0) && CHECK_POLLS < CHECK_POLL_MAX) { CHECK_POLLS++; CHECK_TIMER = setTimeout(securityCheck, CHECK_POLL_MS); }
+  else if (!a.checking && !a.due) CHECK_POLLS = 0;
+}
 
 // ---------------------------------------------------------------- the drill-down
 const RUN_RE = new RegExp('^#security/run/([a-f0-9]{16})/([A-Za-z0-9_-]{1,200})$');
@@ -283,8 +314,13 @@ function runDetail(d) {
   const out = [crumbs, head];
   if (d.overview) out.push(runOverview(d));
   if (r.status === 'failed') out.push(el('section', { class: 'card' }, el('h2', {}, 'Why there is no verdict'), el('p', {}, txt(r.reason) || 'The job did not complete.')));
-  if (r.status === 'running' || r.status === 'noverdict') out.push(el('section', { class: 'card' }, el('h2', {}, r.status === 'running' ? 'Still running' : 'No verdict fetched yet'),
-    el('p', { class: 'fix' }, (r.status === 'running' ? 'Findings appear here when the job finishes. ' : 'The job most likely finished. ') + 'Fetch them on the ', el('a', { href: '#security/' + txt(r.repo_id) }, 'Security Agent page'), ', or run the command below.')));
+  if (r.status === 'running' || r.status === 'noverdict') {
+    const e = runCheckErr(r), c = r.check;
+    out.push(el('section', { class: 'card', 'data-run-check': c ? txt(c.state) : null }, el('h2', {}, r.status === 'running' ? 'Still running' : 'No verdict fetched yet'),
+      c && c.state === 'running' && c.at ? el('p', {}, 'The dashboard checked the job with AWS ' + ago(c.at) + ' (read-only): still running. It checks again about every minute while this page is open, and saves the findings here when the job has finished.') : null,
+      e ? el('p', {}, 'The dashboard could not check the job with AWS: ' + txt(e.reason)) : null,
+      el('p', { class: 'fix' }, (r.status === 'running' ? 'Findings appear here when the job finishes. ' : 'The job most likely finished. ') + 'Fetch them on the ', el('a', { href: '#security/' + txt(r.repo_id) }, 'Security Agent page'), ', or run the command below.')));
+  }
   if (r.status === 'complete' || (d.findings || []).length) out.push(runFindingsCard(d));
   out.push(el('section', { class: 'card' }, el('h2', {}, 'Report and links'), el('ul', { class: 'runlinks' },
     el('li', {}, el('b', {}, 'Result file: '), el('code', {}, txt(d.result_file))),

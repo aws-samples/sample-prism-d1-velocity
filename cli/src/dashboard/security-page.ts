@@ -244,7 +244,7 @@ const saSetupTag = (s) => (!s ? 'not set up on this machine' : s.source === 'rep
 function saResultCell(x, levels, link) {
   if (!x) return el('span', { class: 'fix' }, 'none saved');
   return el('div', {}, el('span', { class: 'pills' }, ...resultPills(x, levels, 'clean')), el('div', { class: 'fix' }, (x.pending ? 'started ' + when(x.started_at) : when(x.finished_at)) + ' · job ' + txt(x.job_id).slice(0, 12)),
-    runningNote(x, null), x.pending ? null : link);
+    runningNote(x, null), x.pending ? checkNote(x) : checkNote(x.running), x.pending ? null : link);
 }
 
 function saResultsCard(repo) {
@@ -259,7 +259,7 @@ function saResultsCard(repo) {
     el('p', { class: 'note' }, 'Every run, with its findings, is in Security runs above.'));
 }
 
-/** The whole-repo review, offered where a branch review has nothing to check (the card, the drawer). Same guards as its own Start. */
+/** The whole-repo review, offered in the drawer after a branch review that had nothing to check. Same guards as the card's Start. */
 function saFullButton(repo) {
   const a = actionDef('security-code-review-full');
   if (!a || !a.available || SNAPSHOT) return null;
@@ -285,28 +285,34 @@ async function saScopeLoad(repo) {
 }
 
 /**
- * The branch review: what it diffs against (the CLI's rule: the upstream, else the remote's default branch),
- * and, when that diff is empty or there is no base, a disabled Start with the whole-repo review instead.
- * Unknown scope (still loading, or the check failed): the usual Start; the CLI decides.
+ * The one code review item: two choices, the branch's changes first, then the whole repo. The branch
+ * review says what it diffs against (the CLI's rule: the upstream, else the remote's default branch);
+ * when that diff is empty or there is no base, its Start is disabled and the note says why. Unknown
+ * scope (still loading, or the check failed): both Starts; the CLI decides. Both go through saStart
+ * (the running / already-reviewed guard, then the confirm dialog).
  */
 function saBranchItem(repo) {
   const s = SA_SCOPE.get(repo.id) || null;
-  const why = ['Uploads the repo at HEAD and a patch of your branch to the scan bucket and starts a code review job. The first run in a repo also creates its code review, as the CI gate does.'];
-  let ctl = [saRun('security-code-review', repo, 'Start code review')], note = null;
+  const why = ['Review this branch: uploads the repo at HEAD and a patch of your branch to the scan bucket and starts a code review job.',
+    'Review the whole repo: uploads the repo at HEAD and starts a code review job of all of it.',
+    'The first run in a repo also creates its code review, as the CI gate does.'];
+  let branch = saRun('security-code-review', repo, 'Review this branch'), note = null;
   if (s) {
     const br = s.branch ? txt(s.branch) : 'this commit (no branch checked out)';
     if (!s.base) {
       note = 'No upstream for ' + br + ' and no default branch on the remote, so there is nothing to diff against. Push the branch with an upstream, or review the whole repo.';
     } else {
-      why.push(s.base.fromUpstream ? 'It diffs against the upstream, ' + txt(s.base.upstream) + '.' : 'No upstream for ' + br + ': it diffs against ' + txt(s.base.upstream) + ', the remote\\'s default branch.');
-      if (s.empty) note = 'Nothing new on ' + br + ' since ' + txt(s.base.upstream) + '; a branch review would have nothing to check.';
+      why.push(s.base.fromUpstream ? 'The branch review diffs against the upstream, ' + txt(s.base.upstream) + '.' : 'No upstream for ' + br + ': the branch review diffs against ' + txt(s.base.upstream) + ', the remote\\'s default branch.');
+      if (s.empty) note = 'Nothing new on ' + br + ' since ' + txt(s.base.upstream) + '; a branch review would have nothing to check. Review the whole repo instead.';
     }
     why.push(s.dirty ? s.dirty + ' uncommitted change' + (s.dirty === 1 ? '' : 's') + ' here will not be reviewed: commit them first.' : 'Uncommitted changes are never reviewed.');
-    if (note) ctl = [el('button', { type: 'button', class: 'run danger', disabled: '', 'data-branch-start': '' }, 'Start code review'), saFullButton(repo)];
+    if (note && branch && branch.nodeName === 'BUTTON') branch = el('button', { type: 'button', class: 'run danger', disabled: '', 'data-branch-start': '' }, 'Review this branch');
   }
-  return el('li', { 'data-branch-review': s ? (note ? 'blocked' : 'ok') : 'unknown' }, el('div', { class: 'sa-head' }, el('b', {}, 'Code review of this branch')),
+  const full = saRun('security-code-review-full', repo, 'Review the whole repo');
+  if (full && full.nodeName === 'BUTTON') full.setAttribute('data-full-start', '');
+  return el('li', { 'data-branch-review': s ? (note ? 'blocked' : 'ok') : 'unknown' }, el('div', { class: 'sa-head' }, el('b', {}, 'Code review')),
     note ? el('div', { class: 'callout', role: 'note' }, note) : null,
-    el('div', { class: 'fix' }, why.join(' ')), el('div', { class: 'srow-ctl' }, ...ctl));
+    el('div', { class: 'fix' }, why.join(' ')), el('div', { class: 'srow-ctl' }, branch, full));
 }
 
 function saStartCard(repo) {
@@ -315,7 +321,6 @@ function saStartCard(repo) {
   return saCard('Start new work in ' + txt(repo.name), 'writes to AWS',
     el('ul', { class: 'salist' },
       saBranchItem(repo),
-      item('Code review of the whole repo', 'Uploads the repo at HEAD and starts a code review job.', saRun('security-code-review-full', repo, 'Start full review')),
       item('Threat model', 'Uploads the repo and its scope docs at HEAD, creates a threat model and starts a job.', saRun('security-threat-model', repo, 'Start threat model')),
       item('Pentest plan', 'Shows the plan, target and cost. Copy only: run it in a terminal.', copyOnly(txt(c.pentestDryRun), 'terminal')),
       item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). Copy only.', copyOnly(txt(c.pentest), 'AWS write')),
