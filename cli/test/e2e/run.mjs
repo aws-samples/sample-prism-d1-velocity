@@ -47,6 +47,23 @@ function seed(name, scenario, extra) {
   return home;
 }
 
+/** demo-shop's seeded pending review (job-demo-2): removed, so the dashboard has nothing to auto-check. */
+function dropPending(home) {
+  const dir = join(home, 'src', 'demo-shop', '.prism', 'results');
+  for (const f of readdirSync(dir)) if (f.endsWith('.json') && JSON.parse(readFileSync(join(dir, f), 'utf8')).status === 'pending') rmSync(join(dir, f));
+}
+/** The same record started `h` hours ago: past the stale window, so only an auto-check can show it running or complete. */
+function agePending(home, h) {
+  const dir = join(home, 'src', 'demo-shop', '.prism', 'results');
+  const t = new Date(Date.now() - h * 3600e3).toISOString();
+  for (const f of readdirSync(dir)) {
+    const r = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+    if (r.status === 'pending') writeFileSync(join(dir, f), JSON.stringify({ ...r, started_at: t, finished_at: t }, null, 2) + '\n');
+  }
+}
+/** Switches the fake aws of a running dashboard (fakebin/aws reads $HOME/fake-aws-mode). */
+const fakeMode = (home, mode) => writeFileSync(join(home, 'fake-aws-mode'), mode);
+
 /** A page that records console errors/warnings, page errors, failed requests and 4xx/5xx. */
 function watch(page, log, tag) {
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') log.push({ tag: tag(), type: 'console.' + m.type(), text: m.text().slice(0, 300) }); });
@@ -494,6 +511,8 @@ try {
     if (existsSync(file)) {
       const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
       const page = await ctx.newPage(); const log = []; let tag = 'snapshot'; watch(page, log, () => tag);
+      out.checkRequests = [];
+      page.on('request', (q) => { if (/security-check/.test(q.url())) out.checkRequests.push(q.url()); });
       await page.goto('file://' + file); await sleep(1200);
       const data = await page.evaluate(() => JSON.parse(document.getElementById('prism-snapshot').textContent).data);
       for (const route of ['#', '#repo/' + data.repos[0].id, '#security', '#accountguard', '#settings', '#settings/aws', '#settings/machine', '#settings/updates']) {
@@ -661,7 +680,8 @@ try {
   if (want('runs')) {
     const out = {};
     R.suites.runs = out;
-    const srv = await live('runs', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete', FAKE_SA: 'ready' });
+    // The auto-check sees job-demo-2 still running; the job "finishes" just before the manual fetch below.
+    const srv = await live('runs', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete', FAKE_SA: 'ready' }, (h) => fakeMode(h, 'in-progress'));
     const { ctx, page, log, setTag } = await openCtx(srv);
     out.log = log;
     const data = await page.evaluate(() => fetch('/api/data').then((r) => r.json()));
@@ -685,6 +705,7 @@ try {
     out.filteredStatus = await page.$$eval('#security-runs-all tr[data-run] .st', (x) => x.map((e) => e.textContent));
     await page.selectOption('#security-runs-all select[data-filter="status"]', ''); await sleep(200);
     // Fetch the pending review: it completes (FAKE_AWS=complete), and the drawer links to its findings.
+    fakeMode(srv.home, 'complete');
     const fetchBtn = page.locator('#security button:visible', { hasText: /^Fetch findings$/ }).first();
     out.fetchFound = await fetchBtn.count();
     if (out.fetchFound) {
@@ -799,7 +820,8 @@ try {
     const cases = [
       ['connect', 'connect', rmConn, {}, 'payments-api'],
       ['profile', 'profile', null, { AWS_PROFILE: 'prism-typo' }, 'payments-api'],
-      ['setup', 'setup', rmSetup, {}, 'payments-api'],
+      // Nothing pending: an auto-check of demo-shop's running review would call AWS while the card waits.
+      ['setup', 'setup', (h) => { rmSetup(h); dropPending(h); }, {}, 'payments-api'],
       ['mismatch', 'mismatch', otherSetup, {}, 'payments-api'],
       ['checking', 'checking', null, { FAKE_AWS: 'in-progress', FAKE_SA: 'slow' }, 'payments-api'],
       ['sso', 'sso', null, { FAKE_SA: 'sso' }, 'payments-api'],
@@ -858,24 +880,24 @@ try {
           await page.locator('#security button:visible', { hasText: new RegExp('^' + label + '$') }).first().click(); await sleep(300);
           return page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return { open: !!d?.open, text: d?.innerText || '', buttons: [...(d?.querySelectorAll('button') || [])].map((b) => b.textContent), focused: document.activeElement?.textContent || '' }; });
         };
-        o.running = await dialog(desk.page, 'Start full review');
+        o.running = await dialog(desk.page, 'Review the whole repo');
         await desk.page.screenshot({ path: join(SHOTS, 'gate-running-1280.png') });
         await desk.page.click('dialog.confirm button:has-text("View it")'); await sleep(500);
         o.runningView = await desk.page.evaluate(() => location.hash);
         const phone = await openCtx(srv, { width: 390, height: 844 });
         await phone.page.goto(srv.base + '/' + hash); await saReady(phone.page);
-        o.runningPhone = (await dialog(phone.page, 'Start full review')).open;
+        o.runningPhone = (await dialog(phone.page, 'Review the whole repo')).open;
         await phone.page.screenshot({ path: join(SHOTS, 'gate-running-390.png') });
         // The job finishes (the CLI fetches it; the fake answers COMPLETED): HEAD now has a finished review.
         const fin = spawnSync(process.execPath, [ENTRY, 'security', 'findings'], { cwd: join(srv.home, 'src', 'demo-shop'), encoding: 'utf8', timeout: 120000, env: demoEnv(srv.home, { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'complete', FAKE_SA: 'ready' }) });
         o.finished = fin.status;
         await desk.page.goto(srv.base + '/' + hash); await desk.page.reload(); await saReady(desk.page);
-        o.reviewed = await dialog(desk.page, 'Start full review');
+        o.reviewed = await dialog(desk.page, 'Review the whole repo');
         await desk.page.screenshot({ path: join(SHOTS, 'gate-reviewed-1280.png') });
         await desk.page.click('dialog.confirm button:has-text("Open those findings")'); await sleep(500);
         o.reviewedOpen = await desk.page.evaluate(() => location.hash);
         await phone.page.reload(); await saReady(phone.page);
-        o.reviewedPhone = (await dialog(phone.page, 'Start full review')).open;
+        o.reviewedPhone = (await dialog(phone.page, 'Review the whole repo')).open;
         await phone.page.screenshot({ path: join(SHOTS, 'gate-reviewed-390.png') });
         out.log.push(...phone.log);
         await phone.ctx.close();
@@ -916,12 +938,12 @@ try {
     await page.waitForSelector('[data-branch-review="blocked"]', { timeout: 15000 }).catch(() => {});
     out.card = await page.evaluate(() => {
       const li = document.querySelector('[data-branch-review]');
-      const start = li && [...li.querySelectorAll('button')].find((b) => b.textContent === 'Start code review');
-      return { state: li?.getAttribute('data-branch-review'), text: li?.innerText || '', startDisabled: !!start?.disabled, offer: !!li?.querySelector('[data-full-offer]') };
+      const start = li && [...li.querySelectorAll('button')].find((b) => b.textContent === 'Review this branch');
+      return { state: li?.getAttribute('data-branch-review'), text: li?.innerText || '', startDisabled: !!start?.disabled, offer: !!li?.querySelector('[data-full-start]') };
     });
     await page.locator('[data-branch-review]').screenshot({ path: join(SHOTS, 'branch-nothing-card-1280.png') }).catch(() => {});
     // The offer opens the whole-repo review's own guard (demo-shop's job-demo-2 is still running).
-    await page.click('[data-branch-review] [data-full-offer]'); await sleep(300);
+    await page.click('[data-branch-review] [data-full-start]'); await sleep(300);
     out.offerDialog = await page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return { open: !!d?.open, title: d?.querySelector('h2')?.textContent || '', buttons: [...(d?.querySelectorAll('button') || [])].map((b) => b.textContent) }; });
     await page.click('dialog.confirm button:has-text("Cancel")');
     // What the user did before: Start another anyway on the branch review. The CLI runs, finds no changes and starts nothing.
@@ -943,12 +965,80 @@ try {
     out.log.push(...phone.log);
     await phone.ctx.close();
   }
+  // ---------- 16b. auto-check of a pending run (1.21.3): running -> complete without a reload; a failed check says why; over stdio too ----------
+  if (want('autocheck')) {
+    const out = {};
+    R.suites.autocheck = out;
+    // job-demo-2 started 3 h ago: without a check it would read "no verdict yet".
+    const srv = await live('autocheck', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_SA: 'ready' }, (h) => { agePending(h, 3); fakeMode(h, 'in-progress'); });
+    const { ctx, page, log } = await openCtx(srv);
+    out.log = log;
+    const checks = [];
+    page.on('request', (q) => { if (new URL(q.url()).pathname === '/api/security-check') checks.push(Date.now()); });
+    await page.goto(srv.base + '/#security'); await saReady(page);
+    const row = () => page.evaluate(() => { const tr = document.querySelector('#security-runs-all tr.run-running'); return tr ? { cls: tr.className, text: tr.innerText.replace(/\s+/g, ' ') } : null; });
+    await page.waitForFunction(() => /Checked with AWS/.test(document.getElementById('security-runs-all')?.innerText || ''), null, { timeout: 30000 }).catch(() => {});
+    out.running = await row();
+    await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'autocheck-running-1280.png') }).catch(() => {});
+    await page.evaluate(() => { window.__noReload = 1; });
+    // The job finishes in AWS. The next check (about a minute later, the page's own refresh) saves its findings.
+    fakeMode(srv.home, 'complete');
+    const t0 = Date.now();
+    await page.waitForFunction(() => [...document.querySelectorAll('#security-runs-all tr.run-complete')].some((x) => /SQL injection in order lookup/.test(x.innerText)), null, { timeout: 120000 }).catch(() => {});
+    out.completeMs = Date.now() - t0;
+    out.complete = await page.evaluate(() => {
+      const tr = [...document.querySelectorAll('#security-runs-all tr.run-complete')].find((x) => /SQL injection in order lookup/.test(x.innerText));
+      return { text: tr ? tr.innerText.replace(/\s+/g, ' ') : '', sameDoc: window.__noReload === 1, noverdict: document.querySelectorAll('#security-runs-all tr.run-noverdict').length };
+    });
+    await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'autocheck-complete-1280.png') }).catch(() => {});
+    out.checkRequests = checks.length;
+    out.calls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').split('\n').filter(Boolean) : [];
+    await ctx.close();
+
+    // No credentials: the check fails, the run keeps "no verdict yet" with the reason and the command.
+    const bad = await live('autocheck-nocreds', 'full', { PRISM_NO_UPDATE_CHECK: '1' }, (h) => agePending(h, 3));
+    const b = await openCtx(bad);
+    await b.page.goto(bad.base + '/#');
+    await b.page.waitForSelector('#security-runs [data-run-check="error"]', { timeout: 30000 }).catch(() => {});
+    out.failed = await b.page.evaluate(() => { const tr = document.querySelector('#security-runs tr.run-noverdict'); return tr ? tr.innerText.replace(/\s+/g, ' ') : ''; });
+    out.failedHome = bad.home;
+    await b.page.locator('#security-runs').screenshot({ path: join(SHOTS, 'autocheck-failed-1280.png') }).catch(() => {});
+    const bp = await openCtx(bad, { width: 390, height: 844 });
+    await bp.page.goto(bad.base + '/#'); await bp.page.waitForSelector('#security-runs [data-run-check="error"]', { timeout: 30000 }).catch(() => {});
+    out.failedPhoneScroll = await bp.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await bp.page.locator('#security-runs').screenshot({ path: join(SHOTS, 'autocheck-failed-390.png') }).catch(() => {});
+    out.log.push(...b.log, ...bp.log);
+    await b.ctx.close(); await bp.ctx.close();
+
+    // Over `dashboard --serve-stdio` (the VS Code and Kiro Crew hosts): the same route, the same completion.
+    const home = seed('autocheck-stdio', 'full', (h) => { agePending(h, 3); fakeMode(h, 'complete'); });
+    const child = spawn(process.execPath, [ENTRY, 'dashboard', '--serve-stdio'], { cwd: readFileSync(join(home, '.start-dir'), 'utf8').trim(), env: demoEnv(home, { PRISM_NO_UPDATE_CHECK: '1', FAKE_SA: 'ready' }), stdio: ['pipe', 'pipe', 'pipe'] });
+    running.push(child);
+    const waiting = new Map();
+    let buf = '', seq = 0;
+    child.stdout.on('data', (d) => { buf += d; for (let i; (i = buf.indexOf('\n')) >= 0;) { const o = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (!o.hello) { waiting.get(o.id)?.(o); waiting.delete(o.id); } } });
+    const ask = (m) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); child.stdin.write(JSON.stringify({ id, ...m }) + '\n'); });
+    await sleep(1500);
+    const s = { answers: [] };
+    for (let i = 0; i < 40; i++) {
+      const a = await ask({ op: 'get', path: '/api/security-check' });
+      s.answers.push(a.json);
+      if (a.json && a.json.generation > 0) break;
+      await sleep(1000);
+    }
+    const data = (await ask({ op: 'get', path: '/api/data' })).json;
+    const run = (data.security_runs || []).find((r) => r.job_id === 'job-demo-2');
+    s.status = run && run.status; s.total = run && run.total;
+    child.stdin.end();
+    out.stdio = s;
+  }
   // ---------- 17. codewatch reviewer and model (1.20): your default in Settings, a repo's override, the team file; a fake claude on PATH ----------
   if (want('reviewer')) {
     const out = { steps: [] };
     R.suites.reviewer = out;
     // The team picked kiro, which is not installed here: the card must say claude runs instead.
-    const team = (h) => { const p = join(h, 'src', 'demo-shop', '.prism', 'config.json'); writeFileSync(p, JSON.stringify({ team_id: 'demo', eval: { reviewer: 'kiro' } }, null, 2) + '\n'); };
+    // Nothing pending (dropPending): this suite checks that no AWS call happens, and an auto-check would make one.
+    const team = (h) => { const p = join(h, 'src', 'demo-shop', '.prism', 'config.json'); writeFileSync(p, JSON.stringify({ team_id: 'demo', eval: { reviewer: 'kiro' } }, null, 2) + '\n'); dropPending(h); };
     const srv = await live('reviewer', 'full', { PRISM_NO_UPDATE_CHECK: '1' }, team, { reviewers: ['claude'] });
     const { ctx, page, log } = await openCtx(srv);
     out.log = log;
@@ -1321,6 +1411,7 @@ function verdicts(R) {
   }
   if (S.snapshot) {
     const live = (S.snapshot.routes || []).flatMap((r) => r.buttons.filter((b) => /^(Run|Re-verify|Disconnect|Upload|Start)/.test(b)).map((b) => r.route + ' ' + b));
+    add('snapshot-nocheck', 'a static snapshot asks for no check of its pending run', !(S.snapshot.checkRequests || []).length, (S.snapshot.checkRequests || []).join(' '));
     add('snapshot', 'the snapshot is written and draws every route', S.snapshot.exit === 0 && S.snapshot.routes.length >= 8 && !S.snapshot.layout320?.hscroll, JSON.stringify({ exit: S.snapshot.exit, stderr: S.snapshot.stderr }));
     add('snapshot-copy-only', 'nothing runs from the snapshot (Run buttons are Copy)', !live.length, live.join('; '));
   }
@@ -1425,6 +1516,21 @@ function verdicts(R) {
     add('GATE10', 'no full account id on the gate cards, and no home path in /api/security-agent', !leaks.length, leaks.join('; '));
     const writes = Object.entries(G).flatMap(([k, x]) => (x.calls || []).filter((c) => !READ_ONLY_AWS.test(c) && !/^(cloudformation describe|securityagent batch-get-code-review-jobs|securityagent list-findings|securityagent batch-get-findings|securityagent list-code-reviews|s3api head-object)/.test(c)).map((c) => `${k}: ${c}`));
     add('GATE11', 'the gate suite made read calls only (the fake aws)', !writes.length, writes.join('; '));
+  }
+  if (S.autocheck) {
+    const A = S.autocheck;
+    const writes = (A.calls || []).filter((c) => /^(s3api put-object|securityagent (start|create|delete|update|stop)|ssm put-parameter)/.test(c));
+    add('AC1', 'a pending run past the stale window that AWS reports still running shows running and when it was checked, not no verdict yet',
+      /^run-running/.test(A.running?.cls || '') && /Checked with AWS/.test(A.running?.text || '') && !/no verdict yet/.test(A.running?.text || ''), JSON.stringify(A.running));
+    add('AC2', 'when the job finishes, the run turns complete with its findings without a reload or a manual fetch',
+      /complete/.test(A.complete?.text || '') && /SQL injection in order lookup/.test(A.complete.text) && A.complete.sameDoc && A.complete.noverdict === 0, JSON.stringify(A.complete) + ' after ' + A.completeMs + ' ms');
+    add('AC3', 'the auto-check is bounded and read-only: a few check requests, no AWS write call',
+      !writes.length && (A.checkRequests || 0) >= 1 && (A.checkRequests || 0) <= 40 && (A.calls || []).some((c) => /^securityagent batch-get-code-review-jobs/.test(c)), 'checks ' + A.checkRequests + ' writes ' + writes.join('; '));
+    const leak = accountLeaks(A.failed || '');
+    add('AC4', 'a check that cannot run (no credentials) keeps no verdict yet, says why (no account id or home path) and gives the fetch command',
+      /could not check with AWS/.test(A.failed || '') && /Check your AWS credentials/.test(A.failed) && /prism-cli security findings --job job-demo-2/.test(A.failed)
+      && !leak.length && !(A.failed || '').includes(A.failedHome || '\u0000') && A.failedPhoneScroll <= 1, (A.failed || '').slice(0, 400) + ' scroll ' + A.failedPhoneScroll);
+    add('AC5', 'over dashboard --serve-stdio the same route completes the run', A.stdio?.status === 'complete' && A.stdio.total === 2, JSON.stringify(A.stdio).slice(0, 400));
   }
   if (S.branch) {
     const B = S.branch;

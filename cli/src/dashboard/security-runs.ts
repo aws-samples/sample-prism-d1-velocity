@@ -14,9 +14,14 @@ import { realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { RESULTS_DIR, readResultEntries, type Finding, type PrismResult, type ResultEntry } from '../codewatch/results.js';
 import { last4 } from '../aws/connection.js';
+import type { CheckState } from './security-autocheck.js';
 
 export type RunType = 'code-review' | 'threat-model' | 'pentest';
-/** complete: a verdict; running: pending and recent; noverdict: pending past the stale window (most likely finished, never fetched); failed: no verdict. */
+/**
+ * complete: a verdict; running: pending and recent, or the dashboard's last check (security-autocheck.ts) found it
+ * still running in AWS; noverdict: pending past the stale window with no such check (none could run, or it failed:
+ * `check.reason` says why); failed: no verdict.
+ */
 export type RunStatus = 'complete' | 'running' | 'failed' | 'noverdict';
 export interface RunCounts { critical: number; high: number; medium: number; low: number }
 
@@ -38,7 +43,12 @@ export interface SecurityRunRow {
   top_title: string | null;
   reason: string | null;
   job_id: string;
+  /** The dashboard's last read-only check of a pending job; null when none ran. */
+  check: CheckState | null;
 }
+
+/** The last auto-check of a job (security-autocheck.ts stateOf); absent: none (a snapshot, the CLI's --json). */
+export type CheckLookup = (type: RunType, jobId: string) => CheckState | null;
 
 export interface RunRepo { id: string; name: string; path: string }
 
@@ -85,9 +95,9 @@ export function runEntries(entries: ResultEntry[]): ResultEntry[] {
   return [...best.values()];
 }
 
-export function runStatus(r: PrismResult, now: Date): RunStatus {
+export function runStatus(r: PrismResult, now: Date, check: CheckState | null = null): RunStatus {
   const t = runTypeOf(r)!;
-  if (r.status === 'pending') return now.getTime() - Date.parse(r.started_at) > STALE_MS[t] ? 'noverdict' : 'running';
+  if (r.status === 'pending') return check?.state === 'running' || now.getTime() - Date.parse(r.started_at) <= STALE_MS[t] ? 'running' : 'noverdict';
   if (r.status === 'error') return 'failed';
   return 'complete';
 }
@@ -108,21 +118,23 @@ function duration(r: PrismResult): number | null {
 
 const sorted = (fs: Finding[]) => [...fs].sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0));
 
-export function runRow(repo: RunRepo, e: ResultEntry, now: Date): SecurityRunRow {
+export function runRow(repo: RunRepo, e: ResultEntry, now: Date, lookup?: CheckLookup): SecurityRunRow {
   const r = e.result;
   const top = sorted(r.findings || [])[0];
+  const job = jobKey(r) || '';
+  const check = r.status === 'pending' && job && lookup ? lookup(runTypeOf(r)!, job) : null;
   return {
-    repo_id: repo.id, run_id: e.id, repo: repo.name, type: runTypeOf(r)!, status: runStatus(r, now),
+    repo_id: repo.id, run_id: e.id, repo: repo.name, type: runTypeOf(r)!, status: runStatus(r, now, check),
     started_at: r.started_at, duration_s: duration(r), branch: r.branch, commit: r.commit ? r.commit.slice(0, 12) : null,
     counts: runCounts(r), total: (r.findings || []).length, top_title: top ? (top.title || top.message) : null,
-    reason: r.reason ?? null, job_id: jobKey(r) || '',
+    reason: r.reason ?? null, job_id: job, check,
   };
 }
 
 /** Every run in every repo, newest first, at most MAX_RUNS. */
-export function collectSecurityRuns(repos: RunRepo[], read: (root: string) => ResultEntry[] = readResultEntries, now: Date = new Date()): SecurityRunRow[] {
+export function collectSecurityRuns(repos: RunRepo[], read: (root: string) => ResultEntry[] = readResultEntries, now: Date = new Date(), check?: CheckLookup): SecurityRunRow[] {
   const rows: SecurityRunRow[] = [];
-  for (const repo of repos) for (const e of runEntries(read(repo.path))) rows.push(runRow(repo, e, now));
+  for (const repo of repos) for (const e of runEntries(read(repo.path))) rows.push(runRow(repo, e, now, check));
   return rows.sort((a, b) => b.started_at.localeCompare(a.started_at)).slice(0, MAX_RUNS);
 }
 
@@ -207,7 +219,7 @@ const shellWord = (p: string) => (/^[~A-Za-z0-9_./@%+,:=-]+$/.test(p) ? p : `'${
 
 /** GET /api/security-run?repo=<id>&run=<id>: one run's header and every finding. Local files only. */
 export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runArg: string | null, home: string, now: Date = new Date(),
-  read: (root: string) => ResultEntry[] = readResultEntries): RunDetail {
+  read: (root: string) => ResultEntry[] = readResultEntries, check?: CheckLookup): RunDetail {
   if (!repoArg || !REPO_ID.test(repoArg) || !runArg || !RUN_ID.test(runArg)) return { found: false, error: 'not a run id' };
   const repo = repos.find((r) => r.id === repoArg);
   if (!repo) return { found: false, error: 'that repo is not in the scan list' };
@@ -229,7 +241,7 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
     : type === 'threat-model' ? `prism-cli security threats --job ${job} --path ${where}`
       : `prism-cli security findings --pentest ${job} --path ${where}`;
   return {
-    found: true, run: runRow(repo, e, now), findings,
+    found: true, run: runRow(repo, e, now, check), findings,
     account4: i?.account ? last4(i.account) : null, region: i?.region ?? null,
     scope: r.security ? SCOPE[r.security.scope] ?? null : null,
     target_host: r.pentest?.target_host ?? null,

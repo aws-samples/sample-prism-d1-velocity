@@ -33,7 +33,7 @@ function realHomeOf(home: string): string {
 import { collectUsage, spendByRepo, type CodeburnExport, type RepoSpend, type UsagePanel } from './usage.js';
 import { versionCachePath } from './usage-cache.js';
 import { collectSecurity, type SecurityPanel } from './security.js';
-import { collectSecurityRuns, type SecurityRunRow } from './security-runs.js';
+import { collectSecurityRuns, type CheckLookup, type SecurityRunRow } from './security-runs.js';
 import { collectAws, type AwsPanel } from './aws.js';
 import { repoId } from './actions.js';
 import type { VersionInfo } from './update-check.js';
@@ -176,6 +176,8 @@ export interface DashboardPayload {
   security: SecurityPanel;
   /** Every code review, threat model and pentest in every repo, newest first (security-runs.ts). */
   security_runs: SecurityRunRow[];
+  /** Bumped by the auto-check whenever a pending run's state changed; the page redraws when GET /api/security-check reports another value. 0 without auto-check. */
+  security_check_gen: number;
   /** The latest cached aws check result per AWS account (repos and ~). */
   aws: AwsPanel;
   /** The one-glance summary shown at the top of the page (buildSummary). */
@@ -226,6 +228,8 @@ export interface PayloadOptions extends DiscoverOptions {
   agentHooks?: (repoRoot: string | null) => AgentHookStatus;
   machineDeps?: MachineDeps;
   pathEnv?: string;
+  /** The live dashboard's auto-check of pending Security Agent jobs (security-autocheck.ts); absent: none (snapshot, --json). */
+  securityCheck?: { lookup: CheckLookup; generation: () => number };
 }
 
 const byName = (a: { name: string; path: string }, b: { name: string; path: string }) =>
@@ -246,6 +250,8 @@ export function sortCodewatchRows(rows: CodewatchRow[]): CodewatchRow[] {
 
 export async function buildPayload(opts: PayloadOptions): Promise<DashboardPayload> {
   const t0 = Date.now();
+  // Read before the result files: a check that lands during the build leaves an older value, so the page asks again.
+  const checkGen = opts.securityCheck?.generation() ?? 0;
   const d = discoverRepos(opts);
   const tScan = Date.now();
   // Usage (codeburn) and the git checks are child processes: start both, then do the in-process work while they run.
@@ -323,8 +329,9 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     },
     suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),
     usage,
-    security: collectSecurity(repos, (p) => results.get(p) ?? readResultEntries(p).map((e) => e.result)),
-    security_runs: collectSecurityRuns(repos.map((r) => ({ id: r.id, name: r.label, path: r.path })), (p) => entries.get(p) ?? readResultEntries(p)),
+    security: collectSecurity(repos, (p) => results.get(p) ?? readResultEntries(p).map((e) => e.result), new Date(), opts.securityCheck?.lookup),
+    security_runs: collectSecurityRuns(repos.map((r) => ({ id: r.id, name: r.label, path: r.path })), (p) => entries.get(p) ?? readResultEntries(p), new Date(), opts.securityCheck?.lookup),
+    security_check_gen: checkGen,
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
     summary: buildSummary(repos, usage, machineSetup),
     version: await versionP,

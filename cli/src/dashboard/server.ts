@@ -255,12 +255,15 @@ export function cachedPayload(build: () => Promise<unknown>, ttlMs = 30_000): ((
   let at = 0;
   let pending: Promise<unknown> | null = null;
   let value: unknown;
+  // An invalidate() during a build must outlive it: that build may have read the files before the change.
+  let epoch = 0;
   const get = () => {
     if (value !== undefined && Date.now() - at < ttlMs) return Promise.resolve(value);
     if (!pending) {
-      pending = build().then((v) => { value = v; at = Date.now(); return v; }).finally(() => { pending = null; });
+      const started = epoch;
+      pending = build().then((v) => { value = v; at = started === epoch ? Date.now() : 0; return v; }).finally(() => { pending = null; });
     }
     return pending;
   };
-  return Object.assign(get, { invalidate: () => { at = 0; } });
+  return Object.assign(get, { invalidate: () => { at = 0; epoch++; } });
 }

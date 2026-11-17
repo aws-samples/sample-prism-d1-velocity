@@ -23,7 +23,7 @@ import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountg
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
 import { securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
-import { securityRunDetail } from './security-runs.js';
+import { securityRunDetail, type CheckLookup } from './security-runs.js';
 import { ApiAnswer } from './server.js';
 import { codewatchDefaults, codewatchReviewer } from './codewatch-reviewer.js';
 
@@ -50,6 +50,8 @@ export interface SetupApiDeps {
   securityAgent?: SecurityAgentDeps;
   /** AccountGuard's routes; absent: they answer 400. */
   accountGuard?: AccountGuardDeps;
+  /** The last auto-check of a pending job (security-autocheck.ts), for the run drill-down. */
+  securityCheck?: CheckLookup;
 }
 
 const emptyObject = (b: unknown) => !!b && typeof b === 'object' && !Array.isArray(b) && Object.keys(b).length === 0;
@@ -103,7 +105,7 @@ export function setupApi(d: SetupApiDeps) {
       // Ids only: the repo id is matched against the scan list and the run id against that repo's result files.
       // No such run answers 404 (the page shows Run not found and stops asking); any other failure is retried.
       '/api/security-run': async (url: URL) => {
-        const run = securityRunDetail(d.securityAgent ? await d.securityAgent.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home);
+        const run = securityRunDetail(d.securityAgent ? await d.securityAgent.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home, new Date(), undefined, d.securityCheck);
         return run.found ? run : new ApiAnswer(404, run);
       },
     },

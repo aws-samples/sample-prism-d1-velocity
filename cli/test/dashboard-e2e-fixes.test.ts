@@ -42,7 +42,7 @@ test('security panel: a newer pending review keeps the last completed review on 
   assert.equal(row.pending, false);
   assert.deepEqual(row.counts, { CRITICAL: 1, HIGH: 1 });
   assert.equal(row.findings.length, 2);
-  assert.deepEqual(row.running, { job_id: 'job-new', scope: 'full', started_at: '2026-11-14T11:30:00Z', stale: false });
+  assert.deepEqual(row.running, { job_id: 'job-new', scope: 'full', started_at: '2026-11-14T11:30:00Z', stale: false, check: null });
 
   // Only a pending job: that is the row, as before. A completed newest job: nothing running.
   const [only] = collectSecurity(repoList, () => [run], NOW).repos;

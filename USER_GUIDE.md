@@ -1240,12 +1240,14 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   for you to run. The **Settings** view (below) can run a fixed set of local setup commands for you,
   the **Security Agent** page (below) runs the Security Agent commands in a repo you pick, and
   **AccountGuard** (below) checks the connected AWS account.
-- **AWS.** Loading the Dashboard makes no AWS calls. **Connect** and **Re-verify** on the Settings AWS tab
+- **AWS.** Loading the Dashboard makes no AWS calls, with one exception: while a code review, threat
+  model or pentest is pending in a repo's results, the open page has the dashboard check that job
+  read-only (below, Security runs). **Connect** and **Re-verify** on the Settings AWS tab
   (`aws connect`), AccountGuard's `aws check`, `team info`, the Security Agent page's agent-space check
   (which runs by itself once per session when you open that page and its first two setup steps pass)
   and its fetch and status buttons make read-only calls. Only two buttons write to AWS, both on the Security Agent page and both after a
-  dialog that says what they upload and where: **Start code review** (`security code-review
-  --no-wait`, branch diff or `--full`) and **Start threat model** (`security threat-model --no-wait`).
+  dialog that says what they upload and where: the **Code review** item's **Review this branch** and
+  **Review the whole repo** (`security code-review --no-wait`, branch diff or `--full`) and **Start threat model** (`security threat-model --no-wait`).
   `enable security` and every `security pentest` command stay Copy only.
 - **Theme.** The page opens in the dark theme. The **Light / Dark / System** toggle in the header is
   saved in your browser (`localStorage`) and wins on the next load; System follows your OS setting.
@@ -1514,22 +1516,22 @@ step.
   **Complete. View findings →** (or **Failed. View details →**), linking to the run's page. The
   dashboard takes the run from the result file the command wrote, not from its output. A job that
   is still running shows the amber `still running` state and no link.
-- **Start new work.** **Start code review** (`security code-review --no-wait`), **Start full review**
-  (`--full --no-wait`) and **Start threat model** (`security threat-model --no-wait`) appear once the
-  setup check passes. Their dialog says what happens, for example
+- **Start new work.** One **Code review** item with two choices, **Review this branch**
+  (`security code-review --no-wait`) first, then **Review the whole repo** (`--full --no-wait`), and
+  **Start threat model** (`security threat-model --no-wait`) appear once the setup check passes. Their dialog says what happens, for example
   "Uploads demo-shop source at HEAD to the scan bucket prism-d1-scan-demo in account ••••3333 /
   us-west-2 and starts a code review job.", shows the command, and has Cancel focused, so Enter never
   confirms; the run needs a click on **Upload and start**. The server checks the setup again, and that
   the credentials still point to the same account, before it runs. The job keeps running in AWS;
   fetch its result here later.
 
-  The branch review's card says what it diffs against, by the same rule as the CLI: the branch's
-  upstream, else the remote's default branch. It reads this from local git only. When the branch has
-  nothing new since that base, or there is no base at all, the card says so, disables **Start code
-  review** and offers **Review the whole repo instead** (the full review, with its own guards). It
-  also counts uncommitted changes, which no review includes: commit them first. If a branch review
-  still finds nothing, the output drawer shows a neutral **nothing to review** (no job, no upload)
-  with the same offer.
+  The Code review item says what the branch review diffs against, by the same rule as the CLI: the
+  branch's upstream, else the remote's default branch. It reads this from local git only. When the
+  branch has nothing new since that base, or there is no base at all, the item says so and disables
+  **Review this branch**; **Review the whole repo** stays (with its own guards). It also counts
+  uncommitted changes, which no review includes: commit them first. If a branch review still finds
+  nothing, the output drawer shows a neutral **nothing to review** (no job, no upload) and offers
+  **Review the whole repo instead**.
 
   ![The Action output drawer with demo data after a branch review found nothing: the amber nothing to review pill, "no job was started and nothing was uploaded", Review the whole repo instead, and the CLI's own lines ending in nothing to review](assets/images/prism-cli/dashboard-security-nothing-to-review-dark.png)
 
@@ -1543,7 +1545,7 @@ step.
 
   ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png) `security pentest`, `--dry-run` and
   `--status` are Copy only (`--status` tears the test environment down once the job has finished).
-  ![The confirm dialog for Start full review with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
+  ![The confirm dialog for Review the whole repo with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
 - **Setup.** One folded card for the whole machine, **Set up Security Agent on this machine**
   (the setup check above leads when something is missing). Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
   CDK app's npm packages into prism-cli's own folder), `prism-cli enable security` to copy, with no
@@ -1609,14 +1611,22 @@ shown at once and refreshed in the background. A failed or missing codeburn is s
 never cached.
 
 **Security runs.** The latest 5 Security Agent runs (code reviews, threat models and pentests) in
-every repo, newest first, read from each repo's `.prism/results/`; loading them makes no AWS call.
+every repo, newest first, read from each repo's `.prism/results/`. Reading them makes no AWS call.
+While a run is pending, the open page has the dashboard check its job with AWS, read-only: when the
+page loads, then about every minute while it stays open and visible. The check is the same command
+a Fetch button runs (`security findings --job`, `security threats --job` or `security findings
+--pentest <job>`, no `--wait`), in that repo, with the same profile and region, so it saves the
+verdict and findings exactly as that command does. When the job has finished, the row turns
+**complete** with its findings, without a reload. One check runs per job at a time, at most two at
+once, never while another dashboard action runs, and after a failed check the next one waits
+longer each time (up to 30 minutes). A static snapshot (`dashboard --snapshot`) checks nothing.
 Each row shows:
 
 | Column | What it shows |
 |---|---|
 | Type | Code review, Threat model or Pentest, with an icon |
 | Repo | The repo, its branch and commit |
-| Status | **complete**, **running** (amber), **failed** (red) or **no verdict yet**. A running or failed row also has an amber or red bar on its left edge. A run still pending after 2 hours (6 for a pentest) reads **no verdict yet**: it has most likely finished, but nobody fetched it |
+| Status | **complete**, **running** (amber), **failed** (red) or **no verdict yet**. A running or failed row also has an amber or red bar on its left edge. A pending run that the last check found still running reads **running**, with when it was checked. A run still pending after 2 hours (6 for a pentest) reads **no verdict yet** only when no check could run or the check failed (no credentials, an expired SSO session, access denied, job not found): the row then says why, with account ids and home paths masked, and gives the fetch command to run by hand. The same reason is the title of the `stale?` pill on the Security Agent page |
 | Started | When it started, and how long it took (or how long it has been running) |
 | Summary | Four severity chips (critical, high, medium, low; a zero is greyed out) and the top finding's title, or `No findings`; a failed run shows its reason |
 | Link | **View findings →** to the run's page; a running run has no link yet |

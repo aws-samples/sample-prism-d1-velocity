@@ -454,12 +454,17 @@ const riskPills = (counts, levels, none) => {
 };
 
 /** A cached result's pills: running (pending), the job's failure, else its counts. */
-const resultPills = (x, levels, none) => x.pending ? [sevPill('medium', 'running'), x.stale ? sevPill('zero', 'stale?') : null].filter(Boolean)
+/** stale?: past the window and no check found it still running; with a failed check, the pill's title says why. */
+const stalePill = (x) => { const p = sevPill('zero', 'stale?'); const e = x.check && x.check.state === 'error' ? x.check : null; if (e) p.setAttribute('title', 'could not check with AWS: ' + txt(e.reason)); return p; };
+/** A failed auto-check of a pending job: why, and the command to fetch it by hand. */
+const checkNote = (x) => { const e = x && x.check && x.check.state === 'error' ? x.check : null;
+  return e ? el('div', { class: 'fix', 'data-check-error': '' }, 'Could not check with AWS: ' + txt(e.reason) + '. Fetch by hand: ', el('code', {}, txt(e.command))) : null; };
+const resultPills = (x, levels, none) => x.pending ? [sevPill('medium', 'running'), x.stale ? stalePill(x) : null].filter(Boolean)
   : x.status === 'error' ? [sevPill('blocked', txt(x.job_status).toLowerCase())] : riskPills(x.counts, levels, none);
 
 const SCOPE_TEXT = { diff: 'branch diff', full: 'whole repo' };
 /** A newer code review still running while the last completed one is shown (security.ts running); null when there is none. */
-const runningNote = (r, hint) => r && r.running ? el('p', { class: 'note' }, sevPill('medium', 'new review running'), r.running.stale ? sevPill('zero', 'stale?') : null,
+const runningNote = (r, hint) => r && r.running ? el('p', { class: 'note' }, sevPill('medium', 'new review running'), r.running.stale ? stalePill(r.running) : null,
   ' started ' + when(r.running.started_at) + ' · ' + txt(SCOPE_TEXT[r.running.scope] || 'scope unknown') + ' · job ' + txt(r.running.job_id).slice(0, 12)
   + '. Shown: the last completed review' + (hint ? '; fetch the new one with ' : '.'), hint ? el('code', {}, hint) : null, hint ? '.' : null) : null;
 
@@ -530,6 +535,8 @@ async function load(fresh) {
     clearTimeout(historyTimer);
     if (!SNAPSHOT && historyPending() && historyPolls < HISTORY_POLL_MAX) { historyPolls++; historyTimer = setTimeout(() => load(false), HISTORY_POLL_MS); }
     else if (!historyPending()) historyPolls = 0;
+    // Pending Security Agent runs: ask the server to check them with AWS (security-runs-page.ts).
+    securityCheck();
   }
 }
 
