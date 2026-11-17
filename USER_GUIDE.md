@@ -1410,7 +1410,7 @@ suggests covering them all with `prism-cli enable codewatch --global` (see
 
 ### Security Agent Page
 
-![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
+![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work with the Pentest target picker (the tracked Dockerfiles, the one .prism/pentest.json names preselected, the build folder, port and health path) and its Pentest plan and Pentest commands, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
 
 **Security Agent** in the header (`#security`, or `#security/<repo-id>` for one repo) runs the
 existing [Security Agent commands](#security-scans-from-your-machine) in a repo you pick, as if you
@@ -1547,6 +1547,9 @@ step.
 
   ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png) `security pentest`, `--dry-run` and
   `--status` are Copy only (`--status` tears the test environment down once the job has finished).
+  The **Pentest target** picker above them chooses the Dockerfile, build folder, port and health
+  path those commands name, asked each time and never saved; see
+  [Running a Penetration Test from the CLI](#running-a-penetration-test-from-the-cli).
   ![The confirm dialog for Review the whole repo with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
 - **Setup.** One folded card for the whole machine, **Set up Security Agent on this machine**
   (the setup check above leads when something is missing). Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
@@ -2218,8 +2221,23 @@ An `env` name that looks sensitive (`password`, `secret`, `token`, `key`, ...) m
 `{ "secret": "<arn>" }` reference; a literal value there is refused, so no credential lands in
 the committed file. Secrets are injected by ECS when the task starts. An actor's `providerType` is
 `SECRETS_MANAGER`, `AWS_LAMBDA` or `AWS_IAM_ROLE`, and its ARN must be in the same account. The
-pentest's service role is granted read on exactly the actor ARNs listed. `--app-dir` and
-`--dockerfile` override `path` and `dockerfile` for one run.
+pentest's service role is granted read on exactly the actor ARNs listed. `--app-dir`,
+`--dockerfile`, `--port` and `--health-path` override `path`, `dockerfile`, `port` and
+`healthPath` for one run.
+
+**From the dashboard.** On the Security Agent page, **Start new work** has a **Pentest target**
+picker. It lists the Dockerfiles git tracks in the picked repo (`Dockerfile`, `*.Dockerfile` and
+`Dockerfile.*`, at most 50), preselects the one `.prism/pentest.json` names (marked **from
+.prism/pentest.json**), else `./Dockerfile`, else the first, and has **Other folder…** for a folder
+or Dockerfile you type. The **Build folder** defaults to the Dockerfile's folder; **Port** and
+**Health path** start from `.prism/pentest.json`, else the defaults (8080, `/health`). The server
+checks a typed path before any command is shown: it must be relative to the repo, stay inside it
+(no `..`, no absolute path, no symlink out of it), and name a folder with a Dockerfile or a
+Dockerfile; otherwise the reason is shown under the field. The **Pentest plan** and **Pentest**
+commands then carry `--app-dir`, `--dockerfile`, `--port` and `--health-path`, shell-quoted, and
+stay Copy only. The choice is asked each time: nothing is written to the repo or to
+`.prism/pentest.json`, and the page keeps it only until you reload it. A `.prism/pentest.json`
+that does not load is named on the card and its values are not used.
 
 **Flags.** Every flag, with its default (`--timeout` 360 minutes for `--wait`):
 [`prism-cli security pentest`](docs/CLI-REFERENCE.md#prism-cli-security-pentest).

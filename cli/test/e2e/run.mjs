@@ -8,7 +8,7 @@
 // exits 1 when a verdict fails.
 import { chromium } from 'playwright-core';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1233,6 +1233,157 @@ try {
     await phone.ctx.close();
   }
 
+  // ---------- 19. the pentest Dockerfile picker (1.21.5): tracked Dockerfiles, pentest.json preselected, typed paths checked, commands follow; over stdio too ----------
+  if (want('pentest')) {
+    const out = { log: [] };
+    R.suites.pentest = out;
+    const D = 'FROM scratch\n';
+    // demo-shop gets four tracked Dockerfiles (one in a folder with a space), a committed pentest.json and a
+    // tracked symlink to a folder outside the repo. Only these paths are added: the seeded repo override stays untracked.
+    const dockerfiles = (h) => {
+      const env = { ...process.env, HOME: h, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Demo Dev', GIT_AUTHOR_EMAIL: 'demo@example.com', GIT_COMMITTER_NAME: 'Demo Dev', GIT_COMMITTER_EMAIL: 'demo@example.com' };
+      const shop = join(h, 'src', 'demo-shop');
+      const w = (p, c) => { mkdirSync(dirname(join(shop, p)), { recursive: true }); writeFileSync(join(shop, p), c); };
+      w('Dockerfile', D); w('services/api/Dockerfile.prod', D); w('docker/web.Dockerfile', D); w('my app/Dockerfile', D); w('docs/README.md', 'docs\n');
+      w('.prism/pentest.json', JSON.stringify({ path: 'services/api', dockerfile: 'services/api/Dockerfile.prod', port: 3000, healthPath: '/healthz' }, null, 2));
+      mkdirSync(join(h, 'outside')); writeFileSync(join(h, 'outside', 'Dockerfile'), D);
+      symlinkSync(join(h, 'outside'), join(shop, 'escape'));
+      execFileSync('git', ['add', 'Dockerfile', 'services', 'docker', 'my app', 'docs', '.prism/pentest.json', 'escape'], { cwd: shop, env });
+      execFileSync('git', ['commit', '-q', '-m', 'Dockerfiles'], { cwd: shop, env });
+    };
+    const srv = await live('pentest', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }, dockerfiles);
+    const shop = join(srv.home, 'src', 'demo-shop');
+    const tree = () => execFileSync('git', ['-C', shop, 'status', '--porcelain', '--', '.', ':!.prism/results'], { encoding: 'utf8' });
+    const before = { tree: tree(), config: readFileSync(join(shop, '.prism', 'pentest.json'), 'utf8') };
+    const { ctx, page, log } = await openCtx(srv, { width: 1280, height: 900 }, { permissions: ['clipboard-read', 'clipboard-write'] });
+    out.log = log;
+    await setTheme(page, 'dark');
+    const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+    const repo = sa.repos.find((r) => r.path.endsWith('/src/demo-shop'));
+    const other = sa.repos.find((r) => r.path.endsWith('/src/payments-api'));
+    await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
+    await page.waitForSelector('[data-pt-repo]', { timeout: 15000 }).catch(() => {});
+    const cmdOf = (key) => `[data-pt-cmd="${key}"]`;
+    const waitCmd = (re) => page.waitForFunction((src) => new RegExp(src).test(document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || ''), re.source, { timeout: 15000 }).catch(() => {});
+    const pt = () => page.evaluate(() => {
+      const root = document.querySelector('[data-pt-repo]');
+      if (!root) return null;
+      const cmd = (k) => { const d = document.querySelector('[data-pt-cmd="' + k + '"]'); return { text: d?.querySelector('code')?.innerText || '', copy: !!d && !d.querySelector('button')?.disabled, badge: d?.querySelector('.badge')?.innerText || '' }; };
+      return {
+        radios: [...root.querySelectorAll('input[type=radio]')].map((r) => ({ v: r.value, on: r.checked, label: r.closest('label')?.innerText.trim() || '' })),
+        fields: ['dir', 'port', 'health'].map((k) => root.querySelector('[id^="sa-pt-' + k + '-"]')?.value),
+        errs: [...root.querySelectorAll('[data-pt-err]')].map((e) => e.getAttribute('data-pt-err') + ': ' + e.innerText),
+        dry: cmd('pentestDryRun'), run: cmd('pentest'), text: root.innerText, runButtons: [...document.querySelectorAll('#security li')].filter((li) => /^Pentest/.test(li.querySelector('b')?.innerText || '')).flatMap((li) => [...li.querySelectorAll('button')].map((b) => b.innerText)).filter((t) => t !== 'Copy'),
+      };
+    });
+    await waitCmd(/--dockerfile/);
+    out.initial = await pt();
+    await page.locator('section.card', { has: page.locator('[data-pt-repo]') }).screenshot({ path: join(SHOTS, 'pentest-picker-1280.png') }).catch(() => {});
+    // The docs screenshot: the whole Security Agent page, dark, at 1280.
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: join(SHOTS, 'dashboard-security-agent-dark.png'), fullPage: true }).catch(() => {});
+    // Pick docker/web.Dockerfile: the build folder follows it and the commands change.
+    await page.check('[data-pt-repo] input[type=radio][value="docker/web.Dockerfile"]');
+    await waitCmd(/--dockerfile docker\/web\.Dockerfile/);
+    out.web = await pt();
+    // The folder with a space: quoted for the shell.
+    await page.check('[data-pt-repo] input[type=radio][value="my app/Dockerfile"]');
+    await waitCmd(/--dockerfile 'my app\/Dockerfile'/);
+    out.space = await pt();
+    // Typing keeps the focus across the redraws: every key lands.
+    await page.click('[id^="sa-pt-port-"]'); await page.keyboard.press('End');
+    await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace');
+    await page.keyboard.type('9090', { delay: 120 });
+    await waitCmd(/--port 9090/);
+    out.typed = await pt();
+    out.focus = await page.evaluate(() => document.activeElement?.id || '');
+    // Copy puts the exact command on the clipboard.
+    await page.locator(cmdOf('pentest') + ' button', { hasText: 'Copy' }).click(); await sleep(200);
+    out.clipboard = await page.evaluate(() => navigator.clipboard.readText().catch((e) => 'unreadable: ' + e.message));
+    // Other folder…: a path out of the repo, a symlink out of it, a folder with no Dockerfile, then a good folder.
+    await page.check('[data-pt-repo] input[type=radio][value="__other__"]');
+    const typeOther = async (v) => { await page.fill('[id^="sa-pt-other-"]', v); await sleep(700); return pt(); };
+    out.bad = { dotdot: await typeOther('../outside'), abs: await typeOther(srv.home + '/outside'), link: await typeOther('escape'), none: await typeOther('docs'), good: await typeOther('my app'), file: await typeOther('services/api/Dockerfile.prod') };
+    await typeOther('../outside');
+    await page.locator('section.card', { has: page.locator('[data-pt-repo]') }).screenshot({ path: join(SHOTS, 'pentest-picker-error-1280.png') }).catch(() => {});
+    await typeOther('my app');
+    // Another repo, then back: the choice is page memory.
+    await page.selectOption('#sa-repo', other.id); await sleep(800);
+    out.otherRepo = await pt();
+    await page.selectOption('#sa-repo', repo.id); await sleep(800);
+    out.back = { ...(await pt()), other: await page.inputValue('[id^="sa-pt-other-"]').catch(() => null) };
+    await ctx.close();
+    // A reload forgets it: pentest.json's choice again.
+    const fresh = await openCtx(srv);
+    await fresh.page.goto(srv.base + '/#security/' + repo.id); await saReady(fresh.page);
+    await fresh.page.waitForSelector('[data-pt-repo]', { timeout: 15000 }).catch(() => {});
+    await fresh.page.waitForFunction(() => /--dockerfile/.test(document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || ''), null, { timeout: 15000 }).catch(() => {});
+    out.reloaded = await fresh.page.evaluate(() => [...document.querySelectorAll('[data-pt-repo] input[type=radio]')].filter((r) => r.checked).map((r) => r.value));
+    out.log.push(...fresh.log);
+    await fresh.ctx.close();
+    const phone = await openCtx(srv, { width: 390, height: 844 });
+    await setTheme(phone.page, 'dark');
+    await phone.page.goto(srv.base + '/#security/' + repo.id); await saReady(phone.page);
+    await phone.page.waitForSelector('[data-pt-repo]', { timeout: 15000 }).catch(() => {});
+    await sleep(600);
+    out.phoneScroll = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await phone.page.locator('section.card', { has: phone.page.locator('[data-pt-repo]') }).screenshot({ path: join(SHOTS, 'pentest-picker-390.png') }).catch(() => {});
+    out.log.push(...phone.log);
+    await phone.ctx.close();
+    out.after = { tree: tree(), config: readFileSync(join(shop, '.prism', 'pentest.json'), 'utf8') };
+    out.before = before;
+    out.calls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').split('\n').filter(Boolean) : [];
+    out.home = srv.home;
+
+    // Over `dashboard --serve-stdio` (the VS Code and Kiro Crew hosts): the shared dist/ui bundle draws the same picker.
+    const home = seed('pentest-stdio', 'full', (h) => { dockerfiles(h); dropPending(h); });
+    const child = spawn(process.execPath, [ENTRY, 'dashboard', '--serve-stdio'], { cwd: readFileSync(join(home, '.start-dir'), 'utf8').trim(), env: demoEnv(home, { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }), stdio: ['pipe', 'pipe', 'pipe'] });
+    running.push(child);
+    const waiting = new Map();
+    let buf = '', hello = null, seq = 0, helloOk;
+    const helloP = new Promise((r) => { helloOk = r; });
+    child.stdout.on('data', (b) => { buf += b; for (let i; (i = buf.indexOf('\n')) >= 0;) { const o = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (o.hello) { hello = o; helloOk(o); continue; } waiting.get(o.id)?.(o); waiting.delete(o.id); } });
+    await Promise.race([helloP, sleep(20000)]);
+    const ask = (m) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); child.stdin.write(JSON.stringify({ id, ...m }) + '\n'); });
+    const s = { relayed: [], routes: hello ? hello.routes.get.filter((r) => /pentest/.test(r)) : [] };
+    out.stdio = s;
+    const ORIGIN = 'https://prism-ui.test', nonce = 'bm9uY2Vub25jZQ==';
+    const files = JSON.parse(readFileSync(join(hello.uiDir, 'manifest.json'), 'utf8')).files;
+    const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src ${ORIGIN}; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'`;
+    const html = `<!DOCTYPE html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><link rel="stylesheet" href="${ORIGIN}/prism-ui.css"></head>`
+      + `<body><div class="wrap">${readFileSync(join(hello.uiDir, 'body.html'), 'utf8')}</div><script nonce="${nonce}" src="${ORIGIN}/bridge.js"></script><script nonce="${nonce}" src="${ORIGIN}/prism-ui.js"></script></body></html>`;
+    const sctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+    const sp = await sctx.newPage();
+    sp.on('pageerror', (e) => out.log.push({ tag: 'pentest stdio', type: 'pageerror', text: String(e).slice(0, 300) }));
+    await sp.route(`${ORIGIN}/**`, (route) => {
+      const name = new URL(route.request().url()).pathname.slice(1);
+      if (name === 'index.html') return route.fulfill({ status: 200, contentType: 'text/html', body: html });
+      if (!files.includes(name)) return route.fulfill({ status: 404, body: '' });
+      route.fulfill({ status: 200, contentType: name.endsWith('.css') ? 'text/css' : 'text/javascript', body: readFileSync(join(hello.uiDir, name)) });
+    });
+    await sp.exposeBinding('__hostPost', async (_s, m) => {
+      if (!m || m.type !== 'prism-ui:request' || !(m.op === 'get' ? hello.routes.get : hello.routes.act).includes(m.path)) return;
+      s.relayed.push(m.op + ' ' + m.path);
+      const a = await ask(m.op === 'get' ? { op: 'get', path: m.path, query: m.query || {} } : { op: 'act', path: m.path, body: m.body });
+      await sp.evaluate((msg) => window.dispatchEvent(new MessageEvent('message', { data: msg })), { type: 'prism-ui:response', id: m.id, status: a.status, json: a.json });
+    });
+    await sp.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: (m) => window.__hostPost(m), getState: () => undefined, setState: () => {} }); });
+    await sp.goto(`${ORIGIN}/index.html#security`);
+    await sp.waitForSelector('#sa-ready', { timeout: 30000 }).catch(() => {});
+    await sp.waitForSelector('[data-pt-repo]', { timeout: 15000 }).catch(() => {});
+    await sp.waitForFunction(() => /--dockerfile/.test(document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || ''), null, { timeout: 15000 }).catch(() => {});
+    s.kind = await sp.evaluate(() => TRANSPORT.kind);
+    s.initial = await sp.evaluate(() => document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || '');
+    await sp.check('[data-pt-repo] input[type=radio][value="docker/web.Dockerfile"]');
+    await sp.waitForFunction(() => /--dockerfile docker\/web\.Dockerfile/.test(document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || ''), null, { timeout: 15000 }).catch(() => {});
+    s.picked = await sp.evaluate(() => document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || '');
+    await sp.check('[data-pt-repo] input[type=radio][value="__other__"]');
+    await sp.fill('[id^="sa-pt-other-"]', 'escape'); await sleep(900);
+    s.err = await sp.evaluate(() => document.querySelector('[data-pt-err="dockerfile"]')?.innerText || '');
+    await sp.locator('section.card', { has: sp.locator('[data-pt-repo]') }).screenshot({ path: join(SHOTS, 'pentest-picker-stdio.png') }).catch(() => {});
+    await sctx.close();
+    child.stdin.end();
+  }
   // ---------- stdio: the shared UI bundle (dist/ui) over dashboard --serve-stdio, as an editor or Kiro Crew host loads it ----------
   // No server: Chromium serves only the bundle's files from a made-up origin (page.route), the page posts through
   // bridge.js to a stand-in host here, and the host relays each request to a real --serve-stdio child.
@@ -1610,6 +1761,44 @@ function verdicts(R) {
       const reason = k === 'cb-month' ? /codeburn: no data directory found/.test(t) : /Earlier weeks unavailable: codeburn: history store is locked/.test(t);
       add('B5 ' + k, 'a codeburn failure shows codeburn\'s own line, no argv or paths', reason && !leaks.length, leaks.length ? 'leaks ' + leaks.join(', ') : t.slice(0, 300));
     }
+  }
+  if (S.pentest) {
+    const P = S.pentest, i = P.initial || {}, base = 'cd ~/src/demo-shop && prism-cli security pentest';
+    const tail = ' --profile prism-demo --region us-west-2';
+    add('PT1', 'the picker lists the tracked Dockerfiles (not the symlink out of the repo), preselects pentest.json\'s and fills its build folder, port and health path',
+      JSON.stringify((i.radios || []).map((r) => r.v)) === '["Dockerfile","docker/web.Dockerfile","my app/Dockerfile","services/api/Dockerfile.prod","__other__"]'
+      && (i.radios || []).find((r) => r.on)?.v === 'services/api/Dockerfile.prod' && /from \.prism\/pentest\.json/.test((i.radios || []).find((r) => r.on)?.label || '')
+      && JSON.stringify(i.fields) === '["services/api","3000","/healthz"]' && /Asked each time: nothing here is saved/.test(i.text || ''),
+      JSON.stringify({ r: i.radios, f: i.fields }));
+    add('PT2', 'the Pentest plan and Pentest commands carry the choice, stay Copy only (no Run), and Copy puts the exact command on the clipboard',
+      i.dry?.text === base + ' --dry-run --app-dir services/api --dockerfile services/api/Dockerfile.prod --port 3000 --health-path /healthz' + tail
+      && i.run?.text === base + ' --app-dir services/api --dockerfile services/api/Dockerfile.prod --port 3000 --health-path /healthz' + tail
+      && i.run.badge === 'AWS write' && !(i.runButtons || []).length && P.clipboard === P.typed?.run?.text,
+      JSON.stringify({ dry: i.dry, run: i.run, b: i.runButtons, clip: P.clipboard }));
+    add('PT3', 'picking another Dockerfile moves the build folder to its folder and changes both commands; a folder with a space is shell-quoted; typing keeps the focus',
+      JSON.stringify(P.web?.fields) === '["docker","3000","/healthz"]' && P.web.run.text === base + ' --app-dir docker --dockerfile docker/web.Dockerfile --port 3000 --health-path /healthz' + tail
+      && P.space?.run?.text === base + ` --app-dir 'my app' --dockerfile 'my app/Dockerfile' --port 3000 --health-path /healthz` + tail
+      && P.typed?.fields?.[1] === '9090' && /--port 9090/.test(P.typed.run.text) && /^sa-pt-port-/.test(P.focus || ''),
+      JSON.stringify({ web: P.web?.run, space: P.space?.run, typed: P.typed?.fields, focus: P.focus }));
+    const b = P.bad || {};
+    const refused = (x, re) => !!x && !x.run.copy && !x.run.text && x.errs.some((e) => re.test(e));
+    add('PT4', 'a typed path is checked on the server: .., an absolute path, a symlink out of the repo and a folder with no Dockerfile are refused inline with no command; a good folder works',
+      refused(b.dotdot, /^dockerfile: the path must stay inside the repo/) && refused(b.abs, /^dockerfile: use a path relative to the repo root/) && refused(b.link, /^dockerfile: escape points outside the repo/)
+      && refused(b.none, /^dockerfile: no Dockerfile in docs/) && b.good?.run?.copy && b.good.run.text.includes(` --app-dir 'my app' --dockerfile 'my app/Dockerfile' --port 9090`)
+      && b.file?.run?.copy && b.file.run.text.includes(' --app-dir services/api --dockerfile services/api/Dockerfile.prod --port 9090')
+      && !accountLeaks(JSON.stringify(b)).length && !JSON.stringify(b).includes(P.home + '/'),
+      JSON.stringify(Object.fromEntries(Object.entries(b).map(([k, x]) => [k, x && { e: x.errs, r: x.run }]))).slice(0, 600));
+    add('PT5', 'the choice survives a repo switch (page memory), a reload goes back to pentest.json, nothing is written to the repo and no AWS write call is made',
+      P.back?.other === 'my app' && JSON.stringify(P.reloaded) === '["services/api/Dockerfile.prod"]' && P.before?.tree === P.after?.tree && P.before?.config === P.after?.config
+      && !(P.calls || []).some((c) => /^(s3api put-object|securityagent (start|create|delete|update|stop)|ssm put-parameter|cloudformation (create|update|delete|deploy)|ecr )/.test(c)),
+      JSON.stringify({ other: P.back?.other, reloaded: P.reloaded, tree: [P.before?.tree, P.after?.tree] }));
+    add('PT6', 'at 390 px the page with the picker has no sideways scroll', P.phoneScroll <= 1, String(P.phoneScroll));
+    const s = P.stdio || {};
+    add('PT7', 'over --serve-stdio the shared bundle draws the picker, a pick changes the command, and a symlink out of the repo is refused',
+      s.kind !== 'browser' && JSON.stringify(s.routes) === '["/api/security-agent/pentest","/api/security-agent/pentest/check"]' && /--dockerfile services\/api\/Dockerfile\.prod/.test(s.initial || '')
+      && /--app-dir docker --dockerfile docker\/web\.Dockerfile/.test(s.picked || '') && /escape points outside the repo/.test(s.err || '')
+      && s.relayed.includes('get /api/security-agent/pentest') && s.relayed.includes('get /api/security-agent/pentest/check'),
+      JSON.stringify({ k: s.kind, r: s.routes, i: s.initial, p: s.picked, e: s.err, rel: (s.relayed || []).filter((x) => /pentest/.test(x)) }));
   }
   if (S.stdio) {
     const U = S.stdio;

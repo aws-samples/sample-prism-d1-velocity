@@ -10,6 +10,8 @@
  *   GET  /api/security-agent         the Security Agent page's data (no AWS call; security-agent.ts)
  *   GET  /api/security-agent/gate?repo=<id>  the gate card's re-check for one repo (local files only, no git)
  *   GET  /api/security-agent/scope?repo=<id> what a branch code review would review there (local git only)
+ *   GET  /api/security-agent/pentest?repo=<id>  the pentest picker: tracked Dockerfiles, .prism/pentest.json (read-only)
+ *   GET  /api/security-agent/pentest/check?repo=<id>&dockerfile=&app_dir=&port=&health_path=  one choice checked, its commands
  *   POST /api/security-agent/spaces  {repo, refresh?}: the read-only agent-space lookup
  *   GET  /api/codewatch/reviewer?repo=<id>[&scope=&reviewer=&model=&reset=1]  the repo page's reviewer and model (git config, .prism/config.json; read-only)
  *   GET  /api/codewatch/defaults     your default reviewer and model (git config --global) and the repos that override it
@@ -23,6 +25,7 @@ import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountg
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
 import { securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, type SecurityAgentDeps } from './security-agent.js';
+import { securityAgentPentest, securityAgentPentestCheck } from './security-pentest.js';
 import { securityRunDetail, type CheckLookup } from './security-runs.js';
 import { ApiAnswer } from './server.js';
 import { codewatchDefaults, codewatchReviewer } from './codewatch-reviewer.js';
@@ -94,6 +97,15 @@ export function setupApi(d: SetupApiDeps) {
       // The branch review's scope in the picked repo: local git only (security/review.ts branchScope).
       '/api/security-agent/scope': async (url: URL) => {
         const s = d.securityAgent ? securityAgentScope(d.securityAgent, url.searchParams.get('repo')) : null;
+        return s ?? new ApiAnswer(404, { error: 'not a repo from the last Security Agent answer' });
+      },
+      // The pentest picker: git-tracked Dockerfiles and .prism/pentest.json, read-only (security-pentest.ts). Writes nothing.
+      '/api/security-agent/pentest': async (url: URL) => {
+        const s = d.securityAgent ? securityAgentPentest(d.securityAgent, url.searchParams.get('repo')) : null;
+        return s ?? new ApiAnswer(404, { error: 'not a repo from the last Security Agent answer' });
+      },
+      '/api/security-agent/pentest/check': async (url: URL) => {
+        const s = d.securityAgent ? securityAgentPentestCheck(d.securityAgent, url.searchParams) : null;
         return s ?? new ApiAnswer(404, { error: 'not a repo from the last Security Agent answer' });
       },
       '/api/codewatch/reviewer': async (url: URL) => {

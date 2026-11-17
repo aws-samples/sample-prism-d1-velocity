@@ -758,3 +758,85 @@ test('code review item: one item, branch first then whole repo; nothing new sinc
   await unknown.settle();
   assert.ok(btn(unknown.dom.byId.security, 'Review this branch')!.listeners.click);
 });
+
+test('pentest picker: tracked Dockerfiles as radios, pentest.json preselected; a pick or a typed path re-checks and the commands follow; errors inline', async () => {
+  const p = await pagePayload();
+  const id = p.repos[0].id;
+  const cmd = (flags: string, dry = false) => `cd ~/demo-shop && prism-cli security pentest${dry ? ' --dry-run' : ''} ${flags} --profile demo --region us-west-2`;
+  const okCheck = (flags: string) => ({ repo: id, ok: true, errors: {}, resolved: null, copy: { pentestDryRun: cmd(flags, true), pentest: cmd(flags) } });
+  const CFG = '--app-dir sample-app --dockerfile sample-app/Dockerfile --port 3000 --health-path /healthz';
+  const listing = {
+    repo: id, dockerfiles: [{ path: 'Dockerfile', fromConfig: false }, { path: 'sample-app/Dockerfile', fromConfig: true }], truncated: false, max: 50, listError: null,
+    config: { ok: true, path: 'sample-app', dockerfile: 'sample-app/Dockerfile', port: 3000, healthPath: '/healthz' }, defaults: { port: 8080, healthPath: '/health' }, port: '3000', healthPath: '/healthz',
+    preselect: { dockerfile: 'sample-app/Dockerfile', appDir: 'sample-app', port: '3000', healthPath: '/healthz', from: 'pentest.json' }, check: okCheck(CFG),
+  };
+  const q = (o: Record<string, string>) => '/api/security-agent/pentest/check?' + new URLSearchParams({ repo: id, ...o }).toString();
+  const ROOT = '--app-dir . --dockerfile Dockerfile --port 3000 --health-path /healthz';
+  const page = await runPage([p], '#security', SETUP, {
+    '/api/security-agent': saAnswer(p, GOOD), ['/api/security-agent/pentest?repo=' + id]: listing,
+    [q({ dockerfile: 'Dockerfile', port: '3000', health_path: '/healthz' })]: okCheck(ROOT),
+    [q({ dockerfile: '../x', port: '3000', health_path: '/healthz' })]: { repo: id, ok: false, errors: { dockerfile: 'the path must stay inside the repo (no ..)' }, resolved: null, copy: null },
+  });
+  await page.settle();
+  const sec = page.dom.byId.security;
+  const radios = () => sec.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'radio');
+  const pres = () => sec.querySelectorAll('code').map((x) => x.textContent).filter((t) => /^cd .*security pentest(?! --status)/.test(t));
+  assert.deepEqual(radios().map((r) => r.getAttribute('value')), ['Dockerfile', 'sample-app/Dockerfile', '__other__']);
+  assert.deepEqual(radios().map((r) => !!(r as unknown as { checked: boolean }).checked), [false, true, false], 'pentest.json\'s Dockerfile is preselected');
+  assert.match(sec.textContent, /sample-app\/Dockerfilefrom \.prism\/pentest\.json/);
+  assert.match(sec.textContent, /Other folder…/);
+  const field = (k: string) => sec.querySelectorAll('input').find((i) => i.getAttribute('id') === `sa-pt-${k}-${id}`)!;
+  assert.deepEqual(['dir', 'port', 'health'].map((k) => field(k).value), ['sample-app', '3000', '/healthz']);
+  assert.match(sec.textContent, /Asked each time: nothing here is saved to the repo or to \.prism\/pentest\.json/);
+  assert.deepEqual(pres(), [cmd(CFG, true), cmd(CFG)]);
+  assert.ok(!sec.querySelectorAll('button').some((b) => b.textContent === 'Run' && /pentest/.test(b.parent?.textContent || '')), 'no Run for a pentest');
+  assert.match(sec.textContent, /Pentest status/, 'the status item stays');
+
+  // Pick ./Dockerfile: the build folder follows it, and the commands come back with its flags.
+  const root = radios()[0] as unknown as { checked: boolean; listeners: Record<string, () => void> };
+  root.checked = true; root.listeners.change();
+  assert.match(sec.textContent, /checking…/, 'no stale command to copy while it checks');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(field('dir').value, '.');
+  assert.deepEqual(pres(), [cmd(ROOT, true), cmd(ROOT)]);
+  assert.ok(page.requests.some((x) => x.url === q({ dockerfile: 'Dockerfile', port: '3000', health_path: '/healthz' })));
+
+  // Other folder…, then a path outside the repo: the reason inline, Copy disabled, no command.
+  const other = radios()[2] as unknown as { checked: boolean; listeners: Record<string, () => void> };
+  other.checked = true; other.listeners.change();
+  const box = sec.querySelectorAll('input').find((i) => i.getAttribute('id') === `sa-pt-other-${id}`)!;
+  assert.equal(box.disabled, false);
+  box.value = '../x'; box.listeners.input();
+  await new Promise((r) => setTimeout(r, 400));
+  assert.match(sec.textContent, /the path must stay inside the repo \(no \.\.\)/);
+  assert.match(sec.textContent, /fix the choice above/);
+  assert.deepEqual(pres(), []);
+  // The choice is page memory: a redraw (another repo and back) keeps it.
+  page.go('#security/' + p.repos[1].id); page.go('#security/' + id); await page.settle();
+  const again = sec.querySelectorAll('input').find((i) => i.getAttribute('id') === `sa-pt-other-${id}`)!;
+  assert.equal(again.value, '../x');
+  assert.equal(page.requests.filter((x) => x.url === '/api/security-agent/pentest?repo=' + id).length, 1, 'listed once per page load');
+  assert.ok(!page.requests.some((x) => x.method === 'POST' && /pentest/.test(x.url)), 'nothing is written');
+});
+
+test('pentest picker: a listing that fails keeps the plain copy-only commands; a bad pentest.json is named; the snapshot has no picker', async () => {
+  const p = await pagePayload();
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD) });
+  await page.settle();
+  const t = page.dom.byId.security.textContent;
+  assert.match(t, /The Dockerfile picker could not load/);
+  assert.match(t, /Pentest plan/);
+  const id = p.repos[0].id;
+  const bad = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD), ['/api/security-agent/pentest?repo=' + id]: {
+    repo: id, dockerfiles: [], truncated: false, max: 50, listError: null, config: { ok: false, error: '.prism/pentest.json is not valid JSON: Unexpected end of JSON input' },
+    defaults: { port: 8080, healthPath: '/health' }, port: '8080', healthPath: '/health', preselect: null, check: null } });
+  await bad.settle();
+  const bt = bad.dom.byId.security.textContent;
+  assert.match(bt, /\.prism\/pentest\.json has a problem, so its values are not used here: \.prism\/pentest\.json is not valid JSON/);
+  assert.match(bt, /git tracks no Dockerfile in this repo/);
+  assert.match(bt, /prism-cli default \(8080\)/);
+  assert.match(bt, /choose a Dockerfile above/);
+  // The static snapshot never draws the page's live parts; the picker returns its plain items first.
+  const { renderPage } = await import('../src/dashboard/page.js');
+  assert.match(renderPage('N'), /if \(SNAPSHOT\) return plain\(\);\s*saPtLoad\(repo\);/);
+});

@@ -48,6 +48,10 @@ ol.gsteps li::before { content:"○ "; } ol.gsteps li.done { color:var(--ok); } 
 .gopt { border:1px solid var(--line); border-radius:10px; padding:12px; background:var(--raised); min-width:0; } .gopt b { display:block; margin-bottom:4px; }
 .okstrip { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:8px 14px; margin-bottom:18px; background:var(--card); overflow-wrap:anywhere; }
 .okstrip b { color:var(--ok); } .okstrip span.ok::before { content:"✓ "; color:var(--ok); }
+fieldset.sa-pt-list { border:1px solid var(--line); border-radius:8px; margin:8px 0; padding:6px 10px 8px; min-width:0; } fieldset.sa-pt-list legend { font-size:12px; color:var(--muted); padding:0 4px; }
+.sa-pt-opt { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:3px 0; min-width:0; overflow-wrap:anywhere; } .sa-pt-opt code { overflow-wrap:anywhere; }
+.sa-pt-row { display:flex; flex-wrap:wrap; gap:4px 8px; align-items:center; margin:6px 0; } .sa-pt-row label { min-width:92px; font-weight:600; font-size:13px; } .sa-pt-row .s-error { flex-basis:100%; }
+input.url:disabled { opacity:.6; } .sa-pt .fix.s-error { color:var(--bad); font-weight:600; }
 `;
 
 export const SECURITY_SCRIPT = `
@@ -315,6 +319,130 @@ function saBranchItem(repo) {
     el('div', { class: 'fix' }, why.join(' ')), el('div', { class: 'srow-ctl' }, branch, full));
 }
 
+/**
+ * The pentest picker, per repo id, in page memory only: it survives a redraw and
+ * a repo or tab switch, not a reload, and nothing is written to disk. list: the
+ * GET /api/security-agent/pentest answer ('loading', or {failed} when it could not
+ * load); choice: {pick (a listed path, or OTHER), other, appDir (null: the
+ * Dockerfile's folder), port, healthPath}; check: the last check's answer.
+ */
+const SA_PT = new Map();
+const SA_PT_OTHER = '__other__';
+const SA_PT_WAIT_MS = 250;
+/** A listed path's folder: "." for the top. */
+const saPtDir = (p) => (p.lastIndexOf('/') > 0 ? p.slice(0, p.lastIndexOf('/')) : '.');
+
+/** Reads the picker's listing once per repo on this page load. shortcut: a Dockerfile added later shows after a reload; refresh on each data load if that matters. */
+async function saPtLoad(repo) {
+  if (SNAPSHOT || SA_PT.has(repo.id)) return;
+  const st = { list: 'loading', choice: null, check: null, seq: 0, timer: null, pending: false };
+  SA_PT.set(repo.id, st);
+  let r;
+  try { r = await api('/api/security-agent/pentest?repo=' + repo.id); } catch (e) { r = { ok: false }; }
+  if (!r.ok || !r.json) { st.list = { failed: txt((r.json || {}).error) || 'the Dockerfile list could not load' }; drawSecurity(); return; }
+  const a = r.json, p = a.preselect;
+  st.list = a;
+  st.choice = { pick: p ? p.dockerfile : SA_PT_OTHER, other: '', appDir: p ? p.appDir : null, port: txt(a.port), healthPath: txt(a.healthPath) };
+  st.check = a.check;
+  drawSecurity();
+}
+
+/**
+ * Checks the current choice on the server a short wait after the last change. The
+ * commands are withdrawn at once (no stale command to copy) and come back with the
+ * answer. Each step redraws the page from SA_PT; drawSecurity keeps the focus and caret.
+ */
+function saPtCheck(id) {
+  const st = SA_PT.get(id);
+  if (!st || !st.choice) return;
+  clearTimeout(st.timer);
+  const seq = ++st.seq;
+  const was = st.pending;
+  st.pending = true;
+  if (!was) drawSecurity();
+  st.timer = setTimeout(async () => {
+    const c = st.choice;
+    const q = new URLSearchParams({ repo: id, dockerfile: c.pick === SA_PT_OTHER ? c.other : c.pick, port: c.port, health_path: c.healthPath });
+    if (c.appDir !== null) q.set('app_dir', c.appDir);
+    let r;
+    try { r = await api('/api/security-agent/pentest/check?' + q.toString()); } catch (e) { r = { ok: false }; }
+    if (seq !== st.seq) return;
+    st.pending = false;
+    st.check = r.ok && r.json ? r.json : { ok: false, errors: { dockerfile: txt((r.json || {}).error) || 'the check could not run' } };
+    drawSecurity();
+  }, SA_PT_WAIT_MS);
+}
+
+/** A command and its Copy button (copyOnly shows the command); with no command (checking, or an error above), a disabled Copy and why. */
+function saPtCmd(key, cmd, why) {
+  if (!cmd) return el('div', { 'data-pt-cmd': key }, el('div', { class: 'srow-ctl' }, el('button', { type: 'button', disabled: '' }, 'Copy'), el('span', { class: 'badge' }, why)));
+  return el('div', { 'data-pt-cmd': key }, copyOnly(cmd, why));
+}
+
+/** The picker: the repo's tracked Dockerfiles as radios, Other folder…, then the build folder, port and health path. */
+function saPtPicker(repo, st) {
+  const id = repo.id, a = st.list, c = st.choice, cfg = a.config;
+  const errs = (!st.pending && st.check && st.check.errors) || {};
+  const err = (f) => (errs[f] ? el('div', { class: 'fix s-error', 'data-pt-err': f, role: 'alert' }, txt(errs[f])) : null);
+  const pick = (value) => {
+    c.pick = value;
+    const listed = (a.dockerfiles || []).find((x) => x.path === value);
+    // pentest.json's own entry brings its build folder; any other choice follows the Dockerfile's folder.
+    c.appDir = listed && listed.fromConfig && cfg && cfg.ok ? txt(cfg.path) : null;
+    saPtCheck(id);
+  };
+  const radio = (value, i, label, extra) => {
+    const r = el('input', { type: 'radio', name: 'sa-pt-pick-' + id, value, id: 'sa-pt-r' + i + '-' + id });
+    r.checked = c.pick === value;
+    r.addEventListener('change', () => { if (r.checked) pick(value); });
+    return el('label', { class: 'sa-pt-opt', for: r.getAttribute('id') }, r, ' ', label, extra || null);
+  };
+  const opts = (a.dockerfiles || []).map((x, i) => radio(x.path, i, el('code', {}, txt(x.path)), x.fromConfig ? el('span', { class: 'badge' }, 'from .prism/pentest.json') : null));
+  const other = el('input', { type: 'text', class: 'url', id: 'sa-pt-other-' + id, 'aria-label': 'Other folder or Dockerfile, relative to the repo root', placeholder: 'folder or path/to/Dockerfile, relative to the repo', spellcheck: 'false' });
+  other.value = c.other;
+  other.disabled = c.pick !== SA_PT_OTHER;
+  other.addEventListener('input', () => { c.other = other.value; saPtCheck(id); });
+  const field = (key, f, label, value, onInput, hint) => {
+    const i = el('input', { type: 'text', class: 'url sa-pt-field', id: 'sa-pt-' + key + '-' + id, spellcheck: 'false' });
+    i.value = value;
+    i.addEventListener('input', () => { onInput(i.value); saPtCheck(id); });
+    return el('div', { class: 'sa-pt-row' }, el('label', { for: i.getAttribute('id') }, label), i, hint ? el('span', { class: 'fix' }, hint) : null, err(f));
+  };
+  const from = (k) => (cfg && cfg.ok ? 'from .prism/pentest.json' : 'prism-cli default (' + txt(a.defaults && a.defaults[k]) + ')');
+  const kids = [];
+  if (cfg && !cfg.ok) kids.push(el('div', { class: 'callout warn', role: 'note', 'data-pt-config': 'error' }, '.prism/pentest.json has a problem, so its values are not used here: ' + txt(cfg.error)));
+  if (a.listError) kids.push(el('div', { class: 'callout warn', role: 'note' }, txt(a.listError)));
+  if (!(a.dockerfiles || []).length && !a.listError) kids.push(el('p', { class: 'fix' }, 'git tracks no Dockerfile in this repo. Type the folder or Dockerfile to build under Other folder….'));
+  kids.push(el('fieldset', { class: 'sa-pt-list' }, el('legend', {}, 'Dockerfile'), ...opts,
+    el('div', { class: 'sa-pt-opt' }, radio(SA_PT_OTHER, 'o', 'Other folder…'), other), err('dockerfile')));
+  if (a.truncated) kids.push(el('p', { class: 'fix' }, 'The first ' + txt(a.max) + ' tracked Dockerfiles are listed; type another under Other folder….'));
+  const resolved = st.check && st.check.resolved;
+  const dirShown = c.appDir !== null ? c.appDir : c.pick !== SA_PT_OTHER ? saPtDir(c.pick) : resolved ? txt(resolved.appDir) : '';
+  kids.push(field('dir', 'appDir', 'Build folder', dirShown, (v) => { c.appDir = v; }, 'the Docker build context; defaults to the Dockerfile\\'s folder'),
+    field('port', 'port', 'Port', c.port, (v) => { c.port = v; }, from('port')),
+    field('health', 'healthPath', 'Health path', c.healthPath, (v) => { c.healthPath = v; }, from('healthPath')));
+  kids.push(el('p', { class: 'fix' }, 'Asked each time: nothing here is saved to the repo or to .prism/pentest.json. This page keeps the choice until you reload it.'));
+  return el('div', { class: 'sa-pt', 'data-pt-repo': id }, ...kids);
+}
+
+/** The Pentest plan and Pentest items: with the picker once its listing is in; while loading, a line; if it failed (or in a snapshot), the commands with no flags. */
+function saPentestItems(repo, item) {
+  const c = repo.copy || {};
+  const plain = () => [item('Pentest plan', 'Shows the plan, target and cost. Copy only: run it in a terminal.', copyOnly(txt(c.pentestDryRun), SNAPSHOT ? 'snapshot: copy only' : 'terminal')),
+    item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). Copy only.', copyOnly(txt(c.pentest), SNAPSHOT ? 'snapshot: copy only' : 'AWS write'))];
+  if (SNAPSHOT) return plain();
+  saPtLoad(repo);
+  const st = SA_PT.get(repo.id);
+  if (!st || st.list === 'loading') return [el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, 'Pentest')), el('p', { class: 'loading' }, 'Reading the repo\\'s Dockerfiles…'))];
+  if (st.list.failed) return [el('li', {}, el('div', { class: 'callout warn', role: 'note' }, 'The Dockerfile picker could not load: ' + txt(st.list.failed) + '. These commands use .prism/pentest.json or the defaults.')), ...plain()];
+  const chk = st.pending ? null : st.check, ok = !!(chk && chk.ok && chk.copy);
+  const status = st.pending ? 'checking…' : ok ? null : chk ? 'fix the choice above' : 'choose a Dockerfile above';
+  const head = (label, why, ctl) => el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, label)), el('div', { class: 'fix' }, why), ctl);
+  return [head('Pentest target', 'Which Dockerfile the pentest builds, from the files git tracks in ' + txt(repo.name) + '.', saPtPicker(repo, st)),
+    head('Pentest plan', 'Shows the plan, target and cost for this choice. Copy only: run it in a terminal.', saPtCmd('pentestDryRun', ok ? txt(chk.copy.pentestDryRun) : null, status || 'terminal')),
+    head('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). Copy only.', saPtCmd('pentest', ok ? txt(chk.copy.pentest) : null, status || 'AWS write'))];
+}
+
 function saStartCard(repo) {
   const c = repo.copy || {};
   const item = (label, why, ctl) => el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, label)), el('div', { class: 'fix' }, why), el('div', { class: 'srow-ctl' }, ctl));
@@ -322,8 +450,7 @@ function saStartCard(repo) {
     el('ul', { class: 'salist' },
       saBranchItem(repo),
       item('Threat model', 'Uploads the repo and its scope docs at HEAD, creates a threat model and starts a job.', saRun('security-threat-model', repo, 'Start threat model')),
-      item('Pentest plan', 'Shows the plan, target and cost. Copy only: run it in a terminal.', copyOnly(txt(c.pentestDryRun), 'terminal')),
-      item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). Copy only.', copyOnly(txt(c.pentest), 'AWS write')),
+      ...saPentestItems(repo, item),
       item('Pentest status', 'Refreshes the job and tears the environment down once it has finished. Copy only.', copyOnly(txt(c.pentestStatus), 'AWS write'))));
 }
 
@@ -527,6 +654,10 @@ function drawSecurity() {
   if (typeof runLeave === 'function') runLeave();
   if (!SA_LOADED) { root.replaceChildren(el('p', { class: 'loading' }, 'loading...')); return; }
   const openState = new Map([...root.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
+  // A redraw (the minute refresh) while typing in the pentest picker keeps the focus and the caret; its values come from SA_PT.
+  const ae = document.activeElement, focusId = ae && root.contains(ae) && /^sa-pt-/.test(ae.id || '') ? ae.id : null;
+  const caret = focusId && ae.type === 'text' ? [ae.selectionStart, ae.selectionEnd] : null;
+  const refocus = () => { const n = focusId && document.getElementById(focusId); if (n) { n.focus(); if (caret) n.setSelectionRange(caret[0], caret[1]); } };
   root.replaceChildren(el('h2', { class: 'sr-only' }, 'Security Agent'));
   if (SNAPSHOT) { root.append(el('section', { class: 'card' }, el('p', { class: 'empty' }, 'The Security Agent page runs on the live dashboard only (prism-cli dashboard). The saved results are on the Dashboard under Security findings.'))); return; }
   if (!SA) { root.append(el('section', { class: 'card' }, pill('error'), ' could not load the Security Agent data')); return; }
@@ -550,5 +681,6 @@ function drawSecurity() {
   const right = [saAccountCard(repo), saSpacesCard(repo), saHealthCard(repo), saWhichCard()];
   root.append(allRunsCard(), el('div', { class: 'sa-grid' }, el('div', { class: 'sa-col' }, ...left), el('div', { class: 'sa-col' }, ...right)));
   for (const d of root.querySelectorAll('details[data-key]')) { const k = d.getAttribute('data-key'); if (openState.has(k)) d.open = openState.get(k); }
+  refocus();
 }
 `;
