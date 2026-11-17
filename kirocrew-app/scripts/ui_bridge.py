@@ -38,9 +38,15 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 STDIO_PROTOCOL = "prism.dashboard.stdio"
 MIN_UI_API = 1
-MIN_CLI_VERSION = (1, 21, 0)
-UPDATE_CMD = "npm install -g @prism-d1/cli@latest"
-UPDATE_TEXT = f"Update prism-cli to {'.'.join(map(str, MIN_CLI_VERSION))} or later: {UPDATE_CMD}"
+#: The one place the app's minimum prism-cli is set: the page check, the install script
+#: (install_prism_cli.py) and the update page read it; tests/test_manifest.py checks that app.json
+#: and the README say the same and that cli/package.json is not older (the store installs from main).
+MIN_CLI_VERSION = (1, 21, 3)
+MIN_CLI_TEXT = ".".join(map(str, MIN_CLI_VERSION))
+#: The same range the install script installs: the newest release of this major, never a 2.x.
+CLI_SPEC = f"@prism-d1/cli@^{MIN_CLI_TEXT}"
+UPDATE_CMD = f"npm install -g {CLI_SPEC}"
+UPDATE_TEXT = f"Update prism-cli to {MIN_CLI_TEXT} or later: {UPDATE_CMD}"
 HELLO_TIMEOUT_S = 15
 REQUEST_TIMEOUT_S = 125
 READY_WAIT_S = 20

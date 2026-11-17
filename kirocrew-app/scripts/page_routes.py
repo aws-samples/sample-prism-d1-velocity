@@ -14,7 +14,7 @@ no process with a port: requests go to one `prism-cli dashboard --serve-stdio` c
 /ui/get and /ui/act answer 200 with the CLI's own {status, json} and its version, so a refusal (a
 missing confirm, the AWS write gate) reaches the page as an answer, and a page whose bundle came
 from another prism-cli version reloads it. prism-cli missing or older than
-1.21.0: 503 with {"error": ..., "update": true, "command": ...}, and the page says only that.
+ui_bridge.MIN_CLI_VERSION: 503 with {"error": ..., "update": true, "command": ..., "minVersion": ...}, and the page says only that.
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ async def _hello(ctx: Any) -> Any:
         return await ub.SUPERVISOR.ensure()
     except ub.BridgeError as e:
         if e.update:
-            return _err(503, str(e), update=True, command=ub.UPDATE_CMD)
+            return _err(503, str(e), update=True, command=ub.UPDATE_CMD, minVersion=ub.MIN_CLI_TEXT)
         return _err(503, str(e))
 
 

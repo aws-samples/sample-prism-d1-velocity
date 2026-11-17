@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import ui_bridge as ub  # noqa: E402
 
-HELLO = {"hello": "prism.dashboard.stdio", "api": 1, "version": "1.21.0", "uiDir": "/opt/prism/dist/ui",
+HELLO = {"hello": "prism.dashboard.stdio", "api": 1, "version": "1.21.3", "uiDir": "/opt/prism/dist/ui",
          "routes": {"get": ["/api/data", "/api/setup", "/api/report"], "act": ["/api/action"]}}
 
 FAKE = r'''#!{python}
@@ -41,9 +41,9 @@ if log:
 
 
 class ChecksTest(unittest.TestCase):
-    def test_hello_needs_protocol_api_and_1_21_0(self):
+    def test_hello_needs_protocol_api_and_the_minimum_version(self):
         self.assertEqual(ub.check_hello(HELLO), HELLO)
-        for bad in ({**HELLO, "version": "1.20.1"}, {**HELLO, "api": 0}, {**HELLO, "hello": "x"}, "nope", None, {**HELLO, "version": "latest"}):
+        for bad in ({**HELLO, "version": "1.21.2"}, {**HELLO, "api": 0}, {**HELLO, "hello": "x"}, "nope", None, {**HELLO, "version": "latest"}):
             with self.assertRaises(ub.BridgeError) as e:
                 ub.check_hello(bad)
             self.assertTrue(e.exception.update, bad)
@@ -51,7 +51,7 @@ class ChecksTest(unittest.TestCase):
             with self.assertRaises(ub.BridgeError) as e:
                 ub.check_hello(bad)
             self.assertFalse(e.exception.update)
-        self.assertEqual(ub.UPDATE_TEXT, "Update prism-cli to 1.21.0 or later: npm install -g @prism-d1/cli@latest")
+        self.assertEqual(ub.UPDATE_TEXT, "Update prism-cli to 1.21.3 or later: npm install -g @prism-d1/cli@^1.21.3")
 
     def test_requests_only_listed_routes_and_plain_shapes(self):
         self.assertEqual(ub.check_request("get", "/api/data", {"fresh": "1"}, None, HELLO), {"op": "get", "path": "/api/data", "query": {"fresh": "1"}})
@@ -65,7 +65,7 @@ class ChecksTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             for name in ub.UI_FILES:
                 Path(d, name).write_text(name + " text", encoding="utf-8")
-            b = ub.read_bundle(d, "1.21.0")
+            b = ub.read_bundle(d, "1.21.3")
             self.assertEqual(b["js"], "prism-ui.js text")
             self.assertEqual(b["hashes"]["js"], ub._sha("prism-ui.js text"))
             self.assertRegex(b["hashes"]["css"], r"^sha256-[A-Za-z0-9+/]+=*$")
@@ -92,7 +92,7 @@ class SupervisorTest(unittest.IsolatedAsyncioTestCase):
         self.dir = Path(self.tmp.name)
         self.log = self.dir / "log"
         self.cli = self.dir / "prism-cli"
-        self.fake("1.21.0", "ok")
+        self.fake("1.21.3", "ok")
         self.sup = ub.Supervisor()
         self.sup.configure(lambda: (str(self.cli), "", {**os.environ, "FAKE_LOG": str(self.log)}), self.dir / "data")
         self.addAsyncCleanup(self.sup.stop)
@@ -134,7 +134,7 @@ class SupervisorTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(again["json"]["pid"], first)
 
     async def test_backoff_grows_while_it_keeps_failing(self):
-        self.fake("1.21.0", "old")
+        self.fake("1.21.3", "old")
         with self.assertRaises(ub.BridgeError) as e:
             await self.ask()
         self.assertTrue(e.exception.update)
@@ -145,18 +145,18 @@ class SupervisorTest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(n, 8)
 
     async def test_a_new_prism_cli_is_picked_up_before_the_next_request(self):
-        self.assertEqual((await self.ask())["json"]["version"], "1.21.0")
-        self.fake("1.21.1", "ok")
+        self.assertEqual((await self.ask())["json"]["version"], "1.21.3")
+        self.fake("1.21.4", "ok")
         a = await self.ask()
-        self.assertEqual(a["json"]["version"], "1.21.1")
+        self.assertEqual(a["json"]["version"], "1.21.4")
         self.assertIn("stdin closed", self.log.read_text(), "the old child was stopped by closing its stdin")
 
     async def test_an_old_prism_cli_says_update_then_an_update_recovers(self):
-        self.fake("1.20.1", "ok")
+        self.fake("1.21.2", "ok")
         with self.assertRaises(ub.BridgeError) as e:
             await self.ask()
         self.assertTrue(e.exception.update)
-        self.fake("1.21.0", "ok")
+        self.fake("1.21.3", "ok")
         self.assertEqual((await self.ask())["status"], 200)
 
     async def test_stop_closes_stdin_and_removes_the_pid_file(self):

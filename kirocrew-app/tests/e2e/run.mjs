@@ -8,9 +8,10 @@
 //   (cd tests/e2e && npm ci) && node tests/e2e/run.mjs        the local build (../cli/dist; npm run build in cli/ first)
 //   PRISM_CLI=/path/to/prism-cli          another prism-cli, e.g. one installed from npm
 //   PRISM_CLI_OLD=/path/to/old/prism-cli  also checks the update page against an older prism-cli
-//   PRISM_CLI_OTHER=/path/to/prism-cli    another 1.21.0+ version: an open tab redraws from its bundle by itself
+//   PRISM_CLI_OTHER=/path/to/prism-cli    another 1.21.3+ version: an open tab redraws from its bundle by itself
 //   KC_PYTHON=/path/to/python3            a Python with aiohttp (default: python3)
 //   PRISM_E2E_THEME=light                 Kiro Crew's light theme (default: dark)
+//   PRISM_E2E_VIEWPORT=1200x675           the browser viewport (default: 1280x860)
 // Writes results.json and shots/*.png to $PRISM_E2E_OUT (default: <tmp>/prism-kirocrew-e2e); exits 1 when a verdict fails.
 import { chromium } from 'playwright-core';
 import { execFileSync, spawn } from 'node:child_process';
@@ -31,6 +32,8 @@ const PY = process.env.KC_PYTHON || 'python3';
 const HOST = 'https://kirocrew.test';
 /** PRISM_E2E_THEME=light: the host page and the PRISM page in Kiro Crew's light theme. */
 const THEME = process.env.PRISM_E2E_THEME === 'light' ? 'light' : 'dark';
+/** PRISM_E2E_VIEWPORT=1200x675: the App Store screenshot size (default 1280x860). */
+const VIEWPORT = (([w, h]) => (w && h ? { width: w, height: h } : { width: 1280, height: 860 }))((/^(\d{3,4})x(\d{3,4})$/.exec(process.env.PRISM_E2E_VIEWPORT || '') || []).slice(1).map(Number));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const READ_ONLY_AWS = /^(--version|configure list-profiles|sts get-caller-identity|iam list-account-aliases|organizations describe-organization|iam list-attached|securityagent list-agent-spaces|securityagent batch-get-agent-spaces|ssm get-parameter)/;
 
@@ -90,7 +93,7 @@ try {
   for (let i = 0; i < 40 && !alive(childPid(d)); i++) await sleep(250);
   R.checks.K7 = { childBeforeFirstRequest: alive(childPid(d)), children: serveStdioChildren(g.gw.pid) };
 
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 }, colorScheme: THEME });
+  const ctx = await browser.newContext({ viewport: VIEWPORT, colorScheme: THEME });
   const page = await ctx.newPage();
   const csp = [], errors = [], relayed = [];
   page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) csp.push(m.text().slice(0, 200)); });
@@ -105,7 +108,7 @@ try {
     const target = new URL((q.pathname === '/apps/prism' ? '/' : q.pathname) + q.search, gw.origin);
     const headers = { ...route.request().headers(), cookie: `kc_stand_in=${token}` };
     if (headers.origin) headers.origin = gw.origin;
-    try { await route.fulfill({ response: await route.fetch({ url: target.href, headers }) }); } catch { await route.abort(); }
+    try { await route.fulfill({ response: await route.fetch({ url: target.href, headers }) }); } catch { await route.abort().catch(() => {}); }
   });
   let pageNavigations = 0;
   page.on('framenavigated', (fr) => { if (fr === page.mainFrame()) pageNavigations++; });
@@ -239,7 +242,7 @@ try {
   if (process.env.PRISM_CLI_OLD) {
     writeFileSync(join(d.data, 'config.json'), JSON.stringify({ cliPath: process.env.PRISM_CLI_OLD }));
     await page.reload();
-    await page.waitForSelector('text=Update prism-cli to 1.21.0 or later', { timeout: 30000 }).catch(() => {});
+    await page.waitForSelector('text=Update prism-cli to 1.21.3 or later', { timeout: 30000 }).catch(() => {});
     R.checks.K10 = { text: (await page.innerText('#root')).replace(/\s+/g, ' ').slice(0, 300), iframe: !!(await page.$('iframe[title=PRISM]')) };
     await page.screenshot({ path: join(SHOTS, 'page-update-prism-cli.png') });
   }
@@ -281,8 +284,8 @@ add('K12', 'clicking every kind of in-app link (top nav, a Settings tab, a repo,
   Array.isArray(C.K12) && C.K12.length === Object.keys(EXPECT_VIEW).length && !C.K12.some(badClick), (C.K12 || []).filter(badClick));
 add('K11', 'on_shutdown stops the child and removes its pid file', C.K11?.stopped && !C.K11.pidFile, C.K11);
 add('aws', 'the fake aws saw read-only calls only', Array.isArray(C.aws) && C.aws.every((x) => READ_ONLY_AWS.test(x)), C.aws);
-if (process.env.PRISM_CLI_OLD) add('K10', 'an older prism-cli: only "Update prism-cli to 1.21.0 or later" and the npm command, no frame',
-  C.K10 && /Update prism-cli to 1\.21\.0 or later/.test(C.K10.text) && /npm install -g @prism-d1\/cli@latest/.test(C.K10.text) && !C.K10.iframe, C.K10);
+if (process.env.PRISM_CLI_OLD) add('K10', 'an older prism-cli: only "Update prism-cli to 1.21.3 or later" and the npm command, no frame',
+  C.K10 && /Update prism-cli to 1\.21\.3 or later/.test(C.K10.text) && /npm install -g @prism-d1\/cli@\^1\.21\.3/.test(C.K10.text) && !C.K10.iframe, C.K10);
 R.verdicts = v;
 writeFileSync(join(OUT, 'results.json'), JSON.stringify(R, null, 2));
 for (const x of v) console.log((x.pass ? 'PASS ' : 'FAIL ') + x.id + ' ' + x.name + (x.pass ? '' : ': ' + x.why));
