@@ -84,7 +84,7 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
     writeGate: (id, repo) => writeGateIn({ ...saIdentity, cache: lookups }, id, repo),
     // The pentest buttons: the picker's choice checked like the check route, or the run resolved from the repo's files.
     // While a background pentest --status runs (it may be tearing an environment down), Start and Clean up wait.
-    pentestArgs: (id, repo, body) => (id !== 'security-pentest-plan' && checks?.pentestRunning()
+    pentestArgs: (id, repo, body) => (checks?.pentestRunning()
       ? { error: 'A background status check of a pentest is running (it tears an environment down once its job has finished). Try again in a few minutes.', status: 409 }
       : pentestActionArgs({ ...saIdentity, cache: lookups }, id, repo, body)),
     // aws-connect accepts only names read fresh from the section headers of the two AWS files, and the region list.

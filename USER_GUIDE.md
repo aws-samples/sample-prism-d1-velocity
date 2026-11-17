@@ -1248,7 +1248,7 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   torn down. **Connect** and **Re-verify** on the Settings AWS tab
   (`aws connect`), AccountGuard's `aws check`, `team info`, the Security Agent page's agent-space check
   (which runs by itself once per session when you open that page and its first two setup steps pass)
-  and its fetch, status and **Show the plan** buttons make read-only calls. The buttons that write to
+  and its fetch and status buttons make read-only calls. The buttons that write to
   AWS are all on the Security Agent page, each after a dialog that says what it changes and where:
   the **Code review** item's **Review this branch** and **Review the whole repo** (`security
   code-review --no-wait`, branch diff or `--full`), **Start threat model** (`security threat-model
@@ -1413,7 +1413,7 @@ suggests covering them all with `prism-cli enable codewatch --global` (see
 
 ### Security Agent Page
 
-![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work with the Pentest target picker (the tracked Dockerfiles, the one .prism/pentest.json names preselected, the build folder, port and health path) and its Pentest plan and Pentest items with Show the plan and Start pentest above the commands to copy, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
+![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work with the Pentest target picker (the tracked Dockerfiles, the one .prism/pentest.json names preselected, the build folder, port and health path) and its Pentest item with Start pentest above the command to copy, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
 
 **Security Agent** in the header (`#security`, or `#security/<repo-id>` for one repo) runs the
 existing [Security Agent commands](#security-scans-from-your-machine) in a repo you pick, as if you
@@ -1551,16 +1551,34 @@ step.
   ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png)
 
   **Pentest.** The **Pentest target** picker chooses the Dockerfile, build folder, port and health
-  path, asked each time and never saved. Under it, **Pentest plan** has **Show the plan**
-  (`security pentest --dry-run` with the picker's `--app-dir`, `--dockerfile`, `--port` and
-  `--health-path`: cdk synth and diff on this machine, read-only in AWS, no confirm box) and
-  **Pentest** has **Start pentest** (`security pentest --yes` with the same flags, no `--wait`, no
-  `--keep`). Each keeps its command under the button, to copy for a terminal. The server checks the
-  picker's values again with the same rules as the picker before it runs anything. Start pentest's
-  dialog names the account and region and says what happens: a temporary private environment (a
-  new VPC, the app on Fargate behind an internal load balancer) is deployed, the Docker image is
-  built on this machine and pushed (Docker must be running), and the test runs for hours and costs
-  money while the environment is up. You tick a box to confirm. The action is stopped after 45
+  path, asked each time and never saved. Under it, **Pentest** has **Start pentest** (`security
+  pentest --yes` with the picker's `--app-dir`, `--dockerfile`, `--port` and `--health-path`, no
+  `--wait`, no `--keep`), with its command under the button to copy for a terminal. The page has no
+  plan button since 1.21.7: to see the CDK diff first, run `security pentest --dry-run` in a
+  terminal. The server checks the picker's values again with the same rules as the picker before
+  it runs anything. Before you confirm, Start pentest's dialog says in plain words what it deploys
+  into the account and region it names, as the pentest stack creates it:
+
+  - a VPC with private subnets only in two availability zones (no internet gateway, no NAT gateway,
+    no public endpoint), with security groups that let only the pentest agent reach the load
+    balancer and only the load balancer reach the app;
+  - a Fargate service running your app, built from the picked Dockerfile on this machine and pushed
+    to Amazon ECR (Docker must be running), behind an internal Application Load Balancer with a
+    private DNS name only the VPC resolves;
+  - VPC endpoints for ECR, S3 and CloudWatch Logs (and Secrets Manager when `.prism/pentest.json`
+    names secrets);
+  - an IAM service role for Security Agent, an S3 source bucket with the repo at HEAD, and
+    CloudWatch log groups for the app and the agent;
+  - in Security Agent, an agent space for the run, a private target domain, and the pentest and its
+    job.
+
+  It also shows the picked Dockerfile, build folder, port and health path; that the environment is
+  torn down automatically when the job finishes (the dashboard checks every 5 minutes while it is
+  open), that a **Clean up** button appears on the run's page if teardown fails, and the cleanup
+  command to run sooner (`security pentest --cleanup --job JOB_ID` with the page's `--profile` and
+  `--region`; the run's page shows the job id); and that it runs for hours and costs money while it
+  is up (publicly reported at $50 per task-hour, plus the environment). You tick a box to confirm;
+  nothing is deployed or called in AWS before **Deploy and start**. The action is stopped after 45
   minutes: `cdk deploy` of the VPC, endpoints, load balancer and Fargate service takes 10 to 20
   minutes, the first run also installs the CDK app's packages and builds the image, and the
   command then waits up to 10 minutes for the health check. While a pentest of the repo is pending
@@ -1575,6 +1593,7 @@ step.
   retries once). It acts only on that run's recorded stack, and only when the run was recorded in
   the account and region the commands use now. See
   [Running a Penetration Test from the CLI](#running-a-penetration-test-from-the-cli).
+  ![The Start pentest confirm dialog with demo data, from its top: it deploys a temporary private environment for demo-shop into account ••••3333 / us-west-2; What it creates lists the private-subnet VPC, the Fargate service built from services/api/Dockerfile.prod, the internal load balancer, the VPC endpoints, the IAM service role, the source bucket and log groups, and the Security Agent agent space, target domain and pentest; Your app shows the Dockerfile, build folder, port and health path; Afterwards explains the automatic teardown and Clean up and shows the cleanup command; Time and cost follows](assets/images/prism-cli/dashboard-security-pentest-start-dark.png)
   ![The confirm dialog for Review the whole repo with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
 - **Setup.** One folded card for the whole machine, **Set up Security Agent on this machine**
   (the setup check above leads when something is missing). Its steps: **Dry run** (`enable security --dry-run`, read-only; its first run installs the
@@ -2267,10 +2286,10 @@ or Dockerfile you type. The **Build folder** defaults to the Dockerfile's folder
 **Health path** start from `.prism/pentest.json`, else the defaults (8080, `/health`). The server
 checks a typed path before any command is shown: it must be relative to the repo, stay inside it
 (no `..`, no absolute path, no symlink out of it), and name a folder with a Dockerfile or a
-Dockerfile; otherwise the reason is shown under the field. The **Pentest plan** and **Pentest**
-commands then carry `--app-dir`, `--dockerfile`, `--port` and `--health-path`, shell-quoted, to
-copy, and the **Show the plan** and **Start pentest** buttons run them (Start pentest with `--yes`,
-after a confirm dialog; see [Security Agent Page](#security-agent-page)). The choice is asked each time: nothing is written to the repo or to
+Dockerfile; otherwise the reason is shown under the field. The **Pentest** command then carries
+`--app-dir`, `--dockerfile`, `--port` and `--health-path`, shell-quoted, to copy, and **Start
+pentest** runs it with `--yes`, after a confirm dialog that lists what it deploys (see
+[Security Agent Page](#security-agent-page)). `--dry-run` is CLI only: run it in a terminal. The choice is asked each time: nothing is written to the repo or to
 `.prism/pentest.json`, and the page keeps it only until you reload it. A `.prism/pentest.json`
 that does not load is named on the card and its values are not used.
 

@@ -60,7 +60,7 @@ export type ActionId = 'codewatch-repo' | 'codewatch-global'
   | 'security-status' | 'security-dry-run' | 'security-findings' | 'security-threats' | 'security-pentest-findings'
   | 'security-code-review' | 'security-code-review-full' | 'security-threat-model'
   | 'security-code-review-force' | 'security-code-review-full-force'
-  | 'security-pentest-plan' | 'security-pentest-start' | 'security-pentest-cleanup';
+  | 'security-pentest-start' | 'security-pentest-cleanup';
 
 export interface ActionDef {
   label: string;
@@ -186,8 +186,6 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'security-code-review-force': { label: 'Start another code review of this branch', args: ['security', 'code-review', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   'security-code-review-full-force': { label: 'Start another code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   // The pentest buttons (1.21.6), with the picker's --app-dir/--dockerfile/--port/--health-path appended by pentestArgs.
-  'security-pentest-plan': { label: 'Pentest plan (dry run)', args: ['security', 'pentest', '--dry-run'], repo: true, awsTarget: true, readOnlyAws: true, pentest: 'choice', timeoutMs: 10 * MIN,
-    note: 'Runs cdk synth and cdk diff of the pentest environment on this machine; nothing is deployed or started. The first run installs the pentest CDK app\'s npm packages into prism-cli\'s own folder.' },
   // --yes: no terminal to answer the prompt; the page's dialog is the confirmation. No --wait: the job runs for hours, and
   // the dashboard's background --status check tears the environment down when it finishes. 45 min: cdk deploy (VPC,
   // endpoints, internal ALB, Fargate) takes 10-20 min, the first run also installs the CDK app's packages and builds and

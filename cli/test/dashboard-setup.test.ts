@@ -226,7 +226,6 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'security-code-review-force': sa(['security', 'code-review', '--no-wait', '--force'], true),
     'security-code-review-full-force': sa(['security', 'code-review', '--full', '--no-wait', '--force'], true),
     // The pentest buttons: the flags pentestArgs returns go right after the fixed args, before --profile/--region.
-    'security-pentest-plan': { ...sa(['security', 'pentest', '--dry-run', '--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health']), body: { repo: repoId(REPO_A), dockerfile: 'Dockerfile', port: '8080', health_path: '/health' } },
     'security-pentest-start': { ...sa(['security', 'pentest', '--yes', '--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health']), body: { repo: repoId(REPO_A), dockerfile: 'Dockerfile', port: '8080', health_path: '/health', confirm: true } },
     'security-pentest-cleanup': { ...sa(['security', 'pentest', '--cleanup', '--job', 'ptj-1']), body: { repo: repoId(REPO_A), run: 'r1', confirm: true } },
   };

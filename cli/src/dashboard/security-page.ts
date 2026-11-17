@@ -37,6 +37,8 @@ ul.salist { list-style:none; margin:0; padding:0; } ul.salist > li { padding:10p
 li.inuse { border-left:3px solid var(--ok); padding-left:10px; }
 select.sa-repo { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); max-width:100%; }
 .sa-notice { font-weight:600; }
+dialog.confirm h3.sa-dh { font-size:13px; margin:12px 0 4px; color:var(--text); } ul.sa-res { margin:4px 0; padding-left:20px; } ul.sa-res li { margin:3px 0; overflow-wrap:anywhere; }
+[data-pt-target] dl.kv { margin:4px 0; } [data-pt-target] code { overflow-wrap:anywhere; }
 .gate { max-width:720px; margin:12px auto 18px; border:1px solid var(--line); border-radius:14px; background:var(--card); overflow:hidden; }
 .gate-top { padding:16px 22px 0; } .gate-body { padding:14px 22px 20px; } .gate-body h3 { font-size:18px; margin:4px 0 8px; } .gate-body p { margin:6px 0 10px; overflow-wrap:anywhere; }
 .gate-step { font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.05em; display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
@@ -134,10 +136,23 @@ function saDialog() {
 }
 /** What the confirm dialog says about the AWS side, per action. */
 const SA_WRITE_NOTE = {
-  'security-pentest-start': 'It returns once the job has started; it does not wait for it. While a Security Agent page is open, the dashboard checks the job every 5 minutes with prism-cli security pentest --status, which saves the findings and tears the environment down when the job finishes. If teardown fails, the run shows Clean up.',
+  'security-pentest-start': 'It returns once the job has started; it does not wait for it.',
   'security-pentest-cleanup': 'It waits for the teardown: the agent\\'s network interfaces are released first, then the stack is deleted, retried once. That can take over an hour.',
 };
 const SA_RUN_LABEL = { 'security-pentest-start': 'Deploy and start', 'security-pentest-cleanup': 'Tear down' };
+
+/**
+ * The Start pentest dialog's account of what it deploys (the check route's pentestStartPlan, for the picked
+ * choice): the resources, the target as picked, the automatic teardown with the cleanup command, and the cost.
+ */
+function saPtPlan(p, t) {
+  const h = (s) => el('h3', { class: 'sa-dh' }, s);
+  return [h('What it creates'), el('ul', { class: 'sa-res', 'data-pt-resources': '' }, ...(p.resources || []).map((r) => el('li', {}, txt(r)))),
+    h('Your app'), el('div', { 'data-pt-target': '' }, kv([['Dockerfile', el('code', {}, txt(t.dockerfile))], ['Build folder', el('code', {}, txt(t.appDir))],
+      ['Port', el('code', {}, txt(t.port))], ['Health path', el('code', {}, txt(t.healthPath))]])),
+    h('Afterwards'), el('p', { 'data-pt-teardown': '' }, txt(p.teardown)), cmdWords('pre', 'cmd', txt(p.cleanup)),
+    h('Time and cost'), el('p', { 'data-pt-cost': '' }, txt(p.cost))];
+}
 
 /**
  * The confirm dialog. o.command: the server's exact line when it depends on more than the repo (the pentest
@@ -152,6 +167,7 @@ function saConfirm(a, repo, o) {
   const cancel = el('button', { type: 'button' }, 'Cancel');
   const kids = [el('h2', { id: 'confirm-title' }, a.label)];
   if (a.writesAws) kids.push(el('p', { class: 'sa-notice' }, txt(notice && notice.text)));
+  if (a.id === 'security-pentest-start' && o.start) kids.push(...saPtPlan(o.start, o.target || {}));
   kids.push(el('p', {}, 'This will run:'), cmdWords('pre', 'cmd', cmd));
   kids.push(el('p', { class: 'note' }, a.writesAws
     ? SA_WRITE_NOTE[a.id] || 'This writes to AWS: an S3 upload and one started job, which may incur cost. It does not wait for the job; fetch the result here later.'
@@ -477,11 +493,11 @@ function saPtRun(id, repo, chk, label) {
     const n = (repo.notices || {})[id];
     if (!n || !n.text) return el('span', { class: 'fix' }, txt((n && n.reason) || 'not available'));
   }
-  const ok = !!(chk && chk.ok && chk.resolved && chk.run && chk.run[id]);
+  const ok = !!(chk && chk.ok && chk.resolved && chk.run && chk.run[id] && chk.start);
   const b = el('button', { type: 'button', class: 'run' + (a.writesAws ? ' danger' : ''), 'data-pt-run': id, disabled: ok ? null : '' }, label);
   if (ok) {
     const r = chk.resolved;
-    const o = { command: txt(chk.run[id]), target: { dockerfile: txt(r.dockerfile), appDir: txt(r.appDir), port: txt(r.port), healthPath: txt(r.healthPath) } };
+    const o = { command: txt(chk.run[id]), start: chk.start, target: { dockerfile: txt(r.dockerfile), appDir: txt(r.appDir), port: txt(r.port), healthPath: txt(r.healthPath) } };
     b.addEventListener('click', () => saPtStart(a, repo, o));
   }
   return b;
@@ -504,11 +520,10 @@ function saPtStart(a, repo, o) {
   cancel.focus();
 }
 
-/** The Pentest plan and Pentest items: with the picker once its listing is in; while loading, a line; if it failed (or in a snapshot), the commands with no flags. */
+/** The Pentest item: with the picker once its listing is in; while loading, a line; if it failed (or in a snapshot), the command with no flags. */
 function saPentestItems(repo, item) {
   const c = repo.copy || {};
-  const plain = () => [item('Pentest plan', 'Shows the plan, target and cost. ' + (SNAPSHOT ? 'Copy only in a snapshot.' : 'Copy only until the target picker loads: run it in a terminal.'), copyOnly(txt(c.pentestDryRun), SNAPSHOT ? 'snapshot: copy only' : 'terminal')),
-    item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). ' + (SNAPSHOT ? 'Copy only in a snapshot.' : 'Copy only until the target picker loads.'), copyOnly(txt(c.pentest), SNAPSHOT ? 'snapshot: copy only' : 'AWS write'))];
+  const plain = () => [item('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money). ' + (SNAPSHOT ? 'Copy only in a snapshot.' : 'Copy only until the target picker loads.'), copyOnly(txt(c.pentest), SNAPSHOT ? 'snapshot: copy only' : 'AWS write'))];
   if (SNAPSHOT) return plain();
   saPtLoad(repo);
   const st = SA_PT.get(repo.id);
@@ -520,9 +535,7 @@ function saPentestItems(repo, item) {
   const ctl = (id, label, key, cmd, badge) => el('div', {}, el('div', { class: 'srow-ctl' }, saPtRun(id, repo, chk, label)),
     el('div', { class: 'fix' }, 'Or in a terminal:'), saPtCmd(key, ok ? txt(cmd) : null, status || badge));
   return [head('Pentest target', 'Which Dockerfile the pentest builds, from the files git tracks in ' + txt(repo.name) + '.', saPtPicker(repo, st)),
-    head('Pentest plan', 'Shows the plan, target and cost for this choice: cdk synth and diff on this machine, read-only in AWS. Nothing is deployed or started.',
-      ctl('security-pentest-plan', 'Show the plan', 'pentestDryRun', ok && chk.copy.pentestDryRun, 'terminal')),
-    head('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money while it runs). The dashboard tears the environment down when the job finishes.',
+    head('Pentest', 'Deploys a private copy of the app in a temporary VPC and starts a pentest (hours; costs money while it runs). Start pentest lists what it deploys before you confirm; the dashboard tears the environment down when the job finishes.',
       ctl('security-pentest-start', 'Start pentest', 'pentest', ok && chk.copy.pentest, 'AWS write'))];
 }
 
