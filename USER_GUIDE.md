@@ -1244,13 +1244,16 @@ It prints a URL such as `http://127.0.0.1:<port>/?token=<token>` and opens it in
   **AccountGuard** (below) checks the connected AWS account.
 - **AWS.** Loading the Dashboard makes no AWS calls, with one exception: while a code review, threat
   model or pentest is pending in a repo's results, the open page has the dashboard check that job
-  read-only (below, Security runs). **Connect** and **Re-verify** on the Settings AWS tab
+  (below, Security runs). That check is read-only, except that a finished pentest's environment is
+  torn down. **Connect** and **Re-verify** on the Settings AWS tab
   (`aws connect`), AccountGuard's `aws check`, `team info`, the Security Agent page's agent-space check
   (which runs by itself once per session when you open that page and its first two setup steps pass)
-  and its fetch and status buttons make read-only calls. Only two buttons write to AWS, both on the Security Agent page and both after a
-  dialog that says what they upload and where: the **Code review** item's **Review this branch** and
-  **Review the whole repo** (`security code-review --no-wait`, branch diff or `--full`) and **Start threat model** (`security threat-model --no-wait`).
-  `enable security` and every `security pentest` command stay Copy only.
+  and its fetch, status and **Show the plan** buttons make read-only calls. The buttons that write to
+  AWS are all on the Security Agent page, each after a dialog that says what it changes and where:
+  the **Code review** item's **Review this branch** and **Review the whole repo** (`security
+  code-review --no-wait`, branch diff or `--full`), **Start threat model** (`security threat-model
+  --no-wait`), **Start pentest** (`security pentest --yes`) and a run's **Clean up** (`security
+  pentest --cleanup --job <job>`). `enable security` stays Copy only.
 - **Theme.** The page opens in the dark theme. The **Light / Dark / System** toggle in the header is
   saved in your browser (`localStorage`) and wins on the next load; System follows your OS setting.
 - **Update check.** The version pill in the header shows `prism-cli <version>`, or
@@ -1410,7 +1413,7 @@ suggests covering them all with `prism-cli enable codewatch --global` (see
 
 ### Security Agent Page
 
-![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work with the Pentest target picker (the tracked Dockerfiles, the one .prism/pentest.json names preselected, the build folder, port and health path) and its Pentest plan and Pentest commands, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
+![The Security Agent page with demo data once the setup check passes: the Security Agent ready strip with the profile, setup and agent space and Check again, the repo override note, the Security runs table with Type, Repo and Status filters (a code review running, a code review and a threat model complete, a pentest failed with a red marker); below it the target repo picker, the results for demo-shop with Complete. View findings links and Fetch buttons, Start new work with the Pentest target picker (the tracked Dockerfiles, the one .prism/pentest.json names preselected, the build folder, port and health path) and its Pentest plan and Pentest items with Show the plan and Start pentest above the commands to copy, and on the right the account and region, agent spaces and setup health](assets/images/prism-cli/dashboard-security-agent-dark.png)
 
 **Security Agent** in the header (`#security`, or `#security/<repo-id>` for one repo) runs the
 existing [Security Agent commands](#security-scans-from-your-machine) in a repo you pick, as if you
@@ -1545,10 +1548,32 @@ step.
   refuses to replace it while a job of that code review is pending in the repo's results, unless you
   pass `--force` (**Start another anyway** does). Jobs CI started are not in the local results.
 
-  ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png) `security pentest`, `--dry-run` and
-  `--status` are Copy only (`--status` tears the test environment down once the job has finished).
-  The **Pentest target** picker above them chooses the Dockerfile, build folder, port and health
-  path those commands name, asked each time and never saved; see
+  ![The guard dialog with demo data: a code review of demo-shop is already running, with Cancel focused, View it and Start another anyway](assets/images/prism-cli/dashboard-security-guard-running-dark.png)
+
+  **Pentest.** The **Pentest target** picker chooses the Dockerfile, build folder, port and health
+  path, asked each time and never saved. Under it, **Pentest plan** has **Show the plan**
+  (`security pentest --dry-run` with the picker's `--app-dir`, `--dockerfile`, `--port` and
+  `--health-path`: cdk synth and diff on this machine, read-only in AWS, no confirm box) and
+  **Pentest** has **Start pentest** (`security pentest --yes` with the same flags, no `--wait`, no
+  `--keep`). Each keeps its command under the button, to copy for a terminal. The server checks the
+  picker's values again with the same rules as the picker before it runs anything. Start pentest's
+  dialog names the account and region and says what happens: a temporary private environment (a
+  new VPC, the app on Fargate behind an internal load balancer) is deployed, the Docker image is
+  built on this machine and pushed (Docker must be running), and the test runs for hours and costs
+  money while the environment is up. You tick a box to confirm. The action is stopped after 45
+  minutes: `cdk deploy` of the VPC, endpoints, load balancer and Fargate service takes 10 to 20
+  minutes, the first run also installs the CDK app's packages and builds the image, and the
+  command then waits up to 10 minutes for the health check. While a pentest of the repo is pending
+  in the same account and region, Start pentest says so and offers **View it →** only:
+  `security pentest` has no `--force`, so start a second one from a terminal if you mean to. The
+  environment is torn down automatically when the job finishes (Security runs, below). A run whose
+  environment is still up afterwards (its teardown failed, it was started with `--keep`, or the
+  app never became healthy) has a **Teardown failed** or **Environment still up** card on its page,
+  with the failure reason (account ids and home paths masked) and **Clean up**: `security pentest
+  --cleanup --job <its job>` after a confirm dialog naming the account and region, stopped after 90
+  minutes (the teardown waits for the agent's network interfaces, then deletes the stack, and
+  retries once). It acts only on that run's recorded stack, and only when the run was recorded in
+  the account and region the commands use now. See
   [Running a Penetration Test from the CLI](#running-a-penetration-test-from-the-cli).
   ![The confirm dialog for Review the whole repo with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
 - **Setup.** One folded card for the whole machine, **Set up Security Agent on this machine**
@@ -1617,14 +1642,23 @@ never cached.
 
 **Security runs.** The latest 5 Security Agent runs (code reviews, threat models and pentests) in
 every repo, newest first, read from each repo's `.prism/results/`. Reading them makes no AWS call.
-While a run is pending, the open page has the dashboard check its job with AWS, read-only: when the
-page loads, then about every minute while it stays open and visible. The check is the same command
-a Fetch button runs (`security findings --job`, `security threats --job` or `security findings
---pentest <job>`, no `--wait`), in that repo, with the same profile and region, so it saves the
-verdict and findings exactly as that command does. When the job has finished, the row turns
-**complete** with its findings, without a reload. One check runs per job at a time, at most two at
-once, never while another dashboard action runs, and after a failed check the next one waits
-longer each time (up to 30 minutes). A static snapshot (`dashboard --snapshot`) checks nothing.
+While a run is pending, the open page has the dashboard check its job with AWS: when the page
+loads, then while it stays open and visible. For a code review or threat model the check is the
+read-only command a Fetch button runs (`security findings --job` or `security threats --job`, no
+`--wait`), about every minute. For a pentest it is `security pentest --status --job <job>`, every 5
+minutes, since a pentest runs for hours. That one writes to AWS once the job has finished: it saves
+the findings and tears the environment down, so a pentest started from the page needs no status
+button. It tears down only the stack that run recorded, never another run's, and never a run
+started with `--keep`. The command checks the account itself and only finds a run recorded in the
+account and region it runs in; a run it cannot find there fails the check visibly. Each check runs
+in that repo, with the same profile and region the page's buttons use, so it saves the verdict
+exactly as that command does. When the job has finished, the row turns **complete** with its
+findings, without a reload. One check runs per job at a time, at most two at once and one pentest
+at a time, never while another dashboard action runs, and after a failed check the next one waits
+longer each time (up to 30 minutes). While a pentest check runs, Start pentest and Clean up wait
+for it. A pentest check is stopped after 90 minutes, the longest a teardown can take; if the
+teardown fails, the run gets the Clean up card. A static snapshot (`dashboard --snapshot`) checks
+nothing and has no buttons.
 Each row shows:
 
 | Column | What it shows |
@@ -2234,8 +2268,9 @@ or Dockerfile you type. The **Build folder** defaults to the Dockerfile's folder
 checks a typed path before any command is shown: it must be relative to the repo, stay inside it
 (no `..`, no absolute path, no symlink out of it), and name a folder with a Dockerfile or a
 Dockerfile; otherwise the reason is shown under the field. The **Pentest plan** and **Pentest**
-commands then carry `--app-dir`, `--dockerfile`, `--port` and `--health-path`, shell-quoted, and
-stay Copy only. The choice is asked each time: nothing is written to the repo or to
+commands then carry `--app-dir`, `--dockerfile`, `--port` and `--health-path`, shell-quoted, to
+copy, and the **Show the plan** and **Start pentest** buttons run them (Start pentest with `--yes`,
+after a confirm dialog; see [Security Agent Page](#security-agent-page)). The choice is asked each time: nothing is written to the repo or to
 `.prism/pentest.json`, and the page keeps it only until you reload it. A `.prism/pentest.json`
 that does not load is named on the card and its values are not used.
 
@@ -2248,10 +2283,14 @@ mostly in the `PENTEST` step. So by default the command starts the job, saves a 
 `--region` you passed.
 
 - `--status` refreshes the job and prints its step. Once the job has finished, it saves the
-  findings and tears the environment down.
+  findings and tears the environment down, unless the run was started with `--keep`. `--job <id>`
+  picks the run (default: the latest in this account and region); the dashboard runs
+  `--status --job <id>` by itself for each pending pentest.
 - `--wait` polls until the job finishes (or `--timeout`), prints the findings, then tears down.
-- `--keep` leaves the environment up after the job, to reproduce a finding.
-- `--cleanup` removes a run's environment at any time; it stops a running job first.
+- `--keep` leaves the environment up after the job, to reproduce a finding. The run records it, so a
+  later `--status` (and the dashboard's check) leaves it up too; remove it with `--cleanup`.
+- `--cleanup` removes a run's environment at any time; it stops a running job first. `--job <id>`
+  picks the run.
 - `security findings --pentest [<job>]` reads the findings without deleting anything.
 
 Teardown deletes the pentest, the run's agent space, its target domain and the CloudFormation

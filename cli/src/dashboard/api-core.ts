@@ -23,6 +23,7 @@ import type { UsageCache } from './usage-cache.js';
 import type { UpdateCheck } from './update-check.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { SecurityAutoCheck, spawnCheck } from './security-autocheck.js';
+import { pentestActionArgs } from './security-pentest.js';
 
 /** The ids /report/<id> accepts (server.ts REPORT_ROUTE). */
 const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
@@ -81,11 +82,16 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
     awsArgs: (repo) => targetArgs(targetIn(repo.path)),
     // The setup gate passes in the repo, the lookup named the space and the bucket, and the account is the same right now.
     writeGate: (id, repo) => writeGateIn({ ...saIdentity, cache: lookups }, id, repo),
+    // The pentest buttons: the picker's choice checked like the check route, or the run resolved from the repo's files.
+    // While a background pentest --status runs (it may be tearing an environment down), Start and Clean up wait.
+    pentestArgs: (id, repo, body) => (id !== 'security-pentest-plan' && checks?.pentestRunning()
+      ? { error: 'A background status check of a pentest is running (it tears an environment down once its job has finished). Try again in a few minutes.', status: 409 }
+      : pentestActionArgs({ ...saIdentity, cache: lookups }, id, repo, body)),
     // aws-connect accepts only names read fresh from the section headers of the two AWS files, and the region list.
     awsChoices: () => { const c = profileChoices(identity); return { profiles: c.profiles.map((p) => p.name), regions: c.regions }; },
     connectionArgs: () => connectionArgs(identity.home, identity.repoRoot),
   });
-  // The fetch command itself, in the repo, with the same --profile/--region a Fetch button's run gets.
+  // The check command itself, in the repo, with the same --profile/--region a Fetch button's run gets.
   const checkRunner = spawnCheck({ execPath: process.execPath, entry: cliEntry(), awsArgs: (repo) => targetArgs(targetIn(repo.path)) });
   checks = new SecurityAutoCheck({
     repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),

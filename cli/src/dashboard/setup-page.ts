@@ -271,6 +271,9 @@ async function startAction(a, o) {
   if (a.url) body.url = o.url;
   if (a.choose) { body.profile = o.profile; body.region = o.region; }
   if (a.pick) { if (o.reviewer) body.reviewer = o.reviewer; if (o.model !== undefined) body.model = o.model; }
+  // A pentest action: the picker's checked choice (the server checks it again), or the run to clean up.
+  if (a.pentest === 'choice' && o.target) { body.dockerfile = o.target.dockerfile; body.app_dir = o.target.appDir; body.port = o.target.port; body.health_path = o.target.healthPath; }
+  if (a.pentest === 'run') body.run = o.run;
   if (a.confirm) body.confirm = true;
   ACTION_PANEL.hidden = false;
   OUT.status.replaceChildren(pill('warn', 'starting'), el('code', {}, a.command));

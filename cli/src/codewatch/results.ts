@@ -197,6 +197,8 @@ export interface PentestInfo {
   target_domain_id?: string | null;
   /** Set when the last teardown left the stack up (destroy failed twice); --cleanup retries it. */
   teardown_failed?: { at: string; reason: string } | null;
+  /** Started with --keep: --status leaves the environment up after the job (only --cleanup removes it). */
+  keep?: boolean | null;
   service_created_at?: string | null;
   service_updated_at?: string | null;
   service_duration_s?: number | null;

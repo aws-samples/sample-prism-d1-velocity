@@ -38,6 +38,36 @@ if [ "$FAKE_AWS" = "in-progress" ] || [ "$FAKE_AWS" = "complete" ]; then
   esac
 fi
 # FAKE_AWS=complete: job-demo-2 has finished with two findings, one whose text carries markup (it must show as text).
+# FAKE_PT=1 (with FAKE_AWS set): the calls `security pentest` makes, for the Run buttons' e2e. The job's status is
+# $HOME/fake-pt-job (default IN_PROGRESS); $HOME/fake-pt-teardown=fail makes every stack deletion end DELETE_FAILED.
+if [ -n "$FAKE_PT" ] && { [ "$FAKE_AWS" = "in-progress" ] || [ "$FAKE_AWS" = "complete" ]; }; then
+  JOB=IN_PROGRESS; [ -f "$HOME/fake-pt-job" ] && JOB=$(cat "$HOME/fake-pt-job")
+  case "$1 $2" in
+    "cloudformation describe-stacks")
+      if [ -f "$HOME/fake-pt-deleting" ]; then
+        if [ "$(cat "$HOME/fake-pt-teardown" 2>/dev/null)" = "fail" ]; then echo '{"Stacks":[{"StackStatus":"DELETE_FAILED","StackStatusReason":"The following resource(s) failed to delete: [AgentSg]. (demo)"}]}'; exit 0; fi
+        echo "" >&2; echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id demo does not exist" >&2; exit 254
+      fi
+      echo '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"VpcArn","OutputValue":"arn:aws:ec2:us-west-2:111122223333:vpc/vpc-demo"},{"OutputKey":"SubnetArns","OutputValue":"arn:aws:ec2:us-west-2:111122223333:subnet/subnet-a,arn:aws:ec2:us-west-2:111122223333:subnet/subnet-b"},{"OutputKey":"AgentSecurityGroupArn","OutputValue":"arn:aws:ec2:us-west-2:111122223333:security-group/sg-agent"},{"OutputKey":"ServiceRoleArn","OutputValue":"arn:aws:iam::111122223333:role/prism-pentest-demo"},{"OutputKey":"AgentLogGroup","OutputValue":"/aws/securityagent/prism-pentest-demo"},{"OutputKey":"PrivateHost","OutputValue":"app.demo-shop.prism.internal"},{"OutputKey":"SourceBucket","OutputValue":"prism-pentest-demo-src"},{"OutputKey":"TargetGroupArn","OutputValue":"arn:aws:elasticloadbalancing:us-west-2:111122223333:targetgroup/app/1"},{"OutputKey":"AppLogGroup","OutputValue":"PrismPentest-demo-AppLogs"},{"OutputKey":"ExpiresAt","OutputValue":"2026-11-18T10:00:00Z"}]}]}'; exit 0 ;;
+    "cloudformation delete-stack") touch "$HOME/fake-pt-deleting"; echo '{}'; exit 0 ;;
+    "cloudformation describe-stack-events") echo '{"StackEvents":[{"LogicalResourceId":"AgentSg","ResourceType":"AWS::EC2::SecurityGroup","ResourceStatus":"DELETE_FAILED","ResourceStatusReason":"resource sg-agent has a dependent object (demo)"}]}'; exit 0 ;;
+    "s3api put-object") echo '{}'; exit 0 ;;
+    "elbv2 describe-target-health") echo '{"TargetHealthDescriptions":[{"Target":{"Id":"10.80.0.5","Port":3000},"TargetHealth":{"State":"healthy"}}]}'; exit 0 ;;
+    "ec2 describe-network-interfaces") echo '{"NetworkInterfaces":[]}'; exit 0 ;;
+    "securityagent create-target-domain") echo '{"targetDomainId":"td-demo","verificationStatus":"PENDING"}'; exit 0 ;;
+    "securityagent verify-target-domain") echo '{"status":"UNREACHABLE"}'; exit 0 ;;
+    "securityagent create-agent-space") echo '{"agentSpaceId":"as-pt-demo"}'; exit 0 ;;
+    "securityagent create-pentest") echo '{"pentestId":"pt-demo"}'; exit 0 ;;
+    "securityagent start-pentest-job")
+      N=$(( $(cat "$HOME/fake-pt-n" 2>/dev/null || echo 0) + 1 )); echo "$N" > "$HOME/fake-pt-n"
+      echo "{\"pentestJobId\":\"ptj-run-$N\",\"status\":\"IN_PROGRESS\",\"createdAt\":\"2026-11-17T10:00:00Z\"}"; exit 0 ;;
+    "securityagent batch-get-pentest-jobs")
+      ID=""; prev=""; for a in "$@"; do [ "$prev" = "--pentest-job-ids" ] && ID=$a; prev=$a; done
+      echo "{\"pentestJobs\":[{\"pentestJobId\":\"$ID\",\"status\":\"$JOB\",\"createdAt\":\"2026-11-17T10:00:00Z\",\"updatedAt\":\"2026-11-17T12:50:00Z\",\"steps\":[{\"name\":\"PENTEST\",\"status\":\"$JOB\"}]}]}"; exit 0 ;;
+    "securityagent list-findings") echo '{"findingsSummaries":[]}'; exit 0 ;;
+    "securityagent stop-pentest-job"|"securityagent batch-delete-pentests"|"securityagent delete-agent-space"|"securityagent delete-target-domain") echo '{}'; exit 0 ;;
+  esac
+fi
 if [ "$FAKE_AWS" = "complete" ]; then
   case "$1 $2" in
     "securityagent batch-get-code-review-jobs") echo '{"codeReviewJobs":[{"codeReviewJobId":"job-demo-2","status":"COMPLETED","createdAt":"2026-11-15T10:00:00Z","updatedAt":"2026-11-15T10:14:00Z"}]}'; exit 0 ;;

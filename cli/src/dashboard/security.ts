@@ -72,6 +72,8 @@ export interface SecurityPentestRow {
   overview: string | null;
   /** The last teardown left the stack up; --cleanup retries it. */
   teardown_failed: { at: string; reason: string } | null;
+  /** The job has finished and the record still names its stack (a --keep run, a failed teardown, an app that never became healthy). */
+  stack_up: boolean;
   pending: boolean;
   stale: boolean;
   check: CheckState | null;
@@ -214,6 +216,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         counts: p.pentest.counts || {}, findings: pf.slice(0, MAX_PANEL_FINDINGS), truncated: pf.length > MAX_PANEL_FINDINGS,
         reason: p.reason ?? null, overview: p.pentest.overview ?? null,
         teardown_failed: p.pentest.teardown_failed ?? null,
+        stack_up: p.status !== 'pending' && !!p.pentest.stack,
         pending: p.status === 'pending',
         stale: staleAfter(p, now, PENTEST_PENDING_STALE_MS, pcheck), check: pcheck,
       });

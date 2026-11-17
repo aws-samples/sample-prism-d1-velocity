@@ -18,6 +18,8 @@ export function binDir(home, opt = {}) {
   const link = (target, name) => { if (!existsSync(join(bin, name))) symlinkSync(target, join(bin, name)); };
   link(process.execPath, 'node');
   link(join(HERE, 'fakebin', 'aws'), 'aws');
+  // A fake docker in every run: a host docker in /usr/bin must never be reached (the pentest e2e "builds" with it).
+  link(join(HERE, 'fakebin', 'docker'), 'docker');
   if (!opt.noCodeburn) link(join(HERE, 'fakebin', 'codeburn'), 'codeburn');
   // opt.reviewers: fake reviewer tools on PATH (fakebin/reviewer: logs and exits 1, never reviews).
   for (const r of opt.reviewers || []) link(join(HERE, 'fakebin', 'reviewer'), r);

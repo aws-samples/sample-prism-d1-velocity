@@ -1,0 +1,11 @@
+#!/bin/sh
+# Fake cdk for the dashboard e2e run (PRISM_PENTEST_CDK_DIR points at a folder whose node_modules/.bin/cdk is this):
+# logs each call to $HOME/cdk-calls.log. synth and diff print a short plan; deploy "builds and pushes" the image with
+# the fake docker on PATH, as cdk deploy would, and creates nothing. No AWS call, no network.
+echo "$*" >> "$HOME/cdk-calls.log"
+case "$1" in
+  synth) exit 0 ;;
+  diff) echo "Stack PrismPentest-demo (fake diff)"; echo "[+] AWS::EC2::VPC Vpc"; echo "[+] AWS::ECS::Service App"; echo "[+] AWS::ElasticLoadBalancingV2::LoadBalancer InternalAlb"; exit 0 ;;
+  deploy) docker build -t prism-pentest-demo . && docker push prism-pentest-demo && rm -f "$HOME/fake-pt-deleting"; echo "PrismPentest-demo: deployed (fake)"; exit 0 ;;
+esac
+exit 0
