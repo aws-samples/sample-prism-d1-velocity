@@ -51,7 +51,7 @@ Before it runs `prism-cli`, the app puts that folder first on `PATH`, so the CLI
 
 ## Install
 
-With prism-cli, which bundles this app (this version, 0.3.1, ships with prism-cli 1.21.2; 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
+With prism-cli, which bundles this app (this version, 0.3.2, ships with prism-cli 1.21.3; 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
 
 ```bash
 npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew
