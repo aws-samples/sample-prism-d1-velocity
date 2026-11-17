@@ -187,6 +187,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
       stale: staleAfter(latest, now, PENDING_STALE_MS, runCheck), check: runCheck,
     } : null;
     if (r && r.security) {
+      const check = checkOf(r, 'code-review', r.security.job_id);
       const findings = [...(r.findings || [])]
         .sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0) || a.file.localeCompare(b.file))
         .map((f) => ({ risk_level: f.risk_level || f.severity.toUpperCase(), title: f.title || f.message, file: f.file, line: f.line, cwe: f.cwe ?? null }));
@@ -196,13 +197,13 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         started_at: r.started_at, finished_at: r.finished_at, counts: r.security.counts || {},
         findings: findings.slice(0, MAX_PANEL_FINDINGS), truncated: findings.length > MAX_PANEL_FINDINGS, reason: r.reason ?? null,
         pending: r.status === 'pending',
-        stale: staleAfter(r, now, PENDING_STALE_MS, checkOf(r, 'code-review', r.security.job_id)),
-        check: checkOf(r, 'code-review', r.security.job_id),
+        stale: staleAfter(r, now, PENDING_STALE_MS, check), check,
         running,
       });
     }
     const p = latestPentest(all);
     if (p && p.pentest) {
+      const pcheck = checkOf(p, 'pentest', p.pentest.job_id);
       const pf = [...(p.findings || [])]
         .sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0) || (a.title || '').localeCompare(b.title || ''))
         .map((f) => ({ risk_level: f.risk_level || f.severity.toUpperCase(), title: f.title || f.message, confidence: f.confidence ?? null }));
@@ -214,8 +215,7 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         reason: p.reason ?? null, overview: p.pentest.overview ?? null,
         teardown_failed: p.pentest.teardown_failed ?? null,
         pending: p.status === 'pending',
-        stale: staleAfter(p, now, PENTEST_PENDING_STALE_MS, checkOf(p, 'pentest', p.pentest.job_id)),
-        check: checkOf(p, 'pentest', p.pentest.job_id),
+        stale: staleAfter(p, now, PENTEST_PENDING_STALE_MS, pcheck), check: pcheck,
       });
     }
   }

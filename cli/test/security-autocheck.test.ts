@@ -246,3 +246,22 @@ test('payload cache: an invalidate() while a build runs is kept, so a check that
   assert.equal(await second, 2, 'built again');
   assert.equal(await get(), 2, 'and cached once nothing invalidated it');
 });
+
+test('a result file that cannot be read after a check, or before one, is a failed check or an empty answer, never a crash', async () => {
+  const root = tmp('readfail');
+  try {
+    writeResult(root, review('job-1', hoursAgo(3)));
+    let fail = false;
+    const calls: ((r: CheckRun) => void)[] = [];
+    const read = (p: string) => { if (fail) throw new Error('EACCES: permission denied'); return readResultEntries(p); };
+    const c = new SecurityAutoCheck({ repos: async () => [{ id: 'aaaaaaaaaaaaaaaa', name: 'x', path: root }], read, home: '/home/demo', onChange: () => {},
+      run: () => new Promise((ok) => calls.push(ok)) });
+    await c.kick();
+    fail = true;
+    calls[0]({ code: 0, output: '', timedOut: false });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(c.stateOf('code-review', 'job-1')?.state, 'error');
+    assert.match(c.stateOf('code-review', 'job-1')!.reason!, /could not read the repo's results: EACCES/);
+    assert.deepEqual(await c.kick(), { pending: 1, checking: 0, due: 0, generation: 1 });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

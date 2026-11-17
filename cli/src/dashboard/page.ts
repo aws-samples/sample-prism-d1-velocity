@@ -453,12 +453,12 @@ const riskPills = (counts, levels, none) => {
   return shown.length ? shown.map((k) => sevPill(k, counts[k] + ' ' + k.toLowerCase())) : [sevPill('ok', none)];
 };
 
-/** A cached result's pills: running (pending), the job's failure, else its counts. */
 /** stale?: past the window and no check found it still running; with a failed check, the pill's title says why. */
 const stalePill = (x) => { const p = sevPill('zero', 'stale?'); const e = x.check && x.check.state === 'error' ? x.check : null; if (e) p.setAttribute('title', 'could not check with AWS: ' + txt(e.reason)); return p; };
 /** A failed auto-check of a pending job: why, and the command to fetch it by hand. */
 const checkNote = (x) => { const e = x && x.check && x.check.state === 'error' ? x.check : null;
   return e ? el('div', { class: 'fix', 'data-check-error': '' }, 'Could not check with AWS: ' + txt(e.reason) + '. Fetch by hand: ', el('code', {}, txt(e.command))) : null; };
+/** A cached result's pills: running (pending), the job's failure, else its counts. */
 const resultPills = (x, levels, none) => x.pending ? [sevPill('medium', 'running'), x.stale ? stalePill(x) : null].filter(Boolean)
   : x.status === 'error' ? [sevPill('blocked', txt(x.job_status).toLowerCase())] : riskPills(x.counts, levels, none);
 

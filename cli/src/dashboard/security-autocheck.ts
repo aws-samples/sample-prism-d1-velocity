@@ -123,7 +123,11 @@ export class SecurityAutoCheck {
 
   /** Starts the checks that are due (never more than one per job), and answers at once. */
   async kick(): Promise<KickAnswer> {
-    const pending = pendingJobsIn(await this.d.repos(), this.d.read);
+    let pending: PendingJob[];
+    // A repo list or result file that cannot be read now: start nothing, answer what is known (the page asks again).
+    try { pending = pendingJobsIn(await this.d.repos(), this.d.read); } catch {
+      return { pending: this.jobs.size, checking: [...this.jobs.values()].filter((e) => e.inFlight).length, due: 0, generation: this.generation };
+    }
     const keys = new Set(pending.map((j) => j.key));
     for (const k of [...this.jobs.keys()]) if (!keys.has(k) && !this.jobs.get(k)!.inFlight) this.jobs.delete(k);
     const now = this.now();
@@ -146,11 +150,16 @@ export class SecurityAutoCheck {
   private start(e: Entry) {
     e.inFlight = true;
     const { job } = e;
-    const done = (r: CheckRun) => {
+    const done = (res: CheckRun) => {
+      let r = res;
       e.inFlight = false;
       const now = this.now();
       // What the command wrote decides, not its exit code alone: a FAILED job exits 1 and still saves its verdict.
-      const still = pendingJobsIn([job.repo], this.d.read).some((j) => j.key === job.key);
+      let still: boolean;
+      try { still = pendingJobsIn([job.repo], this.d.read).some((j) => j.key === job.key); } catch (err) {
+        r = { code: 1, output: `Error: could not read the repo's results: ${(err as Error).message}`, timedOut: false };
+        still = true;
+      }
       if (!still) { this.jobs.delete(job.key); this.changed(); return; }
       const before = e.state.state, at = new Date(now).toISOString();
       if (r.code === EXIT_PENDING) {
