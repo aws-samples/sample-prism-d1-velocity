@@ -707,8 +707,10 @@ upload to your AWS account) needs the same confirmation as in the browser. The a
 fix the real issues in at most 2 rounds and report the rest. The third part is a daily 09:00 digest
 that runs as a script, with no model call. The digest notifies only on a new high finding, on
 today's spend above a threshold you set (off by default), or on a setup item that went from ok to
-warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.21.0 or later; with an older
-prism-cli the page shows only how to update it.
+warn or missing. It needs Kiro Crew 0.12.1 or later and prism-cli 1.21.3 or later; with an older
+prism-cli the page shows only how to update it. Installed from the Kiro Crew App Store, the app
+checks for that prism-cli itself and, when it is missing or older, installs it with
+`npm install -g @prism-d1/cli@^1.21.3` (see [What the install does](kirocrew-app/README.md#what-the-install-does)).
 
 ![The PRISM page in Kiro Crew with demo data: the dashboard's summary cards and Codewatch table](assets/images/prism-cli/kirocrew-app-page-dark.png)
 

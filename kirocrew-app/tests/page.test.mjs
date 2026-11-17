@@ -49,9 +49,10 @@ test('relay: reads by GET with the query as JSON, actions by POST, an SDK error 
 
 test('update page: the title, the reason, the npm command and a Copy button, nothing else', () => {
   const copied = [];
-  const tree = renderUpdate(h, { reason: 'prism-cli was not found (not on PATH).', command: UPDATE_CMD }, { copied: false, copy: (t) => copied.push(t), reload() {} });
+  const tree = renderUpdate(h, { reason: 'prism-cli was not found (not on PATH).', command: UPDATE_CMD, min: '1.21.3' }, { copied: false, copy: (t) => copied.push(t), reload() {} });
   const t = texts(tree);
-  assert.ok(t.includes('Update prism-cli to 1.21.0 or later'));
+  assert.ok(t.includes('Update prism-cli to 1.21.3 or later'), 'the minimum comes from the gateway answer');
+  assert.ok(texts(renderUpdate(h, { command: UPDATE_CMD, min: '<b>' }, { copied: false, copy() {}, reload() {} })).includes('Update prism-cli'), 'no version, or a garbled one: a plain title');
   assert.ok(t.includes('npm install -g @prism-d1/cli@latest'));
   assert.ok(t.includes('prism-cli was not found (not on PATH).'));
   walk(tree, (n) => { if (n.tag === 'button' && n.children.includes('Copy')) n.props.onClick(); });

@@ -28,11 +28,14 @@ Kiro Crew. It adds:
 
 - Kiro Crew 0.12.1 or later (`minKiroCrewVersion`; script crons in an app manifest and
   `"timezone": "local"` were checked against 0.12.1). Linux or macOS.
-- `python3` on the gateway's PATH. The scripts use only the standard library.
-- [prism-cli](https://www.npmjs.com/package/@prism-d1/cli) 1.21.0 or later
-  (`npm install -g @prism-d1/cli@latest`). The page needs `prism-cli dashboard --serve-stdio`, which
-  is new in 1.21.0; with an older or missing prism-cli it shows only **Update prism-cli to 1.21.0 or
-  later** and that command.
+- `python3`, `node` (22 or later) and `npm` on the gateway's PATH. The scripts use only the Python
+  standard library; `node` and `npm` are for prism-cli. Kiro Crew refuses the install, and says
+  which command is missing, when one of the three is not found.
+- [prism-cli](https://www.npmjs.com/package/@prism-d1/cli) 1.21.3 or later. An App Store install
+  sets it up (see [What the install does](#what-the-install-does)); otherwise run
+  `npm install -g @prism-d1/cli@latest`. The page draws `prism-cli dashboard --serve-stdio` and
+  checks pending Security Agent runs by itself from 1.21.3; with an older or missing prism-cli it
+  shows only **Update prism-cli to 1.21.3 or later** and that command.
 
 ### Finding prism-cli
 
@@ -51,7 +54,32 @@ Before it runs `prism-cli`, the app puts that folder first on `PATH`, so the CLI
 
 ## Install
 
-With prism-cli, which bundles this app (this version, 0.3.2, ships with prism-cli 1.21.3; 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
+From the Kiro Crew App Store: **App Store → Browse → PRISM → Install**, then trust and enable it.
+Kiro Crew clones this folder from the `main` branch of this repo and runs the install script below
+before it copies the app into `~/.kiro/crew/apps/prism/`.
+
+### What the install does
+
+`setup.onInstall` runs `python3 scripts/install_prism_cli.py` (Kiro Crew runs it on an App Store
+install and on every App Store update, with a 300 s limit; a local-folder install does not run it):
+
+1. It looks for `prism-cli` the way the app does ([Finding prism-cli](#finding-prism-cli)). If that
+   one reports 1.21.3 or later, it prints so and does nothing else.
+2. Otherwise it checks that `node --version` is 22 or later, then runs
+   `npm install -g @prism-d1/cli@^1.21.3`: the newest 1.x release, so later fixes come along but a
+   new major version does not. It installs into the global folder of the `npm` on the gateway's
+   PATH (for nvm, that Node version's folder). It never uses sudo.
+3. If Node.js is too old, or npm fails (no write access to its global folder, no network), the
+   install stops with that reason and the command to run by hand:
+   `npm install -g @prism-d1/cli@^1.21.3`. Run it, then install the app again.
+
+It does not set up codeburn (that stays a setup step on the page: **Settings**, which runs
+`prism-cli enable codeburn` and asks first) and does not run `prism-cli enable kirocrew`.
+Uninstalling the app leaves prism-cli installed.
+
+### Install with prism-cli
+
+prism-cli bundles this app (this version, 0.4.0, ships with prism-cli 1.21.4; 1.21.3 bundles 0.3.2, 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
 
 ```bash
 npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew
@@ -105,7 +133,8 @@ What you are trusting. After you enable it, the app can:
 
 The manifest declares `cron`, `storage` and `api: ["/api/apps/prism/*"]` (the page may call only
 this app's own routes), and sets `network: false`. The app opens no port and runs no process with
-a port. It has no install hooks and no session control.
+a port. Its one install hook is the prism-cli check above (`setup.onInstall`); it has no session
+control.
 
 ### Updating from v0.1
 
@@ -113,7 +142,8 @@ a port. It has no install hooks and no session control.
 kirocrew app update prism --source <path-to>/sample-prism-d1-velocity/kirocrew-app
 ```
 
-v0.3 needs prism-cli 1.21.0 or later (update it first) and adds `on_startup` and `on_shutdown`
+v0.4 needs prism-cli 1.21.3 or later; an App Store update installs it, otherwise update it first.
+v0.3 needed prism-cli 1.21.0 (update it first) and adds `on_startup` and `on_shutdown`
 hooks; disable and enable the app once after the update if the page still shows the old view.
 v0.2 adds the `api` permission for the page. Per the App Kit, an update that adds an `api` entry
 keeps the app enabled but withholds the new entry until you approve it on the app's detail page
@@ -239,7 +269,10 @@ python3 -m unittest discover -s kirocrew-app/tests
 node --test kirocrew-app/tests/page.test.mjs
 ```
 
-The tests cover the digest's diff logic, the `prism-cli` lookup, the stdio relay (the hello and
+The tests cover the install script (against stand-in `node`, `npm` and `prism-cli`: already new
+enough, too old, missing, Node.js too old, npm failing), the store art sizes and the icon's
+transparency, that every "prism-cli X or later" in `app.json` and this README is the minimum in
+`scripts/ui_bridge.py` and not newer than `cli/package.json`, the digest's diff logic, the `prism-cli` lookup, the stdio relay (the hello and
 version check, which requests are relayed, the bundle hashes, and the child's lifecycle against
 stand-in CLIs: one child, restart after a crash with backoff, a new prism-cli, an old one, stop, a
 child left by an earlier gateway) and the page's pure parts (the frame document and its CSP, message
@@ -254,7 +287,9 @@ check, the owner gate) that mounts the app's real routes and hooks, against a re
 `--serve-stdio` child on demo data with the fake `aws` CLI from `cli/test/e2e` first on `PATH`.
 `PRISM_CLI=` tests another prism-cli (for example one installed from npm), `PRISM_CLI_OLD=` checks
 the update page, `KC_PYTHON=` names a Python with aiohttp, and `PRISM_E2E_THEME=light` renders the
-light theme.
+light theme. The store screenshots (`assets/screenshots/`, and the detail banners in `assets/hero/`,
+the top 288 pixels of the dashboard shot) come from `page-dashboard.png` and `page-findings.png` of a
+run with `PRISM_E2E_VIEWPORT=1200x675`, in both themes, reduced to 256 colours.
 
-Not in v0.3: Windows support (`os.execve` on an npm `.cmd` shim needs a shell), and delivery to a
+Not in v0.4: Windows support (`os.execve` on an npm `.cmd` shim needs a shell), and delivery to a
 channel other than Kiro Crew's default notification.

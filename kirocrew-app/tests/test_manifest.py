@@ -5,11 +5,16 @@ runs too; CI has only the documented rules below.
 """
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = json.loads((ROOT / "app.json").read_text(encoding="utf-8"))
+
+
+def png_size(data: bytes) -> tuple:
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
 
 
 def inside(rel: str) -> bool:
@@ -30,9 +35,58 @@ class ManifestTest(unittest.TestCase):
         # A 512x512 PNG at iconPath, and not the flat gray placeholder of 0.3.1 and earlier (about 2 KB).
         data = (ROOT / MANIFEST["iconPath"]).read_bytes()
         self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-        width, height = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        width, height = png_size(data)
         self.assertEqual((width, height), (512, 512))
         self.assertGreater(len(data), 20_000, "a drawn mark, not a two-tone placeholder square")
+        # The store wants a PNG with transparency (0.4.0): RGBA (color type 6), 8 bits per channel.
+        self.assertEqual((data[24], data[25]), (8, 6), "an RGBA PNG")
+        try:
+            from PIL import Image
+        except ImportError:
+            return
+        alpha = Image.open(ROOT / MANIFEST["iconPath"]).getchannel("A")
+        self.assertEqual(alpha.getpixel((0, 0)), 0, "transparent corners (a rounded tile)")
+        self.assertEqual(alpha.getpixel((256, 256)), 255, "an opaque tile under the mark")
+
+    def test_store_art_sizes(self):
+        # Publishing guide: screenshots 1200 wide at 16:9, at most 5; hero 1200x675, detail banner 1200x288.
+        for key in ("screenshots", "screenshotsDark"):
+            self.assertLessEqual(len(MANIFEST[key]), 5)
+            for rel in MANIFEST[key]:
+                self.assertEqual(png_size((ROOT / rel).read_bytes()), (1200, 675), rel)
+        for key, size in (("heroImage", (1200, 675)), ("heroImageDark", (1200, 675)), ("heroImageDetail", (1200, 288)), ("heroImageDetailDark", (1200, 288))):
+            self.assertTrue(inside(MANIFEST[key]), key)
+            self.assertEqual(png_size((ROOT / MANIFEST[key]).read_bytes()), size, key)
+
+    def test_install_hook_installs_prism_cli_only(self):
+        # setup.onInstall (and onUpdate, which Kiro Crew 0.12 declares but does not run) is the one script;
+        # nothing runs on uninstall, so prism-cli stays.
+        setup = MANIFEST["setup"]
+        self.assertEqual(setup["onInstall"], "python3 scripts/install_prism_cli.py")
+        self.assertEqual(setup["onUpdate"], setup["onInstall"])
+        self.assertNotIn("onUninstall", setup)
+        self.assertTrue((ROOT / "scripts" / "install_prism_cli.py").is_file())
+        self.assertEqual(MANIFEST["dependencies"]["commands"], ["python3", "node", "npm"])
+        self.assertIn("prism-cli", MANIFEST["dependencies"]["optionalCommands"])
+        code = (ROOT / "scripts" / "install_prism_cli.py").read_text(encoding="utf-8")
+        for never in ('"sudo"', '"enable"', "codeburn", '"uninstall"'):
+            self.assertNotIn(never, code)
+
+    def test_minimum_prism_cli_is_said_once_and_released(self):
+        # ui_bridge.MIN_CLI_VERSION is the source; every "prism-cli X.Y.Z or later" in app.json and the
+        # README says the same version.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import ui_bridge
+        said = re.findall(r"prism-cli (\d+\.\d+\.\d+) or later", json.dumps(MANIFEST) + (ROOT / "README.md").read_text(encoding="utf-8"))
+        self.assertTrue(said)
+        self.assertEqual(set(said), {ui_bridge.MIN_CLI_TEXT})
+        # The store installs this folder from main right after a merge, before the npm tag: the app may
+        # never require a prism-cli newer than the one in this repo.
+        pkg = ROOT.parent / "cli" / "package.json"
+        if not pkg.is_file():
+            self.skipTest("not in the repo (a copy of the app)")
+        cli = tuple(int(x) for x in json.loads(pkg.read_text(encoding="utf-8"))["version"].split("-")[0].split("."))
+        self.assertLessEqual(ui_bridge.MIN_CLI_VERSION, cli)
     def test_skills_have_frontmatter(self):
         for rel in MANIFEST["skills"]:
             self.assertTrue(inside(rel), rel)

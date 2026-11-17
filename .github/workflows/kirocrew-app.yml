@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'kirocrew-app/**'
+      - 'cli/package.json'  # the app's minimum prism-cli may not be newer than this
       - '.github/workflows/kirocrew-app.yml'
 
 permissions:

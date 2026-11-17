@@ -11,7 +11,8 @@
 // a second iframe with an empty sandbox (no scripts at all) and a CSP that allows its inline styles only.
 
 export const API = '/api/apps/prism';
-export const UPDATE_TITLE = 'Update prism-cli to 1.21.0 or later';
+/** The minimum version comes from the gateway's answer (ui_bridge.MIN_CLI_VERSION), not from here. */
+export const updateTitle = (min) => (/^\d+\.\d+\.\d+$/.test(str(min)) ? `Update prism-cli to ${min} or later` : 'Update prism-cli');
 export const UPDATE_CMD = 'npm install -g @prism-d1/cli@latest';
 const BLOB_URL_TTL_MS = 10 * 1000;
 /** POST /api/action answers 202 when an action started (actions.ts ActionRunner.start). */
@@ -88,10 +89,10 @@ const S = {
   report: { flex: 1, border: 0, background: '#fff', borderRadius: '0 0 8px 8px' },
 };
 
-/** The page when prism-cli is missing or older than 1.21.0: the message and the command, nothing else. Exported for tests. */
+/** The page when prism-cli is missing or older than the app's minimum: the message and the command, nothing else. Exported for tests. */
 export function renderUpdate(h, u, ui) {
   return h('div', { style: S.page },
-    h('h1', { style: S.h1 }, UPDATE_TITLE),
+    h('h1', { style: S.h1 }, updateTitle(u.min)),
     u.reason ? h('p', { style: S.muted }, str(u.reason)) : null,
     h('p', null, 'Run this in a terminal on the Kiro Crew machine, then reload this page:'),
     h('p', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
@@ -134,7 +135,7 @@ export default function PrismPage() {
       .then((b) => { shownVersion.current = str(b.version); setDoc(srcdocFor(b, dark ? 'dark' : 'light')); })
       .catch((e) => {
         const j = errorBody(e);
-        if (j && j.update) setUpdate({ reason: str(j.error).replace(/\s*Update prism-cli to [\s\S]*$/, ''), command: str(j.command) });
+        if (j && j.update) setUpdate({ reason: str(j.error).replace(/\s*Update prism-cli to [\s\S]*$/, ''), command: str(j.command), min: str(j.minVersion) });
         else setError(str(j ? j.error : e && (e.body || e.message)) || 'could not load the PRISM page');
       });
   }, [api, dark]);

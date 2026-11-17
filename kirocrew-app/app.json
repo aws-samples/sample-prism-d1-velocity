@@ -1,14 +1,18 @@
 {
   "name": "prism",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "displayName": "PRISM",
-  "description": "The PRISM dashboard inside Kiro Crew (the same pages and actions as prism-cli dashboard), codewatch findings, AI spend and setup status for Kiro Crew agents, and a daily digest that speaks only when something changed. Needs prism-cli 1.21.0 or later.",
+  "description": "The PRISM dashboard inside Kiro Crew (the same pages and actions as prism-cli dashboard), codewatch findings, AI spend and setup status for Kiro Crew agents, and a daily digest that speaks only when something changed. Needs prism-cli 1.21.3 or later, which the App Store install sets up with npm.",
   "author": "aws-samples",
   "license": "MIT",
   "minKiroCrewVersion": "0.12.1",
   "iconPath": "assets/icon.png",
   "screenshots": ["assets/screenshots/page-light.png", "assets/screenshots/findings-light.png"],
   "screenshotsDark": ["assets/screenshots/page-dark.png", "assets/screenshots/findings-dark.png"],
+  "heroImage": "assets/screenshots/page-light.png",
+  "heroImageDark": "assets/screenshots/page-dark.png",
+  "heroImageDetail": "assets/hero/hero-detail-light.png",
+  "heroImageDetailDark": "assets/hero/hero-detail-dark.png",
   "tags": ["code-review", "developer-tools", "code-quality"],
   "highlights": [
     "PRISM page: prism-cli's own dashboard (Dashboard, Security Agent, AccountGuard, Settings) with its Run buttons and confirm dialogs, in a sandboxed frame, from your installed prism-cli",
@@ -24,9 +28,10 @@
     "When you want a heads-up without watching a page, let prism-daily-digest run at 09:00 and tell you only about new high findings, a setup regression, or spend over your threshold"
   ],
   "configuration": [
-    "Install with prism-cli 1.21.0 or later: npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew (or install this folder; see the README)",
+    "Install from the App Store: the install checks for prism-cli 1.21.3 or later and, if it is missing or older, runs npm install -g @prism-d1/cli@^1.21.3 (Node.js 22 or later, no sudo). Or: npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew",
     "Trust the app when you enable it; Kiro Crew registers nothing from a third-party app until you do",
-    "Optional: set spendThreshold and cliPath in the app's data/config.json (see the README)"
+    "Optional: set spendThreshold and cliPath in the app's data/config.json (see the README)",
+    "Optional: AI spend on the page and in the digest comes from codeburn; set it up from the page (Settings, prism-cli enable codeburn), which asks first"
   ],
   "links": [
     { "label": "README", "url": "https://github.com/aws-samples/sample-prism-d1-velocity/blob/main/kirocrew-app/README.md" },
@@ -72,13 +77,15 @@
     "network": false
   },
   "dependencies": {
-    "commands": ["python3"],
+    "commands": ["python3", "node", "npm"],
     "optionalCommands": ["prism-cli"]
   },
   "platform": {
     "os": ["macos", "linux"]
   },
   "setup": {
+    "onInstall": "python3 scripts/install_prism_cli.py",
+    "onUpdate": "python3 scripts/install_prism_cli.py",
     "configSchema": {
       "type": "object",
       "additionalProperties": false,
