@@ -63,7 +63,7 @@ export const SECURITY_ACTIONS = [
   'security-status', 'security-dry-run', 'security-findings', 'security-threats', 'security-pentest-findings',
   'security-code-review', 'security-code-review-full', 'security-threat-model',
   'security-code-review-force', 'security-code-review-full-force',
-  'security-pentest-plan', 'security-pentest-start', 'security-pentest-cleanup',
+  'security-pentest-start', 'security-pentest-cleanup',
 ] as const satisfies readonly ActionId[];
 
 /** Where an AWS call goes: the profile only when one was chosen (else the AWS CLI's own chain), always a region. */
@@ -308,7 +308,8 @@ export function writeNotice(kind: WriteKind, repoName: string, l: Lookup | null)
   if (!l || !l.ok) return { text: null, reason: NEED_LOOKUP };
   // A pentest makes its own agent space for the run and uploads to its own bucket: the shared space and bucket do not matter.
   if (kind === 'pentest') {
-    return { text: `Deploys a temporary private environment for ${repoName} (a new VPC, the app on Fargate behind an internal load balancer) into account ${l.account4} / ${l.region}. It builds the Docker image on this machine and pushes it, so Docker must be running. Then it starts a penetration test, which runs for hours and costs money while the environment is up. The environment is torn down automatically when the job finishes.`, reason: null };
+    // The resource list, the target and the teardown come with the picker's checked choice (security-pentest.ts pentestStartPlan).
+    return { text: `This deploys a temporary private environment for ${repoName} into account ${l.account4} / ${l.region} and runs the pentest against it.`, reason: null };
   }
   if (kind === 'pentest cleanup') {
     return { text: `Tears down this run's pentest environment in account ${l.account4} / ${l.region}: stops the job if it still runs, deletes the pentest, the run's agent space and target domain, and deletes the environment's CloudFormation stack (the stack the run recorded, nothing else).`, reason: null };
@@ -354,9 +355,8 @@ const setupView = (s: ResolvedSetup | null) => (s ? { source: s.source, file: s.
 /** enable security: once per machine, from any directory, so its copy line has no `cd`. */
 export const ENABLE_SECURITY_ARGS = ['enable', 'security'] as const;
 
-/** The pentest commands the page also shows as Copy, for a terminal, with the same profile and region the Run actions get. */
+/** The pentest command the page also shows as Copy, for a terminal, with the same profile and region the Run actions get. */
 export const COPY_ARGS = {
-  pentestDryRun: ['security', 'pentest', '--dry-run'],
   pentest: ['security', 'pentest'],
 } as const;
 

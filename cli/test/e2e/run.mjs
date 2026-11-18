@@ -1273,7 +1273,7 @@ try {
         radios: [...root.querySelectorAll('input[type=radio]')].map((r) => ({ v: r.value, on: r.checked, label: r.closest('label')?.innerText.trim() || '' })),
         fields: ['dir', 'port', 'health'].map((k) => root.querySelector('[id^="sa-pt-' + k + '-"]')?.value),
         errs: [...root.querySelectorAll('[data-pt-err]')].map((e) => e.getAttribute('data-pt-err') + ': ' + e.innerText),
-        dry: cmd('pentestDryRun'), run: cmd('pentest'), text: root.innerText, runButtons: [...document.querySelectorAll('#security li')].filter((li) => /^Pentest/.test(li.querySelector('b')?.innerText || '')).flatMap((li) => [...li.querySelectorAll('button')].map((b) => b.innerText)).filter((t) => t !== 'Copy'),
+        dry: document.querySelector('[data-pt-cmd="pentestDryRun"]') ? cmd('pentestDryRun') : null, run: cmd('pentest'), text: root.innerText, runButtons: [...document.querySelectorAll('#security li')].filter((li) => /^Pentest/.test(li.querySelector('b')?.innerText || '')).flatMap((li) => [...li.querySelectorAll('button')].map((b) => b.innerText)).filter((t) => t !== 'Copy'),
       };
     });
     await waitCmd(/--dockerfile/);
@@ -1377,6 +1377,13 @@ try {
     await sp.check('[data-pt-repo] input[type=radio][value="docker/web.Dockerfile"]');
     await sp.waitForFunction(() => /--dockerfile docker\/web\.Dockerfile/.test(document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || ''), null, { timeout: 15000 }).catch(() => {});
     s.picked = await sp.evaluate(() => document.querySelector('[data-pt-cmd="pentest"] code')?.innerText || '');
+    // 1.21.7: the Start pentest dialog, drawn by the bundle, lists what it deploys; Cancel sends nothing.
+    await sp.waitForSelector('[data-pt-run="security-pentest-start"]:not([disabled])', { timeout: 15000 }).catch(() => {});
+    await sp.click('[data-pt-run="security-pentest-start"]').catch(() => {}); await sleep(300);
+    s.dialog = await sp.evaluate(() => { const d = document.querySelector('dialog.confirm'); return d && d.open ? { text: d.innerText.replace(/\s+/g, ' '), items: d.querySelectorAll('[data-pt-resources] li').length, box: !!d.querySelector('input[type=checkbox]') } : null; });
+    await sp.locator('dialog.confirm').screenshot({ path: join(SHOTS, 'pentest-start-dialog-stdio.png') }).catch(() => {});
+    await sp.locator('dialog.confirm button', { hasText: 'Cancel' }).click().catch(() => {}); await sleep(200);
+    s.actsAfterDialog = s.relayed.filter((r) => r === 'act /api/action').length;
     await sp.check('[data-pt-repo] input[type=radio][value="__other__"]');
     await sp.fill('[id^="sa-pt-other-"]', 'escape'); await sleep(900);
     s.err = await sp.evaluate(() => document.querySelector('[data-pt-err="dockerfile"]')?.innerText || '');
@@ -1384,7 +1391,7 @@ try {
     await sctx.close();
     child.stdin.end();
   }
-  // ---------- 20. the pentest Run buttons (1.21.6): plan, start, the background --status teardown, Clean up; over stdio too ----------
+  // ---------- 20. the pentest Run buttons (1.21.6; 1.21.7: no plan, the start dialog lists what it deploys): start, the background --status teardown, Clean up; over stdio too ----------
   // The real `security pentest` runs end to end against fakes: fakebin/aws (FAKE_PT), fakebin/docker on PATH, and
   // fakebin/cdk as PRISM_PENTEST_CDK_DIR's node_modules/.bin/cdk. Nothing reaches AWS, Docker or the network.
   if (want('pentestrun')) {
@@ -1411,6 +1418,14 @@ try {
     const lines = (f) => (existsSync(join(home, f)) ? readFileSync(join(home, f), 'utf8').split('\n').filter(Boolean) : []);
     const results = () => readdirSync(join(shop, '.prism', 'results')).filter((f) => f.endsWith('.json')).map((f) => ({ id: f.replace(/\.json$/, ''), ...JSON.parse(readFileSync(join(shop, '.prism', 'results', f), 'utf8')) })).filter((r) => r.kind === 'security-pentest' && r.pentest?.stack !== undefined && r.pentest?.job_id?.startsWith('ptj-run-'));
     const serve = async () => { const s = await startDashboard(home, ENV); running.push(s.proc); return { ...s, base: `http://127.0.0.1:${s.port}` }; };
+    // 1.21.7: every pentest record (a deploying one has no job yet), and waiting for one to reach a state.
+    const readRec = (f) => { try { return { id: f.replace(/\.json$/, ''), ...JSON.parse(readFileSync(join(shop, '.prism', 'results', f), 'utf8')) }; } catch { return null; } };
+    const allPt = () => { try { return readdirSync(join(shop, '.prism', 'results')).filter((f) => f.endsWith('.json')).map(readRec).filter((r) => r && r.kind === 'security-pentest'); } catch { return []; } };
+    const actionDone = async (id, maxMs) => { const t0 = Date.now(); for (;;) { const st = await page.evaluate(() => api('/api/action/status').then((r) => r.json)); if (st.action === id && st.state === 'done') return st; if (Date.now() - t0 > maxMs) return st; await sleep(400); } };
+    const recOf = (id) => allPt().find((r) => r.id === id) || null;
+    const waitRec = async (id, pred, maxMs = 90000) => { const t0 = Date.now(); for (;;) { const r = recOf(id); if (r && pred(r)) return r; if (Date.now() - t0 > maxMs) return r; await sleep(250); } };
+    const ptPick = { dockerfile: 'services/api/Dockerfile.prod', app_dir: 'services/api', port: '3000', health_path: '/healthz' };
+    const startApi = () => page.evaluate((b) => api('/api/action', b).then((r) => ({ status: r.status, json: r.json })), { action: 'security-pentest-start', repo: repo.id, ...ptPick, confirm: true });
     let srv = await serve();
     let { ctx, page, log } = await openCtx(srv, { width: 1280, height: 900 });
     out.log = log;
@@ -1419,8 +1434,13 @@ try {
     const repo = sa.repos.find((r) => r.path.endsWith('/src/demo-shop'));
     const drawer = () => page.evaluate(() => { const d = document.getElementById('action-drawer'); return d ? { hidden: d.hidden, status: d.querySelector('.srow-head')?.innerText.replace(/\s+/g, ' ').slice(0, 300), out: d.querySelector('pre')?.innerText.slice(-1500) } : null; });
     const waitDone = async (maxMs = 120000) => { const t0 = Date.now(); for (;;) { const d = await drawer(); if (d && !d.hidden && !/running|starting/.test(d.status || '')) return d; if (Date.now() - t0 > maxMs) return { hung: true, ...d }; await sleep(500); } };
-    const dialog = () => page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return d && d.open ? { text: d.innerText.replace(/\s+/g, ' '), buttons: [...d.querySelectorAll('button')].map((b) => ({ t: b.textContent.trim(), dis: b.disabled })), box: !!d.querySelector('input[type=checkbox]') } : null; });
+    const dialog = () => page.evaluate(() => { const d = document.querySelector('dialog.confirm'); return d && d.open ? { text: d.innerText.replace(/\s+/g, ' '), buttons: [...d.querySelectorAll('button')].map((b) => ({ t: b.textContent.trim(), dis: b.disabled })), box: !!d.querySelector('input[type=checkbox]'),
+      resources: [...d.querySelectorAll('[data-pt-resources] li')].map((l) => l.innerText), target: d.querySelector('[data-pt-target]')?.innerText.replace(/\s+/g, ' ') || null, cmds: [...d.querySelectorAll('pre.cmd')].map((x) => x.innerText.replace(/\s+/g, ' ')),
+      overflow: d.scrollWidth - d.clientWidth } : null; });
+    const callMark = () => ({ aws: lines('aws-calls.log').length, cdk: lines('cdk-calls.log').length, docker: lines('docker-calls.log').length });
+    const callsSince = (m) => ({ aws: lines('aws-calls.log').slice(m.aws), cdk: lines('cdk-calls.log').slice(m.cdk), docker: lines('docker-calls.log').slice(m.docker) });
     const openPage = async () => {
+      // A reload, not only a hash change: the Security Agent answer is read again.
       await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
       await page.waitForFunction(() => !!document.querySelector('[data-pt-run="security-pentest-start"]:not([disabled])'), null, { timeout: 15000 }).catch(() => {});
     };
@@ -1430,13 +1450,11 @@ try {
       buttons: [...document.querySelectorAll('[data-pt-run]')].map((b) => ({ id: b.getAttribute('data-pt-run'), label: b.textContent, disabled: b.disabled })),
       copy: [...document.querySelectorAll('[data-pt-cmd] code')].map((c) => c.innerText),
     }));
-    // 1. Show the plan: the dry run with the picker's flags, read-only.
-    const before = { aws: lines('aws-calls.log').length, cdk: lines('cdk-calls.log').length, docker: lines('docker-calls.log').length };
-    await page.click('[data-pt-run="security-pentest-plan"]'); await sleep(300);
-    out.steps.planDialog = await dialog();
-    await page.locator('dialog.confirm button', { hasText: /^Run$/ }).click();
-    out.steps.plan = await waitDone();
-    out.steps.planCalls = { aws: lines('aws-calls.log').slice(before.aws), cdk: lines('cdk-calls.log').slice(before.cdk), docker: lines('docker-calls.log').slice(before.docker) };
+    // 1. 1.21.7: the plan (dry run) is gone from the page and from the server's actions; nothing runs for it.
+    const before = callMark();
+    out.steps.plan = await page.evaluate((id) => api('/api/action', { action: 'security-pentest-plan', repo: id, dockerfile: 'services/api/Dockerfile.prod', app_dir: 'services/api', port: '3000', health_path: '/healthz' }).then((r) => ({ status: r.status, error: r.json && r.json.error })), repo.id);
+    await sleep(300);
+    out.steps.planCalls = callsSince(before);
     // 2. A bad choice sent straight to the server is refused before anything runs.
     const mark = lines('cdk-calls.log').length;
     out.steps.bad = await page.evaluate((id) => api('/api/action', { action: 'security-pentest-start', repo: id, dockerfile: '../../etc/passwd', port: '3000', health_path: '/healthz', confirm: true }).then((r) => ({ status: r.status, error: r.json && r.json.error })), repo.id);
@@ -1444,17 +1462,73 @@ try {
     // That 400 is the answer under test; the browser logs it too.
     await sleep(300);
     out.log.splice(0, out.log.length, ...out.log.filter((l) => !(/POST .*\/api\/action$/.test(l.text) || /status of 400/.test(l.text))));
-    // 3. Start pentest: the confirm dialog, then --yes with the flags; no --wait, no --keep.
+    // 3. Start pentest: the confirm dialog lists what it deploys; opening it, Cancel and the tick box run nothing. Then --yes with the flags; no --wait, no --keep.
+    const b1 = callMark();
+    await page.click('[data-pt-run="security-pentest-start"]'); await sleep(300);
+    await page.locator('dialog.confirm button', { hasText: 'Cancel' }).click(); await sleep(200);
+    out.steps.cancelled = await page.evaluate(() => !document.querySelector('dialog.confirm')?.open);
     await page.click('[data-pt-run="security-pentest-start"]'); await sleep(300);
     out.steps.startDialog = await dialog();
     await page.screenshot({ path: join(SHOTS, 'pentest-start-dialog-1280.png') }).catch(() => {});
+    // The docs screenshot: the dialog from its top (Cancel has the focus, which scrolls it to the end).
+    await page.evaluate(() => { document.querySelector('dialog.confirm').scrollTop = 0; }); await sleep(100);
+    await page.locator('dialog.confirm').screenshot({ path: join(SHOTS, 'pentest-start-dialog-dark.png') }).catch(() => {});
     await page.check('dialog.confirm input[type=checkbox]');
+    out.steps.ticked = await dialog();
+    out.steps.beforeConfirm = callsSince(b1);
     const b2 = { aws: lines('aws-calls.log').length, docker: lines('docker-calls.log').length };
+    // 1.21.7: the deploy runs detached. Slow fake cdk steps, so the phases and the Bootstrapping views can be seen.
+    writeFileSync(join(home, 'fake-cdk-slow'), '3');
+    const t3 = Date.now();
     await page.locator('dialog.confirm button', { hasText: 'Deploy and start' }).click();
-    out.steps.start = await waitDone();
+    out.steps.start = await waitDone(20000);
+    out.steps.startMs = Date.now() - t3;
+    out.steps.startLink = await page.evaluate(() => document.querySelector('#action-drawer [data-run-boot] a')?.getAttribute('href') || null);
+    await page.locator('#action-drawer').screenshot({ path: join(SHOTS, 'pentest-bootstrapping-drawer.png') }).catch(() => {});
+    const boot = allPt().find((r) => r.status === 'deploying');
+    const runId = boot?.id;
+    out.steps.boot = boot ? { phase: boot.pentest.deploy.phase, log: boot.pentest.deploy.log, stack: boot.pentest.stack, choice: [boot.pentest.deploy.app_dir, boot.pentest.deploy.dockerfile, boot.pentest.deploy.port, boot.pentest.deploy.health_path] } : null;
+    out.steps.lockState = await page.evaluate(() => api('/api/action/status').then((r) => r.json.state));
+    // The lock is free while it deploys: a read-only action runs; a second Start is refused.
+    out.steps.second = await startApi();
+    // The deliberate 409 is the answer under test; the browser logs it too.
+    await sleep(200);
+    out.log.splice(0, out.log.length, ...out.log.filter((l) => !(/POST .*\/api\/action$/.test(l.text) || /status of 409/.test(l.text))));
+    out.steps.other = await page.evaluate((id) => api('/api/action', { action: 'security-status', repo: id }).then((r) => r.status), repo.id);
+    const od = await actionDone('security-status', 60000);
+    out.steps.otherDone = { status: od.state + ' exit ' + od.exitCode };
+    // The phases, as the record says them, until the job starts.
+    const phases = [];
+    const watch = (async () => { const t0 = Date.now(); for (;;) { const r = recOf(runId); if (r?.pentest?.deploy && phases[phases.length - 1] !== r.pentest.deploy.phase) phases.push(r.pentest.deploy.phase); if (!r || r.status !== 'deploying' || Date.now() - t0 > 120000) return r; await sleep(150); } })();
+    // The Bootstrapping row and the run's page, with its log, while it deploys (the docs screenshots).
+    await sleep(1500);
+    await openPage();
+    await page.waitForSelector('#security-runs-all tr.run-bootstrapping', { timeout: 15000 }).catch(() => {});
+    out.steps.bootRow = await page.evaluate(() => document.querySelector('#security-runs-all tr.run-bootstrapping')?.innerText.replace(/\s+/g, ' ') || null);
+    await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'dashboard-security-runs-bootstrapping-dark.png') }).catch(() => {});
+    await page.goto(srv.base + '/#security/run/' + repo.id + '/' + runId);
+    await page.waitForSelector('[data-run-deploy="bootstrapping"]', { timeout: 15000 }).catch(() => {});
+    await page.click('[data-run-log-open]').catch(() => {});
+    await page.waitForSelector('[data-run-log]:not([hidden])', { timeout: 10000 }).catch(() => {});
+    await sleep(300);
+    out.steps.bootPage = await page.evaluate(() => ({ card: document.querySelector('[data-run-deploy]')?.innerText.replace(/\s+/g, ' ') || null, log: document.querySelector('[data-run-log]')?.innerText || null,
+      now: document.querySelector('[data-deploy-steps] li.now')?.innerText || null, status: document.querySelector('[data-run-detail] .st')?.innerText || null }));
+    // The docs screenshot without the action drawer (the read-only action above) over it.
+    await page.locator('#action-drawer button', { hasText: 'Close' }).click().catch(() => {}); await sleep(200);
+    await page.screenshot({ path: join(SHOTS, 'dashboard-security-run-bootstrapping-dark.png'), fullPage: true }).catch(() => {});
+    const done3 = await watch;
+    writeFileSync(join(home, 'fake-cdk-slow'), '0');
+    out.steps.phases = phases;
+    out.steps.sameId = done3 ? { id: done3.id === runId, status: done3.status, job: done3.pentest.job_id, phase: done3.pentest.deploy?.phase } : null;
+    out.steps.history = (done3?.pentest?.deploy?.history || []).map((h) => h.phase);
     out.steps.startCalls = { aws: lines('aws-calls.log').slice(b2.aws), docker: lines('docker-calls.log').slice(b2.docker) };
+    const callsNow = out.steps.startCalls.aws;
+    const startAt = callsNow.findIndex((c) => c.startsWith('securityagent start-pentest-job'));
+    out.steps.checkedBeforeStart = callsNow.slice(0, startAt < 0 ? callsNow.length : startAt).filter((c) => c.includes('batch-get-pentest-jobs')).length;
     out.steps.afterStart = results().map((r) => ({ status: r.status, job: r.pentest.job_id, stack: r.pentest.stack, keep: r.pentest.keep ?? null }));
-    // 4. Start again while it is pending: the guard dialog, with no Start another.
+    out.steps.logFile = runId ? existsSync(join(shop, '.prism', 'results', runId + '.log')) : false;
+    // 4. Start again while it is pending: the guard dialog, with no Start another. A fresh page load: it reads the Security Agent answer again.
+    await page.goto('about:blank');
     await openPage();
     await page.click('[data-pt-run="security-pentest-start"]'); await sleep(300);
     out.steps.guard = await dialog();
@@ -1483,6 +1557,7 @@ try {
     await page.check('dialog.confirm input[type=checkbox]');
     await page.locator('dialog.confirm button', { hasText: 'Deploy and start' }).click();
     out.steps.start2 = await waitDone();
+    { const b = allPt().find((r) => r.status === 'deploying'); if (b) await waitRec(b.id, (r) => r.status !== 'deploying'); }
     writeFileSync(join(home, 'fake-pt-job'), 'COMPLETED'); writeFileSync(join(home, 'fake-pt-teardown'), 'fail');
     await ctx.close(); srv.proc.kill('SIGTERM'); await sleep(500);
     srv = await serve();
@@ -1517,6 +1592,48 @@ try {
       const fin = results().find((r) => r.id === failed.id);
       out.steps.cleanedRecord = fin ? { stack: fin.pentest.stack, teardown_failed: fin.pentest.teardown_failed ?? null } : null;
     }
+    // 7. 1.21.7: a deploy that fails: the record becomes an error that keeps its stack, and its page offers Clean up.
+    writeFileSync(join(home, 'fake-cdk-deploy'), 'fail');
+    await openPage();
+    const f7 = await startApi();
+    const fid = f7.json?.result?.run;
+    const frec = fid ? await waitRec(fid, (r) => r.status !== 'deploying') : null;
+    out.steps.deployFail = { start: f7.status, status: frec?.status, reason: frec?.reason, stack: frec?.pentest?.stack, phase: frec?.pentest?.deploy?.phase };
+    if (fid) {
+      await page.goto(srv.base + '/#security/run/' + repo.id + '/' + fid);
+      await page.waitForSelector('[data-run-cleanup]', { timeout: 15000 }).catch(() => {});
+      out.steps.deployFailPage = await page.evaluate(() => ({ kind: document.querySelector('[data-run-cleanup]')?.getAttribute('data-run-cleanup') || null, button: !!document.querySelector('[data-cleanup]'), deploy: document.querySelector('[data-run-deploy]')?.innerText.replace(/\s+/g, ' ') || null }));
+      await page.click('[data-cleanup]').catch(() => {}); await sleep(300);
+      await page.locator('dialog.confirm button', { hasText: 'Tear down' }).click().catch(() => {});
+      out.steps.deployFailCleanup = await waitDone(180000);
+      const fr = recOf(fid);
+      out.steps.deployFailAfter = fr ? fr.pentest.stack : 'missing';
+    }
+    // 8. A deploy whose process is killed: the dashboard's check (local, no AWS) marks it interrupted, with Clean up.
+    writeFileSync(join(home, 'fake-cdk-deploy'), 'hang');
+    await openPage();
+    const k8 = await startApi();
+    const kid = k8.json?.result?.run;
+    const krec = kid ? await waitRec(kid, (r) => r.pentest?.deploy?.phase === 'deploying' && !!r.pentest.deploy.pid) : null;
+    const kpid = krec?.pentest?.deploy?.pid;
+    out.steps.killed = { start: k8.status, phase: krec?.pentest?.deploy?.phase, pid: !!kpid };
+    if (kpid) {
+      try { process.kill(-kpid, 'SIGKILL'); } catch { try { process.kill(kpid, 'SIGKILL'); } catch { /* gone */ } }
+      const k0 = lines('aws-calls.log').length;
+      await openPage();
+      let r8 = null;
+      for (let i = 0; i < 90; i++) { await page.evaluate(() => api('/api/security-check')); r8 = recOf(kid); if (r8 && r8.status !== 'deploying') break; await sleep(1000); }
+      out.steps.interrupted = { status: r8?.status, reason: r8?.reason, flag: !!r8?.pentest?.deploy?.interrupted, stack: r8?.pentest?.stack, awsWhileDeploying: lines('aws-calls.log').slice(k0) };
+      await page.goto(srv.base + '/#security/run/' + repo.id + '/' + kid);
+      await page.waitForSelector('[data-run-cleanup]', { timeout: 15000 }).catch(() => {});
+      out.steps.interruptedPage = await page.evaluate(() => ({ kind: document.querySelector('[data-run-cleanup]')?.getAttribute('data-run-cleanup') || null, button: !!document.querySelector('[data-cleanup]'), deploy: document.querySelector('[data-run-deploy]')?.innerText.replace(/\s+/g, ' ') || null }));
+      await page.locator('#action-drawer button', { hasText: 'Close' }).click().catch(() => {}); await sleep(200);
+      await page.screenshot({ path: join(SHOTS, 'dashboard-security-run-interrupted-dark.png'), fullPage: true }).catch(() => {});
+      await page.click('[data-cleanup]').catch(() => {}); await sleep(300);
+      await page.locator('dialog.confirm button', { hasText: 'Tear down' }).click().catch(() => {});
+      out.steps.interruptedCleanup = await waitDone(180000);
+    }
+    rmSync(join(home, 'fake-cdk-deploy'), { force: true });
     // The docs screenshot: the whole Security Agent page with the buttons, dark, at 1280.
     await openPage();
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -1529,10 +1646,24 @@ try {
     await sleep(600);
     out.steps.phoneScroll = await phone.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     await phone.page.locator('section.card', { has: phone.page.locator('[data-pt-repo]') }).screenshot({ path: join(SHOTS, 'pentest-buttons-390.png') }).catch(() => {});
+    // The start dialog at 390 px, light and dark: it fits (no sideways scroll inside it) and scrolls down to the tick box.
+    out.steps.phoneDialog = {};
+    for (const theme of ['light', 'dark']) {
+      await setTheme(phone.page, theme);
+      await phone.page.waitForSelector('[data-pt-run="security-pentest-start"]:not([disabled])', { timeout: 15000 }).catch(() => {});
+      await phone.page.click('[data-pt-run="security-pentest-start"]'); await sleep(300);
+      out.steps.phoneDialog[theme] = await phone.page.evaluate(() => { const d = document.querySelector('dialog.confirm'); if (!d || !d.open) return null; const r = d.getBoundingClientRect();
+        return { overflow: d.scrollWidth - d.clientWidth, width: Math.round(r.width), items: d.querySelectorAll('[data-pt-resources] li').length, running: !!d.querySelector('[data-pt-running]'), clipped: [...d.querySelectorAll('[data-pt-target] dd, pre.cmd')].filter((x) => x.scrollWidth > x.clientWidth + 1).map((x) => x.innerText.slice(0, 60)), fg: getComputedStyle(d).color, bg: getComputedStyle(d).backgroundColor }; });
+      await phone.page.screenshot({ path: join(SHOTS, `pentest-start-dialog-390-${theme}-end.png`) }).catch(() => {});
+      await phone.page.evaluate(() => { document.querySelector('dialog.confirm').scrollTop = 0; }); await sleep(100);
+      await phone.page.screenshot({ path: join(SHOTS, `pentest-start-dialog-390-${theme}.png`) }).catch(() => {});
+      await phone.page.keyboard.press('Escape'); await sleep(150);
+    }
     out.log.push(...phone.log);
     await phone.ctx.close();
     out.calls = lines('aws-calls.log');
     out.home = home;
+    out.repoId = repo.id; out.runId = runId;
 
     // Over --serve-stdio: the same action route answers the same way (VS Code, Kiro Crew).
     const shome = seed('pentestrun-stdio', 'full', prep);
@@ -1550,12 +1681,12 @@ try {
     const pick = { dockerfile: 'services/api/Dockerfile.prod', app_dir: 'services/api', port: '3000', health_path: '/healthz' };
     const st = { badStart: await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-start', repo: sid, ...pick, health_path: 'no-slash', confirm: true } }) };
     st.plan = await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-plan', repo: sid, ...pick } });
-    for (let i = 0; i < 120; i++) { const s = (await ask({ op: 'get', path: '/api/action/status' })).json; if (s.state === 'done') { st.planDone = s; break; } await sleep(500); }
+    st.check = await ask({ op: 'get', path: '/api/security-agent/pentest/check', query: { repo: sid, dockerfile: pick.dockerfile, app_dir: pick.app_dir, port: pick.port, health_path: pick.health_path } });
     st.start = await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-start', repo: sid, ...pick, confirm: true } });
     for (let i = 0; i < 240; i++) { const s = (await ask({ op: 'get', path: '/api/action/status' })).json; if (s.state === 'done') { st.startDone = s; break; } await sleep(500); }
     st.again = await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-start', repo: sid, ...pick, confirm: true } });
-    out.stdio = { badStart: { status: st.badStart.status, error: st.badStart.json?.error }, plan: st.plan.status, planExit: st.planDone?.exitCode, planCmd: st.planDone?.command,
-      start: st.start.status, startExit: st.startDone?.exitCode, startCmd: st.startDone?.command, again: { status: st.again.status, error: st.again.json?.error } };
+    out.stdio = { badStart: { status: st.badStart.status, error: st.badStart.json?.error }, plan: st.plan.status, planError: st.plan.json?.error, start0: st.check.json?.start,
+      start: st.start.status, startExit: st.startDone?.exitCode, startCmd: st.startDone?.command, startOutcome: st.startDone?.outcome, again: { status: st.again.status, error: st.again.json?.error } };
     child.stdin.end();
   }
   // ---------- stdio: the shared UI bundle (dist/ui) over dashboard --serve-stdio, as an editor or Kiro Crew host loads it ----------
@@ -1944,10 +2075,10 @@ function verdicts(R) {
       && (i.radios || []).find((r) => r.on)?.v === 'services/api/Dockerfile.prod' && /from \.prism\/pentest\.json/.test((i.radios || []).find((r) => r.on)?.label || '')
       && JSON.stringify(i.fields) === '["services/api","3000","/healthz"]' && /Asked each time: nothing here is saved/.test(i.text || ''),
       JSON.stringify({ r: i.radios, f: i.fields }));
-    add('PT2', 'the Pentest plan and Pentest commands carry the choice, stay visible to copy under their Run buttons, and Copy puts the exact command on the clipboard',
-      i.dry?.text === base + ' --dry-run --app-dir services/api --dockerfile services/api/Dockerfile.prod --port 3000 --health-path /healthz' + tail
+    add('PT2', 'the Pentest command carries the choice and stays visible to copy under Start pentest (no Pentest plan item since 1.21.7), and Copy puts the exact command on the clipboard',
+      i.dry === null
       && i.run?.text === base + ' --app-dir services/api --dockerfile services/api/Dockerfile.prod --port 3000 --health-path /healthz' + tail
-      && i.run.badge === 'AWS write' && JSON.stringify(i.runButtons) === '["Show the plan","Start pentest"]' && P.clipboard === P.typed?.run?.text,
+      && i.run.badge === 'AWS write' && JSON.stringify(i.runButtons) === '["Start pentest"]' && P.clipboard === P.typed?.run?.text,
       JSON.stringify({ dry: i.dry, run: i.run, b: i.runButtons, clip: P.clipboard }));
     add('PT3', 'picking another Dockerfile moves the build folder to its folder and changes both commands; a folder with a space is shell-quoted; typing keeps the focus',
       JSON.stringify(P.web?.fields) === '["docker","3000","/healthz"]' && P.web.run.text === base + ' --app-dir docker --dockerfile docker/web.Dockerfile --port 3000 --health-path /healthz' + tail
@@ -1968,6 +2099,9 @@ function verdicts(R) {
       JSON.stringify({ other: P.back?.other, reloaded: P.reloaded, tree: [P.before?.tree, P.after?.tree] }));
     add('PT6', 'at 390 px the page with the picker has no sideways scroll', P.phoneScroll <= 1, String(P.phoneScroll));
     const s = P.stdio || {};
+    add('PT8', 'over --serve-stdio the bundle\'s Start pentest dialog lists the resources, the picked Dockerfile, the teardown and the cleanup command; Cancel posts no action',
+      s.dialog?.items === 7 && s.dialog.box && /built from docker\/web\.Dockerfile/.test(s.dialog.text) && /torn down automatically when the job finishes/.test(s.dialog.text)
+      && /prism-cli security pentest --cleanup --job JOB_ID/.test(s.dialog.text) && s.actsAfterDialog === 0, JSON.stringify({ d: s.dialog?.text?.slice(0, 300), n: s.dialog?.items, a: s.actsAfterDialog }));
     add('PT7', 'over --serve-stdio the shared bundle draws the picker, a pick changes the command, and a symlink out of the repo is refused',
       s.kind !== 'browser' && JSON.stringify(s.routes) === '["/api/security-agent/pentest","/api/security-agent/pentest/check"]' && /--dockerfile services\/api\/Dockerfile\.prod/.test(s.initial || '')
       && /--app-dir docker --dockerfile docker\/web\.Dockerfile/.test(s.picked || '') && /escape points outside the repo/.test(s.err || '')
@@ -1978,23 +2112,62 @@ function verdicts(R) {
     const Q = S.pentestrun, s = Q.steps || {};
     const FLAGS = '--app-dir services/api --dockerfile services/api/Dockerfile.prod --port 3000 --health-path /healthz';
     const WRITE = /^(s3api put-object|securityagent (start|create|delete|update|stop|batch-delete|verify)|ssm put-parameter|cloudformation (create|update|delete|deploy)|ecr )/;
-    add('PR1', 'Start new work: Show the plan and Start pentest buttons for the picked target, the commands still shown to copy, and no Pentest status item',
-      JSON.stringify((s.page?.buttons || []).map((b) => [b.id, b.label, b.disabled])) === '[["security-pentest-plan","Show the plan",false],["security-pentest-start","Start pentest",false]]'
-      && (s.page?.copy || []).some((c) => c.includes('security pentest --dry-run ' + FLAGS)) && !/Pentest status/.test(s.page?.text || ''), JSON.stringify({ b: s.page?.buttons, c: s.page?.copy }));
+    add('PR1', 'Start new work: Start pentest only (no Pentest plan item or Show the plan button since 1.21.7), its command still shown to copy, and no Pentest status item',
+      JSON.stringify((s.page?.buttons || []).map((b) => [b.id, b.label, b.disabled])) === '[["security-pentest-start","Start pentest",false]]'
+      && (s.page?.copy || []).some((c) => c.includes('security pentest ' + FLAGS)) && !(s.page?.copy || []).some((c) => /--dry-run/.test(c))
+      && !/Pentest status|Pentest plan|Show the plan/.test(s.page?.text || ''), JSON.stringify({ b: s.page?.buttons, c: s.page?.copy }));
     const pc = s.planCalls || {};
-    add('PR2', 'Show the plan runs security pentest --dry-run with the picker\'s flags (cdk synth and diff), no confirm box, exit 0, and makes no AWS write and no docker call',
-      !s.planDialog?.box && /security pentest --dry-run/.test(s.planDialog?.text || '') && /exit 0/.test(s.plan?.status || '') && s.plan.status.includes('--dry-run ' + FLAGS)
-      && (pc.cdk || []).some((c) => c.startsWith('synth')) && (pc.cdk || []).some((c) => c.startsWith('diff')) && (pc.cdk || []).every((c) => /-c port=3000/.test(c) && /-c healthPath=\/healthz/.test(c) && /-c dockerfile=Dockerfile\.prod/.test(c))
-      && !(pc.aws || []).some((c) => WRITE.test(c)) && !(pc.docker || []).length, JSON.stringify({ d: s.planDialog, p: s.plan?.status, c: pc }));
+    add('PR2', 'the removed plan action is refused by the server (400) and runs nothing: no cdk, docker or AWS call',
+      s.plan?.status === 400 && !(pc.cdk || []).length && !(pc.docker || []).length && !(pc.aws || []).some((c) => WRITE.test(c)), JSON.stringify({ p: s.plan, c: pc }));
     add('PR3', 'a bad picker value sent to the server is refused (400) with the field, and nothing is spawned',
       s.bad?.status === 400 && /the pentest target is not valid: dockerfile:/.test(s.bad.error || '') && !s.badSpawned, JSON.stringify(s.bad));
     const sd = s.startDialog || {}, sc = s.startCalls || {};
-    add('PR4', 'Start pentest confirms with the account and region, Docker, hours, cost and automatic teardown, needs the box; it runs --yes with the flags (no --wait, no --keep), builds and pushes with docker, deploys, starts the job and saves a pending run',
+    const bc = s.beforeConfirm || {};
+    add('PR10', 'the Start pentest dialog says what it deploys before the confirm: the account and region, the stack\'s resources, the picked Dockerfile, build folder, port and health path, the automatic teardown, Clean up and the cleanup command, hours and cost',
+      /This deploys a temporary private environment for demo-shop into account ••••3333 \/ us-west-2 and runs the pentest against it\./.test(sd.text || '')
+      && (sd.resources || []).length === 7 && /^A VPC with private subnets only/.test(sd.resources[0]) && /no internet gateway/.test(sd.resources[0]) && /no public endpoint/.test(sd.resources[0])
+      && /^A Fargate service running your app, built from services\/api\/Dockerfile\.prod \(build folder services\/api\)/.test(sd.resources[1]) && /Docker must be running/.test(sd.resources[1])
+      && ['internal Application Load Balancer', 'VPC endpoints for ECR, S3 and CloudWatch Logs', 'IAM service role', 'S3 source bucket', 'CloudWatch log groups', 'agent space for this run, a private target domain, and the pentest and its job'].every((w) => sd.resources.join(' ').includes(w))
+      && sd.target === 'Dockerfile services/api/Dockerfile.prod Build folder services/api Port 3000 Health path /healthz'
+      && /torn down automatically when the job finishes: while the dashboard is open, it checks the job every 5 minutes/.test(sd.text || '') && /a Clean up button appears on the run's page/.test(sd.text || '')
+      && (sd.cmds || []).includes('cd ~/src/demo-shop && prism-cli security pentest --cleanup --job JOB_ID --profile prism-demo --region us-west-2')
+      && /runs for hours/.test(sd.text || '') && /costs money while it runs/.test(sd.text || '') && /\$50 per task-hour/.test(sd.text || '') && sd.overflow <= 1,
+      JSON.stringify({ t: sd.text?.slice(0, 600), r: sd.resources, tg: sd.target, c: sd.cmds }));
+    add('PR11', 'the tick box is still required, and opening the dialog, Cancel and ticking the box make no AWS write, no cdk and no docker call; only Deploy and start runs',
+      s.cancelled === true && sd.box && sd.buttons?.find((b) => b.t === 'Deploy and start')?.dis === true && s.ticked?.buttons?.find((b) => b.t === 'Deploy and start')?.dis === false
+      && !(bc.aws || []).some((c) => WRITE.test(c)) && !(bc.cdk || []).length && !(bc.docker || []).length, JSON.stringify({ c: s.cancelled, bc }));
+    const PD = s.phoneDialog || {};
+    add('PR12', 'at 390 px the start dialog fits in light and dark (no sideways scroll, all 7 resources, no target value or command cut off) with themed text on a themed surface',
+      ['light', 'dark'].every((t) => PD[t] && PD[t].overflow <= 1 && PD[t].width <= 390 && PD[t].items === 7 && !PD[t].running && !(PD[t].clipped || ['?']).length) && PD.light.bg !== PD.dark.bg && PD.light.fg !== PD.dark.fg, JSON.stringify(PD));
+    add('PR4', 'Start pentest confirms with the account and region, Docker, hours, cost and automatic teardown, needs the box; it runs --yes with the flags (no --wait, no --keep) detached, builds and pushes with docker, deploys, starts the job, and the same record becomes pending',
       ['account ••••3333 / us-west-2', 'Docker must be running', 'runs for hours', 'costs money', 'torn down automatically when the job finishes'].every((w) => (sd.text || '').includes(w)) && sd.box
-      && sd.buttons?.find((b) => b.t === 'Deploy and start')?.dis === true && /exit 0/.test(s.start?.status || '') && s.start.status.includes('security pentest --yes ' + FLAGS) && !/--wait|--keep/.test(s.start.status)
+      && sd.buttons?.find((b) => b.t === 'Deploy and start')?.dis === true && /Bootstrapping started/.test(s.start?.status || '') && s.start.status.includes('security pentest --yes ' + FLAGS) && !/--wait|--keep/.test(s.start.status)
       && (sc.docker || []).some((c) => c.startsWith('build')) && (sc.docker || []).some((c) => c.startsWith('push')) && (sc.aws || []).some((c) => c.startsWith('securityagent start-pentest-job'))
-      && JSON.stringify(s.afterStart) === '[{"status":"pending","job":"ptj-run-1","stack":' + JSON.stringify((s.afterStart || [])[0]?.stack) + ',"keep":null}]' && /^PrismPentest-demo-shop-/.test((s.afterStart || [])[0]?.stack || ''),
-      JSON.stringify({ d: sd.text?.slice(0, 400), st: s.start?.status, docker: sc.docker, after: s.afterStart }));
+      && JSON.stringify(s.afterStart) === '[{"status":"pending","job":"ptj-run-1","stack":' + JSON.stringify((s.afterStart || [])[0]?.stack) + ',"keep":null}]' && /^PrismPentest-demo-shop-/.test((s.afterStart || [])[0]?.stack || '')
+      && s.sameId?.id === true && s.sameId.status === 'pending' && s.logFile === true,
+      JSON.stringify({ d: sd.text?.slice(0, 200), st: s.start?.status, docker: sc.docker, after: s.afterStart, same: s.sameId }));
+    const ph = s.phases || [];
+    const ORDER = ['preparing', 'building', 'pushing', 'deploying', 'health', 'registering', 'starting'];
+    add('PR13', 'Start pentest returns at once (Bootstrapping started, a link to the run) with the record already written (deploying, the stack, the picked target); the lock stays free (another action runs) and a second Start is refused while it deploys',
+      s.startMs < 8000 && s.startLink === '#security/run/' + Q.repoId + '/' + (s.boot ? Q.runId : '') && !!s.boot && ['preparing', 'building'].includes(s.boot.phase) && /^PrismPentest-demo-shop-/.test(s.boot.stack || '')
+      && s.boot.log === Q.runId + '.log' && JSON.stringify(s.boot.choice) === '["services/api","services/api/Dockerfile.prod",3000,"/healthz"]'
+      && s.lockState === 'done' && s.other === 202 && /^done exit \d+$/.test(s.otherDone?.status || '') && s.second?.status === 409 && /already bootstrapping/.test(s.second.json?.error || ''),
+      JSON.stringify({ ms: s.startMs, link: s.startLink, boot: s.boot, lock: s.lockState, other: s.other, second: s.second }));
+    add('PR14', 'the record\'s phase advances in order through every step (its history: preparing, building, pushing, deploying, health, registering, starting), seen live as it goes, and no job check runs against AWS before the job has started',
+      JSON.stringify(s.history) === JSON.stringify(ORDER) && ph.length >= 3 && ph.every((x, k) => k === 0 || ORDER.indexOf(x) > ORDER.indexOf(ph[k - 1])) && ['pushing', 'deploying'].every((x) => ph.includes(x)) && s.checkedBeforeStart === 0,
+      JSON.stringify({ ph, h: s.history, checked: s.checkedBeforeStart }));
+    add('PR15', 'while it deploys, the runs table shows Bootstrapping with its step, and the run page lists the steps with the current one, and View log shows the redacted log',
+      /Bootstrapping/.test(s.bootRow || '') && /Step \d of 7: /.test(s.bootRow || '') && /View progress/.test(s.bootRow || '') && s.bootPage?.status === 'Bootstrapping' && !!s.bootPage.now
+      && /Deploying the private target environment/.test(s.bootPage.log || '') && !accountLeaks(s.bootPage.log || '').length && !(s.bootPage.log || '').includes(Q.home + '/'),
+      JSON.stringify({ row: s.bootRow, page: s.bootPage && { ...s.bootPage, log: (s.bootPage.log || '').slice(-300) } }));
+    const df = s.deployFail || {}, ki = s.interrupted || {};
+    add('PR16', 'a deploy that fails becomes an error that keeps its stack; its page shows Deploy stopped and Clean up, which removes the stack',
+      df.start === 202 && df.status === 'error' && /cdk deploy of the pentest target/.test(df.reason || '') && /^PrismPentest-/.test(df.stack || '') && s.deployFailPage?.kind === 'deploy_stopped' && s.deployFailPage.button
+      && /Deploy stopped/.test(s.deployFailPage.deploy || '') && /exit 0/.test(s.deployFailCleanup?.status || '') && s.deployFailAfter === null, JSON.stringify({ df, p: s.deployFailPage, c: s.deployFailCleanup?.status, a: s.deployFailAfter }));
+    add('PR17', 'a deploy whose process is killed is marked interrupted by the dashboard\'s local check (no AWS call), keeps its stack, and its page offers Clean up',
+      s.killed?.start === 202 && s.killed.phase === 'deploying' && s.killed.pid && ki.status === 'error' && /^deploy interrupted: its process \(pid \d+\) stopped during "Deploying the environment"/.test(ki.reason || '') && ki.flag
+      && /^PrismPentest-/.test(ki.stack || '') && !(ki.awsWhileDeploying || []).length && s.interruptedPage?.kind === 'deploy_stopped' && s.interruptedPage.button && /Interrupted at step 4 of 7/.test(s.interruptedPage.deploy || '')
+      && /exit 0/.test(s.interruptedCleanup?.status || ''), JSON.stringify({ k: s.killed, ki, p: s.interruptedPage, c: s.interruptedCleanup?.status }));
     add('PR5', 'while it is pending, Start pentest warns that a pentest is already running, with View it and no Start another; the running check tears nothing down',
       /A pentest of demo-shop is already running/.test(s.guard?.text || '') && JSON.stringify((s.guard?.buttons || []).map((b) => b.t)) === '["Cancel","View it →"]'
       && s.runningCheck?.deletes === 0 && JSON.stringify(s.runningCheck.rows) === '["pending"]', JSON.stringify({ g: s.guard, r: s.runningCheck }));
@@ -2008,11 +2181,11 @@ function verdicts(R) {
       && /exit 1/.test(s.cleanup1?.status || '') && /exit 0/.test(s.cleanup2?.status || '') && s.cardAfter === false && s.cleanedRecord?.stack === null && s.cleanedRecord.teardown_failed === null,
       JSON.stringify({ f: s.failedRecord, c: s.card, d: s.cleanupDialog?.text?.slice(0, 300), c1: s.cleanup1?.status, c2: s.cleanup2?.status, after: s.cardAfter, rec: s.cleanedRecord }));
     const U = Q.stdio || {};
-    add('PR8', 'over --serve-stdio: a bad health path is refused (400), the plan and the start run with the same argv (exit 0), and a second start is refused while the first is pending (409)',
-      U.badStart?.status === 400 && /healthPath:/.test(U.badStart.error || '') && U.plan === 202 && U.planExit === 0 && (U.planCmd || '').includes('--dry-run ' + FLAGS)
-      && U.start === 202 && U.startExit === 0 && (U.startCmd || '').includes('--yes ' + FLAGS) && U.again?.status === 409 && /already running/.test(U.again.error || ''), JSON.stringify(U));
+    add('PR8', 'over --serve-stdio: a bad health path is refused (400), the removed plan action is refused (400), the check route carries the dialog\'s resource list, the start runs with the same argv (exit 0), and a second start is refused while the first is pending (409)',
+      U.badStart?.status === 400 && /healthPath:/.test(U.badStart.error || '') && U.plan === 400 && (U.start0?.resources || []).length === 7 && /--cleanup --job JOB_ID/.test(U.start0?.cleanup || '')
+      && U.start === 202 && U.startExit === 0 && (U.startCmd || '').includes('--yes ' + FLAGS) && U.startOutcome === 'detached' && U.again?.status === 409 && /already (bootstrapping|running)/.test(U.again.error || ''), JSON.stringify(U));
     add('PR9', 'at 390 px the page with the buttons has no sideways scroll, and no account id or home path leaks into what the page showed', s.phoneScroll <= 1
-      && !accountLeaks(JSON.stringify([s.page?.text, s.card, s.guard, s.startDialog])).length && !JSON.stringify([s.page?.text, s.card]).includes(Q.home + '/'), String(s.phoneScroll));
+      && !accountLeaks(JSON.stringify([s.page?.text, s.card, s.guard, s.startDialog])).length && !JSON.stringify([s.page?.text, s.card, s.startDialog]).includes(Q.home + '/'), String(s.phoneScroll));
   }
   if (S.stdio) {
     const U = S.stdio;

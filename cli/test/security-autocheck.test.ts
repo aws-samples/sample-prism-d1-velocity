@@ -5,12 +5,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { makeResult, readResultEntries, writeResult, type PrismResult } from '../src/codewatch/results.js';
 import { CHECK_EVERY_MS, checkArgs, checkReason, MAX_IN_FLIGHT, PENTEST_CHECK_EVERY_MS, SecurityAutoCheck, type CheckRun, type PendingJob } from '../src/dashboard/security-autocheck.js';
-import { collectSecurityRuns } from '../src/dashboard/security-runs.js';
+import { collectSecurityRuns, LOG_TAIL_LINES, securityRunLog } from '../src/dashboard/security-runs.js';
+import { deployingPentestResult } from '../src/security/pentest-deploy.js';
+import { pentestCleanupOf } from '../src/dashboard/security-pentest.js';
 import { collectSecurity } from '../src/dashboard/security.js';
 import { dispatch } from '../src/dashboard/stdio.js';
 import { buildPayload, type DashboardPayload } from '../src/dashboard/payload.js';
@@ -58,7 +60,7 @@ test('pending -> complete: the fetch command for the job runs once, its verdict 
     const rows = () => collectSecurityRuns([r.repo], undefined, new Date(), (t, j) => r.c.stateOf(t, j));
     assert.equal(rows()[0].status, 'noverdict', 'past the stale window, before any check');
     const a = await r.c.kick();
-    assert.deepEqual(a, { pending: 1, checking: 1, due: 0, generation: 0 });
+    assert.deepEqual(a, { pending: 1, checking: 1, due: 0, generation: 0, deploying: 0 });
     assert.deepEqual(r.calls.map((x) => x.args), [['security', 'findings', '--job', 'job-1']]);
     assert.equal(rows()[0].check?.state, 'checking');
     // The command completes the pending record in place, as `security findings` does.
@@ -69,7 +71,7 @@ test('pending -> complete: the fetch command for the job runs once, its verdict 
     assert.equal(r.c.generation, 1);
     const row = rows()[0];
     assert.deepEqual([row.status, row.total, row.check], ['complete', 1, null]);
-    assert.deepEqual(await r.c.kick(), { pending: 0, checking: 0, due: 0, generation: 1 }, 'nothing pending: nothing runs');
+    assert.deepEqual(await r.c.kick(), { pending: 0, checking: 0, due: 0, generation: 1, deploying: 0 }, 'nothing pending: nothing runs');
     assert.equal(r.calls.length, 1);
   } finally { r.cleanup(); }
 });
@@ -137,7 +139,7 @@ test('reasons: the last Error: line, else the last line; a timeout says so; long
 test('bounded: one check in flight per job, MAX_IN_FLIGHT overall, none while an action runs, none when nothing is pending', async () => {
   const none = rig([review('job-done', hoursAgo(1), 'findings')]);
   try {
-    assert.deepEqual(await none.c.kick(), { pending: 0, checking: 0, due: 0, generation: 0 });
+    assert.deepEqual(await none.c.kick(), { pending: 0, checking: 0, due: 0, generation: 0, deploying: 0 });
     assert.equal(none.calls.length, 0);
   } finally { none.cleanup(); }
   const r = rig([review('job-1', hoursAgo(3)), review('job-2', hoursAgo(2.5)), review('job-3', hoursAgo(2.2))]);
@@ -178,11 +180,11 @@ test('stdio transport: GET /api/security-check over `dashboard --serve-stdio` ki
       getApi: { '/api/security-check': () => r.c.kick() },
     };
     const first = await dispatch(api, { id: 7, op: 'get', path: '/api/security-check' });
-    assert.deepEqual(first, { id: 7, status: 200, json: { pending: 1, checking: 1, due: 0, generation: 0 } });
+    assert.deepEqual(first, { id: 7, status: 200, json: { pending: 1, checking: 1, due: 0, generation: 0, deploying: 0 } });
     writeResult(r.root, review('job-1', hoursAgo(3), 'findings'), r.ids[0]);
     r.calls[0].answer({ code: 0, output: '', timedOut: false });
     await r.settle();
-    assert.deepEqual((await dispatch(api, { id: 8, op: 'get', path: '/api/security-check' })).json, { pending: 0, checking: 0, due: 0, generation: 1 });
+    assert.deepEqual((await dispatch(api, { id: 8, op: 'get', path: '/api/security-check' })).json, { pending: 0, checking: 0, due: 0, generation: 1, deploying: 0 });
     assert.equal(readResultEntries(r.root)[0].result.status, 'findings');
   } finally { r.cleanup(); }
 });
@@ -262,7 +264,7 @@ test('a result file that cannot be read after a check, or before one, is a faile
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(c.stateOf('code-review', 'job-1')?.state, 'error');
     assert.match(c.stateOf('code-review', 'job-1')!.reason!, /could not read the repo's results: EACCES/);
-    assert.deepEqual(await c.kick(), { pending: 1, checking: 0, due: 0, generation: 1 });
+    assert.deepEqual(await c.kick(), { pending: 1, checking: 0, due: 0, generation: 1, deploying: 0 });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -297,7 +299,7 @@ test('pentest: checked with pentest --status --job (an AWS write once finished),
     await r.settle();
     assert.equal(r.c.stateOf('pentest', 'ptj-1'), null);
     r.tick(PENTEST_CHECK_EVERY_MS * 10);
-    assert.deepEqual(await r.c.kick(), { pending: 0, checking: 0, due: 0, generation: r.c.generation });
+    assert.deepEqual(await r.c.kick(), { pending: 0, checking: 0, due: 0, generation: r.c.generation, deploying: 0 });
     assert.equal(r.calls.length, 2, 'never run again: the teardown happens once');
   } finally { r.cleanup(); }
 });
@@ -339,4 +341,60 @@ test('pentest: a check that cannot find the job in this account fails visibly (b
     assert.equal(r.calls.length, 1, 'backing off: 5 min doubled');
     assert.match(checkReason('', '/h', true, 'pentest'), /did not finish in 90 min/);
   } finally { r.cleanup(); }
+});
+
+// ---------------------------------------------------------------- 1.21.7: deploying pentests are read locally
+
+test('a deploying pentest: never checked with AWS; its step and log on the row; its process gone, it becomes interrupted with Clean up', async () => {
+  const root = tmp('deploy');
+  try {
+    const started = new Date(Date.now() - 10 * 60_000).toISOString();
+    const r = deployingPentestResult({ account: ACCOUNT, region: 'us-west-2', slug: 'demo-shop-abc', startedAt: started, commit: 'a'.repeat(40), branch: 'main',
+      choice: { appDir: '.', dockerfile: 'Dockerfile', port: 8080, healthPath: '/health' }, pid: 4242, log: null });
+    const id = basename(writeResult(root, r), '.json');
+    writeResult(root, { ...r, pentest: { ...r.pentest!, deploy: { ...r.pentest!.deploy!, phase: 'pushing', phase_at: started, log: id + '.log' } } }, id);
+    const repo = { id: 'aaaaaaaaaaaaaaaa', name: 'demo-shop', path: root };
+    let alive = true, runs = 0, changes = 0;
+    const c = new SecurityAutoCheck({ repos: async () => [repo], home: '/home/demo', run: async () => { runs++; return { code: 0, output: '', timedOut: false }; }, onChange: () => { changes++; }, alive: () => alive });
+    const a = await c.kick();
+    assert.deepEqual({ ...a, generation: 0 }, { pending: 0, checking: 0, due: 0, generation: 0, deploying: 1 });
+    assert.equal(runs, 0, 'no check command (no AWS call) for a deploying run');
+    assert.equal(changes, 1, 'its first sight redraws the page');
+    const row = collectSecurityRuns([repo])[0];
+    assert.equal(row.status, 'bootstrapping');
+    assert.deepEqual({ ...row.deploy, phase_at: 'x' }, { phase: 'pushing', label: 'Pushing the image to ECR', step: 3, steps: 7, phase_at: 'x', log: true, interrupted: false });
+    await c.kick();
+    assert.equal(changes, 1, 'nothing new, no redraw');
+    alive = false;
+    const b = await c.kick();
+    assert.equal(b.deploying, 0); assert.equal(runs, 0); assert.equal(changes, 2);
+    const e = readResultEntries(root).find((x) => x.id === id)!;
+    assert.equal(e.result.status, 'error');
+    assert.match(e.result.reason!, /^deploy interrupted: its process \(pid 4242\) stopped during "Pushing the image to ECR"; no pentest job was started$/);
+    assert.equal(e.result.pentest!.stack, 'PrismPentest-demo-shop-abc', 'pushing: cdk deploy had begun, so the stack is kept');
+    const failed = collectSecurityRuns([repo])[0];
+    assert.equal(failed.status, 'failed'); assert.equal(failed.deploy?.interrupted, true);
+    assert.equal(pentestCleanupOf(e)?.kind, 'deploy_stopped');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the deploy log route: only the run\'s own log, its end, redacted and with home as ~; a terminal run has none', () => {
+  const root = tmp('log');
+  try {
+    const r = deployingPentestResult({ account: ACCOUNT, region: 'us-west-2', slug: 's-1', startedAt: new Date().toISOString(), commit: null, branch: null,
+      choice: { appDir: '.', dockerfile: 'Dockerfile', port: 8080, healthPath: '/health' }, pid: null, log: null });
+    const id = basename(writeResult(root, r), '.json');
+    const repo = { id: 'aaaaaaaaaaaaaaaa', name: 'demo-shop', path: root };
+    assert.deepEqual(securityRunLog([repo], repo.id, id, '/home/demo'), { found: false, error: 'this run has no deploy log (it was started from a terminal, or before 1.21.7)' });
+    writeResult(root, { ...r, pentest: { ...r.pentest!, deploy: { ...r.pentest!.deploy!, log: id + '.log' } } }, id);
+    const lines = Array.from({ length: LOG_TAIL_LINES + 50 }, (_, i) => `line ${i}`);
+    writeFileSync(join(root, '.prism', 'results', id + '.log'), [...lines, `deploying into arn:aws:iam::${ACCOUNT}:role/x from ${root}/sub`].join('\n') + '\n');
+    const l = securityRunLog([repo], repo.id, id, root) as { found: true; text: string; truncated: boolean };
+    assert.equal(l.found, true); assert.equal(l.truncated, true);
+    assert.ok(!l.text.includes(ACCOUNT), 'account id masked');
+    assert.ok(l.text.includes('~/sub') && !l.text.includes(root + '/'), 'home as ~');
+    assert.ok(!l.text.includes('line 0\n') && l.text.includes(`line ${LOG_TAIL_LINES + 49}`));
+    assert.equal(securityRunLog([repo], repo.id, '../x', root).found, false);
+    assert.equal(securityRunLog([repo], 'bbbbbbbbbbbbbbbb', id, root).found, false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

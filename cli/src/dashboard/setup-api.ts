@@ -26,7 +26,7 @@ import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
 import { commandLine, securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, securityTargetIn, type SecurityAgentDeps } from './security-agent.js';
 import { securityAgentPentest, securityAgentPentestCheck } from './security-pentest.js';
-import { securityRunDetail, type CheckLookup } from './security-runs.js';
+import { securityRunDetail, securityRunLog, type CheckLookup } from './security-runs.js';
 import { ApiAnswer } from './server.js';
 import { codewatchDefaults, codewatchReviewer } from './codewatch-reviewer.js';
 
@@ -67,7 +67,7 @@ export function setupApi(d: SetupApiDeps) {
     const a = ACTIONS[id];
     return {
       id, label: a.label, command: displayCommand(a.args, a.program), repo: !!a.repo, url: !!a.url, confirm: !!a.confirm,
-      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, choose: !!a.choose, connected: !!a.connected, inHome: !!a.inHome, confirmLabel: a.confirmLabel ?? null, pick: a.pick ?? null, pentest: a.pentest ?? null, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
+      readOnlyAws: !!a.readOnlyAws, installs: !!a.installs, writesAws: !!a.writesAws, note: a.note ?? null, choose: !!a.choose, connected: !!a.connected, inHome: !!a.inHome, confirmLabel: a.confirmLabel ?? null, pick: a.pick ?? null, pentest: a.pentest ?? null, detached: !!a.detached, timeoutSec: a.timeoutMs / 1000, available: d.runner.available(id),
     };
   });
   return {
@@ -122,6 +122,12 @@ export function setupApi(d: SetupApiDeps) {
         const line = sa ? (path: string, args: string[]) => commandLine([...ACTIONS['security-pentest-cleanup'].args, ...args], path, sa.identity.home, securityTargetIn(sa, path)) : undefined;
         const run = securityRunDetail(sa ? await sa.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home, new Date(), undefined, d.securityCheck, line);
         return run.found ? run : new ApiAnswer(404, run);
+      },
+      // A pentest deploy's log (1.21.7): the end of the run's own .log, redacted, home as ~. Ids only, as above.
+      '/api/security-run/log': async (url: URL) => {
+        const sa = d.securityAgent;
+        const log = securityRunLog(sa ? await sa.repos() : [], url.searchParams.get('repo'), url.searchParams.get('run'), d.identity.home);
+        return log.found ? log : new ApiAnswer(404, log);
       },
     },
     postApi: {

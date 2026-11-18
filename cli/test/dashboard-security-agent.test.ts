@@ -19,6 +19,7 @@ import {
   securityAgentGate, securityAgentLookup, securityAgentView, targetArgs, WRITE_KIND, writeNotice, type AwsCall, type Lookup, type SecurityAgentDeps,
 } from '../src/dashboard/security-agent.js';
 import { setupApi } from '../src/dashboard/setup-api.js';
+import { pentestStartPlan } from '../src/dashboard/security-pentest.js';
 import type { Gate, GateState } from '../src/dashboard/security-gate.js';
 import type { AwsResult } from '../src/utils/aws.js';
 import { FakeElement, runPage, SETUP_STUB } from './page-dom.js';
@@ -163,9 +164,9 @@ test('the page actions: fixed ids, in the repo, read-only except the --no-wait u
   assert.deepEqual(Object.keys(WRITE_KIND).sort(), [...writes].sort());
   // The pentest start never waits and never keeps: the background --status check tears it down.
   assert.deepEqual(ACTIONS['security-pentest-start'].args, ['security', 'pentest', '--yes']);
-  assert.deepEqual(ACTIONS['security-pentest-plan'].args, ['security', 'pentest', '--dry-run']);
-  assert.equal(ACTIONS['security-pentest-plan'].readOnlyAws, true);
-  assert.equal(ACTIONS['security-pentest-plan'].confirm, undefined, 'the plan needs no confirm');
+  // 1.21.7: no plan (dry run) action on the page; security pentest --dry-run stays in the CLI.
+  assert.ok(!Object.prototype.hasOwnProperty.call(ACTIONS, 'security-pentest-plan'));
+  assert.ok(!SECURITY_ACTIONS.some((id) => ACTIONS[id].args.includes('--dry-run') && ACTIONS[id].args[0] === 'security'));
   assert.deepEqual(ACTIONS['security-pentest-cleanup'].args, ['security', 'pentest', '--cleanup']);
   assert.deepEqual(ACTIONS['security-code-review-force'].args, ['security', 'code-review', '--no-wait', '--force'], '"Start another anyway" passes --force');
   assert.deepEqual(ACTIONS['security-code-review-full-force'].args, ['security', 'code-review', '--full', '--no-wait', '--force']);
@@ -337,7 +338,7 @@ test('setup-api: the routes are mounted; the catalog flags the writing actions',
   assert.ok(api.postApi['/api/security-agent/spaces']);
   const cat = (await api.getApi['/api/setup']()) as any;
   assert.deepEqual(cat.actions.filter((a: any) => a.writesAws).map((a: any) => a.id), ['security-code-review', 'security-code-review-full', 'security-threat-model', 'security-code-review-force', 'security-code-review-full-force', 'security-pentest-start', 'security-pentest-cleanup']);
-  assert.deepEqual(cat.actions.filter((a: any) => a.pentest).map((a: any) => [a.id, a.pentest]), [['security-pentest-plan', 'choice'], ['security-pentest-start', 'choice'], ['security-pentest-cleanup', 'run']]);
+  assert.deepEqual(cat.actions.filter((a: any) => a.pentest).map((a: any) => [a.id, a.pentest]), [['security-pentest-start', 'choice'], ['security-pentest-cleanup', 'run']]);
   const none = setupApi({ runner: runnerWith([]), cwd: '/work', repoPaths: async () => [], identity: { env: {}, home, repoRoot: null }, refresh: async () => ({}) });
   assert.equal((await none.postApi['/api/security-agent/spaces']({ repo: 'x' })).status, 400);
 });
@@ -391,7 +392,7 @@ const MACHINE_VIEW = { source: 'machine', file: '~/.prism/security.json', codeRe
 const GOOD: Lookup = { ok: true, at: '2026-11-14T12:00:00Z', profile: 'demo', region: 'us-west-2', account4: '••••3333', inUse: 'as-1', scanBucket: 'prism-scan-demo', consoleUrl: 'https://us-west-2.console.aws.amazon.com/securityagent/home?region=us-west-2',
   spaces: [{ id: 'as-1', name: 'prism-d1-security', createdAt: null, inUse: true, pentest: false, bucketListed: true }, { id: 'as-2', name: 'pentest-demo', createdAt: null, inUse: false, pentest: true, bucketListed: null }] };
 const EXPIRED: Lookup = { ok: false, at: '', profile: 'demo', region: 'us-west-2', error: 'the credentials did not work: Token has expired', credentials: true, kind: 'credentials', action: null };
-const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, label: ACTIONS[id].label, command: 'prism-cli ' + ACTIONS[id].args.join(' '), repo: true, url: false, confirm: !!ACTIONS[id].confirm, readOnlyAws: !!ACTIONS[id].readOnlyAws, writesAws: !!ACTIONS[id].writesAws, note: ACTIONS[id].note ?? null, installs: false, pentest: ACTIONS[id].pentest ?? null, timeoutSec: ACTIONS[id].timeoutMs / 1000, available: true })) };
+const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, label: ACTIONS[id].label, command: 'prism-cli ' + ACTIONS[id].args.join(' '), repo: true, url: false, confirm: !!ACTIONS[id].confirm, readOnlyAws: !!ACTIONS[id].readOnlyAws, writesAws: !!ACTIONS[id].writesAws, note: ACTIONS[id].note ?? null, installs: false, pentest: ACTIONS[id].pentest ?? null, detached: !!ACTIONS[id].detached, timeoutSec: ACTIONS[id].timeoutMs / 1000, available: true })) };
 
 const buttons = (root: FakeElement) => root.querySelectorAll('button');
 const btn = (root: FakeElement, label: string) => buttons(root).find((b) => b.textContent === label);
@@ -769,8 +770,8 @@ test('code review item: one item, branch first then whole repo; nothing new sinc
 test('pentest picker: tracked Dockerfiles as radios, pentest.json preselected; a pick or a typed path re-checks and the commands follow; errors inline', async () => {
   const p = await pagePayload();
   const id = p.repos[0].id;
-  const cmd = (flags: string, dry = false) => `cd ~/demo-shop && prism-cli security pentest${dry ? ' --dry-run' : ''} ${flags} --profile demo --region us-west-2`;
-  const okCheck = (flags: string) => ({ repo: id, ok: true, errors: {}, resolved: null, copy: { pentestDryRun: cmd(flags, true), pentest: cmd(flags) } });
+  const cmd = (flags: string) => `cd ~/demo-shop && prism-cli security pentest ${flags} --profile demo --region us-west-2`;
+  const okCheck = (flags: string) => ({ repo: id, ok: true, errors: {}, resolved: null, copy: { pentest: cmd(flags) } });
   const CFG = '--app-dir sample-app --dockerfile sample-app/Dockerfile --port 3000 --health-path /healthz';
   const listing = {
     repo: id, dockerfiles: [{ path: 'Dockerfile', fromConfig: false }, { path: 'sample-app/Dockerfile', fromConfig: true }], truncated: false, max: 50, listError: null,
@@ -795,7 +796,8 @@ test('pentest picker: tracked Dockerfiles as radios, pentest.json preselected; a
   const field = (k: string) => sec.querySelectorAll('input').find((i) => i.getAttribute('id') === `sa-pt-${k}-${id}`)!;
   assert.deepEqual(['dir', 'port', 'health'].map((k) => field(k).value), ['sample-app', '3000', '/healthz']);
   assert.match(sec.textContent, /Asked each time: nothing here is saved to the repo or to \.prism\/pentest\.json/);
-  assert.deepEqual(pres(), [cmd(CFG, true), cmd(CFG)]);
+  assert.deepEqual(pres(), [cmd(CFG)]);
+  assert.doesNotMatch(sec.textContent, /Pentest plan|Show the plan|--dry-run/, '1.21.7: no plan item');
   assert.doesNotMatch(sec.textContent, /Pentest status/, 'the status item is gone');
 
   // Pick ./Dockerfile: the build folder follows it, and the commands come back with its flags.
@@ -804,7 +806,7 @@ test('pentest picker: tracked Dockerfiles as radios, pentest.json preselected; a
   assert.match(sec.textContent, /checking…/, 'no stale command to copy while it checks');
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(field('dir').value, '.');
-  assert.deepEqual(pres(), [cmd(ROOT, true), cmd(ROOT)]);
+  assert.deepEqual(pres(), [cmd(ROOT)]);
   assert.ok(page.requests.some((x) => x.url === q({ dockerfile: 'Dockerfile', port: '3000', health_path: '/healthz' })));
 
   // Other folder…, then a path outside the repo: the reason inline, Copy disabled, no command.
@@ -831,7 +833,8 @@ test('pentest picker: a listing that fails keeps the plain copy-only commands; a
   await page.settle();
   const t = page.dom.byId.security.textContent;
   assert.match(t, /The Dockerfile picker could not load/);
-  assert.match(t, /Pentest plan/);
+  assert.match(t, /Deploys a private copy of the app/);
+  assert.doesNotMatch(t, /Pentest plan/, '1.21.7: the plain items have no plan either');
   const id = p.repos[0].id;
   const bad = await runPage([p], '#security', SETUP, { '/api/security-agent': saAnswer(p, GOOD), ['/api/security-agent/pentest?repo=' + id]: {
     repo: id, dockerfiles: [], truncated: false, max: 50, listError: null, config: { ok: false, error: '.prism/pentest.json is not valid JSON: Unexpected end of JSON input' },
@@ -859,8 +862,9 @@ function ptRoutes(p: DashboardPayload, answer: unknown = saAnswer(p, GOOD)) {
   const flags = '--app-dir sample-app --dockerfile sample-app/Dockerfile --port 3000 --health-path /healthz';
   const line = (args: string) => `cd ~/demo-shop && prism-cli security pentest ${args ? args + ' ' : ''}${flags} --profile demo --region us-west-2`;
   const check = { repo: id, ok: true, errors: {}, resolved: { dockerfile: 'sample-app/Dockerfile', appDir: 'sample-app', port: 3000, healthPath: '/healthz' },
-    copy: { pentestDryRun: line('--dry-run'), pentest: line('') },
-    run: { 'security-pentest-plan': line('--dry-run'), 'security-pentest-start': line('--yes') } };
+    copy: { pentest: line('') },
+    run: { 'security-pentest-start': line('--yes') },
+    start: pentestStartPlan({ identity: { env: { AWS_PROFILE: 'demo', AWS_REGION: 'us-west-2' }, home: '/home/dev' } }, '/home/dev/demo-shop', { dockerfile: 'sample-app/Dockerfile', appDir: 'sample-app' }) };
   const routes = {
     '/api/security-agent': answer,
     ['/api/security-agent/pentest?repo=' + id]: {
@@ -875,25 +879,18 @@ function ptRoutes(p: DashboardPayload, answer: unknown = saAnswer(p, GOOD)) {
 }
 const ptButton = (root: FakeElement, id: string) => root.querySelectorAll('button').find((b) => b.getAttribute('data-pt-run') === id)!;
 
-test('pentest buttons: Show the plan runs the dry run with the picker\'s checked values and no confirm box; the terminal command stays under it', async () => {
+test('pentest buttons: 1.21.7 has no Pentest plan item or Show the plan button; Start pentest keeps its terminal command under it', async () => {
   const p = await pagePayload();
   const { routes, line } = ptRoutes(p);
   const page = await runPage([p], '#security', SETUP, routes);
   await page.settle();
   const sec = page.dom.byId.security;
-  const plan = ptButton(sec, 'security-pentest-plan');
-  assert.ok(plan && !plan.hasAttribute('disabled'), 'Show the plan is enabled for a checked choice');
-  assert.ok(sec.querySelectorAll('code').some((c) => c.textContent === line('--dry-run')), 'the copy-only command stays visible');
+  assert.equal(ptButton(sec, 'security-pentest-plan'), undefined);
+  assert.equal(btn(sec, 'Show the plan'), undefined);
+  assert.doesNotMatch(sec.textContent, /Pentest plan|--dry-run/);
+  assert.ok(sec.querySelectorAll('code').some((c) => c.textContent === line('')), 'the copy-only pentest command stays visible');
   assert.match(sec.textContent, /Or in a terminal:/);
-  plan.listeners.click();
-  const dlg = dialogOf(page);
-  assert.ok(dlg.modal);
-  assert.match(dlg.textContent, /Read-only in AWS/);
-  assert.ok(dlg.textContent.includes(line('--dry-run').split(' ').slice(3).join(' ')), 'the dialog shows the exact line');
-  assert.ok(!dlg.querySelectorAll('input').some((i) => i.getAttribute('type') === 'checkbox'), 'no confirm box for the plan');
-  btn(dlg, 'Run')!.listeners.click();
-  await page.settle();
-  assert.deepEqual(posts(page, '/api/action').map((x) => x.body), [{ action: 'security-pentest-plan', repo: p.repos[0].id, dockerfile: 'sample-app/Dockerfile', app_dir: 'sample-app', port: '3000', health_path: '/healthz' }]);
+  assert.match(sec.textContent, /Start pentest lists what it deploys before you confirm/);
 });
 
 test('pentest buttons: Start pentest confirms with the account, region, Docker, hours and cost, and needs the box ticked', async () => {
@@ -903,11 +900,22 @@ test('pentest buttons: Start pentest confirms with the account, region, Docker, 
   await page.settle();
   ptButton(page.dom.byId.security, 'security-pentest-start').listeners.click();
   const dlg = dialogOf(page);
-  for (const w of ['account ••••3333 / us-west-2', 'Docker must be running', 'runs for hours', 'costs money', 'torn down automatically when the job finishes', 'every 5 minutes']) assert.ok(dlg.textContent.includes(w), w);
+  for (const w of ['This deploys a temporary private environment for demo-shop into account ••••3333 / us-west-2 and runs the pentest against it.', 'Docker must be running', 'runs for hours', 'costs money', 'torn down automatically when the job finishes', 'every 5 minutes', 'Clean up button appears on the run\'s page', '$50 per task-hour']) assert.ok(dlg.textContent.includes(w), w);
+  // The resources, one item each, as the server named them; the picked target; the cleanup line as the run's page builds it.
+  const res = dlg.querySelectorAll('ul').find((u) => u.getAttribute('data-pt-resources') !== null)!;
+  assert.equal(res.childNodes.length, 7);
+  assert.match(res.childNodes[0].textContent, /^A VPC with private subnets only/);
+  assert.match(res.childNodes[1].textContent, /built from sample-app\/Dockerfile \(build folder sample-app\)/);
+  const target = dlg.querySelectorAll('div').find((d) => d.getAttribute('data-pt-target') !== null)!;
+  assert.equal(target.textContent, 'Dockerfilesample-app/DockerfileBuild foldersample-appPort3000Health path/healthz');
+  assert.ok(dlg.textContent.includes('prism-cli security pentest --cleanup --job JOB_ID --profile demo --region us-west-2'), 'the cleanup command');
   assert.match(dlg.textContent, /security pentest --yes --app-dir sample-app/);
-  assert.match(dlg.textContent, /stopped after 45 min/);
+  assert.match(dlg.textContent, /It runs in the background/, '1.21.7: detached, no 45 min stop');
+  const { renderPage } = await import('../src/dashboard/page.js');
+  assert.doesNotMatch(/function saPtPlan\(p, t\) \{[\s\S]*?\n\}/.exec(renderPage('N'))![0], /innerHTML/, 'values go in as text');
   const go = btn(dlg, 'Deploy and start')!;
   assert.equal(go.disabled, true, 'needs the box');
+  assert.equal(posts(page, '/api/action').length, 0, 'nothing posted before the confirm');
   const box = dlg.querySelectorAll('input').find((i) => i.getAttribute('data-pt-ack') !== null)!;
   (box as unknown as { checked: boolean }).checked = true; box.listeners.change();
   assert.equal(go.disabled, false);
@@ -931,7 +939,7 @@ test('pentest buttons: a pentest already running for the repo and account warns 
   assert.equal(posts(page, '/api/action').length, 0);
 });
 
-test('pentest buttons: the Pentest status item is gone; a choice being checked disables both buttons', async () => {
+test('pentest buttons: the Pentest status item is gone; a choice being checked disables Start pentest', async () => {
   const p = await pagePayload();
   const { routes } = ptRoutes(p);
   const page = await runPage([p], '#security', SETUP, routes);
@@ -941,7 +949,7 @@ test('pentest buttons: the Pentest status item is gone; a choice being checked d
   const radio = sec.querySelectorAll('input').find((i) => i.getAttribute('type') === 'radio' && i.getAttribute('value') === '__other__') as unknown as { checked: boolean; listeners: Record<string, () => void> };
   radio.checked = true; radio.listeners.change();
   const runs = sec.querySelectorAll('button').filter((b) => b.getAttribute('data-pt-run'));
-  assert.deepEqual(runs.map((b) => [b.getAttribute('data-pt-run'), b.hasAttribute('disabled')]), [['security-pentest-plan', true], ['security-pentest-start', true]]);
+  assert.deepEqual(runs.map((b) => [b.getAttribute('data-pt-run'), b.hasAttribute('disabled')]), [['security-pentest-start', true]]);
 });
 
 test('run drill-down: a pentest whose teardown failed shows the reason and Clean up, which confirms and posts the run id', async () => {
@@ -971,4 +979,82 @@ test('run drill-down: a pentest whose teardown failed shows the reason and Clean
   await clean.settle();
   assert.doesNotMatch(clean.dom.byId.security.textContent, /Teardown failed|Environment still up/);
   assert.ok(!clean.dom.byId.security.querySelectorAll('button').some((x) => x.getAttribute('data-cleanup') !== null));
+});
+
+// ---------------------------------------------------------------- 1.21.7: Bootstrapping
+
+test('Bootstrapping: the runs table shows the step and links to the run; its page lists the steps and View log draws the log as text', async () => {
+  const p = await pagePayload();
+  const id = p.repos[0].id;
+  const at = new Date(Date.now() - 4 * 60_000).toISOString();
+  const run = { repo_id: id, run_id: 'run-pt-boot', repo: 'demo-shop', type: 'pentest', status: 'bootstrapping', started_at: at, duration_s: null, branch: 'main', commit: 'abc', counts: {}, total: 0, top_title: null, reason: null, job_id: 'PrismPentest-demo-shop-x', check: null,
+    deploy: { phase: 'deploying', label: 'Deploying the environment', step: 4, steps: 7, phase_at: at, log: true, interrupted: false } };
+  const detail = { found: true, run, findings: [], account4: '••••3333', region: 'us-west-2', scope: null, target_host: null, overview: null, result_file: '~/demo-shop/.prism/results/run-pt-boot.json', cli: 'prism-cli security pentest --status --path ~/demo-shop', no_remediation: 'x', cleanup: null };
+  const routes = { '/api/security-agent': saAnswer(p, GOOD), ['/api/security-run?repo=' + id + '&run=run-pt-boot']: detail,
+    ['/api/security-run/log?repo=' + id + '&run=run-pt-boot']: { found: true, text: 'Deploying...\n<img src=x onerror=alert(1)>', truncated: false, updated_at: at } };
+  const dash = await runPage([{ ...p, security_runs: [run] }], '', SETUP, routes);
+  await dash.settle();
+  const row = dash.dom.byId.main.querySelectorAll('tr').find((t) => t.getAttribute('data-run') === 'run-pt-boot')!;
+  assert.match(row.textContent, /Bootstrapping/);
+  assert.match(row.textContent, /Step 4 of 7: Deploying the environment/);
+  assert.equal(row.querySelectorAll('a').find((a) => a.textContent === 'View progress →')?.getAttribute('href'), '#security/run/' + id + '/run-pt-boot');
+  const page = await runPage([{ ...p, security_runs: [run] }], '#security/run/' + id + '/run-pt-boot', SETUP, routes);
+  await page.settle();
+  const sec = page.dom.byId.security;
+  const card = sec.querySelectorAll('section').find((s) => s.getAttribute('data-run-deploy') === 'bootstrapping')!;
+  assert.ok(card, 'the Bootstrapping card');
+  const steps = card.querySelectorAll('li');
+  assert.equal(steps.length, 7);
+  assert.deepEqual(steps.map((s) => s.getAttribute('class')), ['done', 'done', 'done', 'now', null, null, null]);
+  assert.match(card.textContent, /closing the dashboard, VS Code or Kiro Crew does not stop it/);
+  assert.match(sec.textContent, /still bootstrapping/);
+  const view = card.querySelectorAll('button').find((b) => b.getAttribute('data-run-log-open') !== null)!;
+  view.listeners.click();
+  await page.settle();
+  const pre = card.querySelectorAll('pre').find((x) => x.getAttribute('data-run-log') !== null)!;
+  assert.equal(pre.textContent, 'Deploying...\n<img src=x onerror=alert(1)>', 'drawn as text');
+  assert.equal(pre.childNodes.length, 1);
+  assert.ok(!pre.hasAttribute('hidden'));
+  assert.ok(page.requests.some((r) => r.url === '/api/security-run/log?repo=' + id + '&run=run-pt-boot'));
+  // The page sends nothing that writes for a Bootstrapping run.
+  assert.equal(page.requests.filter((r) => r.method === 'POST' && r.url === '/api/action').length, 0);
+});
+
+test('Bootstrapping: a stopped deploy shows the step it stopped at and Clean up; the drawer says Bootstrapping started with a link to the run', async () => {
+  const p = await pagePayload();
+  const id = p.repos[0].id;
+  const at = '2026-11-17T08:00:00Z';
+  const run = { repo_id: id, run_id: 'run-pt-int', repo: 'demo-shop', type: 'pentest', status: 'failed', started_at: at, duration_s: null, branch: 'main', commit: 'abc', counts: {}, total: 0, top_title: null,
+    reason: 'deploy interrupted: its process (pid 4242) stopped during "Deploying the environment"; no pentest job was started', job_id: 'PrismPentest-demo-shop-x', check: null,
+    deploy: { phase: 'deploying', label: 'Deploying the environment', step: 4, steps: 7, phase_at: at, log: false, interrupted: true } };
+  const cmd = 'cd ~/demo-shop && prism-cli security pentest --cleanup --profile demo --region us-west-2';
+  const detail = { found: true, run, findings: [], account4: '••••3333', region: 'us-west-2', scope: null, target_host: null, overview: null, result_file: 'x', cli: 'x', no_remediation: 'x',
+    cleanup: { kind: 'deploy_stopped', reason: run.reason, available: true, why: null, command: cmd } };
+  const routes = { '/api/security-agent': saAnswer(p, GOOD), ['/api/security-run?repo=' + id + '&run=run-pt-int']: detail, '/api/action': { state: 'running' }, '/api/action/status': { state: 'idle' } };
+  const page = await runPage([{ ...p, security_runs: [run] }], '#security/run/' + id + '/run-pt-int', SETUP, routes);
+  await page.settle();
+  const sec = page.dom.byId.security;
+  assert.match(sec.textContent, /Deploy stopped/);
+  assert.match(sec.textContent, /Interrupted at step 4 of 7: Deploying the environment/);
+  assert.match(sec.textContent, /Started from a terminal/);
+  assert.match(sec.textContent, /Clean up the deploy/);
+  assert.ok(sec.querySelectorAll('button').some((b) => b.getAttribute('data-cleanup') !== null), 'Clean up');
+  // The drawer after a detached Start.
+  const { routes: pr } = ptRoutes(p);
+  const st = { state: 'done', action: 'security-pentest-start', command: 'prism-cli security pentest --yes', repo: 'demo-shop', repoId: id, startedAt: at, exitCode: 0, outcome: 'detached', output: 'Bootstrapping started in the background.', result: { repo: id, run: 'run-pt-new', status: 'bootstrapping' } };
+  const d = await runPage([p], '#security', SETUP, { ...pr, '/api/action': st, '/api/action/status': st });
+  await d.settle();
+  ptButton(d.dom.byId.security, 'security-pentest-start').listeners.click();
+  const dlg = dialogOf(d);
+  assert.match(dlg.textContent, /It runs in the background: the dialog closes at once/);
+  assert.match(dlg.textContent, /Other actions can run while it deploys/);
+  assert.doesNotMatch(dlg.textContent, /stopped after 45 min/);
+  const box = dlg.querySelectorAll('input').find((i) => i.getAttribute('data-pt-ack') !== null)!;
+  (box as unknown as { checked: boolean }).checked = true; box.listeners.change();
+  btn(dlg, 'Deploy and start')!.listeners.click();
+  await d.settle();
+  const drawer = d.dom.byId['action-drawer'] ?? d.dom.document.body;
+  assert.match(drawer.textContent, /Bootstrapping started/);
+  const link = drawer.querySelectorAll('a').find((a) => a.textContent === 'View progress →');
+  assert.equal(link?.getAttribute('href'), '#security/run/' + id + '/run-pt-new');
 });

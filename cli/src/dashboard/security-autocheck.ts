@@ -32,6 +32,7 @@ import { EXIT_PENDING } from '../security/errors.js';
 import { maskHome, redact } from '../utils/redact.js';
 import { displayCommand, type ScanRepo, type SpawnFn } from './actions.js';
 import { runEntries, runTypeOf, type RunType } from './security-runs.js';
+import { interruptGoneDeploys, pidAlive } from '../security/pentest-deploy.js';
 
 /** What the last check of a pending job said. running: AWS reports it still running. error: the check could not run or failed (reason says why). */
 export interface CheckState {
@@ -120,15 +121,22 @@ export interface AutoCheckDeps {
   busy?: () => boolean;
   home: string;
   now?: () => number;
+  /** Whether a deploy's process still runs (default: pentest-deploy.ts pidAlive); a test seam. */
+  alive?: (pid: number) => boolean;
 }
 
 interface Entry { job: PendingJob; inFlight: boolean; nextAt: number; failures: number; state: CheckState }
 
-/** pending: jobs pending; checking: checks in flight; due: checks due but held back (an action runs, or MAX_IN_FLIGHT): the page asks again soon. */
-export interface KickAnswer { pending: number; checking: number; due: number; generation: number }
+/**
+ * pending: jobs pending; checking: checks in flight; due: checks due but held back (an action runs, or MAX_IN_FLIGHT):
+ * the page asks again soon. deploying: pentests still deploying (1.21.7), read locally; the page keeps asking while there are.
+ */
+export interface KickAnswer { pending: number; checking: number; due: number; generation: number; deploying: number }
 
 export class SecurityAutoCheck {
   private jobs = new Map<string, Entry>();
+  /** The deploying pentests last seen (run id and phase), so a new phase redraws the page. */
+  private deploySeen = '';
   /** Bumped on every change the page should redraw for; the payload carries it (security_check_gen). */
   generation = 0;
   constructor(private d: AutoCheckDeps) {}
@@ -149,10 +157,14 @@ export class SecurityAutoCheck {
 
   /** Starts the checks that are due (never more than one per job), and answers at once. */
   async kick(): Promise<KickAnswer> {
-    let pending: PendingJob[];
+    let pending: PendingJob[], deploying: number;
     // A repo list or result file that cannot be read now: start nothing, answer what is known (the page asks again).
-    try { pending = pendingJobsIn(await this.d.repos(), this.d.read); } catch {
-      return { pending: this.jobs.size, checking: [...this.jobs.values()].filter((e) => e.inFlight).length, due: 0, generation: this.generation };
+    try {
+      const repos = await this.d.repos();
+      deploying = this.sweepDeploys(repos);
+      pending = pendingJobsIn(repos, this.d.read);
+    } catch {
+      return { pending: this.jobs.size, checking: [...this.jobs.values()].filter((e) => e.inFlight).length, due: 0, generation: this.generation, deploying: 0 };
     }
     const keys = new Set(pending.map((j) => j.key));
     for (const k of [...this.jobs.keys()]) if (!keys.has(k) && !this.jobs.get(k)!.inFlight) this.jobs.delete(k);
@@ -173,7 +185,30 @@ export class SecurityAutoCheck {
       if (job.type === 'pentest') pentests = true;
       this.start(e);
     }
-    return { pending: pending.length, checking: inFlight, due, generation: this.generation };
+    return { pending: pending.length, checking: inFlight, due, generation: this.generation, deploying };
+  }
+
+  /**
+   * Deploying pentests: local files and their pid only, never AWS. One whose process is gone is marked interrupted
+   * (its stack kept for Clean up); a new phase or a change of state redraws the page. Returns how many still deploy.
+   */
+  private sweepDeploys(repos: ScanRepo[]): number {
+    const read = this.d.read ?? readResultEntries;
+    const now = new Date(this.now());
+    const seen: string[] = [];
+    let changed = 0;
+    const deployingIn = (es: ResultEntry[]) => es.filter((e) => e.result.kind === 'security-pentest' && e.result.status === 'deploying');
+    for (const repo of repos) {
+      let entries = deployingIn(read(repo.path));
+      if (!entries.length) continue;
+      const n = interruptGoneDeploys(repo.path, now, this.d.alive ?? pidAlive, entries);
+      // Read again only when a record was just marked interrupted.
+      if (n) { changed += n; entries = deployingIn(read(repo.path)); }
+      for (const e of entries) seen.push(`${repo.id}/${e.id}:${e.result.pentest?.deploy?.phase}`);
+    }
+    const sig = seen.sort().join(',');
+    if (changed || sig !== this.deploySeen) { this.deploySeen = sig; this.changed(); }
+    return seen.length;
   }
 
   private start(e: Entry) {

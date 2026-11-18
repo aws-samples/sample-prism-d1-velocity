@@ -20,8 +20,14 @@ export const SECURITY_RUNS_STYLE = `
 .st.running { color:var(--warn); } .st.running::before { background:transparent; border:2px solid currentColor; border-right-color:transparent; animation:runspin 1.2s linear infinite; }
 .st.failed { color:var(--bad); } .st.failed::before { border-radius:2px; }
 .st.noverdict { color:var(--muted); } .st.noverdict::before { background:transparent; border:2px dashed currentColor; }
+.st.bootstrapping { color:var(--accent); } .st.bootstrapping::before { background:transparent; border:2px solid currentColor; border-top-color:transparent; animation:runspin 1.6s linear infinite; }
+table.runs tr.run-bootstrapping td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+ol.dsteps { list-style:none; margin:8px 0 10px; padding:0; display:grid; gap:4px; font-size:13px; } ol.dsteps li { color:var(--muted); overflow-wrap:anywhere; }
+ol.dsteps li::before { content:"○ "; } ol.dsteps li.done { color:var(--ok); } ol.dsteps li.done::before { content:"✓ "; } ol.dsteps li.now { color:var(--text); font-weight:650; } ol.dsteps li.now::before { content:"● "; color:var(--accent); }
+ol.dsteps li.stop { color:var(--bad); font-weight:650; } ol.dsteps li.stop::before { content:"✕ "; }
+pre.runlog { max-height:360px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; background:var(--raised); color:var(--text); border-radius:6px; padding:8px 10px; margin:8px 0 0; }
 @keyframes runspin { to { transform:rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .st.running::before { animation:none; } }
+@media (prefers-reduced-motion: reduce) { .st.running::before, .st.bootstrapping::before { animation:none; } }
 .runfilters { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; margin:0 0 12px; }
 .runfilters label { font-size:12px; color:var(--muted); display:inline-flex; align-items:center; gap:6px; }
 .runfilters select { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
@@ -48,6 +54,7 @@ table.runs .rgo { text-align:right; white-space:nowrap; } .rgo a { font-weight:6
   table.runs td { border:0; padding:0; }
   table.runs tr.run-failed td:first-child, table.runs tr.run-running td:first-child { box-shadow:none; }
   table.runs tr.run-failed { box-shadow:inset 3px 0 0 var(--bad); } table.runs tr.run-running { box-shadow:inset 3px 0 0 var(--warn); }
+  table.runs tr.run-bootstrapping td:first-child { box-shadow:none; } table.runs tr.run-bootstrapping { box-shadow:inset 3px 0 0 var(--accent); }
   table.runs .c-type { grid-column:1; grid-row:1; } table.runs .c-status { grid-column:2; grid-row:1; text-align:right; }
   table.runs .c-repo, table.runs .rwhen, table.runs .rsum, table.runs .rgo { grid-column:1 / -1; }
   table.runs .rgo { text-align:left; }
@@ -84,7 +91,7 @@ ul.runlinks { list-style:none; padding:0; margin:0; } ul.runlinks li { margin:0 
 
 export const SECURITY_RUNS_SCRIPT = `
 const RUN_TYPES = { 'code-review': 'Code review', 'threat-model': 'Threat model', pentest: 'Pentest' };
-const RUN_STATUS = { complete: 'complete', running: 'running', failed: 'failed', noverdict: 'no verdict yet' };
+const RUN_STATUS = { complete: 'complete', running: 'running', failed: 'failed', noverdict: 'no verdict yet', bootstrapping: 'Bootstrapping' };
 const RUN_SEVS = ['critical', 'high', 'medium', 'low'];
 /** Each type's icon as SVG elements (built with createElementNS; no markup strings). */
 const RUN_ICON = {
@@ -111,7 +118,14 @@ function runDur(s) {
 const runChips = (c) => el('span', { class: 'runchips' }, ...RUN_SEVS.map((s) => { const n = (c || {})[s] || 0; return sevPill(n ? s : 'zero', n + ' ' + s); }));
 /** The auto-check's last answer for a pending run (security-autocheck.ts): checked when, or why it could not check. */
 const runCheckErr = (r) => r.check && r.check.state === 'error' ? r.check : null;
+/** A pentest's deploy step: "Step 3 of 7: Pushing the image to ECR, since 2 min". */
+const runStep = (dp) => 'Step ' + txt(dp.step) + ' of ' + txt(dp.steps) + ': ' + txt(dp.label);
 function runSummary(r) {
+  if (r.status === 'bootstrapping') {
+    const dp = r.deploy;
+    return [el('div', { 'data-run-phase': dp ? txt(dp.phase) : null }, dp ? runStep(dp) : 'Deploying the environment'),
+      el('div', { class: 'fix' }, (dp ? 'this step started ' + ago(dp.phase_at) + '; ' : '') + 'the job starts after the last step')];
+  }
   if (r.status === 'running') return [el('div', {}, 'Running in Security Agent'), el('div', { class: 'fix', 'data-run-check': r.check ? txt(r.check.state) : null },
     r.check && r.check.at && r.check.state === 'running' ? 'Checked with AWS ' + ago(r.check.at) + '; findings appear when it finishes' : 'Findings appear when it finishes')];
   if (r.status === 'noverdict') {
@@ -124,11 +138,12 @@ function runSummary(r) {
   return [runChips(r.counts), el('div', { class: 'fix' }, r.total ? 'Top: ' + txt(r.top_title) : 'No findings')];
 }
 function runLink(r) {
+  if (r.status === 'bootstrapping') return el('a', { href: runHref(r) }, 'View progress →');
   if (r.status === 'running') return el('span', { class: 'later' }, 'no findings yet');
   return el('a', { href: runHref(r) }, r.status === 'complete' ? 'View findings →' : 'View details →');
 }
 function runRow(r) {
-  const wait = r.status === 'running' ? 'running for ' + ago(r.started_at).replace(/ ago$/, '') : runDur(r.duration_s) ? 'took ' + runDur(r.duration_s) : '';
+  const wait = r.status === 'bootstrapping' ? 'bootstrapping for ' + ago(r.started_at).replace(/ ago$/, '') : r.status === 'running' ? 'running for ' + ago(r.started_at).replace(/ ago$/, '') : runDur(r.duration_s) ? 'took ' + runDur(r.duration_s) : '';
   return el('tr', { class: 'run-' + txt(r.status), 'data-run': txt(r.run_id) },
     el('td', { class: 'c-type' }, runType(r.type)),
     el('td', { class: 'c-repo rrepo' }, txt(r.repo), el('small', {}, [r.branch ? txt(r.branch) : null, r.commit ? txt(r.commit).slice(0, 7) : null].filter(Boolean).join(' @ '))),
@@ -199,10 +214,12 @@ const repoRunsCard = (repoId) => runsTable({ repoId, limit: 10, step: 25, filter
 /** The newest run of this type in this repo, for the results card's link. */
 const latestRunOf = (repoId, type) => runRows().find((r) => r.repo_id === repoId && r.type === type) || null;
 
-/** "Complete. View findings →" for a finished run; nothing while it runs. */
+/** "Complete. View findings →" for a finished run; nothing while it runs; "Bootstrapping started. View progress →" for a deploy. */
 function runDoneBar(r, summary) {
   if (!r || r.status === 'running' || !r.repo || !r.run) return null;
   const href = '#security/run/' + txt(r.repo) + '/' + encodeURIComponent(txt(r.run));
+  if (r.status === 'bootstrapping') return el('div', { class: 'rundone', 'data-run-link': '', 'data-run-boot': '' }, el('b', {}, 'Bootstrapping started.'),
+    el('span', { class: 'fix' }, 'The deploy runs in the background; closing the dashboard does not stop it.'), el('a', { href }, 'View progress →'));
   const ok = r.status === 'complete';
   return el('div', { class: 'rundone' + (ok ? '' : ' bad'), 'data-run-link': '' }, el('b', {}, ok ? 'Complete.' : r.status === 'failed' ? 'Failed.' : 'No verdict yet.'), summary || null,
     el('a', { href }, ok ? 'View findings →' : 'View details →'));
@@ -219,7 +236,8 @@ const runCellLink = (repoId, type) => { const r = latestRunOf(repoId, type); ret
  */
 const CHECK_POLL_MS = 5000, CHECK_POLL_MAX = 40;
 let CHECK_TIMER = null, CHECK_POLLS = 0, CHECK_ASKING = false, CHECK_LOADED_FOR = null;
-const runsPending = () => runRows().some((r) => (r.status === 'running' || r.status === 'noverdict') && r.job_id);
+// A deploying pentest (1.21.7) counts too: the check marks one whose process went away, and moves the page on with its steps.
+const runsPending = () => runRows().some((r) => ((r.status === 'running' || r.status === 'noverdict') && r.job_id) || r.status === 'bootstrapping');
 async function securityCheck() {
   if (SNAPSHOT || CHECK_ASKING || !runsPending() || document.visibilityState !== 'visible') return;
   CHECK_ASKING = true;
@@ -229,8 +247,8 @@ async function securityCheck() {
   if (!a) return;
   // Once per generation: a payload that still lags (built while the check landed) waits for the next poll or refresh.
   if (LAST && a.generation !== LAST.security_check_gen && a.generation !== CHECK_LOADED_FOR) { CHECK_LOADED_FOR = a.generation; CHECK_POLLS = 0; load(false); return; }
-  if ((a.checking > 0 || a.due > 0) && CHECK_POLLS < CHECK_POLL_MAX) { CHECK_POLLS++; CHECK_TIMER = setTimeout(securityCheck, CHECK_POLL_MS); }
-  else if (!a.checking && !a.due) CHECK_POLLS = 0;
+  if ((a.checking > 0 || a.due > 0 || a.deploying > 0) && CHECK_POLLS < CHECK_POLL_MAX) { CHECK_POLLS++; CHECK_TIMER = setTimeout(securityCheck, CHECK_POLL_MS); }
+  else if (!a.checking && !a.due && !a.deploying) CHECK_POLLS = 0;
 }
 
 // ---------------------------------------------------------------- the drill-down
@@ -238,15 +256,15 @@ const RUN_RE = new RegExp('^#security/run/([a-f0-9]{16})/([A-Za-z0-9_-]{1,200})$
 function runRoute() { const m = RUN_RE.exec(location.hash); return m ? { repo: m[1], run: m[2] } : null; }
 let RUN_DETAIL = null, RUN_KEY = null, RUN_FETCH = null, RUN_SHOWN = null;
 /** What the person chose on the run's page (severity filter, open findings): kept across a refresh's repaint, dropped on leaving. */
-let RUN_UI = { key: null, pick: '', open: null, overview: false };
+let RUN_UI = { key: null, pick: '', open: null, overview: false, log: false };
 /**
  * Only a run without a verdict yet, or one whose environment is still up (Clean up changes it), can change under
  * the page: its copy is read again on every draw (route entry, the minute refresh). Any other finished run and a
  * server's not found (404) are final.
  */
-const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict' || !!d.cleanup);
+const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict' || d.run.status === 'bootstrapping' || !!d.cleanup);
 /** Leaving the drill-down (the router calls this) drops its copy, so coming back always reads the run again. */
-function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null, overview: false }; }
+function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null, overview: false, log: false }; }
 
 /** Draws the cached copy (when there is one and it is not on screen), then reads the run again if it may have changed. */
 async function drawRunDetail(root, route) {
@@ -283,7 +301,7 @@ async function drawRunDetail(root, route) {
 function paintRunDetail(root, d, key) {
   // Keep which findings are open across a repaint of the same run.
   if (RUN_UI.key === key && RUN_SHOWN === key) RUN_UI.open = new Set([...root.querySelectorAll('details[data-fid]')].filter((x) => x.open).map((x) => x.getAttribute('data-fid')));
-  else if (RUN_UI.key !== key) RUN_UI = { key, pick: '', open: null, overview: false };
+  else if (RUN_UI.key !== key) RUN_UI = { key, pick: '', open: null, overview: false, log: false };
   RUN_SHOWN = key;
   const back = el('a', { href: '#security' }, 'Back to Security runs');
   if (!d.found) {
@@ -308,7 +326,7 @@ function runDetail(d) {
         ...kv('Target', d.target_host ? el('code', {}, txt(d.target_host)) : null),
         ...kv('Account, region', d.account4 || d.region ? 'account ' + txt(d.account4 || 'unknown') + ' / ' + txt(d.region || 'unknown') : null),
         ...kv('Started', when(r.started_at) + ' (' + ago(r.started_at) + ')'),
-        ...kv('Duration', r.status === 'running' ? 'still running' : runDur(r.duration_s) || 'not recorded'),
+        ...kv('Duration', r.status === 'running' ? 'still running' : r.status === 'bootstrapping' ? 'still bootstrapping' : runDur(r.duration_s) || 'not recorded'),
         ...kv('Job', r.job_id ? copyButton(txt(r.job_id)) : null)),
       el('div', {},
         el('h3', {}, r.type === 'threat-model' ? 'Threats by severity' : 'Findings by severity'),
@@ -316,6 +334,7 @@ function runDetail(d) {
   const out = [crumbs, head];
   if (d.overview) out.push(runOverview(d));
   if (r.status === 'failed') out.push(el('section', { class: 'card' }, el('h2', {}, 'Why there is no verdict'), el('p', {}, txt(r.reason) || 'The job did not complete.')));
+  if (r.deploy && (r.status === 'bootstrapping' || r.status === 'failed')) out.push(runDeployCard(r));
   if (d.cleanup) out.push(runCleanupCard(d));
   if (r.status === 'running' || r.status === 'noverdict') {
     const e = runCheckErr(r), c = r.check;
@@ -334,11 +353,48 @@ function runDetail(d) {
   return out;
 }
 
+/**
+ * A pentest's deploy (1.21.7): its steps (done, the current one, the rest; the one it stopped at), how long the
+ * current step has taken, and View log (the end of its log, redacted by the server, drawn as text).
+ */
+const DEPLOY_STEPS = ['Preparing (checks and the CDK plan)', 'Building the app image', 'Pushing the image to ECR', 'Deploying the environment', 'Waiting for the app to pass its health check', 'Registering the target with Security Agent', 'Starting the pentest job'];
+function runDeployCard(r) {
+  const dp = r.deploy, boot = r.status === 'bootstrapping';
+  const steps = el('ol', { class: 'dsteps', 'data-deploy-steps': '' }, ...DEPLOY_STEPS.map((s, i) => el('li', { class: i + 1 < dp.step ? 'done' : i + 1 === dp.step ? (boot ? 'now' : 'stop') : null }, s)));
+  const kids = [el('h2', {}, boot ? 'Bootstrapping' : 'Deploy stopped', el('span', { class: 'sub' }, boot ? 'deploying the environment; the pentest job starts after it' : 'before the pentest job started')),
+    el('p', { 'data-deploy-phase': txt(dp.phase) }, boot ? runStep(dp) + '. This step started ' + ago(dp.phase_at) + '; the deploy started ' + ago(r.started_at) + '.'
+      : (dp.interrupted ? 'Interrupted at ' : 'Stopped at ') + 'step ' + txt(dp.step) + ' of ' + txt(dp.steps) + ': ' + txt(dp.label) + '.'),
+    steps];
+  if (boot) kids.push(el('p', { class: 'fix' }, 'It runs in the background, so closing the dashboard, VS Code or Kiro Crew does not stop it. This page follows it; once the job starts, the run shows as running and is checked about every 5 minutes.'));
+  if (dp.log && !SNAPSHOT) {
+    const out = el('pre', { class: 'runlog', 'data-run-log': '', hidden: '' }), note = el('div', { class: 'fix' });
+    const b = el('button', { type: 'button', 'data-run-log-open': '' }, 'View log');
+    const show = async () => {
+      RUN_UI.log = true;
+      b.disabled = true;
+      let x;
+      try { x = await api('/api/security-run/log?repo=' + encodeURIComponent(r.repo_id) + '&run=' + encodeURIComponent(r.run_id)); } catch (e) { x = { ok: false, json: { error: e.message } }; }
+      b.disabled = false; b.textContent = 'Refresh log';
+      if (!x.ok) { note.textContent = 'Could not read the log: ' + txt(x.json && x.json.error); return; }
+      out.textContent = txt(x.json.text) || '(nothing written yet)';
+      out.removeAttribute('hidden');
+      out.scrollTop = out.scrollHeight;
+      note.textContent = (x.json.truncated ? 'The last lines' : 'The whole log') + (x.json.updated_at ? ', written ' + ago(x.json.updated_at) : '') + '. Account ids and keys are masked.';
+    };
+    b.addEventListener('click', show);
+    // Open before this repaint (the page follows a deploy every few seconds): read it again.
+    if (RUN_UI.log) show();
+    kids.push(el('div', { class: 'srow-ctl' }, b), note, out);
+  } else if (!dp.log) kids.push(el('p', { class: 'fix' }, 'Started from a terminal: its output is in that terminal.'));
+  return el('section', { class: 'card', 'data-run-deploy': boot ? 'bootstrapping' : 'stopped' }, ...kids);
+}
+
 /** A pentest whose environment is still up: why (the teardown's reason, redacted by the server), Clean up, and the command for a terminal. */
 function runCleanupCard(d) {
-  const c = d.cleanup, failed = c.kind === 'teardown_failed';
-  return el('section', { class: 'card', 'data-run-cleanup': txt(c.kind) }, el('h2', {}, failed ? 'Teardown failed' : 'Environment still up'),
+  const c = d.cleanup, failed = c.kind === 'teardown_failed', stopped = c.kind === 'deploy_stopped';
+  return el('section', { class: 'card', 'data-run-cleanup': txt(c.kind) }, el('h2', {}, failed ? 'Teardown failed' : stopped ? 'Clean up the deploy' : 'Environment still up'),
     el('p', {}, failed ? 'The last teardown left this run\\'s environment up. It may cost money until it is removed.'
+      : stopped ? 'The deploy stopped before the pentest job started (it failed, or its process went away). What it created may still be up, and may cost money until it is removed.'
       : 'The job has finished, but this run still records its environment (started with --keep, or the app never became healthy). It may cost money until it is removed.'),
     c.reason ? el('p', { class: 'fix', 'data-cleanup-reason': '' }, 'Reason: ' + txt(c.reason)) : null,
     el('div', { class: 'srow-ctl' }, saCleanupButton(d.run, c)),

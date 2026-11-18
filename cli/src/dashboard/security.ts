@@ -160,11 +160,13 @@ export function latestPentest(results: PrismResult[]): PrismResult | null {
   const byJob = new Map<string, PrismResult>();
   for (const r of results) {
     // A run that never started a job (the app never became healthy) has no job id but may still have a stack up.
-    const key = r.kind === 'security-pentest' ? (r.pentest?.job_id || r.pentest?.stack) : null;
+    // 1.21.7: a deploy that stopped before cdk deploy keeps only its slug.
+    const key = r.kind === 'security-pentest' ? (r.pentest?.job_id || r.pentest?.stack || r.pentest?.slug) : null;
     if (!key) continue;
     const prev = byJob.get(key);
-    if (prev && (prev.status === 'pending') !== (r.status === 'pending')) {
-      if (prev.status === 'pending') byJob.set(key, r);
+    const open = (x: PrismResult) => x.status === 'pending' || x.status === 'deploying';
+    if (prev && open(prev) !== open(r)) {
+      if (open(prev)) byJob.set(key, r);
       continue;
     }
     if (!prev || r.finished_at > prev.finished_at) byJob.set(key, r);
@@ -216,8 +218,9 @@ export function collectSecurity(repos: { name: string; path: string; current: bo
         counts: p.pentest.counts || {}, findings: pf.slice(0, MAX_PANEL_FINDINGS), truncated: pf.length > MAX_PANEL_FINDINGS,
         reason: p.reason ?? null, overview: p.pentest.overview ?? null,
         teardown_failed: p.pentest.teardown_failed ?? null,
-        stack_up: p.status !== 'pending' && !!p.pentest.stack,
-        pending: p.status === 'pending',
+        stack_up: p.status !== 'pending' && p.status !== 'deploying' && !!p.pentest.stack,
+        // Still deploying (1.21.7) shows as running here; its run's page has the step.
+        pending: p.status === 'pending' || p.status === 'deploying',
         stale: staleAfter(p, now, PENTEST_PENDING_STALE_MS, pcheck), check: pcheck,
       });
     }

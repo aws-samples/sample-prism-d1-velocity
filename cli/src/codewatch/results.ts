@@ -203,6 +203,29 @@ export interface PentestInfo {
   service_updated_at?: string | null;
   service_duration_s?: number | null;
   wall_s?: number | null;
+  /** The deploy that stood the environment up (1.21.7): kept on the pending and finished record. Absent before 1.21.7. */
+  deploy?: PentestDeploy | null;
+}
+
+/** security-pentest only: the deploy before the job starts (status deploying), written before anything is deployed. */
+export interface PentestDeploy {
+  /** preparing, building, pushing, deploying, health, registering, starting (security/pentest.ts DEPLOY_PHASES). */
+  phase: string;
+  /** When it reached that phase, ISO. */
+  phase_at: string;
+  /** Every phase it reached, in order, with when. */
+  history?: { phase: string; at: string }[];
+  /** The process running the deploy; null until it has started (the dashboard writes the record, then starts it). */
+  pid: number | null;
+  /** Its output: a file name in .prism/results/ (started from the dashboard); null when it runs in a terminal. */
+  log: string | null;
+  /** The target as picked, repo-relative. */
+  app_dir: string;
+  dockerfile: string;
+  port: number;
+  health_path: string;
+  /** Set when the deploy's process went away before the job started (the dashboard's check, or --status/--cleanup). */
+  interrupted?: { at: string; reason: string } | null;
 }
 /** `agent`: an AI agent's own hook or tool call (the harness loop), never a person's git hook. */
 export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual' | 'agent';
@@ -214,8 +237,11 @@ export type ResultHook = 'pre-commit' | 'pre-push' | 'ci' | 'manual' | 'agent';
  * pending   security-review / security-pentest: the job was started and has no
  *           verdict yet. finished_at equals started_at until the record is
  *           completed in place.
+ * deploying security-pentest only (1.21.7): the environment is being deployed and
+ *           no job has started yet; pentest.deploy says where. The same record
+ *           becomes pending when the job starts, or error when the deploy fails.
  */
-export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped' | 'pending';
+export type ResultStatus = 'ok' | 'findings' | 'error' | 'skipped' | 'pending' | 'deploying';
 
 export interface PrismResult {
   schema_version: typeof RESULT_SCHEMA_VERSION;
