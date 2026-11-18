@@ -146,7 +146,9 @@ function saActItems(repo) {
 function saBadge() {
   const b = document.getElementById('security-badge');
   if (!b) return;
-  const items = saActItems(saRepo());
+  // 1.21.12: plus every pentest left up (cleanup failed, or kept after its job), in any repo: the Needs you list's items.
+  const left = ((LAST && LAST.needsYou) || []).filter((x) => x.tab === 'security').map((x) => txt(x.text));
+  const items = [...saActItems(saRepo()), ...left];
   b.textContent = items.length ? String(items.length) : '';
   b.setAttribute('title', items.join('; '));
   if (items.length) b.removeAttribute('hidden'); else b.setAttribute('hidden', '');

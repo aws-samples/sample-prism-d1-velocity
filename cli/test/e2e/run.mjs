@@ -1577,19 +1577,53 @@ try {
     // The background check: the job is still running, so --status saves nothing and tears nothing down.
     await page.evaluate(() => api('/api/security-check')); await sleep(6000);
     out.steps.runningCheck = { deletes: lines('aws-calls.log').filter((c) => c.startsWith('cloudformation delete-stack')).length, rows: results().map((r) => r.status) };
-    // 5. The job finishes. A dashboard opened later checks it at once: pentest --status tears the run's own stack down, once.
+    // 5. The job finishes. A dashboard opened later checks it at once: pentest --status deletes the run's own stack, once.
+    // 1.21.12: the stack says DELETE_IN_PROGRESS twice, so the run shows Cleaning up for two checks (each check is one
+    // step and never waits), then the third verifies stack and Security Agent resources gone: Complete · cleaned up.
+    // Checks are 5 min apart, so each "cycle" is a fresh dashboard, whose first check runs at once.
+    const cycle = async (first) => {
+      await ctx.close(); srv.proc.kill('SIGTERM'); await sleep(500);
+      srv = await serve();
+      ({ ctx, page, log } = await openCtx(srv)); out.log.push(...log);
+      await setTheme(page, 'dark');
+      await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
+      // `first`: reads the page as this fresh dashboard first drew it, before its check lands.
+      if (first) await first();
+      const n0 = lines('aws-calls.log').length;
+      for (let i = 0; i < 60; i++) {
+        const a = await page.evaluate(() => api('/api/security-check').then((r) => r.json));
+        if (i > 0 && !a.checking && lines('aws-calls.log').slice(n0).some((c) => c.startsWith('cloudformation describe-stacks') || c.startsWith('securityagent batch-get-pentest-jobs'))) break;
+        await sleep(1000);
+      }
+      await sleep(800);
+      await page.evaluate(() => load(false)).catch(() => {}); await sleep(800);
+    };
+    const runRowText = (id) => page.evaluate((x) => document.querySelector(`#security-runs-all tr[data-run="${x}"]`)?.innerText.replace(/\s+/g, ' ') || null, id);
+    const cleanState = () => results().map((r) => r.pentest.cleanup?.state || r.status);
     writeFileSync(join(home, 'fake-pt-job'), 'COMPLETED');
-    await ctx.close(); srv.proc.kill('SIGTERM'); await sleep(500);
+    writeFileSync(join(home, 'fake-pt-inprogress'), '2');
     const b5 = lines('aws-calls.log').length;
-    srv = await serve();
-    ({ ctx, page, log } = await openCtx(srv)); out.log.push(...log);
-    await setTheme(page, 'dark');
-    await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
-    for (let i = 0; i < 40 && results().some((r) => r.status === 'pending'); i++) { await page.evaluate(() => api('/api/security-check')); await sleep(1000); }
-    await sleep(1500);
+    const seq5 = [];
+    await cycle(); seq5.push(cleanState());
+    const r5 = results()[0];
+    out.steps.cleaningRow = r5 ? await runRowText(r5.id) : null;
+    out.steps.cleaningRec = r5 ? { status: r5.status, findings: (r5.findings || []).length, left: r5.pentest.cleanup?.left || [], stack: r5.pentest.stack } : null;
+    await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'pentest-runs-cleaning-up-1280-dark.png') }).catch(() => {});
+    if (r5) {
+      await page.goto(srv.base + '/#security/run/' + repo.id + '/' + r5.id);
+      await page.waitForSelector('[data-run-cleaning-card]', { timeout: 15000 }).catch(() => {});
+      out.steps.cleaningPage = await page.evaluate(() => ({ status: document.querySelector('[data-run-detail] h2 .st')?.innerText || null, card: document.querySelector('[data-run-cleaning-card]')?.innerText.replace(/\s+/g, ' ') || null, findings: !!document.querySelector('[data-run-findings]'), cleanupButton: !!document.querySelector('[data-cleanup]') }));
+      await page.screenshot({ path: join(SHOTS, 'pentest-run-cleaning-up-1280-dark.png'), fullPage: true }).catch(() => {});
+    }
+    await cycle(); seq5.push(cleanState());
+    await cycle(); seq5.push(cleanState());
+    out.steps.cleanSeq = seq5;
+    out.steps.doneRow = r5 ? await runRowText(r5.id) : null;
+    await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'pentest-runs-cleaned-up-1280-dark.png') }).catch(() => {});
     for (let i = 0; i < 3; i++) { await page.evaluate(() => api('/api/security-check')); await sleep(800); }
     const after5 = lines('aws-calls.log').slice(b5);
-    out.steps.teardown = { calls: after5, deletes: after5.filter((c) => c.startsWith('cloudformation delete-stack')), rows: results().map((r) => ({ status: r.status, stack: r.pentest.stack })) };
+    out.steps.teardown = { calls: after5, deletes: after5.filter((c) => c.startsWith('cloudformation delete-stack')), rows: results().map((r) => ({ status: r.status, stack: r.pentest.stack })),
+      verify: after5.filter((c) => /^securityagent batch-get-(target-domains|agent-spaces)/.test(c)).length };
     // 6. A second run whose teardown fails: the drill-down shows the reason and Clean up.
     writeFileSync(join(home, 'fake-pt-job'), 'IN_PROGRESS');
     await openPage();
@@ -1599,16 +1633,19 @@ try {
     out.steps.start2 = await waitDone();
     { const b = allPt().find((r) => r.status === 'deploying'); if (b) await waitRec(b.id, (r) => r.status !== 'deploying'); }
     writeFileSync(join(home, 'fake-pt-job'), 'COMPLETED'); writeFileSync(join(home, 'fake-pt-teardown'), 'fail');
-    await ctx.close(); srv.proc.kill('SIGTERM'); await sleep(500);
-    srv = await serve();
-    ({ ctx, page, log } = await openCtx(srv)); out.log.push(...log);
-    await setTheme(page, 'dark');
-    await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
-    for (let i = 0; i < 60 && results().some((r) => r.status === 'pending'); i++) { await page.evaluate(() => api('/api/security-check')); await sleep(1000); }
-    await sleep(1500);
+    // 1.21.12: delete (DELETE_FAILED), the teardown's own retry on the next check (DELETE_FAILED), then cleanup_failed.
+    const seq6 = [];
+    for (let i = 0; i < 3; i++) { await cycle(); seq6.push(results().map((r) => r.pentest.cleanup?.state || r.status)); }
+    out.steps.failSeq = seq6;
     const failed = results().find((r) => r.pentest.teardown_failed);
-    out.steps.failedRecord = failed ? { reason: failed.pentest.teardown_failed.reason, stack: failed.pentest.stack } : null;
+    out.steps.failedRecord = failed ? { reason: failed.pentest.teardown_failed.reason, stack: failed.pentest.stack, state: failed.pentest.cleanup?.state, deletes: lines('aws-calls.log').filter((c) => c.startsWith('cloudformation delete-stack')).length } : null;
+    const costItems = () => page.evaluate(() => api('/api/data').then((r) => (r.json.needsYou || []).filter((x) => x.tab === 'security').map((x) => ({ text: x.text, href: x.href }))));
+    const badgeText = () => page.evaluate(() => { const b = document.getElementById('security-badge'); return b && !b.hidden ? b.textContent : ''; });
     if (failed) {
+      out.steps.failRow = await runRowText(failed.id);
+      out.steps.failNeeds = await costItems();
+      out.steps.failBadge = await badgeText();
+      await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'pentest-runs-cleanup-failed-1280-dark.png') }).catch(() => {});
       await page.goto(srv.base + '/#security/run/' + repo.id + '/' + failed.id);
       await page.waitForSelector('[data-cleanup]', { timeout: 15000 }).catch(() => {});
       out.steps.card = await page.evaluate(() => { const c = document.querySelector('[data-run-cleanup]'); return c ? { kind: c.getAttribute('data-run-cleanup'), text: c.innerText.replace(/\s+/g, ' '), button: !!c.querySelector('[data-cleanup]') } : null; });
@@ -1630,7 +1667,10 @@ try {
       await page.goto(srv.base + '/#security/run/' + repo.id + '/' + failed.id); await sleep(2500);
       out.steps.cardAfter = await page.evaluate(() => !!document.querySelector('[data-run-cleanup]'));
       const fin = results().find((r) => r.id === failed.id);
-      out.steps.cleanedRecord = fin ? { stack: fin.pentest.stack, teardown_failed: fin.pentest.teardown_failed ?? null } : null;
+      out.steps.cleanedRecord = fin ? { stack: fin.pentest.stack, teardown_failed: fin.pentest.teardown_failed ?? null, state: fin.pentest.cleanup?.state } : null;
+      out.steps.cleanedNeeds = await costItems();
+      await page.goto(srv.base + '/#security/' + repo.id); await saReady(page); await sleep(500);
+      out.steps.cleanedBadge = await badgeText();
     }
     // 7. 1.21.7: a deploy that fails: the record becomes an error that keeps its stack, and its page offers Clean up.
     writeFileSync(join(home, 'fake-cdk-deploy'), 'fail');
@@ -1674,6 +1714,63 @@ try {
       out.steps.interruptedCleanup = await waitDone(180000);
     }
     rmSync(join(home, 'fake-cdk-deploy'), { force: true });
+    // 9. 1.21.12: a kept run (--keep, finished) and a record an older prism-cli marked complete while its stack is still
+    // recorded. The snapshot shows their states and runs no check; the live check moves the older one through its
+    // cleanup (verified) and never touches the kept one; the kept one costs money (badge, Needs you) until Clean up.
+    for (const f of ['fake-pt-deleting', 'fake-pt-sa-deleted', 'fake-pt-inprogress', 'fake-pt-teardown']) rmSync(join(home, f), { force: true });
+    let seedTpl = null;
+    {
+      const tpl = recOf(runId);
+      const { id: _drop, ...body } = tpl || {};
+      seedTpl = body;
+      const put = (id, started, pentest) => writeFileSync(join(shop, '.prism', 'results', id + '.json'), JSON.stringify({ ...body, status: 'ok', started_at: started, finished_at: started, pentest: { ...body.pentest, teardown_failed: null, ...pentest } }, null, 2));
+      put('seed-kept-run', '2026-11-18T01:00:00.000Z', { job_id: 'ptj-kept-1', stack: 'PrismPentest-demo-kept', slug: 'demo-kept', keep: true, target_domain_id: 'td-demo', cleanup: { state: 'kept', since: '2026-11-18T03:50:00.000Z', at: '2026-11-18T03:50:00.000Z', left: [] } });
+      put('seed-legacy-run', '2026-11-18T00:30:00.000Z', { job_id: 'ptj-legacy-1', stack: 'PrismPentest-demo-legacy', slug: 'demo-legacy', keep: undefined, target_domain_id: 'td-demo', cleanup: undefined });
+    }
+    const n9 = lines('aws-calls.log').length;
+    const snapFile = join(home, 'pentest-snapshot.html');
+    const snap = spawnSync(process.execPath, [ENTRY, 'dashboard', '--snapshot', snapFile], { cwd: readFileSync(join(home, '.start-dir'), 'utf8').trim(), encoding: 'utf8', timeout: 120000, env: demoEnv(home, ENV) });
+    out.steps.snapshot = { exit: snap.status, awsCalls: lines('aws-calls.log').slice(n9).filter((c) => !/^(--version|configure|sts get-caller-identity|iam list-account-aliases)/.test(c)) };
+    if (existsSync(snapFile)) {
+      const sctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const sp = await sctx.newPage();
+      const checks = []; sp.on('request', (q) => { if (/security-check/.test(q.url())) checks.push(q.url()); });
+      await sp.goto('file://' + snapFile + '#repo/' + repo.id); await sleep(1500);
+      out.steps.snapshot.rows = await sp.evaluate(() => JSON.parse(document.getElementById('prism-snapshot').textContent).data.security_runs.filter((r) => /^seed-/.test(r.run_id)).map((r) => [r.run_id, r.status]).sort());
+      out.steps.snapshot.text = await sp.evaluate(() => document.body.innerText.replace(/\s+/g, ' '));
+      out.steps.snapshot.cleanupButtons = await sp.evaluate(() => document.querySelectorAll('[data-cleanup]').length);
+      out.steps.snapshot.checks = checks.length;
+      await sctx.close();
+    }
+    const n9b = lines('aws-calls.log').length;
+    await cycle(async () => {
+      out.steps.keptBefore = { row: await runRowText('seed-kept-run'), legacyRow: await runRowText('seed-legacy-run'), needs: await costItems(), badge: await badgeText() };
+      await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'pentest-runs-kept-legacy-1280-dark.png') }).catch(() => {});
+    });
+    const legacy = recOf('seed-legacy-run'), keptRec = recOf('seed-kept-run');
+    const calls9 = lines('aws-calls.log').slice(n9b);
+    out.steps.legacy = { state: legacy?.pentest?.cleanup?.state, stack: legacy?.pentest?.stack, deletes: calls9.filter((c) => c.startsWith('cloudformation delete-stack')), status: legacy?.status };
+    out.steps.keptAfterCheck = { state: keptRec?.pentest?.cleanup?.state, stack: keptRec?.pentest?.stack };
+    await page.goto(srv.base + '/#security/run/' + repo.id + '/seed-kept-run');
+    await page.waitForSelector('[data-cleanup]', { timeout: 15000 }).catch(() => {});
+    out.steps.keptPage = await page.evaluate(() => ({ kind: document.querySelector('[data-run-cleanup]')?.getAttribute('data-run-cleanup') || null, text: document.querySelector('[data-run-cleanup]')?.innerText.replace(/\s+/g, ' ') || null, status: document.querySelector('[data-run-detail] h2 .st')?.innerText || null, button: !!document.querySelector('[data-cleanup]') }));
+    await page.screenshot({ path: join(SHOTS, 'pentest-run-kept-1280-dark.png'), fullPage: true }).catch(() => {});
+    await page.click('[data-cleanup]').catch(() => {}); await sleep(300);
+    await page.locator('dialog.confirm button', { hasText: 'Tear down' }).click().catch(() => {});
+    out.steps.keptCleanup = await waitDone(180000);
+    const kr = recOf('seed-kept-run');
+    out.steps.keptAfter = { state: kr?.pentest?.cleanup?.state, stack: kr?.pentest?.stack, needs: await costItems() };
+    await page.goto(srv.base + '/#security/' + repo.id); await saReady(page); await sleep(500);
+    out.steps.keptAfter.row = await runRowText('seed-kept-run');
+    {
+      const ph = await openCtx(srv, { width: 390, height: 844 });
+      await setTheme(ph.page, 'dark');
+      await ph.page.goto(srv.base + '/#security/' + repo.id); await saReady(ph.page); await sleep(500);
+      out.steps.phoneRuns = await ph.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      await ph.page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'pentest-runs-states-390-dark.png') }).catch(() => {});
+      out.log.push(...ph.log);
+      await ph.ctx.close();
+    }
     // The docs screenshot: the whole Security Agent page with the buttons, dark, at 1280.
     await openPage();
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -1707,6 +1804,14 @@ try {
 
     // Over --serve-stdio: the same action route answers the same way (VS Code, Kiro Crew).
     const shome = seed('pentestrun-stdio', 'full', prep);
+    // 1.21.12: a run cleaning up and a kept one in the stdio home: the same rows and Needs you items over stdio.
+    if (seedTpl) {
+      const sshop = join(shome, 'src', 'demo-shop');
+      mkdirSync(join(sshop, '.prism', 'results'), { recursive: true });
+      const put = (id, started, pentest) => writeFileSync(join(sshop, '.prism', 'results', id + '.json'), JSON.stringify({ ...seedTpl, status: 'ok', started_at: started, finished_at: started, pentest: { ...seedTpl.pentest, teardown_failed: null, ...pentest } }));
+      put('seed-cleaning-run', '2026-11-18T01:00:00.000Z', { job_id: 'ptj-clean-1', stack: 'PrismPentest-demo-clean', cleanup: { state: 'cleaning_up', since: '2026-11-18T03:50:00.000Z', at: '2026-11-18T03:55:00.000Z', left: ['the stack PrismPentest-demo-clean (DELETE_IN_PROGRESS)'] } });
+      put('seed-kept-run', '2026-11-18T00:30:00.000Z', { job_id: 'ptj-kept-1', stack: 'PrismPentest-demo-kept', keep: true, cleanup: { state: 'kept', since: '2026-11-18T03:50:00.000Z', at: '2026-11-18T03:50:00.000Z', left: [] } });
+    }
     const child = spawn(process.execPath, [ENTRY, 'dashboard', '--serve-stdio'], { cwd: readFileSync(join(shome, '.start-dir'), 'utf8').trim(), env: demoEnv(shome, { ...ENV, PRISM_PENTEST_CDK_DIR: join(shome, 'pentest-cdk') }), stdio: ['pipe', 'pipe', 'pipe'] });
     running.push(child);
     const waiting = new Map();
@@ -1719,6 +1824,10 @@ try {
     const sid = sv.repos.find((r) => r.path.endsWith('/src/demo-shop')).id;
     await ask({ op: 'act', path: '/api/security-agent/spaces', body: { repo: sid } });
     const pick = { dockerfile: 'services/api/Dockerfile.prod', app_dir: 'services/api', port: '3000', health_path: '/healthz' };
+    const sdata = (await ask({ op: 'get', path: '/api/data' })).json;
+    const sKept = await ask({ op: 'get', path: '/api/security-run', query: { repo: sid, run: 'seed-kept-run' } });
+    out.stdioStates = { rows: (sdata?.security_runs || []).filter((r) => /^seed-/.test(r.run_id)).map((r) => [r.run_id, r.status, r.cleanup?.state]).sort(),
+      needs: (sdata?.needsYou || []).filter((x) => x.tab === 'security').map((x) => x.href), kept: { status: sKept.status, kind: sKept.json?.cleanup?.kind, run: sKept.json?.run?.status } };
     const st = { badStart: await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-start', repo: sid, ...pick, health_path: 'no-slash', confirm: true } }) };
     st.plan = await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-plan', repo: sid, ...pick } });
     st.check = await ask({ op: 'get', path: '/api/security-agent/pentest/check', query: { repo: sid, dockerfile: pick.dockerfile, app_dir: pick.app_dir, port: pick.port, health_path: pick.health_path } });
@@ -2580,12 +2689,38 @@ function verdicts(R) {
     const t = s.teardown || {};
     add('PR6', 'once the job has finished, the background pentest --status --job saves the verdict and deletes the run\'s own recorded stack exactly once; asking again deletes nothing more',
       (t.deletes || []).length === 1 && t.deletes[0].includes('--stack-name ' + (s.afterStart || [])[0]?.stack) && (t.calls || []).some((c) => c.includes('batch-get-pentest-jobs') && c.includes('--pentest-job-ids ptj-run-1'))
-      && JSON.stringify(t.rows) === '[{"status":"ok","stack":null}]', JSON.stringify({ d: t.deletes, rows: t.rows }));
+      && JSON.stringify(t.rows) === '[{"status":"ok","stack":null}]' && t.verify >= 2, JSON.stringify({ d: t.deletes, rows: t.rows, v: t.verify }));
+    const cr = s.cleaningRec || {}, cp = s.cleaningPage || {};
+    add('PR18', '1.21.12: once the job has finished the run shows Cleaning up (amber, elapsed, what is left) with its findings saved and viewable; a stack still DELETE_IN_PROGRESS stays Cleaning up on the next check; the check after that verifies the stack and the Security Agent resources gone: Complete · cleaned up',
+      JSON.stringify(s.cleanSeq) === '[["cleaning_up"],["cleaning_up"],["verified"]]' && cr.status === 'ok' && /DELETE_IN_PROGRESS/.test((cr.left || []).join(' ')) && /^PrismPentest-/.test(cr.stack || '')
+      && /Cleaning up/.test(s.cleaningRow || '') && /Cleaning up for .*left: the stack PrismPentest-.* \(DELETE_IN_PROGRESS\)/.test(s.cleaningRow || '') && /View findings/.test(s.cleaningRow || '')
+      && cp.status === 'Cleaning up' && /Still there: the stack PrismPentest-/.test(cp.card || '') && cp.findings && !cp.cleanupButton
+      && /Complete · cleaned up/.test(s.doneRow || '') && !/Cleaning up/.test(s.doneRow || ''), JSON.stringify({ seq: s.cleanSeq, rec: cr, row: s.cleaningRow, page: cp, done: s.doneRow }));
     add('PR7', 'a run whose teardown failed: its page shows Teardown failed with the reason (redacted) and Clean up; Clean up confirms in the account and region, keeps the card while deletion fails, and clears it once it works',
       !!s.failedRecord?.stack && s.card?.kind === 'teardown_failed' && s.card.button && /Reason: DELETE_FAILED/.test(s.card.text) && !accountLeaks(s.card.text).length
       && /Tears down this run's pentest environment in account ••••3333 \/ us-west-2/.test(s.cleanupDialog?.text || '') && /--cleanup --job ptj-run-2/.test(s.cleanupDialog?.text || '')
       && /exit 1/.test(s.cleanup1?.status || '') && /exit 0/.test(s.cleanup2?.status || '') && s.cardAfter === false && s.cleanedRecord?.stack === null && s.cleanedRecord.teardown_failed === null,
       JSON.stringify({ f: s.failedRecord, c: s.card, d: s.cleanupDialog?.text?.slice(0, 300), c1: s.cleanup1?.status, c2: s.cleanup2?.status, after: s.cardAfter, rec: s.cleanedRecord }));
+    const num = (b) => Number(b || 0);
+    add('PR19', '1.21.12: a stack that fails to delete is retried once on the next check, then the run is Cleanup failed (red, reason, Clean up); it counts in Needs you and the Security Agent badge until Clean up works and verifies (Complete · cleaned up)',
+      JSON.stringify(s.failSeq) === '[["verified","cleaning_up"],["verified","cleaning_up"],["verified","cleanup_failed"]]' && s.failedRecord?.state === 'cleanup_failed' && /Cleanup failed: DELETE_FAILED/.test(s.failRow || '')
+      && (s.failNeeds || []).length === 1 && /cleanup of a pentest of (src\/)?demo-shop failed/.test(s.failNeeds[0].text) && (s.failNeeds[0].href || '').startsWith('#security/run/' + Q.repoId + '/')
+      && num(s.failBadge) === num(s.cleanedBadge) + 1 && s.cleanedRecord?.state === 'verified' && !(s.cleanedNeeds || ['x']).length && !accountLeaks(s.failRow || '').length,
+      JSON.stringify({ seq: s.failSeq, rec: s.failedRecord, row: s.failRow, needs: s.failNeeds, b: [s.failBadge, s.cleanedBadge], after: s.cleanedRecord, an: s.cleanedNeeds }));
+    const kb = s.keptBefore || {}, sn = s.snapshot || {};
+    add('PR20', '1.21.12: a kept run shows Environment kept and counts in Needs you and the badge; an older "complete" record with its stack shows Cleaning up; the snapshot shows both states with no check, no Clean up button and no AWS call',
+      /Environment kept/.test(kb.row || '') && /Cleaning up/.test(kb.legacyRow || '') && (kb.needs || []).some((x) => /environment is kept \(--keep\)/.test(x.text) && /seed-kept-run$/.test(x.href)) && num(kb.badge) >= 1
+      && sn.exit === 0 && !(sn.awsCalls || ['x']).length && JSON.stringify(sn.rows) === '[["seed-kept-run","kept"],["seed-legacy-run","cleaning_up"]]' && sn.checks === 0 && sn.cleanupButtons === 0 && /Environment kept/.test(sn.text || '') && /Cleaning up/.test(sn.text || ''),
+      JSON.stringify({ kb, sn }));
+    add('PR21', '1.21.12: the live check re-checks the older record: it deletes that run\'s own stack once and verifies (Complete · cleaned up); the kept run is never touched by the check, and its Clean up removes it and verifies; at 390 px the runs table does not scroll sideways',
+      s.legacy?.state === 'verified' && s.legacy.stack === null && (s.legacy.deletes || []).length === 1 && s.legacy.deletes[0].includes('--stack-name PrismPentest-demo-legacy')
+      && s.keptAfterCheck?.state === 'kept' && s.keptAfterCheck.stack === 'PrismPentest-demo-kept' && s.keptPage?.kind === 'kept' && s.keptPage.button && s.keptPage.status === 'Environment kept'
+      && /exit 0/.test(s.keptCleanup?.status || '') && s.keptAfter?.state === 'verified' && s.keptAfter.stack === null && !(s.keptAfter.needs || ['x']).length && /Complete · cleaned up/.test(s.keptAfter.row || '') && s.phoneRuns <= 1,
+      JSON.stringify({ l: s.legacy, k: s.keptAfterCheck, p: s.keptPage, c: s.keptCleanup?.status, a: s.keptAfter, ph: s.phoneRuns }));
+    const SS = Q.stdioStates || {};
+    add('PR22', '1.21.12 over --serve-stdio: the same run states (Cleaning up, Environment kept) and Needs you items as over HTTP, and the kept run\'s page offers Clean up',
+      JSON.stringify(SS.rows) === '[["seed-cleaning-run","cleaning_up","cleaning_up"],["seed-kept-run","kept","kept"]]' && (SS.needs || []).length === 1 && /seed-kept-run$/.test(SS.needs[0]) && SS.kept?.status === 200 && SS.kept.kind === 'kept' && SS.kept.run === 'kept',
+      JSON.stringify(SS));
     const U = Q.stdio || {};
     add('PR8', 'over --serve-stdio: a bad health path is refused (400), the removed plan action is refused (400), the check route carries the dialog\'s resource list, the start runs with the same argv (exit 0), and a second start is refused while the first is pending (409)',
       U.badStart?.status === 400 && /healthPath:/.test(U.badStart.error || '') && U.plan === 400 && (U.start0?.resources || []).length === 7 && /--cleanup --job JOB_ID/.test(U.start0?.cleanup || '')

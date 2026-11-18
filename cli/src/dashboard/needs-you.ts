@@ -4,20 +4,26 @@
  * section's badge, the Overview's Needs you list, and `dashboard --json`
  * summary.warnings all read this list from the payload, so they can never
  * disagree. Each item names the Settings tab it belongs to and its fix
- * commands.
+ * commands. 1.21.12: a pentest whose cleanup failed, or that was kept with
+ * --keep after its job finished, is an item too (its environment costs
+ * money): tab `security`, linked to its run page, also counted by the
+ * Security Agent nav badge and not by the Settings badge.
  */
 import type { AgentHookStatus } from '../commands/enable/harness-hooks.js';
 import type { CheckItem } from './setup.js';
 import type { SetupRow, Suggestion } from './payload.js';
 import type { VersionInfo } from './update-check.js';
+import type { SecurityRunRow } from './security-runs.js';
 
-export type NeedsTab = 'machine' | 'repos' | 'agents' | 'sync' | 'aws' | 'updates';
+export type NeedsTab = 'machine' | 'repos' | 'agents' | 'sync' | 'aws' | 'updates' | 'security';
 
 export interface NeedsItem {
   tab: NeedsTab;
   text: string;
   /** Commands (or instructions) that fix it; may be empty. */
   fixes: string[];
+  /** Where the item opens when it is not a Settings tab (a pentest run's page). */
+  href?: string;
 }
 
 /** The Claude Code plugin update, as the Agent hooks and Updates panes show it. */
@@ -31,6 +37,8 @@ export interface NeedsInput {
   suggestions: Suggestion[];
   agentHooks: AgentHookStatus;
   version: Pick<VersionInfo, 'installed' | 'latest' | 'update'>;
+  /** The Security runs rows (security-runs.ts): pentests whose environment is still up count. */
+  runs?: Pick<SecurityRunRow, 'type' | 'status' | 'repo' | 'repo_id' | 'run_id' | 'job_id'>[];
 }
 
 const needs = (s: CheckItem['status']) => s === 'missing' || s === 'warn';
@@ -61,6 +69,13 @@ export function needsYou(d: NeedsInput): NeedsItem[] {
   // Kiro hooks installed without the Kiro Crew app: the same note, fixed by re-running the Kiro hooks install.
   else if (!st && kiroRow && (d.agentHooks.steering === 'outdated' || d.agentHooks.steering === 'missing')) {
     add('agents', `Kiro steering note ~/.kiro/steering/prism-codewatch.md is ${d.agentHooks.steering}`, [`prism-cli enable agent-hooks --client kiro${kiroRow.scope === 'global' ? ' --global' : ''}`]);
+  }
+  for (const r of d.runs || []) {
+    if (r.type !== 'pentest' || (r.status !== 'cleanup_failed' && r.status !== 'kept')) continue;
+    const text = r.status === 'cleanup_failed'
+      ? `The cleanup of a pentest of ${r.repo} failed: its environment may still be up and cost money. Clean it up on the run's page.`
+      : `A pentest of ${r.repo} has finished, and its environment is kept (--keep): it costs money until you clean it up on the run's page.`;
+    out.push({ tab: 'security', text, fixes: [], href: `#security/run/${r.repo_id}/${encodeURIComponent(r.run_id)}` });
   }
   if (d.version.update) add('updates', `prism-cli ${d.version.latest ?? ''} is available (you have ${d.version.installed}).`, [UPDATE_CMD]);
   return out;

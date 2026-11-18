@@ -83,7 +83,7 @@ Uninstalling the app leaves prism-cli installed.
 
 ### Install with prism-cli
 
-prism-cli bundles this app (this version, 0.4.1, ships with prism-cli 1.21.11; 1.21.4 to 1.21.10 bundle 0.4.0, 1.21.3 bundles 0.3.2, 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
+prism-cli bundles this app (this version, 0.4.1, ships with prism-cli 1.21.11 and 1.21.12; 1.21.4 to 1.21.10 bundle 0.4.0, 1.21.3 bundles 0.3.2, 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
 
 ```bash
 npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew

@@ -22,12 +22,19 @@ export const SECURITY_RUNS_STYLE = `
 .st.noverdict { color:var(--muted); } .st.noverdict::before { background:transparent; border:2px dashed currentColor; }
 .st.bootstrapping { color:var(--accent); } .st.bootstrapping::before { background:transparent; border:2px solid currentColor; border-top-color:transparent; animation:runspin 1.6s linear infinite; }
 table.runs tr.run-bootstrapping td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+.st.cleaning_up { color:var(--warn); } .st.cleaning_up::before { background:transparent; border:2px solid currentColor; border-left-color:transparent; animation:runspin 1.6s linear infinite; }
+.st.cleanup_failed { color:var(--bad); } .st.cleanup_failed::before { border-radius:2px; }
+.st.kept { color:var(--accent); } .st.kept::before { border-radius:2px; width:8px; height:8px; }
+table.runs tr.run-cleaning_up td:first-child { box-shadow:inset 3px 0 0 var(--warn); }
+table.runs tr.run-cleanup_failed td:first-child { box-shadow:inset 3px 0 0 var(--bad); }
+table.runs tr.run-kept td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+ul.cleanleft { margin:6px 0 10px; padding-left:20px; font-size:13px; } ul.cleanleft li { overflow-wrap:anywhere; }
 ol.dsteps { list-style:none; margin:8px 0 10px; padding:0; display:grid; gap:4px; font-size:13px; } ol.dsteps li { color:var(--muted); overflow-wrap:anywhere; }
 ol.dsteps li::before { content:"○ "; } ol.dsteps li.done { color:var(--ok); } ol.dsteps li.done::before { content:"✓ "; } ol.dsteps li.now { color:var(--text); font-weight:650; } ol.dsteps li.now::before { content:"● "; color:var(--accent); }
 ol.dsteps li.stop { color:var(--bad); font-weight:650; } ol.dsteps li.stop::before { content:"✕ "; }
 pre.runlog { max-height:360px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; background:var(--raised); color:var(--text); border-radius:6px; padding:8px 10px; margin:8px 0 0; }
 @keyframes runspin { to { transform:rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .st.running::before, .st.bootstrapping::before { animation:none; } }
+@media (prefers-reduced-motion: reduce) { .st.running::before, .st.bootstrapping::before, .st.cleaning_up::before { animation:none; } }
 .runfilters { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; margin:0 0 12px; }
 .runfilters label { font-size:12px; color:var(--muted); display:inline-flex; align-items:center; gap:6px; }
 .runfilters select { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
@@ -55,6 +62,8 @@ table.runs .rgo { text-align:right; white-space:nowrap; } .rgo a { font-weight:6
   table.runs tr.run-failed td:first-child, table.runs tr.run-running td:first-child { box-shadow:none; }
   table.runs tr.run-failed { box-shadow:inset 3px 0 0 var(--bad); } table.runs tr.run-running { box-shadow:inset 3px 0 0 var(--warn); }
   table.runs tr.run-bootstrapping td:first-child { box-shadow:none; } table.runs tr.run-bootstrapping { box-shadow:inset 3px 0 0 var(--accent); }
+  table.runs tr.run-cleaning_up td:first-child, table.runs tr.run-cleanup_failed td:first-child, table.runs tr.run-kept td:first-child { box-shadow:none; }
+  table.runs tr.run-cleaning_up { box-shadow:inset 3px 0 0 var(--warn); } table.runs tr.run-cleanup_failed { box-shadow:inset 3px 0 0 var(--bad); } table.runs tr.run-kept { box-shadow:inset 3px 0 0 var(--accent); }
   table.runs .c-type { grid-column:1; grid-row:1; } table.runs .c-status { grid-column:2; grid-row:1; text-align:right; }
   table.runs .c-repo, table.runs .rwhen, table.runs .rsum, table.runs .rgo { grid-column:1 / -1; }
   table.runs .rgo { text-align:left; }
@@ -91,7 +100,9 @@ ul.runlinks { list-style:none; padding:0; margin:0; } ul.runlinks li { margin:0 
 
 export const SECURITY_RUNS_SCRIPT = `
 const RUN_TYPES = { 'code-review': 'Code review', 'threat-model': 'Threat model', pentest: 'Pentest' };
-const RUN_STATUS = { complete: 'complete', running: 'running', failed: 'failed', noverdict: 'no verdict yet', bootstrapping: 'Bootstrapping' };
+const RUN_STATUS = { complete: 'complete', running: 'running', failed: 'failed', noverdict: 'no verdict yet', bootstrapping: 'Bootstrapping', cleaning_up: 'Cleaning up', cleanup_failed: 'Cleanup failed', kept: 'Environment kept' };
+/** A finished pentest's cleanup (1.21.12): verified gone, so the run is complete; one still under way, failed or kept is its own status. */
+const runCleaned = (r) => !!(r && r.cleanup && r.cleanup.state === 'verified');
 const RUN_SEVS = ['critical', 'high', 'medium', 'low'];
 /** Each type's icon as SVG elements (built with createElementNS; no markup strings). */
 const RUN_ICON = {
@@ -106,7 +117,9 @@ function runIcon(type) {
   return s;
 }
 const runType = (t) => el('span', { class: 'runtype' }, runIcon(t), RUN_TYPES[t] || txt(t));
-const runStatus = (s) => el('span', { class: 'st ' + (RUN_STATUS[s] ? s : 'noverdict') }, RUN_STATUS[s] || txt(s));
+const runStatus = (s, r) => el('span', { class: 'st ' + (RUN_STATUS[s] ? s : 'noverdict'), 'data-cleaned': runCleaned(r) ? '' : null }, s === 'complete' && runCleaned(r) ? 'Complete · cleaned up' : RUN_STATUS[s] || txt(s));
+/** What a cleanup still has to remove, as a sentence: "the stack X (DELETE_IN_PROGRESS); the target domain Y". */
+const cleanLeft = (c) => (c && (c.left || []).length) ? (c.left || []).map(txt).join('; ') : '';
 const runHref = (r) => '#security/run/' + txt(r.repo_id) + '/' + encodeURIComponent(txt(r.run_id));
 function runDur(s) {
   if (typeof s !== 'number') return null;
@@ -135,19 +148,23 @@ function runSummary(r) {
     return [el('div', {}, 'Started, but no result was fetched'), el('div', { class: 'fix' }, 'Fetch its findings on the Security Agent page')];
   }
   if (r.status === 'failed') return [el('div', {}, 'No verdict'), r.reason ? el('div', { class: 'fix' }, txt(r.reason)) : null];
+  const c = r.cleanup;
+  if (r.status === 'cleaning_up') return [runChips(r.counts), el('div', { class: 'fix', 'data-run-cleaning': '' }, 'Cleaning up' + (c && c.since ? ' for ' + ago(c.since).replace(/ ago$/, '') : '') + (cleanLeft(c) ? '; left: ' + cleanLeft(c) : ''))];
+  if (r.status === 'cleanup_failed') return [runChips(r.counts), el('div', { class: 'fix', 'data-run-cleanfail': '' }, 'Cleanup failed' + (c && c.reason ? ': ' + txt(c.reason) : '') + '. Clean it up on the run\\'s page')];
+  if (r.status === 'kept') return [runChips(r.counts), el('div', { class: 'fix' }, 'Environment kept (--keep); it costs money until you clean it up')];
   return [runChips(r.counts), el('div', { class: 'fix' }, r.total ? 'Top: ' + txt(r.top_title) : 'No findings')];
 }
 function runLink(r) {
   if (r.status === 'bootstrapping') return el('a', { href: runHref(r) }, 'View progress →');
   if (r.status === 'running') return el('span', { class: 'later' }, 'no findings yet');
-  return el('a', { href: runHref(r) }, r.status === 'complete' ? 'View findings →' : 'View details →');
+  return el('a', { href: runHref(r) }, r.status === 'complete' || r.cleanup ? 'View findings →' : 'View details →');
 }
 function runRow(r) {
-  const wait = r.status === 'bootstrapping' ? 'bootstrapping for ' + ago(r.started_at).replace(/ ago$/, '') : r.status === 'running' ? 'running for ' + ago(r.started_at).replace(/ ago$/, '') : runDur(r.duration_s) ? 'took ' + runDur(r.duration_s) : '';
+  const wait = r.status === 'bootstrapping' ? 'bootstrapping for ' + ago(r.started_at).replace(/ ago$/, '') : r.status === 'running' ? 'running for ' + ago(r.started_at).replace(/ ago$/, '') : runDur(r.duration_s) ? (r.type === 'pentest' && r.status !== 'complete' && r.status !== 'failed' ? 'job took ' : 'took ') + runDur(r.duration_s) : '';
   return el('tr', { class: 'run-' + txt(r.status), 'data-run': txt(r.run_id) },
     el('td', { class: 'c-type' }, runType(r.type)),
     el('td', { class: 'c-repo rrepo' }, txt(r.repo), el('small', {}, [r.branch ? txt(r.branch) : null, r.commit ? txt(r.commit).slice(0, 7) : null].filter(Boolean).join(' @ '))),
-    el('td', { class: 'c-status' }, runStatus(r.status)),
+    el('td', { class: 'c-status' }, runStatus(r.status, r)),
     el('td', { class: 'rwhen' }, ago(r.started_at), wait ? el('small', {}, wait) : null),
     el('td', { class: 'rsum' }, ...runSummary(r)),
     el('td', { class: 'rgo' }, runLink(r)));
@@ -221,6 +238,9 @@ function runDoneBar(r, summary) {
   if (r.status === 'bootstrapping') return el('div', { class: 'rundone', 'data-run-link': '', 'data-run-boot': '' }, el('b', {}, 'Bootstrapping started.'),
     el('span', { class: 'fix' }, 'The deploy runs in the background; closing the dashboard does not stop it.'), el('a', { href }, 'View progress →'));
   const ok = r.status === 'complete';
+  // 1.21.12: a finished pentest's cleanup: findings are there to view in every state.
+  const clean = { cleaning_up: 'Finished; cleaning up.', cleanup_failed: 'Finished; cleanup failed.', kept: 'Finished; environment kept.' }[r.status];
+  if (clean) return el('div', { class: 'rundone' + (r.status === 'cleaning_up' ? '' : ' bad'), 'data-run-link': '', 'data-run-clean': txt(r.status) }, el('b', {}, clean), summary || null, el('a', { href }, 'View findings →'));
   return el('div', { class: 'rundone' + (ok ? '' : ' bad'), 'data-run-link': '' }, el('b', {}, ok ? 'Complete.' : r.status === 'failed' ? 'Failed.' : 'No verdict yet.'), summary || null,
     el('a', { href }, ok ? 'View findings →' : 'View details →'));
 }
@@ -237,7 +257,8 @@ const runCellLink = (repoId, type) => { const r = latestRunOf(repoId, type); ret
 const CHECK_POLL_MS = 5000, CHECK_POLL_MAX = 40;
 let CHECK_TIMER = null, CHECK_POLLS = 0, CHECK_ASKING = false, CHECK_LOADED_FOR = null;
 // A deploying pentest (1.21.7) counts too: the check marks one whose process went away, and moves the page on with its steps.
-const runsPending = () => runRows().some((r) => ((r.status === 'running' || r.status === 'noverdict') && r.job_id) || r.status === 'bootstrapping');
+// 1.21.12: and a pentest still cleaning up: each check takes its cleanup one step on.
+const runsPending = () => runRows().some((r) => ((r.status === 'running' || r.status === 'noverdict' || r.status === 'cleaning_up') && r.job_id) || r.status === 'bootstrapping');
 async function securityCheck() {
   if (SNAPSHOT || CHECK_ASKING || !runsPending() || document.visibilityState !== 'visible') return;
   CHECK_ASKING = true;
@@ -262,7 +283,7 @@ let RUN_UI = { key: null, pick: '', open: null, overview: false, log: false };
  * the page: its copy is read again on every draw (route entry, the minute refresh). Any other finished run and a
  * server's not found (404) are final.
  */
-const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict' || d.run.status === 'bootstrapping' || !!d.cleanup);
+const runStale = (d) => !!d && d.found && (d.run.status === 'running' || d.run.status === 'noverdict' || d.run.status === 'bootstrapping' || d.run.status === 'cleaning_up' || !!d.cleanup);
 /** Leaving the drill-down (the router calls this) drops its copy, so coming back always reads the run again. */
 function runLeave() { RUN_DETAIL = null; RUN_KEY = null; RUN_SHOWN = null; RUN_UI = { key: null, pick: '', open: null, overview: false, log: false }; }
 
@@ -317,7 +338,7 @@ function runDetail(d) {
   const crumbs = el('div', { class: 'crumbs' }, el('a', { href: '#' }, 'Dashboard'), ' / ', el('a', { href: '#security' }, 'Security runs'), ' / ', (RUN_TYPES[r.type] || '') + ' · ' + txt(r.repo));
   const kv = (k, v) => v === null || v === undefined || v === '' ? [] : [el('dt', {}, k), el('dd', {}, v)];
   const head = el('section', { class: 'card', 'data-run-detail': txt(r.run_id) },
-    el('h2', {}, runType(r.type), el('span', {}, txt(r.repo)), runStatus(r.status)),
+    el('h2', {}, runType(r.type), el('span', {}, txt(r.repo)), runStatus(r.status, r)),
     el('div', { class: 'runhead' },
       el('dl', { class: 'rundl' },
         ...kv('Repo', el('a', { href: '#repo/' + txt(r.repo_id) }, txt(r.repo))),
@@ -335,6 +356,7 @@ function runDetail(d) {
   if (d.overview) out.push(runOverview(d));
   if (r.status === 'failed') out.push(el('section', { class: 'card' }, el('h2', {}, 'Why there is no verdict'), el('p', {}, txt(r.reason) || 'The job did not complete.')));
   if (r.deploy && (r.status === 'bootstrapping' || r.status === 'failed')) out.push(runDeployCard(r));
+  if (r.status === 'cleaning_up') out.push(runCleaningCard(r));
   if (d.cleanup) out.push(runCleanupCard(d));
   if (r.status === 'running' || r.status === 'noverdict') {
     const e = runCheckErr(r), c = r.check;
@@ -345,7 +367,7 @@ function runDetail(d) {
       e ? el('p', {}, 'The dashboard could not check the job with AWS: ' + txt(e.reason)) : null,
       el('p', { class: 'fix' }, (r.status === 'running' ? 'Findings appear here when the job finishes. ' : 'The job most likely finished. ') + 'Fetch them on the ', el('a', { href: '#security/' + txt(r.repo_id) }, 'Security Agent page'), ', or run the command below.')));
   }
-  if (r.status === 'complete' || (d.findings || []).length) out.push(runFindingsCard(d));
+  if (r.status === 'complete' || r.cleanup || (d.findings || []).length) out.push(runFindingsCard(d));
   out.push(el('section', { class: 'card' }, el('h2', {}, 'Report and links'), el('ul', { class: 'runlinks' },
     el('li', {}, el('b', {}, 'Result file: '), el('code', {}, txt(d.result_file))),
     el('li', {}, el('b', {}, 'Same run in a terminal: '), copyButton(txt(d.cli))),
@@ -389,13 +411,29 @@ function runDeployCard(r) {
   return el('section', { class: 'card', 'data-run-deploy': boot ? 'bootstrapping' : 'stopped' }, ...kids);
 }
 
+/**
+ * A pentest still cleaning up (1.21.12): for how long, what is still there, when it was last checked. The
+ * dashboard's check goes on with it about every 5 minutes; the run is complete once the cleanup is verified.
+ */
+function runCleaningCard(r) {
+  const c = r.cleanup || {}, left = (c.left || []).map(txt);
+  return el('section', { class: 'card', 'data-run-cleaning-card': '' }, el('h2', {}, 'Cleaning up', el('span', { class: 'sub' }, 'the job has finished and its findings are saved below')),
+    el('p', {}, 'The environment is being removed' + (c.since ? ' (started ' + ago(c.since) + ')' : '') + '. The run shows complete once a check confirms the stack and the Security Agent resources this run created are gone.'),
+    left.length ? [el('div', { class: 'fix' }, 'Still there:'), el('ul', { class: 'cleanleft', 'data-cleanup-left': '' }, ...left.map((x) => el('li', {}, x)))] : null,
+    el('p', { class: 'fix' }, (c.at ? 'Last step ' + ago(c.at) + '. ' : '') + 'While a dashboard page is open it goes on about every 5 minutes; a stack deletion can take over an hour.'),
+    r.check && r.check.state === 'error' ? el('p', { class: 'fix', 'data-run-check': 'error' }, 'The last check could not run: ' + txt(r.check.reason)) : null);
+}
+
 /** A pentest whose environment is still up: why (the teardown's reason, redacted by the server), Clean up, and the command for a terminal. */
 function runCleanupCard(d) {
-  const c = d.cleanup, failed = c.kind === 'teardown_failed', stopped = c.kind === 'deploy_stopped';
-  return el('section', { class: 'card', 'data-run-cleanup': txt(c.kind) }, el('h2', {}, failed ? 'Teardown failed' : stopped ? 'Clean up the deploy' : 'Environment still up'),
-    el('p', {}, failed ? 'The last teardown left this run\\'s environment up. It may cost money until it is removed.'
+  const c = d.cleanup, failed = c.kind === 'teardown_failed', stopped = c.kind === 'deploy_stopped', kept = c.kind === 'kept';
+  const left = d.run.cleanup && failed ? (d.run.cleanup.left || []).map(txt) : [];
+  return el('section', { class: 'card', 'data-run-cleanup': txt(c.kind) }, el('h2', {}, failed ? 'Cleanup failed' : stopped ? 'Clean up the deploy' : kept ? 'Environment kept' : 'Environment still up'),
+    el('p', {}, failed ? 'The cleanup left part of this run\\'s environment up. It may cost money until it is removed; Clean up tries again and verifies it.'
       : stopped ? 'The deploy stopped before the pentest job started (it failed, or its process went away). What it created may still be up, and may cost money until it is removed.'
-      : 'The job has finished, but this run still records its environment (started with --keep, or the app never became healthy). It may cost money until it is removed.'),
+      : kept ? 'The job has finished and its findings are saved. The run was started with --keep, so its environment stays up on purpose; it costs money until you clean it up.'
+      : 'The job has finished, but this run still records its environment (the app never became healthy). It may cost money until it is removed.'),
+    left.length ? el('ul', { class: 'cleanleft', 'data-cleanup-left': '' }, ...left.map((x) => el('li', {}, x))) : null,
     c.reason ? el('p', { class: 'fix', 'data-cleanup-reason': '' }, 'Reason: ' + txt(c.reason)) : null,
     el('div', { class: 'srow-ctl' }, saCleanupButton(d.run, c)),
     c.command ? el('div', {}, el('div', { class: 'fix' }, 'Or in a terminal:'), copyOnly(txt(c.command), 'AWS write')) : null);

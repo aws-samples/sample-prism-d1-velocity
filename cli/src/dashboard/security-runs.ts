@@ -17,6 +17,7 @@ import { last4 } from '../aws/connection.js';
 import type { CheckState } from './security-autocheck.js';
 import { cleanupArgsFor, pentestCleanupOf, shownReason } from './security-pentest.js';
 import { DEPLOY_PHASE_LABEL, DEPLOY_PHASES, deployLogName, type DeployPhase } from '../security/pentest-deploy.js';
+import { pentestCleanupState } from '../security/pentest.js';
 import { maskHome, redact } from '../utils/redact.js';
 
 export type RunType = 'code-review' | 'threat-model' | 'pentest';
@@ -24,9 +25,15 @@ export type RunType = 'code-review' | 'threat-model' | 'pentest';
  * complete: a verdict; running: pending and recent, or the dashboard's last check (security-autocheck.ts) found it
  * still running in AWS; noverdict: pending past the stale window with no such check (none could run, or it failed:
  * `check.reason` says why); failed: no verdict; bootstrapping (1.21.7): a pentest still deploying its environment,
- * no job yet.
+ * no job yet. A finished pentest (1.21.12) is only complete or failed once its cleanup is verified: cleaning_up
+ * (findings saved, the environment is being removed), cleanup_failed (Clean up retries it), kept (--keep).
  */
-export type RunStatus = 'complete' | 'running' | 'failed' | 'noverdict' | 'bootstrapping';
+export type RunStatus = 'complete' | 'running' | 'failed' | 'noverdict' | 'bootstrapping' | 'cleaning_up' | 'cleanup_failed' | 'kept';
+/**
+ * A finished pentest's cleanup, as the page shows it (1.21.12): its state, since when, the last step, what is still
+ * there and why it failed (redacted). verified: the stack and the Security Agent resources were checked gone.
+ */
+export interface RunCleanup { state: 'cleaning_up' | 'cleanup_failed' | 'kept' | 'verified'; since: string | null; at: string | null; left: string[]; reason: string | null }
 /** A pentest run's deploy, as the page shows it: the step (id and words), since when, and whether a log can be shown. */
 export interface RunDeploy { phase: string; label: string; step: number; steps: number; phase_at: string; log: boolean; interrupted: boolean }
 export interface RunCounts { critical: number; high: number; medium: number; low: number }
@@ -53,6 +60,8 @@ export interface SecurityRunRow {
   check: CheckState | null;
   /** A pentest run's deploy (1.21.7); null for other runs and for records from before 1.21.7. */
   deploy?: RunDeploy | null;
+  /** A finished pentest's cleanup (1.21.12); null for other runs, while the job runs, and for older torn-down records. */
+  cleanup?: RunCleanup | null;
 }
 
 /** The last auto-check of a job (security-autocheck.ts stateOf); absent: none (a snapshot, the CLI's --json). */
@@ -108,6 +117,8 @@ export function runStatus(r: PrismResult, now: Date, check: CheckState | null = 
   const t = runTypeOf(r)!;
   if (r.status === 'deploying') return 'bootstrapping';
   if (r.status === 'pending') return check?.state === 'running' || now.getTime() - Date.parse(r.started_at) <= STALE_MS[t] ? 'running' : 'noverdict';
+  const cs = pentestCleanupState(r);
+  if (cs && cs !== 'verified') return cs;
   if (r.status === 'error') return 'failed';
   return 'complete';
 }
@@ -135,19 +146,36 @@ export function runDeploy(e: ResultEntry): RunDeploy | null {
     phase_at: String(d.phase_at || e.result.started_at), log: d.log === deployLogName(e.id), interrupted: !!d.interrupted };
 }
 
+const MAX_LEFT = 10;
+/** A pentest's cleanup for the page; the text is redacted again (account ids, ARNs) and capped. */
+export function runCleanup(r: PrismResult): RunCleanup | null {
+  const state = pentestCleanupState(r);
+  if (!state) return null;
+  const c = r.pentest!.cleanup;
+  const line = (s: string) => { const t = redact(String(s)).replace(/\s+/g, ' ').trim(); return t.length > 300 ? t.slice(0, 299) + '…' : t; };
+  const reason = c?.reason || (state === 'cleanup_failed' ? r.pentest!.teardown_failed?.reason : null) || null;
+  return {
+    state, since: c?.since ?? null, at: c?.at ?? null,
+    left: (Array.isArray(c?.left) ? c!.left : state === 'cleaning_up' && r.pentest!.stack ? [`the stack ${r.pentest!.stack}`] : []).slice(0, MAX_LEFT).map(line),
+    reason: reason ? line(reason) : null,
+  };
+}
+
 const sorted = (fs: Finding[]) => [...fs].sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0));
 
 export function runRow(repo: RunRepo, e: ResultEntry, now: Date, lookup?: CheckLookup): SecurityRunRow {
   const r = e.result;
   const top = sorted(r.findings || [])[0];
   const job = jobKey(r) || '';
-  const check = r.status === 'pending' && job && lookup ? lookup(runTypeOf(r)!, job) : null;
+  // A pentest still cleaning up is checked by the same background check as a pending job.
+  const check = (r.status === 'pending' || pentestCleanupState(r) === 'cleaning_up') && job && lookup ? lookup(runTypeOf(r)!, job) : null;
   return {
     repo_id: repo.id, run_id: e.id, repo: repo.name, type: runTypeOf(r)!, status: runStatus(r, now, check),
     started_at: r.started_at, duration_s: duration(r), branch: r.branch, commit: r.commit ? r.commit.slice(0, 12) : null,
     counts: runCounts(r), total: (r.findings || []).length, top_title: top ? (top.title || top.message) : null,
     // A pentest with no job yet (deploying, or its deploy stopped) shows no job: its key is the stack.
     reason: r.reason ?? null, job_id: r.kind === 'security-pentest' && !r.pentest?.job_id ? '' : job, check, deploy: runDeploy(e),
+    cleanup: runCleanup(r),
   };
 }
 
@@ -213,7 +241,7 @@ export type RunDetail =
      * recorded): why, the failure reason (redacted, home as ~), and whether Clean up can target this run
      * (`why` when it cannot), and the exact line Clean up runs (also the terminal command). null for every other run.
      */
-    cleanup: { kind: 'teardown_failed' | 'still_up' | 'deploy_stopped'; reason: string | null; available: boolean; why: string | null; command: string | null } | null;
+    cleanup: { kind: 'teardown_failed' | 'kept' | 'still_up' | 'deploy_stopped'; reason: string | null; available: boolean; why: string | null; command: string | null } | null;
   };
 
 export const NO_REMEDIATION = 'No remediation provided by this run type.';

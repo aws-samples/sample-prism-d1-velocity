@@ -18,6 +18,10 @@
  *     the account and region it runs in; a job it cannot find there exits 1 and
  *     shows as a failed check. One pentest check at a time, every
  *     PENTEST_CHECK_EVERY_MS, stopped after PENTEST_CHECK_TIMEOUT_MS.
+ *     1.21.12: a finished pentest stays in the list while its cleanup is under
+ *     way (cleaning_up, also an older record that still names its stack): each
+ *     check takes it one step on, without waiting, until it is verified gone
+ *     (complete) or failed (cleanup_failed: Clean up retries it).
  *
  * Driven by the open page: GET /api/security-check (page.ts, after each load
  * of the data and while a check runs) calls kick(). Nothing runs when nothing
@@ -33,6 +37,7 @@ import { maskHome, redact } from '../utils/redact.js';
 import { displayCommand, type ScanRepo, type SpawnFn } from './actions.js';
 import { runEntries, runTypeOf, type RunType } from './security-runs.js';
 import { interruptGoneDeploys, pidAlive } from '../security/pentest-deploy.js';
+import { pentestCleanupState } from '../security/pentest.js';
 
 /** What the last check of a pending job said. running: AWS reports it still running. error: the check could not run or failed (reason says why). */
 export interface CheckState {
@@ -56,9 +61,9 @@ export const CHECK_TIMEOUT_MS = 3 * 60_000;
 /** A pentest runs for hours (the reference runs took about 2 h 50 min): its job is checked every 5 min. */
 export const PENTEST_CHECK_EVERY_MS = 5 * 60_000;
 /**
- * A pentest check that finds the job finished tears the environment down: up to 10 min for the agent's network
- * interfaces, up to 30 min for the stack deletion, then both once more (pentest.ts). Stopping it earlier would leave
- * the stack half deleted with no teardown_failed marker.
+ * Since 1.21.12 a pentest check takes one cleanup step and does not wait for the stack (cleanupPass in pentest.ts),
+ * so it finishes in seconds. The bound stays at the old blocking teardown's length (ENI wait plus two stack
+ * deletions): stopping a check in the middle of a delete-stack call would leave its record unwritten.
  */
 export const PENTEST_CHECK_TIMEOUT_MS = 90 * 60_000;
 const everyMs = (t: RunType) => (t === 'pentest' ? PENTEST_CHECK_EVERY_MS : CHECK_EVERY_MS);
@@ -86,13 +91,16 @@ function jobIdOf(e: ResultEntry): string | null {
   return id && FETCH_JOB.test(id) ? id : null;
 }
 
-/** Every pending job in these repos (one per job: a verdict for the same job elsewhere wins, as on the page). Local files only. */
+/**
+ * Every pending job in these repos (one per job: a verdict for the same job elsewhere wins, as on the page), and
+ * every pentest whose cleanup is under way. Local files only.
+ */
 export function pendingJobsIn(repos: ScanRepo[], read: (root: string) => ResultEntry[] = readResultEntries): PendingJob[] {
   const out: PendingJob[] = [];
   for (const repo of repos) {
     for (const e of runEntries(read(repo.path))) {
       const type = runTypeOf(e.result), jobId = jobIdOf(e);
-      if (type && jobId && e.result.status === 'pending') out.push({ key: checkKey(type, jobId), type, jobId, repo });
+      if (type && jobId && (e.result.status === 'pending' || pentestCleanupState(e.result) === 'cleaning_up')) out.push({ key: checkKey(type, jobId), type, jobId, repo });
     }
   }
   return out;

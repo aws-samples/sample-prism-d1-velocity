@@ -323,7 +323,8 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
   const agentHooks = (opts.agentHooks || ((repoRoot) => agentHookStatus({
     home: opts.machineDeps?.home || opts.home || homedir(), env: opts.machineDeps?.env || process.env, repoRoot, cli: prismCliCommand(ownCliLocation()),
   })))(d.currentRepo);
-  const needs = needsYou({ machine: machineSetup, setup: setupRows, suggestions, agentHooks, version });
+  const securityRuns = collectSecurityRuns(repos.map((r) => ({ id: r.id, name: r.label, path: r.path })), (p) => entries.get(p) ?? readResultEntries(p), new Date(), opts.securityCheck?.lookup);
+  const needs = needsYou({ machine: machineSetup, setup: setupRows, suggestions, agentHooks, version, runs: securityRuns });
   return {
     schema: PAYLOAD_SCHEMA,
     generated_at: new Date().toISOString(),
@@ -339,7 +340,7 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     suggestions,
     usage,
     security: collectSecurity(repos, (p) => results.get(p) ?? readResultEntries(p).map((e) => e.result), new Date(), opts.securityCheck?.lookup),
-    security_runs: collectSecurityRuns(repos.map((r) => ({ id: r.id, name: r.label, path: r.path })), (p) => entries.get(p) ?? readResultEntries(p), new Date(), opts.securityCheck?.lookup),
+    security_runs: securityRuns,
     security_check_gen: checkGen,
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
     summary: buildSummary(repos, usage, needs),
