@@ -1418,6 +1418,14 @@ try {
     const lines = (f) => (existsSync(join(home, f)) ? readFileSync(join(home, f), 'utf8').split('\n').filter(Boolean) : []);
     const results = () => readdirSync(join(shop, '.prism', 'results')).filter((f) => f.endsWith('.json')).map((f) => ({ id: f.replace(/\.json$/, ''), ...JSON.parse(readFileSync(join(shop, '.prism', 'results', f), 'utf8')) })).filter((r) => r.kind === 'security-pentest' && r.pentest?.stack !== undefined && r.pentest?.job_id?.startsWith('ptj-run-'));
     const serve = async () => { const s = await startDashboard(home, ENV); running.push(s.proc); return { ...s, base: `http://127.0.0.1:${s.port}` }; };
+    // 1.21.7: every pentest record (a deploying one has no job yet), and waiting for one to reach a state.
+    const readRec = (f) => { try { return { id: f.replace(/\.json$/, ''), ...JSON.parse(readFileSync(join(shop, '.prism', 'results', f), 'utf8')) }; } catch { return null; } };
+    const allPt = () => { try { return readdirSync(join(shop, '.prism', 'results')).filter((f) => f.endsWith('.json')).map(readRec).filter((r) => r && r.kind === 'security-pentest'); } catch { return []; } };
+    const actionDone = async (id, maxMs) => { const t0 = Date.now(); for (;;) { const st = await page.evaluate(() => api('/api/action/status').then((r) => r.json)); if (st.action === id && st.state === 'done') return st; if (Date.now() - t0 > maxMs) return st; await sleep(400); } };
+    const recOf = (id) => allPt().find((r) => r.id === id) || null;
+    const waitRec = async (id, pred, maxMs = 90000) => { const t0 = Date.now(); for (;;) { const r = recOf(id); if (r && pred(r)) return r; if (Date.now() - t0 > maxMs) return r; await sleep(250); } };
+    const ptPick = { dockerfile: 'services/api/Dockerfile.prod', app_dir: 'services/api', port: '3000', health_path: '/healthz' };
+    const startApi = () => page.evaluate((b) => api('/api/action', b).then((r) => ({ status: r.status, json: r.json })), { action: 'security-pentest-start', repo: repo.id, ...ptPick, confirm: true });
     let srv = await serve();
     let { ctx, page, log } = await openCtx(srv, { width: 1280, height: 900 });
     out.log = log;
@@ -1432,6 +1440,7 @@ try {
     const callMark = () => ({ aws: lines('aws-calls.log').length, cdk: lines('cdk-calls.log').length, docker: lines('docker-calls.log').length });
     const callsSince = (m) => ({ aws: lines('aws-calls.log').slice(m.aws), cdk: lines('cdk-calls.log').slice(m.cdk), docker: lines('docker-calls.log').slice(m.docker) });
     const openPage = async () => {
+      // A reload, not only a hash change: the Security Agent answer is read again.
       await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
       await page.waitForFunction(() => !!document.querySelector('[data-pt-run="security-pentest-start"]:not([disabled])'), null, { timeout: 15000 }).catch(() => {});
     };
@@ -1468,11 +1477,58 @@ try {
     out.steps.ticked = await dialog();
     out.steps.beforeConfirm = callsSince(b1);
     const b2 = { aws: lines('aws-calls.log').length, docker: lines('docker-calls.log').length };
+    // 1.21.7: the deploy runs detached. Slow fake cdk steps, so the phases and the Bootstrapping views can be seen.
+    writeFileSync(join(home, 'fake-cdk-slow'), '3');
+    const t3 = Date.now();
     await page.locator('dialog.confirm button', { hasText: 'Deploy and start' }).click();
-    out.steps.start = await waitDone();
+    out.steps.start = await waitDone(20000);
+    out.steps.startMs = Date.now() - t3;
+    out.steps.startLink = await page.evaluate(() => document.querySelector('#action-drawer [data-run-boot] a')?.getAttribute('href') || null);
+    await page.locator('#action-drawer').screenshot({ path: join(SHOTS, 'pentest-bootstrapping-drawer.png') }).catch(() => {});
+    const boot = allPt().find((r) => r.status === 'deploying');
+    const runId = boot?.id;
+    out.steps.boot = boot ? { phase: boot.pentest.deploy.phase, log: boot.pentest.deploy.log, stack: boot.pentest.stack, choice: [boot.pentest.deploy.app_dir, boot.pentest.deploy.dockerfile, boot.pentest.deploy.port, boot.pentest.deploy.health_path] } : null;
+    out.steps.lockState = await page.evaluate(() => api('/api/action/status').then((r) => r.json.state));
+    // The lock is free while it deploys: a read-only action runs; a second Start is refused.
+    out.steps.second = await startApi();
+    // The deliberate 409 is the answer under test; the browser logs it too.
+    await sleep(200);
+    out.log.splice(0, out.log.length, ...out.log.filter((l) => !(/POST .*\/api\/action$/.test(l.text) || /status of 409/.test(l.text))));
+    out.steps.other = await page.evaluate((id) => api('/api/action', { action: 'security-status', repo: id }).then((r) => r.status), repo.id);
+    const od = await actionDone('security-status', 60000);
+    out.steps.otherDone = { status: od.state + ' exit ' + od.exitCode };
+    // The phases, as the record says them, until the job starts.
+    const phases = [];
+    const watch = (async () => { const t0 = Date.now(); for (;;) { const r = recOf(runId); if (r?.pentest?.deploy && phases[phases.length - 1] !== r.pentest.deploy.phase) phases.push(r.pentest.deploy.phase); if (!r || r.status !== 'deploying' || Date.now() - t0 > 120000) return r; await sleep(150); } })();
+    // The Bootstrapping row and the run's page, with its log, while it deploys (the docs screenshots).
+    await sleep(1500);
+    await openPage();
+    await page.waitForSelector('#security-runs-all tr.run-bootstrapping', { timeout: 15000 }).catch(() => {});
+    out.steps.bootRow = await page.evaluate(() => document.querySelector('#security-runs-all tr.run-bootstrapping')?.innerText.replace(/\s+/g, ' ') || null);
+    await page.locator('#security-runs-all').screenshot({ path: join(SHOTS, 'dashboard-security-runs-bootstrapping-dark.png') }).catch(() => {});
+    await page.goto(srv.base + '/#security/run/' + repo.id + '/' + runId);
+    await page.waitForSelector('[data-run-deploy="bootstrapping"]', { timeout: 15000 }).catch(() => {});
+    await page.click('[data-run-log-open]').catch(() => {});
+    await page.waitForSelector('[data-run-log]:not([hidden])', { timeout: 10000 }).catch(() => {});
+    await sleep(300);
+    out.steps.bootPage = await page.evaluate(() => ({ card: document.querySelector('[data-run-deploy]')?.innerText.replace(/\s+/g, ' ') || null, log: document.querySelector('[data-run-log]')?.innerText || null,
+      now: document.querySelector('[data-deploy-steps] li.now')?.innerText || null, status: document.querySelector('[data-run-detail] .st')?.innerText || null }));
+    // The docs screenshot without the action drawer (the read-only action above) over it.
+    await page.locator('#action-drawer button', { hasText: 'Close' }).click().catch(() => {}); await sleep(200);
+    await page.screenshot({ path: join(SHOTS, 'dashboard-security-run-bootstrapping-dark.png'), fullPage: true }).catch(() => {});
+    const done3 = await watch;
+    writeFileSync(join(home, 'fake-cdk-slow'), '0');
+    out.steps.phases = phases;
+    out.steps.sameId = done3 ? { id: done3.id === runId, status: done3.status, job: done3.pentest.job_id, phase: done3.pentest.deploy?.phase } : null;
+    out.steps.history = (done3?.pentest?.deploy?.history || []).map((h) => h.phase);
     out.steps.startCalls = { aws: lines('aws-calls.log').slice(b2.aws), docker: lines('docker-calls.log').slice(b2.docker) };
+    const callsNow = out.steps.startCalls.aws;
+    const startAt = callsNow.findIndex((c) => c.startsWith('securityagent start-pentest-job'));
+    out.steps.checkedBeforeStart = callsNow.slice(0, startAt < 0 ? callsNow.length : startAt).filter((c) => c.includes('batch-get-pentest-jobs')).length;
     out.steps.afterStart = results().map((r) => ({ status: r.status, job: r.pentest.job_id, stack: r.pentest.stack, keep: r.pentest.keep ?? null }));
-    // 4. Start again while it is pending: the guard dialog, with no Start another.
+    out.steps.logFile = runId ? existsSync(join(shop, '.prism', 'results', runId + '.log')) : false;
+    // 4. Start again while it is pending: the guard dialog, with no Start another. A fresh page load: it reads the Security Agent answer again.
+    await page.goto('about:blank');
     await openPage();
     await page.click('[data-pt-run="security-pentest-start"]'); await sleep(300);
     out.steps.guard = await dialog();
@@ -1501,6 +1557,7 @@ try {
     await page.check('dialog.confirm input[type=checkbox]');
     await page.locator('dialog.confirm button', { hasText: 'Deploy and start' }).click();
     out.steps.start2 = await waitDone();
+    { const b = allPt().find((r) => r.status === 'deploying'); if (b) await waitRec(b.id, (r) => r.status !== 'deploying'); }
     writeFileSync(join(home, 'fake-pt-job'), 'COMPLETED'); writeFileSync(join(home, 'fake-pt-teardown'), 'fail');
     await ctx.close(); srv.proc.kill('SIGTERM'); await sleep(500);
     srv = await serve();
@@ -1535,6 +1592,48 @@ try {
       const fin = results().find((r) => r.id === failed.id);
       out.steps.cleanedRecord = fin ? { stack: fin.pentest.stack, teardown_failed: fin.pentest.teardown_failed ?? null } : null;
     }
+    // 7. 1.21.7: a deploy that fails: the record becomes an error that keeps its stack, and its page offers Clean up.
+    writeFileSync(join(home, 'fake-cdk-deploy'), 'fail');
+    await openPage();
+    const f7 = await startApi();
+    const fid = f7.json?.result?.run;
+    const frec = fid ? await waitRec(fid, (r) => r.status !== 'deploying') : null;
+    out.steps.deployFail = { start: f7.status, status: frec?.status, reason: frec?.reason, stack: frec?.pentest?.stack, phase: frec?.pentest?.deploy?.phase };
+    if (fid) {
+      await page.goto(srv.base + '/#security/run/' + repo.id + '/' + fid);
+      await page.waitForSelector('[data-run-cleanup]', { timeout: 15000 }).catch(() => {});
+      out.steps.deployFailPage = await page.evaluate(() => ({ kind: document.querySelector('[data-run-cleanup]')?.getAttribute('data-run-cleanup') || null, button: !!document.querySelector('[data-cleanup]'), deploy: document.querySelector('[data-run-deploy]')?.innerText.replace(/\s+/g, ' ') || null }));
+      await page.click('[data-cleanup]').catch(() => {}); await sleep(300);
+      await page.locator('dialog.confirm button', { hasText: 'Tear down' }).click().catch(() => {});
+      out.steps.deployFailCleanup = await waitDone(180000);
+      const fr = recOf(fid);
+      out.steps.deployFailAfter = fr ? fr.pentest.stack : 'missing';
+    }
+    // 8. A deploy whose process is killed: the dashboard's check (local, no AWS) marks it interrupted, with Clean up.
+    writeFileSync(join(home, 'fake-cdk-deploy'), 'hang');
+    await openPage();
+    const k8 = await startApi();
+    const kid = k8.json?.result?.run;
+    const krec = kid ? await waitRec(kid, (r) => r.pentest?.deploy?.phase === 'deploying' && !!r.pentest.deploy.pid) : null;
+    const kpid = krec?.pentest?.deploy?.pid;
+    out.steps.killed = { start: k8.status, phase: krec?.pentest?.deploy?.phase, pid: !!kpid };
+    if (kpid) {
+      try { process.kill(-kpid, 'SIGKILL'); } catch { try { process.kill(kpid, 'SIGKILL'); } catch { /* gone */ } }
+      const k0 = lines('aws-calls.log').length;
+      await openPage();
+      let r8 = null;
+      for (let i = 0; i < 90; i++) { await page.evaluate(() => api('/api/security-check')); r8 = recOf(kid); if (r8 && r8.status !== 'deploying') break; await sleep(1000); }
+      out.steps.interrupted = { status: r8?.status, reason: r8?.reason, flag: !!r8?.pentest?.deploy?.interrupted, stack: r8?.pentest?.stack, awsWhileDeploying: lines('aws-calls.log').slice(k0) };
+      await page.goto(srv.base + '/#security/run/' + repo.id + '/' + kid);
+      await page.waitForSelector('[data-run-cleanup]', { timeout: 15000 }).catch(() => {});
+      out.steps.interruptedPage = await page.evaluate(() => ({ kind: document.querySelector('[data-run-cleanup]')?.getAttribute('data-run-cleanup') || null, button: !!document.querySelector('[data-cleanup]'), deploy: document.querySelector('[data-run-deploy]')?.innerText.replace(/\s+/g, ' ') || null }));
+      await page.locator('#action-drawer button', { hasText: 'Close' }).click().catch(() => {}); await sleep(200);
+      await page.screenshot({ path: join(SHOTS, 'dashboard-security-run-interrupted-dark.png'), fullPage: true }).catch(() => {});
+      await page.click('[data-cleanup]').catch(() => {}); await sleep(300);
+      await page.locator('dialog.confirm button', { hasText: 'Tear down' }).click().catch(() => {});
+      out.steps.interruptedCleanup = await waitDone(180000);
+    }
+    rmSync(join(home, 'fake-cdk-deploy'), { force: true });
     // The docs screenshot: the whole Security Agent page with the buttons, dark, at 1280.
     await openPage();
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -1564,6 +1663,7 @@ try {
     await phone.ctx.close();
     out.calls = lines('aws-calls.log');
     out.home = home;
+    out.repoId = repo.id; out.runId = runId;
 
     // Over --serve-stdio: the same action route answers the same way (VS Code, Kiro Crew).
     const shome = seed('pentestrun-stdio', 'full', prep);
@@ -1586,7 +1686,7 @@ try {
     for (let i = 0; i < 240; i++) { const s = (await ask({ op: 'get', path: '/api/action/status' })).json; if (s.state === 'done') { st.startDone = s; break; } await sleep(500); }
     st.again = await ask({ op: 'act', path: '/api/action', body: { action: 'security-pentest-start', repo: sid, ...pick, confirm: true } });
     out.stdio = { badStart: { status: st.badStart.status, error: st.badStart.json?.error }, plan: st.plan.status, planError: st.plan.json?.error, start0: st.check.json?.start,
-      start: st.start.status, startExit: st.startDone?.exitCode, startCmd: st.startDone?.command, again: { status: st.again.status, error: st.again.json?.error } };
+      start: st.start.status, startExit: st.startDone?.exitCode, startCmd: st.startDone?.command, startOutcome: st.startDone?.outcome, again: { status: st.again.status, error: st.again.json?.error } };
     child.stdin.end();
   }
   // ---------- stdio: the shared UI bundle (dist/ui) over dashboard --serve-stdio, as an editor or Kiro Crew host loads it ----------
@@ -2039,12 +2139,35 @@ function verdicts(R) {
     const PD = s.phoneDialog || {};
     add('PR12', 'at 390 px the start dialog fits in light and dark (no sideways scroll, all 7 resources, no target value or command cut off) with themed text on a themed surface',
       ['light', 'dark'].every((t) => PD[t] && PD[t].overflow <= 1 && PD[t].width <= 390 && PD[t].items === 7 && !PD[t].running && !(PD[t].clipped || ['?']).length) && PD.light.bg !== PD.dark.bg && PD.light.fg !== PD.dark.fg, JSON.stringify(PD));
-    add('PR4', 'Start pentest confirms with the account and region, Docker, hours, cost and automatic teardown, needs the box; it runs --yes with the flags (no --wait, no --keep), builds and pushes with docker, deploys, starts the job and saves a pending run',
+    add('PR4', 'Start pentest confirms with the account and region, Docker, hours, cost and automatic teardown, needs the box; it runs --yes with the flags (no --wait, no --keep) detached, builds and pushes with docker, deploys, starts the job, and the same record becomes pending',
       ['account ••••3333 / us-west-2', 'Docker must be running', 'runs for hours', 'costs money', 'torn down automatically when the job finishes'].every((w) => (sd.text || '').includes(w)) && sd.box
-      && sd.buttons?.find((b) => b.t === 'Deploy and start')?.dis === true && /exit 0/.test(s.start?.status || '') && s.start.status.includes('security pentest --yes ' + FLAGS) && !/--wait|--keep/.test(s.start.status)
+      && sd.buttons?.find((b) => b.t === 'Deploy and start')?.dis === true && /Bootstrapping started/.test(s.start?.status || '') && s.start.status.includes('security pentest --yes ' + FLAGS) && !/--wait|--keep/.test(s.start.status)
       && (sc.docker || []).some((c) => c.startsWith('build')) && (sc.docker || []).some((c) => c.startsWith('push')) && (sc.aws || []).some((c) => c.startsWith('securityagent start-pentest-job'))
-      && JSON.stringify(s.afterStart) === '[{"status":"pending","job":"ptj-run-1","stack":' + JSON.stringify((s.afterStart || [])[0]?.stack) + ',"keep":null}]' && /^PrismPentest-demo-shop-/.test((s.afterStart || [])[0]?.stack || ''),
-      JSON.stringify({ d: sd.text?.slice(0, 400), st: s.start?.status, docker: sc.docker, after: s.afterStart }));
+      && JSON.stringify(s.afterStart) === '[{"status":"pending","job":"ptj-run-1","stack":' + JSON.stringify((s.afterStart || [])[0]?.stack) + ',"keep":null}]' && /^PrismPentest-demo-shop-/.test((s.afterStart || [])[0]?.stack || '')
+      && s.sameId?.id === true && s.sameId.status === 'pending' && s.logFile === true,
+      JSON.stringify({ d: sd.text?.slice(0, 200), st: s.start?.status, docker: sc.docker, after: s.afterStart, same: s.sameId }));
+    const ph = s.phases || [];
+    const ORDER = ['preparing', 'building', 'pushing', 'deploying', 'health', 'registering', 'starting'];
+    add('PR13', 'Start pentest returns at once (Bootstrapping started, a link to the run) with the record already written (deploying, the stack, the picked target); the lock stays free (another action runs) and a second Start is refused while it deploys',
+      s.startMs < 8000 && s.startLink === '#security/run/' + Q.repoId + '/' + (s.boot ? Q.runId : '') && !!s.boot && ['preparing', 'building'].includes(s.boot.phase) && /^PrismPentest-demo-shop-/.test(s.boot.stack || '')
+      && s.boot.log === Q.runId + '.log' && JSON.stringify(s.boot.choice) === '["services/api","services/api/Dockerfile.prod",3000,"/healthz"]'
+      && s.lockState === 'done' && s.other === 202 && /^done exit \d+$/.test(s.otherDone?.status || '') && s.second?.status === 409 && /already bootstrapping/.test(s.second.json?.error || ''),
+      JSON.stringify({ ms: s.startMs, link: s.startLink, boot: s.boot, lock: s.lockState, other: s.other, second: s.second }));
+    add('PR14', 'the record\'s phase advances in order through every step (its history: preparing, building, pushing, deploying, health, registering, starting), seen live as it goes, and no job check runs against AWS before the job has started',
+      JSON.stringify(s.history) === JSON.stringify(ORDER) && ph.length >= 3 && ph.every((x, k) => k === 0 || ORDER.indexOf(x) > ORDER.indexOf(ph[k - 1])) && ['pushing', 'deploying'].every((x) => ph.includes(x)) && s.checkedBeforeStart === 0,
+      JSON.stringify({ ph, h: s.history, checked: s.checkedBeforeStart }));
+    add('PR15', 'while it deploys, the runs table shows Bootstrapping with its step, and the run page lists the steps with the current one, and View log shows the redacted log',
+      /Bootstrapping/.test(s.bootRow || '') && /Step \d of 7: /.test(s.bootRow || '') && /View progress/.test(s.bootRow || '') && s.bootPage?.status === 'Bootstrapping' && !!s.bootPage.now
+      && /Deploying the private target environment/.test(s.bootPage.log || '') && !accountLeaks(s.bootPage.log || '').length && !(s.bootPage.log || '').includes(Q.home + '/'),
+      JSON.stringify({ row: s.bootRow, page: s.bootPage && { ...s.bootPage, log: (s.bootPage.log || '').slice(-300) } }));
+    const df = s.deployFail || {}, ki = s.interrupted || {};
+    add('PR16', 'a deploy that fails becomes an error that keeps its stack; its page shows Deploy stopped and Clean up, which removes the stack',
+      df.start === 202 && df.status === 'error' && /cdk deploy of the pentest target/.test(df.reason || '') && /^PrismPentest-/.test(df.stack || '') && s.deployFailPage?.kind === 'deploy_stopped' && s.deployFailPage.button
+      && /Deploy stopped/.test(s.deployFailPage.deploy || '') && /exit 0/.test(s.deployFailCleanup?.status || '') && s.deployFailAfter === null, JSON.stringify({ df, p: s.deployFailPage, c: s.deployFailCleanup?.status, a: s.deployFailAfter }));
+    add('PR17', 'a deploy whose process is killed is marked interrupted by the dashboard\'s local check (no AWS call), keeps its stack, and its page offers Clean up',
+      s.killed?.start === 202 && s.killed.phase === 'deploying' && s.killed.pid && ki.status === 'error' && /^deploy interrupted: its process \(pid \d+\) stopped during "Deploying the environment"/.test(ki.reason || '') && ki.flag
+      && /^PrismPentest-/.test(ki.stack || '') && !(ki.awsWhileDeploying || []).length && s.interruptedPage?.kind === 'deploy_stopped' && s.interruptedPage.button && /Interrupted at step 4 of 7/.test(s.interruptedPage.deploy || '')
+      && /exit 0/.test(s.interruptedCleanup?.status || ''), JSON.stringify({ k: s.killed, ki, p: s.interruptedPage, c: s.interruptedCleanup?.status }));
     add('PR5', 'while it is pending, Start pentest warns that a pentest is already running, with View it and no Start another; the running check tears nothing down',
       /A pentest of demo-shop is already running/.test(s.guard?.text || '') && JSON.stringify((s.guard?.buttons || []).map((b) => b.t)) === '["Cancel","View it →"]'
       && s.runningCheck?.deletes === 0 && JSON.stringify(s.runningCheck.rows) === '["pending"]', JSON.stringify({ g: s.guard, r: s.runningCheck }));
@@ -2060,7 +2183,7 @@ function verdicts(R) {
     const U = Q.stdio || {};
     add('PR8', 'over --serve-stdio: a bad health path is refused (400), the removed plan action is refused (400), the check route carries the dialog\'s resource list, the start runs with the same argv (exit 0), and a second start is refused while the first is pending (409)',
       U.badStart?.status === 400 && /healthPath:/.test(U.badStart.error || '') && U.plan === 400 && (U.start0?.resources || []).length === 7 && /--cleanup --job JOB_ID/.test(U.start0?.cleanup || '')
-      && U.start === 202 && U.startExit === 0 && (U.startCmd || '').includes('--yes ' + FLAGS) && U.again?.status === 409 && /already running/.test(U.again.error || ''), JSON.stringify(U));
+      && U.start === 202 && U.startExit === 0 && (U.startCmd || '').includes('--yes ' + FLAGS) && U.startOutcome === 'detached' && U.again?.status === 409 && /already (bootstrapping|running)/.test(U.again.error || ''), JSON.stringify(U));
     add('PR9', 'at 390 px the page with the buttons has no sideways scroll, and no account id or home path leaks into what the page showed', s.phoneScroll <= 1
       && !accountLeaks(JSON.stringify([s.page?.text, s.card, s.guard, s.startDialog])).length && !JSON.stringify([s.page?.text, s.card, s.startDialog]).includes(Q.home + '/'), String(s.phoneScroll));
   }

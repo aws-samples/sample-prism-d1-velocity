@@ -31,6 +31,7 @@ class FakeChild extends EventEmitter {
   stderr = new EventEmitter();
   killed: string[] = [];
   kill(sig: string) { this.killed.push(sig); if (sig === 'SIGTERM') setImmediate(() => this.emit('close', null)); return true; }
+  unref() {}
 }
 function fakeSpawn(calls: Spawned[], auto = true): SpawnFn {
   return ((file: string, args: string[], opts: any) => {
@@ -234,7 +235,9 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     const home = tmp('ah');
     const r = runner(calls, { home, awsArgs: () => ['--profile', 'dev', '--region', 'us-west-2'], writeGate: () => null,
       pentestArgs: (pid) => ({ args: pid === 'security-pentest-cleanup' ? ['--job', 'ptj-1'] : ['--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health'] }),
-      awsChoices: () => ({ profiles: ['demo'], regions: ['us-west-2'] }), connectionArgs: () => ['--profile', 'demo', '--region', 'us-west-2'] });
+      awsChoices: () => ({ profiles: ['demo'], regions: ['us-west-2'] }), connectionArgs: () => ['--profile', 'demo', '--region', 'us-west-2'],
+      // Start pentest (1.21.7) is detached: its record and log first.
+      detach: () => ({ run: 'run-1', log: join(home, 'run-1.log'), failed: () => {} }) });
     const res = await r.start({ action: id, ...e.body });
     assert.equal(res.status, 202, id);
     assert.equal(calls.length, 1);
@@ -242,6 +245,15 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     assert.deepEqual(calls[0].args, e.npm ? e.args : ['/opt/prism/dist/bin/prism-cli.js', ...e.args], id);
     assert.equal(calls[0].opts.shell, false, id);
     assert.equal(calls[0].opts.cwd, e.cwd === 'HOME' ? home : e.cwd, id);
+    if (ACTIONS[id].detached) {
+      // Its own process group, output to the run's log (stdin closed), the run named in the env; the lock is free at once.
+      assert.equal(calls[0].opts.detached, true, id);
+      const io = calls[0].opts.stdio as unknown[];
+      assert.equal(io[0], 'ignore'); assert.equal(typeof io[1], 'number'); assert.equal(io[1], io[2]);
+      assert.equal((calls[0].opts.env as Record<string, string>).PRISM_PENTEST_RUN, 'run-1');
+      assert.equal(r.running, false, `${id}: no lock held`);
+      continue;
+    }
     assert.deepEqual(calls[0].opts.stdio, ['ignore', 'pipe', 'pipe'], `${id}: stdin closed`);
     await until(() => !r.running);
   }
@@ -250,8 +262,6 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
   for (const [id, a] of Object.entries(ACTIONS)) {
     const line = a.args.join(' ');
     if (a.writesAws) { assert.match(line, /^security (code-review( --full)? --no-wait( --force)?|threat-model --no-wait|pentest --yes|pentest --cleanup)$/, id); assert.equal(a.confirm, true, id); continue; }
-    // The pentest plan is the one read-only pentest command.
-    if (line === 'security pentest --dry-run') { assert.equal(a.readOnlyAws, true); continue; }
     assert.ok(!/^(security (code-review|threat-model|pentest)|team add-developer)/.test(line), line);
     assert.ok(!/^enable security( |$)/.test(line) || /--(status|dry-run)$/.test(line), line);
   }

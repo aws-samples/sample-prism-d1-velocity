@@ -292,7 +292,9 @@ function showStatus(s) {
   const pending = s.state === 'done' && s.outcome === 'pending';
   // outcome nothing: a branch code review found no changes against its base and started nothing. Neither red nor green.
   const nothing = s.state === 'done' && s.outcome === 'nothing';
-  const p = s.state === 'running' ? pill('warn', 'running') : nothing ? pill('info', 'nothing to review') : s.exitCode === 0 ? pill('ok', 'exit 0')
+  // outcome detached (Start pentest, 1.21.7): the deploy runs in its own process; the run's page follows it.
+  const detached = s.state === 'done' && s.outcome === 'detached';
+  const p = s.state === 'running' ? pill('warn', 'running') : detached ? pill('ok', 'Bootstrapping started') : nothing ? pill('info', 'nothing to review') : s.exitCode === 0 ? pill('ok', 'exit 0')
     : pending ? pill('warn', 'still running (exit ' + s.exitCode + ')') : pill('error', s.timedOut ? 'timed out' : 'exit ' + s.exitCode);
   // replaceChildren would print a null as text: only nodes go in.
   OUT.status.replaceChildren(...[p, el('code', {}, txt(s.command)), el('span', { class: 'fix' }, (s.repo ? 'in ' + txt(s.repo) + ' · ' : '') + 'started ' + when(s.startedAt)),

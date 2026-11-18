@@ -392,7 +392,7 @@ const MACHINE_VIEW = { source: 'machine', file: '~/.prism/security.json', codeRe
 const GOOD: Lookup = { ok: true, at: '2026-11-14T12:00:00Z', profile: 'demo', region: 'us-west-2', account4: '••••3333', inUse: 'as-1', scanBucket: 'prism-scan-demo', consoleUrl: 'https://us-west-2.console.aws.amazon.com/securityagent/home?region=us-west-2',
   spaces: [{ id: 'as-1', name: 'prism-d1-security', createdAt: null, inUse: true, pentest: false, bucketListed: true }, { id: 'as-2', name: 'pentest-demo', createdAt: null, inUse: false, pentest: true, bucketListed: null }] };
 const EXPIRED: Lookup = { ok: false, at: '', profile: 'demo', region: 'us-west-2', error: 'the credentials did not work: Token has expired', credentials: true, kind: 'credentials', action: null };
-const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, label: ACTIONS[id].label, command: 'prism-cli ' + ACTIONS[id].args.join(' '), repo: true, url: false, confirm: !!ACTIONS[id].confirm, readOnlyAws: !!ACTIONS[id].readOnlyAws, writesAws: !!ACTIONS[id].writesAws, note: ACTIONS[id].note ?? null, installs: false, pentest: ACTIONS[id].pentest ?? null, timeoutSec: ACTIONS[id].timeoutMs / 1000, available: true })) };
+const SETUP = { ...SETUP_STUB, actions: SECURITY_ACTIONS.map((id) => ({ id, label: ACTIONS[id].label, command: 'prism-cli ' + ACTIONS[id].args.join(' '), repo: true, url: false, confirm: !!ACTIONS[id].confirm, readOnlyAws: !!ACTIONS[id].readOnlyAws, writesAws: !!ACTIONS[id].writesAws, note: ACTIONS[id].note ?? null, installs: false, pentest: ACTIONS[id].pentest ?? null, detached: !!ACTIONS[id].detached, timeoutSec: ACTIONS[id].timeoutMs / 1000, available: true })) };
 
 const buttons = (root: FakeElement) => root.querySelectorAll('button');
 const btn = (root: FakeElement, label: string) => buttons(root).find((b) => b.textContent === label);
@@ -910,7 +910,7 @@ test('pentest buttons: Start pentest confirms with the account, region, Docker, 
   assert.equal(target.textContent, 'Dockerfilesample-app/DockerfileBuild foldersample-appPort3000Health path/healthz');
   assert.ok(dlg.textContent.includes('prism-cli security pentest --cleanup --job JOB_ID --profile demo --region us-west-2'), 'the cleanup command');
   assert.match(dlg.textContent, /security pentest --yes --app-dir sample-app/);
-  assert.match(dlg.textContent, /stopped after 45 min/);
+  assert.match(dlg.textContent, /It runs in the background/, '1.21.7: detached, no 45 min stop');
   const { renderPage } = await import('../src/dashboard/page.js');
   assert.doesNotMatch(/function saPtPlan\(p, t\) \{[\s\S]*?\n\}/.exec(renderPage('N'))![0], /innerHTML/, 'values go in as text');
   const go = btn(dlg, 'Deploy and start')!;
@@ -979,4 +979,82 @@ test('run drill-down: a pentest whose teardown failed shows the reason and Clean
   await clean.settle();
   assert.doesNotMatch(clean.dom.byId.security.textContent, /Teardown failed|Environment still up/);
   assert.ok(!clean.dom.byId.security.querySelectorAll('button').some((x) => x.getAttribute('data-cleanup') !== null));
+});
+
+// ---------------------------------------------------------------- 1.21.7: Bootstrapping
+
+test('Bootstrapping: the runs table shows the step and links to the run; its page lists the steps and View log draws the log as text', async () => {
+  const p = await pagePayload();
+  const id = p.repos[0].id;
+  const at = new Date(Date.now() - 4 * 60_000).toISOString();
+  const run = { repo_id: id, run_id: 'run-pt-boot', repo: 'demo-shop', type: 'pentest', status: 'bootstrapping', started_at: at, duration_s: null, branch: 'main', commit: 'abc', counts: {}, total: 0, top_title: null, reason: null, job_id: 'PrismPentest-demo-shop-x', check: null,
+    deploy: { phase: 'deploying', label: 'Deploying the environment', step: 4, steps: 7, phase_at: at, log: true, interrupted: false } };
+  const detail = { found: true, run, findings: [], account4: '••••3333', region: 'us-west-2', scope: null, target_host: null, overview: null, result_file: '~/demo-shop/.prism/results/run-pt-boot.json', cli: 'prism-cli security pentest --status --path ~/demo-shop', no_remediation: 'x', cleanup: null };
+  const routes = { '/api/security-agent': saAnswer(p, GOOD), ['/api/security-run?repo=' + id + '&run=run-pt-boot']: detail,
+    ['/api/security-run/log?repo=' + id + '&run=run-pt-boot']: { found: true, text: 'Deploying...\n<img src=x onerror=alert(1)>', truncated: false, updated_at: at } };
+  const dash = await runPage([{ ...p, security_runs: [run] }], '', SETUP, routes);
+  await dash.settle();
+  const row = dash.dom.byId.main.querySelectorAll('tr').find((t) => t.getAttribute('data-run') === 'run-pt-boot')!;
+  assert.match(row.textContent, /Bootstrapping/);
+  assert.match(row.textContent, /Step 4 of 7: Deploying the environment/);
+  assert.equal(row.querySelectorAll('a').find((a) => a.textContent === 'View progress →')?.getAttribute('href'), '#security/run/' + id + '/run-pt-boot');
+  const page = await runPage([{ ...p, security_runs: [run] }], '#security/run/' + id + '/run-pt-boot', SETUP, routes);
+  await page.settle();
+  const sec = page.dom.byId.security;
+  const card = sec.querySelectorAll('section').find((s) => s.getAttribute('data-run-deploy') === 'bootstrapping')!;
+  assert.ok(card, 'the Bootstrapping card');
+  const steps = card.querySelectorAll('li');
+  assert.equal(steps.length, 7);
+  assert.deepEqual(steps.map((s) => s.getAttribute('class')), ['done', 'done', 'done', 'now', null, null, null]);
+  assert.match(card.textContent, /closing the dashboard, VS Code or Kiro Crew does not stop it/);
+  assert.match(sec.textContent, /still bootstrapping/);
+  const view = card.querySelectorAll('button').find((b) => b.getAttribute('data-run-log-open') !== null)!;
+  view.listeners.click();
+  await page.settle();
+  const pre = card.querySelectorAll('pre').find((x) => x.getAttribute('data-run-log') !== null)!;
+  assert.equal(pre.textContent, 'Deploying...\n<img src=x onerror=alert(1)>', 'drawn as text');
+  assert.equal(pre.childNodes.length, 1);
+  assert.ok(!pre.hasAttribute('hidden'));
+  assert.ok(page.requests.some((r) => r.url === '/api/security-run/log?repo=' + id + '&run=run-pt-boot'));
+  // The page sends nothing that writes for a Bootstrapping run.
+  assert.equal(page.requests.filter((r) => r.method === 'POST' && r.url === '/api/action').length, 0);
+});
+
+test('Bootstrapping: a stopped deploy shows the step it stopped at and Clean up; the drawer says Bootstrapping started with a link to the run', async () => {
+  const p = await pagePayload();
+  const id = p.repos[0].id;
+  const at = '2026-11-17T08:00:00Z';
+  const run = { repo_id: id, run_id: 'run-pt-int', repo: 'demo-shop', type: 'pentest', status: 'failed', started_at: at, duration_s: null, branch: 'main', commit: 'abc', counts: {}, total: 0, top_title: null,
+    reason: 'deploy interrupted: its process (pid 4242) stopped during "Deploying the environment"; no pentest job was started', job_id: 'PrismPentest-demo-shop-x', check: null,
+    deploy: { phase: 'deploying', label: 'Deploying the environment', step: 4, steps: 7, phase_at: at, log: false, interrupted: true } };
+  const cmd = 'cd ~/demo-shop && prism-cli security pentest --cleanup --profile demo --region us-west-2';
+  const detail = { found: true, run, findings: [], account4: '••••3333', region: 'us-west-2', scope: null, target_host: null, overview: null, result_file: 'x', cli: 'x', no_remediation: 'x',
+    cleanup: { kind: 'deploy_stopped', reason: run.reason, available: true, why: null, command: cmd } };
+  const routes = { '/api/security-agent': saAnswer(p, GOOD), ['/api/security-run?repo=' + id + '&run=run-pt-int']: detail, '/api/action': { state: 'running' }, '/api/action/status': { state: 'idle' } };
+  const page = await runPage([{ ...p, security_runs: [run] }], '#security/run/' + id + '/run-pt-int', SETUP, routes);
+  await page.settle();
+  const sec = page.dom.byId.security;
+  assert.match(sec.textContent, /Deploy stopped/);
+  assert.match(sec.textContent, /Interrupted at step 4 of 7: Deploying the environment/);
+  assert.match(sec.textContent, /Started from a terminal/);
+  assert.match(sec.textContent, /Clean up the deploy/);
+  assert.ok(sec.querySelectorAll('button').some((b) => b.getAttribute('data-cleanup') !== null), 'Clean up');
+  // The drawer after a detached Start.
+  const { routes: pr } = ptRoutes(p);
+  const st = { state: 'done', action: 'security-pentest-start', command: 'prism-cli security pentest --yes', repo: 'demo-shop', repoId: id, startedAt: at, exitCode: 0, outcome: 'detached', output: 'Bootstrapping started in the background.', result: { repo: id, run: 'run-pt-new', status: 'bootstrapping' } };
+  const d = await runPage([p], '#security', SETUP, { ...pr, '/api/action': st, '/api/action/status': st });
+  await d.settle();
+  ptButton(d.dom.byId.security, 'security-pentest-start').listeners.click();
+  const dlg = dialogOf(d);
+  assert.match(dlg.textContent, /It runs in the background: the dialog closes at once/);
+  assert.match(dlg.textContent, /Other actions can run while it deploys/);
+  assert.doesNotMatch(dlg.textContent, /stopped after 45 min/);
+  const box = dlg.querySelectorAll('input').find((i) => i.getAttribute('data-pt-ack') !== null)!;
+  (box as unknown as { checked: boolean }).checked = true; box.listeners.change();
+  btn(dlg, 'Deploy and start')!.listeners.click();
+  await d.settle();
+  const drawer = d.dom.byId['action-drawer'] ?? d.dom.document.body;
+  assert.match(drawer.textContent, /Bootstrapping started/);
+  const link = drawer.querySelectorAll('a').find((a) => a.textContent === 'View progress →');
+  assert.equal(link?.getAttribute('href'), '#security/run/' + id + '/run-pt-new');
 });

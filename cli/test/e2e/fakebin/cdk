@@ -1,11 +1,27 @@
 #!/bin/sh
 # Fake cdk for the dashboard e2e run (PRISM_PENTEST_CDK_DIR points at a folder whose node_modules/.bin/cdk is this):
 # logs each call to $HOME/cdk-calls.log. synth and diff print a short plan; deploy "builds and pushes" the image with
-# the fake docker on PATH, as cdk deploy would, and creates nothing. No AWS call, no network.
+# the fake docker on PATH, as cdk deploy would, prints cdk's progress lines, and creates nothing. No AWS call, no network.
+#   $HOME/fake-cdk-slow    seconds to wait after each deploy step (default 0), so the e2e can watch the phases
+#   $HOME/fake-cdk-deploy  fail: the stack deploy fails after the image is pushed; hang: it never finishes
 echo "$*" >> "$HOME/cdk-calls.log"
+SLOW=$(cat "$HOME/fake-cdk-slow" 2>/dev/null || echo 0)
+MODE=$(cat "$HOME/fake-cdk-deploy" 2>/dev/null || echo ok)
 case "$1" in
   synth) exit 0 ;;
   diff) echo "Stack PrismPentest-demo (fake diff)"; echo "[+] AWS::EC2::VPC Vpc"; echo "[+] AWS::ECS::Service App"; echo "[+] AWS::ElasticLoadBalancingV2::LoadBalancer InternalAlb"; exit 0 ;;
-  deploy) docker build -t prism-pentest-demo . && docker push prism-pentest-demo && rm -f "$HOME/fake-pt-deleting"; echo "PrismPentest-demo: deployed (fake)"; exit 0 ;;
+  deploy)
+    echo "$2:  start: Building fakeimage:current_account-current_region" >&2
+    docker build -t prism-pentest-demo . || exit 1
+    sleep "$SLOW"
+    echo "$2:  start: Publishing fakeimage:current_account-current_region" >&2
+    docker push prism-pentest-demo || exit 1
+    sleep "$SLOW"
+    echo "$2: deploying... [1/1]"
+    echo "$2: creating CloudFormation changeset..."
+    if [ "$MODE" = "fail" ]; then echo "$2 | CREATE_FAILED | AWS::ECS::Service | App: fake failure" >&2; echo "❌  $2 failed: fake" >&2; exit 1; fi
+    if [ "$MODE" = "hang" ]; then sleep 600; fi
+    sleep "$SLOW"
+    rm -f "$HOME/fake-pt-deleting"; echo "$2: deployed (fake)"; exit 0 ;;
 esac
 exit 0

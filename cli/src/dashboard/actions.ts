@@ -38,7 +38,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROFILE_RE, REGION_RE } from '../aws/connection.js';
@@ -47,6 +47,7 @@ import { settingError, type Scope } from '../codewatch/reviewer-settings.js';
 import { maskHome, redact } from '../utils/redact.js';
 import { tildeHome } from './payload.js';
 import { runWrittenSince, type RunStatus } from './security-runs.js';
+import { PENTEST_RUN_ENV } from '../security/pentest-deploy.js';
 
 export type ActionId = 'codewatch-repo' | 'codewatch-global'
   | 'codewatch-reviewer-clone' | 'codewatch-reviewer-team' | 'codewatch-reviewer-global'
@@ -98,6 +99,12 @@ export interface ActionDef {
    * RunnerDeps.pentestArgs checks them and returns the flags to append; absent, the action is refused.
    */
   pentest?: 'choice' | 'run';
+  /**
+   * Runs in its own detached process (1.21.7, Start pentest): RunnerDeps.detach writes its run record first, the
+   * runner starts the command with its output in the run's log file and answers at once. It does not hold the lock,
+   * timeoutMs does not apply, and it survives the dashboard (and its stdio host) going away.
+   */
+  detached?: true;
   /** Appends every repo of the server's scan list (absolute paths it found itself), one argument each. */
   allRepos?: true;
   /** Appends --profile/--region of the connected account (RunnerDeps.connectionArgs); refused when none is connected. */
@@ -190,7 +197,8 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   // the dashboard's background --status check tears the environment down when it finishes. 45 min: cdk deploy (VPC,
   // endpoints, internal ALB, Fargate) takes 10-20 min, the first run also installs the CDK app's packages and builds and
   // pushes the image, then up to 10 min for the ALB health check. Stopping it mid-deploy would leave a stack with no record.
-  'security-pentest-start': { label: 'Start a pentest', args: ['security', 'pentest', '--yes'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'choice', timeoutMs: 45 * MIN },
+  // Detached (1.21.7): the deploy runs in the background with its own run record (status deploying); the drawer links to it.
+  'security-pentest-start': { label: 'Start a pentest', args: ['security', 'pentest', '--yes'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'choice', detached: true, timeoutMs: 45 * MIN },
   // 90 min: teardown waits up to 10 min for the agent's network interfaces, up to 30 min for the stack deletion, then once more of each.
   'security-pentest-cleanup': { label: 'Clean up the pentest environment', args: ['security', 'pentest', '--cleanup'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'run', timeoutMs: 90 * MIN },
 };
@@ -255,6 +263,11 @@ export interface RunnerDeps {
   awsChoices?: () => { profiles: string[]; regions: string[] };
   /** For AccountGuard: --profile/--region of the connected account, or null when none is connected. */
   connectionArgs?: () => string[] | null;
+  /**
+   * For a detached action: writes its run record and names it, its log file (absolute) and how to mark it failed
+   * if the process cannot start; else why not. Absent: detached actions are refused.
+   */
+  detach?: (id: ActionId, repo: ScanRepo, body: Record<string, unknown>) => { run: string; log: string; failed: (reason: string) => void } | { error: string; status: number };
   /** Finds the run a Security Agent action wrote (default: security-runs.ts runWrittenSince); a test seam. */
   runWritten?: typeof runWrittenSince;
   /** Kill grace after SIGTERM. */
@@ -285,7 +298,7 @@ export interface ActionStatus {
    * When done: ok (exit 0), pending (the action's pendingExit: the job is still running), nothing (a branch
    * code review that exited 0 and saved no run: its diff was empty, so it started nothing), else failed.
    */
-  outcome?: 'ok' | 'pending' | 'nothing' | 'failed';
+  outcome?: 'ok' | 'pending' | 'nothing' | 'failed' | 'detached';
   /** The repo's id (from the scan list) for a repo action, so the drawer can offer the next action there. */
   repoId?: string | null;
   timedOut?: boolean;
@@ -427,6 +440,7 @@ export class ActionRunner {
     const args = [...def.args, ...pentest, ...chosen, ...picked, ...target, ...every, ...(def.url ? [b.url as string] : [])];
     const cwd = repo ? repo.path : def.inHome ? this.d.home : this.d.cwd;
     const now = this.d.now ?? (() => new Date());
+    if (def.detached) return repo ? this.startDetached(id, repo, args, b) : bad('a detached action needs a repo');
     this.busy = true;
     const runId = ++this.seq;
     const st = this.cur = {
@@ -485,6 +499,43 @@ export class ActionRunner {
       }, this.d.exitGraceMs ?? EXIT_GRACE_MS);
       lingering.unref();
     });
+    return { status: 202, json: this.status() };
+  }
+
+  /**
+   * A detached action: its record first (RunnerDeps.detach), then the command in its own process group with its
+   * output in the run's log, unref'd. Answers done at once with the run to link to; the lock is never taken.
+   */
+  private startDetached(id: ActionId, repo: ScanRepo, args: string[], body: Record<string, unknown>): ApiResult {
+    const bad = (error: string, status = 400): ApiResult => ({ status, json: { error } });
+    const prep = this.d.detach ? this.d.detach(id, repo, body) : { error: 'this action is not available here', status: 400 };
+    if ('error' in prep) return bad(prep.error, prep.status);
+    const at = (this.d.now ?? (() => new Date()))().toISOString();
+    let fd: number;
+    try { fd = openSync(prep.log, 'a', 0o600); } catch (e) {
+      prep.failed(`could not open its log file: ${(e as Error).message}`);
+      return bad(`could not open the run's log file: ${redact((e as Error).message)}`, 500);
+    }
+    let child: ChildProcess;
+    try {
+      child = (this.d.spawn ?? nodeSpawn)(this.d.execPath, [this.d.entry, ...args], {
+        cwd: repo.path, shell: false, windowsHide: true, detached: true, stdio: ['ignore', fd, fd],
+        env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0', [PENTEST_RUN_ENV]: prep.run },
+      });
+    } catch (e) {
+      prep.failed(`could not start: ${(e as Error).message}`);
+      return bad(`could not start: ${redact((e as Error).message)}`, 500);
+    } finally { closeSync(fd); }
+    child.on('error', (e) => prep.failed(`could not start: ${e.message}`));
+    child.unref();
+    const st = this.cur = {
+      state: 'done' as const, runId: ++this.seq, action: id, repo: repo.name, repoId: repo.id, command: displayCommand(args), cwd: repo.path,
+      buf: `Bootstrapping started in the background. Closing the dashboard does not stop it.\nIts output: .prism/results/${prep.run}.log (the run's page shows it).\n`,
+      exitCode: 0, outcome: 'detached' as const, timedOut: false, startedAt: at, finishedAt: at,
+      result: { repo: repo.id, run: prep.run, status: 'bootstrapping' as RunStatus },
+    } as ActionStatus & { buf: string };
+    this.log(st);
+    try { this.d.onDone?.(); } catch { /* a refresh hook must not break the runner */ }
     return { status: 202, json: this.status() };
   }
 

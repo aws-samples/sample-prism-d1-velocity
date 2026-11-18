@@ -10,20 +10,25 @@
  * from AWS and from code: it leaves here as plain JSON strings and the page
  * places it with textContent.
  */
-import { realpathSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { RESULTS_DIR, readResultEntries, type Finding, type PrismResult, type ResultEntry } from '../codewatch/results.js';
 import { last4 } from '../aws/connection.js';
 import type { CheckState } from './security-autocheck.js';
 import { cleanupArgsFor, pentestCleanupOf, shownReason } from './security-pentest.js';
+import { DEPLOY_PHASE_LABEL, DEPLOY_PHASES, deployLogName, type DeployPhase } from '../security/pentest-deploy.js';
+import { maskHome, redact } from '../utils/redact.js';
 
 export type RunType = 'code-review' | 'threat-model' | 'pentest';
 /**
  * complete: a verdict; running: pending and recent, or the dashboard's last check (security-autocheck.ts) found it
  * still running in AWS; noverdict: pending past the stale window with no such check (none could run, or it failed:
- * `check.reason` says why); failed: no verdict.
+ * `check.reason` says why); failed: no verdict; bootstrapping (1.21.7): a pentest still deploying its environment,
+ * no job yet.
  */
-export type RunStatus = 'complete' | 'running' | 'failed' | 'noverdict';
+export type RunStatus = 'complete' | 'running' | 'failed' | 'noverdict' | 'bootstrapping';
+/** A pentest run's deploy, as the page shows it: the step (id and words), since when, and whether a log can be shown. */
+export interface RunDeploy { phase: string; label: string; step: number; steps: number; phase_at: string; log: boolean; interrupted: boolean }
 export interface RunCounts { critical: number; high: number; medium: number; low: number }
 
 export interface SecurityRunRow {
@@ -46,6 +51,8 @@ export interface SecurityRunRow {
   job_id: string;
   /** The dashboard's last read-only check of a pending job; null when none ran. */
   check: CheckState | null;
+  /** A pentest run's deploy (1.21.7); null for other runs and for records from before 1.21.7. */
+  deploy?: RunDeploy | null;
 }
 
 /** The last auto-check of a job (security-autocheck.ts stateOf); absent: none (a snapshot, the CLI's --json). */
@@ -66,7 +73,8 @@ export const runTypeOf = (r: PrismResult): RunType | null => TYPE_OF[r.kind] ?? 
 function info(r: PrismResult) {
   return r.security ?? r.threat_model ?? r.pentest ?? null;
 }
-const rawJobKey = (r: PrismResult): string | null => (r.kind === 'security-pentest' ? r.pentest?.job_id || r.pentest?.stack || null : info(r)?.job_id || null);
+// A pentest with no job keys on its stack, else its slug (a deploy that stopped before cdk deploy keeps only the slug).
+const rawJobKey = (r: PrismResult): string | null => (r.kind === 'security-pentest' ? r.pentest?.job_id || r.pentest?.stack || r.pentest?.slug || null : info(r)?.job_id || null);
 /**
  * The job id, or null when the file holds none or one outside the shape AWS and prism-cli
  * use: the id goes into a copyable command and a URL, so an edited file cannot inject anything.
@@ -87,7 +95,7 @@ export function runEntries(entries: ResultEntry[]): ResultEntry[] {
     const key = `${t}:${k}`, prev = best.get(key);
     if (!prev) { best.set(key, e); continue; }
     const a = prev.result, b = e.result;
-    const pend = (x: PrismResult) => x.status === 'pending';
+    const pend = (x: PrismResult) => x.status === 'pending' || x.status === 'deploying';
     if (pend(a) !== pend(b)) { if (pend(a)) best.set(key, e); continue; }
     const scoped = (x: PrismResult) => (x.security ? x.security.scope !== 'unknown' : true);
     if (scoped(a) !== scoped(b)) { if (!scoped(a)) best.set(key, e); continue; }
@@ -98,6 +106,7 @@ export function runEntries(entries: ResultEntry[]): ResultEntry[] {
 
 export function runStatus(r: PrismResult, now: Date, check: CheckState | null = null): RunStatus {
   const t = runTypeOf(r)!;
+  if (r.status === 'deploying') return 'bootstrapping';
   if (r.status === 'pending') return check?.state === 'running' || now.getTime() - Date.parse(r.started_at) <= STALE_MS[t] ? 'running' : 'noverdict';
   if (r.status === 'error') return 'failed';
   return 'complete';
@@ -109,12 +118,21 @@ export function runCounts(r: PrismResult): RunCounts {
 }
 
 function duration(r: PrismResult): number | null {
-  if (r.status === 'pending') return null;
+  if (r.status === 'pending' || r.status === 'deploying') return null;
   const i = info(r) as { wall_s?: number | null; service_duration_s?: number | null; service_created_at?: string | null; service_updated_at?: string | null } | null;
   if (typeof i?.wall_s === 'number') return i.wall_s;
   if (typeof i?.service_duration_s === 'number') return i.service_duration_s;
   const a = Date.parse(i?.service_created_at || ''), b = Date.parse(i?.service_updated_at || '');
   return Number.isFinite(a) && Number.isFinite(b) && b >= a ? Math.round((b - a) / 1000) : null;
+}
+
+/** The deploy of a pentest record, for the page; the log only when the record names the run's own log file. */
+export function runDeploy(e: ResultEntry): RunDeploy | null {
+  const d = e.result.kind === 'security-pentest' ? e.result.pentest?.deploy : null;
+  if (!d || typeof d.phase !== 'string') return null;
+  const i = DEPLOY_PHASES.indexOf(d.phase as DeployPhase);
+  return { phase: d.phase, label: DEPLOY_PHASE_LABEL[d.phase as DeployPhase] ?? 'Bootstrapping', step: i + 1, steps: DEPLOY_PHASES.length,
+    phase_at: String(d.phase_at || e.result.started_at), log: d.log === deployLogName(e.id), interrupted: !!d.interrupted };
 }
 
 const sorted = (fs: Finding[]) => [...fs].sort((a, b) => (RANK[b.risk_level || ''] ?? 0) - (RANK[a.risk_level || ''] ?? 0));
@@ -128,7 +146,8 @@ export function runRow(repo: RunRepo, e: ResultEntry, now: Date, lookup?: CheckL
     repo_id: repo.id, run_id: e.id, repo: repo.name, type: runTypeOf(r)!, status: runStatus(r, now, check),
     started_at: r.started_at, duration_s: duration(r), branch: r.branch, commit: r.commit ? r.commit.slice(0, 12) : null,
     counts: runCounts(r), total: (r.findings || []).length, top_title: top ? (top.title || top.message) : null,
-    reason: r.reason ?? null, job_id: job, check,
+    // A pentest with no job yet (deploying, or its deploy stopped) shows no job: its key is the stack.
+    reason: r.reason ?? null, job_id: r.kind === 'security-pentest' && !r.pentest?.job_id ? '' : job, check, deploy: runDeploy(e),
   };
 }
 
@@ -194,7 +213,7 @@ export type RunDetail =
      * recorded): why, the failure reason (redacted, home as ~), and whether Clean up can target this run
      * (`why` when it cannot), and the exact line Clean up runs (also the terminal command). null for every other run.
      */
-    cleanup: { kind: 'teardown_failed' | 'still_up'; reason: string | null; available: boolean; why: string | null; command: string | null } | null;
+    cleanup: { kind: 'teardown_failed' | 'still_up' | 'deploy_stopped'; reason: string | null; available: boolean; why: string | null; command: string | null } | null;
   };
 
 export const NO_REMEDIATION = 'No remediation provided by this run type.';
@@ -252,7 +271,8 @@ export function securityRunDetail(repos: RunRepo[], repoArg: string | null, runA
   const job = shellWord(jobKey(r)!);
   const cli = type === 'code-review' ? `prism-cli security findings --job ${job} --path ${where}`
     : type === 'threat-model' ? `prism-cli security threats --job ${job} --path ${where}`
-      : `prism-cli security findings --pentest ${job} --path ${where}`;
+      // A pentest with no job yet (deploying, or its deploy stopped): its status, which also marks an interrupted deploy.
+      : r.pentest?.job_id ? `prism-cli security findings --pentest ${job} --path ${where}` : `prism-cli security pentest --status --path ${where}`;
   return {
     found: true, run: runRow(repo, e, now, check), findings,
     account4: i?.account ? last4(i.account) : null, region: i?.region ?? null,
@@ -282,4 +302,38 @@ export function runWrittenSince(repoPath: string, sinceMs: number, now: Date = n
     if (!best || m > best.m) best = { e, m };
   }
   return best ? { run: best.e.id, status: runStatus(best.e.result, now) } : null;
+}
+
+// ---------------------------------------------------------------- a pentest deploy's log (1.21.7)
+
+/** How much of a deploy log the page gets: its end. */
+export const LOG_TAIL_BYTES = 64 * 1024;
+export const LOG_TAIL_LINES = 200;
+
+export type RunLog = { found: false; error: string } | { found: true; text: string; truncated: boolean; updated_at: string | null };
+
+/**
+ * GET /api/security-run/log?repo=<id>&run=<id>: the end of a pentest deploy's log, redacted (account ids, ARNs,
+ * keys) and with home as ~. Only the run's own log file (<run id>.log in .prism/results/, named by its record);
+ * ids only, never a path from the request. Local files only.
+ */
+export function securityRunLog(repos: RunRepo[], repoArg: string | null, runArg: string | null, home: string, read: (root: string) => ResultEntry[] = readResultEntries): RunLog {
+  if (!repoArg || !REPO_ID.test(repoArg) || !runArg || !RUN_ID.test(runArg)) return { found: false, error: 'not a run id' };
+  const repo = repos.find((r) => r.id === repoArg);
+  if (!repo) return { found: false, error: 'that repo is not in the scan list' };
+  const e = read(repo.path).find((x) => x.id === runArg);
+  if (!e || !runDeploy(e)?.log) return { found: false, error: 'this run has no deploy log (it was started from a terminal, or before 1.21.7)' };
+  const file = join(resolve(repo.path, RESULTS_DIR), deployLogName(e.id));
+  let size: number, mtime: string;
+  try { const st = statSync(file); size = st.size; mtime = st.mtime.toISOString(); } catch { return { found: true, text: '', truncated: false, updated_at: null }; }
+  const n = Math.min(size, LOG_TAIL_BYTES), buf = Buffer.alloc(n);
+  const fd = openSync(file, 'r');
+  try { readSync(fd, buf, 0, n, size - n); } finally { closeSync(fd); }
+  let lines = buf.toString('utf8').split('\n');
+  if (size > n) lines = lines.slice(1);
+  const truncated = size > n || lines.length > LOG_TAIL_LINES;
+  let real = home;
+  try { real = realpathSync(home); } catch { /* keep home */ }
+  const text = [home, real].reduce((t, h) => (h ? maskHome(t, h) : t), redact(lines.slice(-LOG_TAIL_LINES).join('\n')));
+  return { found: true, text, truncated, updated_at: mtime };
 }

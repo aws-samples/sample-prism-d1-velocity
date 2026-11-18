@@ -136,7 +136,7 @@ function saDialog() {
 }
 /** What the confirm dialog says about the AWS side, per action. */
 const SA_WRITE_NOTE = {
-  'security-pentest-start': 'It returns once the job has started; it does not wait for it.',
+  'security-pentest-start': 'It runs in the background: the dialog closes at once and the run shows Bootstrapping, with each step and its log, until the job starts. Closing the dashboard, VS Code or Kiro Crew does not stop it.',
   'security-pentest-cleanup': 'It waits for the teardown: the agent\\'s network interfaces are released first, then the stack is deleted, retried once. That can take over an hour.',
 };
 const SA_RUN_LABEL = { 'security-pentest-start': 'Deploy and start', 'security-pentest-cleanup': 'Tear down' };
@@ -173,7 +173,8 @@ function saConfirm(a, repo, o) {
     ? SA_WRITE_NOTE[a.id] || 'This writes to AWS: an S3 upload and one started job, which may incur cost. It does not wait for the job; fetch the result here later.'
     : 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.'));
   if (a.note) kids.push(el('p', { class: 'note' }, txt(a.note)));
-  kids.push(el('p', { class: 'note' }, 'It runs without a terminal, so it cannot ask questions; one action runs at a time and this one is stopped after ' + Math.max(1, Math.round(a.timeoutSec / 60)) + ' min.'));
+  kids.push(el('p', { class: 'note' }, a.detached ? 'It runs without a terminal, so it cannot ask questions. Other actions can run while it deploys.'
+    : 'It runs without a terminal, so it cannot ask questions; one action runs at a time and this one is stopped after ' + Math.max(1, Math.round(a.timeoutSec / 60)) + ' min.'));
   // A pentest is billed for hours: its Deploy and start also needs the box ticked.
   if (a.id === 'security-pentest-start') {
     const cb = el('input', { type: 'checkbox', 'data-pt-ack': '' });
@@ -512,8 +513,8 @@ function saPtStart(a, repo, o) {
   const view = el('button', { type: 'button', class: 'run' }, 'View it →');
   view.addEventListener('click', () => { DIALOG.close(); navigate('#security/run/' + repo.id + '/' + txt(g.run_id)); });
   DIALOG.replaceChildren(el('h2', { id: 'confirm-title' }, a.label),
-    el('div', { class: 'callout warn', role: 'note', 'data-pt-running': '' }, el('strong', {}, 'A pentest of ' + txt(repo.name) + ' is already running. '),
-      'Started ' + when(g.started_at) + ' (job ' + txt(g.job_id) + '). Its environment is torn down when the job finishes. A second one would deploy another VPC and be billed separately; prism-cli has no --force for pentests, so start a second one from a terminal if you mean to.'),
+    el('div', { class: 'callout warn', role: 'note', 'data-pt-running': '' }, el('strong', {}, 'A pentest of ' + txt(repo.name) + ' is already ' + (g.deploying ? 'bootstrapping' : 'running') + '. '),
+      'Started ' + when(g.started_at) + (g.deploying ? ' (still deploying its environment)' : ' (job ' + txt(g.job_id) + ')') + '. Its environment is torn down when the job finishes. A second one would deploy another VPC and be billed separately; prism-cli has no --force for pentests, so start a second one from a terminal if you mean to.'),
     el('div', { class: 'actions' }, cancel, view));
   cancel.addEventListener('click', () => DIALOG.close());
   DIALOG.showModal();

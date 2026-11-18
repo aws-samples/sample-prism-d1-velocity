@@ -23,7 +23,7 @@ import type { UsageCache } from './usage-cache.js';
 import type { UpdateCheck } from './update-check.js';
 import { findOnPath } from '../utils/tool-check.js';
 import { SecurityAutoCheck, spawnCheck } from './security-autocheck.js';
-import { pentestActionArgs } from './security-pentest.js';
+import { pentestActionArgs, pentestDetach } from './security-pentest.js';
 
 /** The ids /report/<id> accepts (server.ts REPORT_ROUTE). */
 const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
@@ -87,6 +87,8 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
     pentestArgs: (id, repo, body) => (checks?.pentestRunning()
       ? { error: 'A background status check of a pentest is running (it tears an environment down once its job has finished). Try again in a few minutes.', status: 409 }
       : pentestActionArgs({ ...saIdentity, cache: lookups }, id, repo, body)),
+    // Start pentest (1.21.7): its deploying run record first, then the runner starts it detached with its log beside it.
+    detach: (_id, repo, body) => pentestDetach({ ...saIdentity, cache: lookups }, repo, body),
     // aws-connect accepts only names read fresh from the section headers of the two AWS files, and the region list.
     awsChoices: () => { const c = profileChoices(identity); return { profiles: c.profiles.map((p) => p.name), regions: c.regions }; },
     connectionArgs: () => connectionArgs(identity.home, identity.repoRoot),

@@ -1578,11 +1578,32 @@ step.
   command to run sooner (`security pentest --cleanup --job JOB_ID` with the page's `--profile` and
   `--region`; the run's page shows the job id); and that it runs for hours and costs money while it
   is up (publicly reported at $50 per task-hour, plus the environment). You tick a box to confirm;
-  nothing is deployed or called in AWS before **Deploy and start**. The action is stopped after 45
-  minutes: `cdk deploy` of the VPC, endpoints, load balancer and Fargate service takes 10 to 20
-  minutes, the first run also installs the CDK app's packages and builds the image, and the
-  command then waits up to 10 minutes for the health check. While a pentest of the repo is pending
-  in the same account and region, Start pentest says so and offers **View it →** only:
+  nothing is deployed or called in AWS before **Deploy and start**.
+
+  **Bootstrapping.** Since 1.21.7, Deploy and start runs the deploy in the background, in its own
+  process, and answers at once: the action drawer says **Bootstrapping started** with **View
+  progress →**. Closing the dashboard, VS Code or Kiro Crew does not stop it, and it does not hold
+  the one-action lock, so other actions can run meanwhile. Before anything is deployed, it writes
+  the run's record (status `deploying`) with the stack name, the account and region and the picked
+  target; its output goes to `.prism/results/<run>.log` beside it (ignored by git, as the results
+  are). The deploy takes 10 to 20 minutes or more: `cdk deploy` of the VPC, endpoints, load
+  balancer and Fargate service, the first run also installs the CDK app's packages, and the command
+  then waits up to 10 minutes for the health check. The Security runs table shows the run as
+  **Bootstrapping** with its step (Preparing, Building the app image, Pushing the image to ECR,
+  Deploying the environment, Waiting for the app to pass its health check, Registering the target
+  with Security Agent, Starting the pentest job) and how long that step has run; its page lists the
+  steps and has **View log** (the end of the log, account ids and home paths masked). The dashboard
+  reads a bootstrapping run from its record only, with no AWS call. When the job starts, the same
+  record becomes the pending run, which the dashboard checks every 5 minutes as before. If the
+  deploy fails, the run is **failed** with the reason, keeps what it created, and its page has
+  **Clean up**. If its process goes away (it was killed, or the machine restarted) while the record
+  still says deploying, the dashboard marks it **deploy interrupted** and offers Clean up too.
+
+  ![The Security runs table with a pentest Bootstrapping at step 2 of 7, Building the app image, with View progress](assets/images/prism-cli/dashboard-security-runs-bootstrapping-dark.png)
+  ![A bootstrapping pentest's page: the seven steps with the first two done and Pushing the image to ECR current, the note that closing the dashboard does not stop it, and View log open on the deploy's output](assets/images/prism-cli/dashboard-security-run-bootstrapping-dark.png)
+
+  While a pentest of the repo is bootstrapping or pending in the same account and region, Start
+  pentest says so and offers **View it →** only:
   `security pentest` has no `--force`, so start a second one from a terminal if you mean to. The
   environment is torn down automatically when the job finishes (Security runs, below). A run whose
   environment is still up afterwards (its teardown failed, it was started with `--keep`, or the
@@ -2333,6 +2354,16 @@ skips the prompt). It starts the job only after the app passes the ALB health ch
 to 10 minutes. If the app never becomes healthy, no pentest is created; the command prints the
 target's health reason and an `aws logs tail` command for the app's log group, and leaves the
 environment up for `--cleanup`.
+
+**The run record (1.21.7).** Right after the confirm and before anything is deployed, the command
+writes the run's record in `.prism/results/` with status `deploying`, and updates its step as it
+goes (the same steps the dashboard shows as Bootstrapping). When the job starts, the same file
+becomes the pending record; if the deploy fails, it becomes an error that keeps the stack name and
+anything already created in Security Agent, so `--cleanup` removes it. Started from a terminal or
+from the dashboard, the run looks the same on the dashboard. `--status` on a run that is still
+deploying prints its step and exits 0; if its process is gone, it marks the run interrupted.
+`--cleanup` refuses while the deploy is still running (it would delete the stack under it) and
+removes an interrupted or failed deploy's environment.
 
 **Cost.** Security Agent penetration testing is billed in task-hours, publicly reported at **$50
 per task-hour** (per-second metered; check the current AWS Security Agent pricing page). The
