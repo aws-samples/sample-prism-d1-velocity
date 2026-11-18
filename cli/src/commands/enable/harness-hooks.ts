@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import { run } from '../../utils/exec.js';
 import { backup, configDir, lineDiff, ownCliLocation, pluginState, PLUGIN_ID, prismCliCommand, render, writeAtomic } from './claude-code.js';
 import { runGuarded } from './security.js';
-import { bundledAppDir, bundledSteering, removeSteering, steeringPath, steeringState, writeSteering, type SteeringState } from '../../utils/kirocrew.js';
+import { bundledAppDir, bundledSteering, installedAppVersion, removeSteering, steeringPath, steeringState, writeSteering, type SteeringState } from '../../utils/kirocrew.js';
 
 export const CLIENTS = ['kiro', 'claude'] as const;
 export type Client = typeof CLIENTS[number];
@@ -181,15 +181,17 @@ function kiroSteering(o: AgentHooksOptions, d: AgentHooksDeps): void {
   const p = tilde(steeringPath(d.home), d.home);
   const st = steeringState(d.home, note);
   if (o.uninstall) {
-    if (!o.global) { if (st !== 'missing') d.log(`  Steering note ${p} is kept: it is global (remove it with --uninstall --global).`); return; }
+    if (!o.global) { if (st === 'installed' || st === 'outdated') d.log(`  Steering note ${p} is kept: it is global (remove it with --uninstall --global).`); return; }
     if (st === 'user-owned') { d.log(`  - ${p} has no prism-cli marker; it is left as it is.`); return; }
     if (st === 'missing') return;
+    if (installedAppVersion(d.home, d.env)) { d.log(`  Steering note ${p} is kept: the PRISM Kiro Crew app uses it too (prism-cli enable kirocrew --uninstall removes it).`); return; }
     if (o.dryRun) { d.log(`  → would remove the steering note ${p}`); return; }
     if (removeSteering(d.home)) d.log(`  ✓ Removed the steering note ${p}`);
     return;
   }
   if (st === 'user-owned') { d.log(`  - Steering note: ${p} exists without the prism-cli marker; it is yours and is left as it is.`); return; }
-  if (st === 'installed' || !note) { if (note) d.log(`  Steering note: installed (${p}).`); return; }
+  if (st === 'installed') { d.log(`  Steering note: installed (${p}).`); return; }
+  if (!note) { d.log(`  - Steering note ${p} is ${st}: this prism-cli has no bundled note (reinstall it: npm i -g @prism-d1/cli).`); return; }
   const verb = st === 'missing' ? 'write' : 'update';
   if (o.dryRun) { d.log(`  → would ${verb} the steering note ${p} (kiro-cli, Kiro IDE and Kiro Crew load it: check codewatch findings before finishing)`); return; }
   try {

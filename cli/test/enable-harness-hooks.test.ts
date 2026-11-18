@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -287,8 +287,23 @@ test('kiro steering: a file without the marker is left alone; --uninstall --glob
   assert.match(y.text(), /is kept: it is global/);
   y.run({ client: 'kiro', uninstall: true, global: true, dryRun: true });
   assert.ok(existsSync(notePath(y.home)));
+  // The PRISM Kiro Crew app is installed: it uses the same note, so it stays.
+  mkdirSync(join(y.home, '.kiro', 'crew', 'apps', 'prism'), { recursive: true });
+  writeFileSync(join(y.home, '.kiro', 'crew', 'apps', 'prism', 'installed.json'), JSON.stringify({ version: '0.4.1' }));
+  y.out.length = 0;
+  y.run({ client: 'kiro', uninstall: true, global: true });
+  assert.ok(existsSync(notePath(y.home)));
+  assert.match(y.text(), /the PRISM Kiro Crew app uses it too/);
+  rmSync(join(y.home, '.kiro', 'crew'), { recursive: true });
   y.run({ client: 'kiro', uninstall: true, global: true });
   assert.ok(!existsSync(notePath(y.home)));
+});
+
+test('kiro steering: no bundled note: a missing note is reported, nothing is written', () => {
+  const x = rig({ steeringNote: () => null });
+  assert.equal(x.run({ client: 'kiro' }), 0);
+  assert.match(x.text(), /Steering note ~\/\.kiro\/steering\/prism-codewatch\.md is missing: this prism-cli has no bundled note/);
+  assert.ok(!existsSync(notePath(x.home)));
 });
 
 test('kiro steering: --status and the dashboard status report its state', async () => {
