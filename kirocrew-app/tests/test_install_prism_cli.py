@@ -188,6 +188,16 @@ class InstallTest(unittest.TestCase):
         self.assertIn("could not write the steering note", p.stdout)
         self.assertIn("nothing to install", p.stdout)
 
+    def test_steering_note_not_utf8_does_not_fail_the_install(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().write_bytes(b"\xff\xfe not text")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("could not write the steering note", p.stdout)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertEqual(self.note().read_bytes(), b"\xff\xfe not text")
+
 
 if __name__ == "__main__":
     unittest.main()

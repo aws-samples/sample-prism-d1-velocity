@@ -352,14 +352,23 @@ export async function enableKirocrew(opts: KirocrewOptions, d: KirocrewDeps): Pr
   checkPrismCliOnPath(d);
   const verb = dry ? '  → would' : '  →';
   const noteStep = `${verb} ${steering === 'missing' ? 'write' : 'update'} the steering note ${notePath} (tells Kiro Crew agents to load the prism-fix-findings skill)`;
-  const putNote = () => { writeSteering(d.home, note!); d.log(`  ✓ ${steering === 'missing' ? 'Wrote' : 'Updated'} ${notePath}`); };
+  const putNote = (): boolean => {
+    try {
+      writeSteering(d.home, note!);
+    } catch (e) {
+      d.error(`  ⚠ could not write ${notePath}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
+      return false;
+    }
+    d.log(`  ✓ ${steering === 'missing' ? 'Wrote' : 'Updated'} ${notePath}`);
+    return true;
+  };
   if (!args) {
     if (info && !info.enabled) d.log(`\n  The app is installed but not enabled: kirocrew app enable ${APP}`);
     if (writeNote) {
       d.log(noteStep);
       if (dry) { d.log('\n  Dry run complete. Re-run without --dry-run to apply.\n'); return 0; }
       if (!await confirm('\n  Proceed? [y/N] ', opts, d)) return 1;
-      putNote();
+      if (!putNote()) return 1;
     }
     d.log('');
     return 0;

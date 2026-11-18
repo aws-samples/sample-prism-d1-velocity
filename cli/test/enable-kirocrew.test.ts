@@ -397,6 +397,14 @@ test('steering: --uninstall removes our note (also when the app is already gone)
   assert.match(m.text(), /✓ Removed ~\/\.kiro\/steering\/prism-codewatch\.md/);
 });
 
+test('steering: a note that cannot be written is reported; the app install still enables the app', async () => {
+  const m = machine();
+  writeFileSync(join(m.home, '.kiro'), 'a file, not a folder');
+  assert.equal(await enableKirocrew({ yes: true }, m.deps), 0);
+  assert.match(m.text(), /⚠ could not write ~\/\.kiro\/steering\/prism-codewatch\.md: E[A-Z]+/);
+  assert.deepEqual(writes(m.calls).map((a) => a.slice(0, 2).join(' ')), ['app install', 'app enable']);
+});
+
 test('steering: states and --status', async () => {
   const home = tmp('prism-kc-home-');
   assert.equal(steeringState(home, NOTE), 'missing');

@@ -82,8 +82,8 @@ def install_steering(env: Mapping[str, str], src: Path = STEERING_SRC) -> str:
         tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, dest)
-    except OSError as e:
-        say(f"could not write the steering note {shown} ({e.strerror or e}); run: prism-cli enable kirocrew")
+    except (OSError, ValueError) as e:  # ValueError: a note that is not UTF-8 text
+        say(f"could not write the steering note {shown} ({getattr(e, 'strerror', None) or e}); run: prism-cli enable kirocrew")
         return "failed"
     did = "wrote" if have is None else "updated"
     say(f"{did} the steering note {shown} (agents load the prism-fix-findings skill)")
