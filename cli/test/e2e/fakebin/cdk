@@ -22,6 +22,6 @@ case "$1" in
     if [ "$MODE" = "fail" ]; then echo "$2 | CREATE_FAILED | AWS::ECS::Service | App: fake failure" >&2; echo "❌  $2 failed: fake" >&2; exit 1; fi
     if [ "$MODE" = "hang" ]; then sleep 600; fi
     sleep "$SLOW"
-    rm -f "$HOME/fake-pt-deleting"; echo "$2: deployed (fake)"; exit 0 ;;
+    rm -f "$HOME/fake-pt-deleting" "$HOME/fake-pt-sa-deleted"; echo "$2: deployed (fake)"; exit 0 ;;
 esac
 exit 0

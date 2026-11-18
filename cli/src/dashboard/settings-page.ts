@@ -40,7 +40,7 @@ body:has(.drawer:not([hidden])) .wrap { padding-bottom:48vh; }
 export const SETTINGS_SCRIPT = `
 /** The Settings tabs, in order: id and label. */
 const SETTINGS_TABS = [['overview', 'Overview'], ['machine', 'This machine'], ['repos', 'Repos'], ['agents', 'Agent hooks'], ['sync', 'Usage sync'], ['aws', 'AWS'], ['updates', 'Updates']];
-const tabLabel = (id) => (SETTINGS_TABS.find(([t]) => t === id) || [id, id])[1];
+const tabLabel = (id) => id === 'security' ? 'Security Agent' : (SETTINGS_TABS.find(([t]) => t === id) || [id, id])[1];
 
 /** #repo/<16 hex>. */
 function repoRoute() { const m = /^#repo\\/([0-9a-f]{16})$/.exec(location.hash); return m ? m[1] : null; }
@@ -95,7 +95,7 @@ function overviewPane(data, items) {
   const checks = (data.machine.setup || []).filter((i) => i.status !== 'info');
   const c = data.overview.counts, rows = (data.agentHooks || { rows: [] }).rows;
   const score = (v, label) => el('div', { class: 'card score' }, el('b', {}, v), el('span', { class: 'fix' }, label));
-  const list = el('ul', { class: 'todo' }, items.map((it) => el('li', {}, el('a', { class: 'go', href: '#settings/' + it.tab }, 'Open ' + tabLabel(it.tab) + ' →'),
+  const list = el('ul', { class: 'todo' }, items.map((it) => el('li', {}, el('a', { class: 'go', href: it.href && /^#security\\/run\\//.test(it.href) ? it.href : '#settings/' + it.tab }, it.href ? 'Open the run →' : 'Open ' + tabLabel(it.tab) + ' →'),
     sevPill('medium', tabLabel(it.tab)), ' ', it.text, it.fixes.map(fixLine))));
   return [el('div', { class: 'scores' },
     score(checks.filter((i) => i.status === 'ok').length + '/' + checks.length, 'machine checks pass'),
@@ -323,8 +323,10 @@ async function renderSetup(data) {
   const root = document.getElementById('settings');
   const openState = new Map([...root.querySelectorAll('details[data-key]')].map((d) => [d.getAttribute('data-key'), d.open]));
   const items = needsYou(data);
+  // The Settings badge counts the Settings tabs' items; a pentest left up (tab security) is the Security Agent badge's.
+  const own = items.filter((x) => x.tab !== 'security').length;
   const badge = document.getElementById('settings-badge');
-  if (badge) { badge.textContent = items.length ? String(items.length) : ''; if (items.length) badge.removeAttribute('hidden'); else badge.setAttribute('hidden', ''); }
+  if (badge) { badge.textContent = own ? String(own) : ''; if (own) badge.removeAttribute('hidden'); else badge.setAttribute('hidden', ''); }
   root.replaceChildren();
   if (!SETUP) { root.append(el('section', { class: 'card' }, pill('error'), ' could not load the settings data')); return; }
   const machine = { ...data, machine: { ...data.machine, setup: (data.machine.setup || []).filter((i) => i.id !== 'kirocrew-app' && i.id !== 'kirocrew-steering') } };

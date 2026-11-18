@@ -1639,14 +1639,17 @@ step.
   While a pentest of the repo is bootstrapping or pending in the same account and region, Start
   pentest says so and offers **View it →** only:
   `security pentest` has no `--force`, so start a second one from a terminal if you mean to. The
-  environment is torn down automatically when the job finishes (Security runs, below). A run whose
-  environment is still up afterwards (its teardown failed, it was started with `--keep`, or the
-  app never became healthy) has a **Teardown failed** or **Environment still up** card on its page,
-  with the failure reason (account ids and home paths masked) and **Clean up**: `security pentest
-  --cleanup --job <its job>` after a confirm dialog naming the account and region, stopped after 90
-  minutes (the teardown waits for the agent's network interfaces, then deletes the stack, and
-  retries once). It acts only on that run's recorded stack, and only when the run was recorded in
-  the account and region the commands use now. See
+  environment is torn down automatically when the job finishes (Security runs, below), and the run
+  is called complete only once that cleanup is verified. A run whose environment is still up
+  afterwards has a card on its page with **Clean up**: **Cleanup failed** (the stack or a Security
+  Agent resource would not go; the reason is shown with account ids and home paths masked),
+  **Environment kept** (started with `--keep`), or **Environment still up** (an older run whose app
+  never became healthy). Clean up runs `security pentest --cleanup --job <its job>` after a confirm
+  dialog naming the account and region, stopped after 90 minutes (the teardown waits for the
+  agent's network interfaces, then deletes the stack, and retries once), then verifies the cleanup.
+  It acts only on that run's recorded resources, and only when the run was recorded in the account
+  and region the commands use now. Cleanup failed and kept runs cost money, so they are also items
+  in the Needs you list and in the Security Agent tab's badge. See
   [Running a Penetration Test from the CLI](#running-a-penetration-test-from-the-cli).
   ![The Start pentest confirm dialog with demo data, from its top: it deploys a temporary private environment for demo-shop into account ••••3333 / us-west-2; What it creates lists the private-subnet VPC, the Fargate service built from services/api/Dockerfile.prod, the internal load balancer, the VPC endpoints, the IAM service role, the source bucket and log groups, and the Security Agent agent space, target domain and pentest; Your app shows the Dockerfile, build folder, port and health path; Afterwards explains the automatic teardown and Clean up and shows the cleanup command; Time and cost follows](assets/images/prism-cli/dashboard-security-pentest-start-dark.png)
   ![The confirm dialog for Review the whole repo with demo data: it names payments-api, the scan bucket prism-demo-scans, account ••••3333 and us-west-2, shows the exact command, and has Cancel next to Upload and start](assets/images/prism-cli/dashboard-security-agent-confirm-dark.png)
@@ -1733,18 +1736,30 @@ loads, then while it stays open and visible. For a code review or threat model t
 read-only command a Fetch button runs (`security findings --job` or `security threats --job`, no
 `--wait`), about every minute. For a pentest it is `security pentest --status --job <job>`, every 5
 minutes, since a pentest runs for hours. That one writes to AWS once the job has finished: it saves
-the findings and tears the environment down, so a pentest started from the page needs no status
-button. It tears down only the stack that run recorded, never another run's, and never a run
-started with `--keep`. The command checks the account itself and only finds a run recorded in the
+the findings and cleans the environment up, so a pentest started from the page needs no status
+button. It removes only the resources that run recorded, never another run's, and never a run
+started with `--keep`. Since 1.21.12 a finished pentest goes through these states:
+
+| Status | Meaning |
+|---|---|
+| **Cleaning up** (amber) | The job has finished and its findings are saved; the environment is being removed. The row shows for how long and what is still there (for example the stack, `DELETE_IN_PROGRESS`). Each check takes the cleanup one step on without waiting, so a stack deletion that takes over an hour never holds a check. |
+| **Cleanup failed** (red) | The stack failed to delete twice (the teardown's own retry), or a Security Agent resource was still there after a second delete, or the cleanup could not be checked (a read kept failing, for example access denied) for 6 checks in a row. The reason is shown; **Clean up** on the run's page tries again and verifies. |
+| **Environment kept** | Started with `--keep`: the environment stays up on purpose until you press **Clean up**. |
+| **Complete · cleaned up** | A check confirmed, read-only, that the CloudFormation stack is gone (`DELETE_COMPLETE` or it no longer exists) and that the target domain and agent space (or pentest) the run recorded are gone in Security Agent. A pentest whose job failed shows **failed** at this point instead. |
+
+The findings can be opened in every state. A record an older prism-cli marked complete while it
+still names its stack shows **Cleaning up**, and the check removes and verifies it the same way. The command checks the account itself and only finds a run recorded in the
 account and region it runs in; a run it cannot find there fails the check visibly. Each check runs
 in that repo, with the same profile and region the page's buttons use, so it saves the verdict
 exactly as that command does. When the job has finished, the row turns **complete** with its
 findings, without a reload. One check runs per job at a time, at most two at once and one pentest
 at a time, never while another dashboard action runs, and after a failed check the next one waits
 longer each time (up to 30 minutes). While a pentest check runs, Start pentest and Clean up wait
-for it. A pentest check is stopped after 90 minutes, the longest a teardown can take; if the
-teardown fails, the run gets the Clean up card. A static snapshot (`dashboard --snapshot`) checks
-nothing and has no buttons.
+for it. A pentest check is stopped after 90 minutes. A static snapshot (`dashboard --snapshot`)
+shows each run's state but checks nothing, cleans nothing up and has no buttons.
+
+![The Security runs table with demo data: a pentest whose cleanup failed, with its DELETE_FAILED reason and a pointer to Clean up on its page; a pentest that is Complete · cleaned up; and code review and threat model runs that are complete](assets/images/prism-cli/dashboard-security-runs-cleanup-dark.png)
+![A pentest run's page with demo data while it cleans up: the Cleaning up card says the job has finished and its findings are saved, lists the stack still there, and when the last step ran](assets/images/prism-cli/dashboard-security-run-cleaning-up-dark.png)
 Each row shows:
 
 | Column | What it shows |
@@ -2303,7 +2318,7 @@ deployed. The design is in [docs/DESIGN-prism-cli-pentest.md](docs/DESIGN-prism-
 ```bash
 prism-cli security pentest --dry-run                    # the plan, target and cost; changes nothing
 prism-cli security pentest                              # deploy, start the job, return (no wait)
-prism-cli security pentest --status                     # refresh the job; tear down once it has finished
+prism-cli security pentest --status                     # refresh the job and its run state; clean up once it has finished
 prism-cli security findings --pentest                   # read the findings (read-only)
 prism-cli security pentest --cleanup                    # remove the environment now
 prism-cli security pentest --wait --fail-on high        # wait (up to 6 h), then exit 1 on a high finding
@@ -2378,11 +2393,18 @@ mostly in the `PENTEST` step. So by default the command starts the job, saves a 
 `.prism/results/` and returns. It prints the follow-up commands with the `--profile` and
 `--region` you passed.
 
-- `--status` refreshes the job and prints its step. Once the job has finished, it saves the
-  findings and tears the environment down, unless the run was started with `--keep`. `--job <id>`
-  picks the run (default: the latest in this account and region); the dashboard runs
-  `--status --job <id>` by itself for each pending pentest.
-- `--wait` polls until the job finishes (or `--timeout`), prints the findings, then tears down.
+- `--status` refreshes the job and prints its step and its `Run state:` (Cleaning up, Cleanup
+  failed, Environment kept, Complete · cleaned up). Once the job has finished, it saves the
+  findings and starts the cleanup, unless the run was started with `--keep`. Each later `--status`
+  takes the cleanup one step on and returns without waiting: the stack still deleting stays
+  Cleaning up; the agent's network interfaces still attached wait (up to 10 minutes) before the
+  stack is deleted; a stack that ends `DELETE_FAILED` is deleted once more, then the run is
+  Cleanup failed (exit 1). Once the stack and the Security Agent resources are checked gone it
+  prints `Cleanup verified`. `--job <id>` picks the run (default: the latest in this account and
+  region); the dashboard runs `--status --job <id>` by itself for each pending pentest and each one
+  still cleaning up.
+- `--wait` polls until the job finishes (or `--timeout`), prints the findings, then tears down and
+  verifies.
 - `--keep` leaves the environment up after the job, to reproduce a finding. The run records it, so a
   later `--status` (and the dashboard's check) leaves it up too; remove it with `--cleanup`.
 - `--cleanup` removes a run's environment at any time; it stops a running job first. `--job <id>`
@@ -2391,8 +2413,12 @@ mostly in the `PENTEST` step. So by default the command starts the job, saves a 
 
 Teardown deletes the pentest, the run's agent space, its target domain and the CloudFormation
 stack. It first waits for the agent's network interfaces to be released, then retries the stack
-deletion once. If it still fails, the record keeps a `teardown failed` marker, which `--status`
-and the dashboard show; run `--cleanup` again later.
+deletion once. Then it verifies, with read-only calls (`cloudformation describe-stacks`,
+`securityagent batch-get-target-domains`, `batch-get-agent-spaces` or `batch-get-pentests`), that
+each is gone; what is still there in Security Agent is deleted once more. Only then is the run
+complete. If it still fails, the record keeps a `teardown failed` marker and the state Cleanup
+failed, which `--status` and the dashboard show; run `--cleanup` again later. The record keeps the
+state as `pentest.cleanup` (`state`, `since`, `left`, `reason`, `verified_at`).
 
 **What it creates.** One CloudFormation stack per run, `PrismPentest-<repo>-<id>`, tagged
 `prism:purpose=pentest` and `prism:expires-at`:

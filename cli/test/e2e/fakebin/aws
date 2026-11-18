@@ -40,12 +40,17 @@ fi
 # FAKE_AWS=complete: job-demo-2 has finished with two findings, one whose text carries markup (it must show as text).
 # FAKE_PT=1 (with FAKE_AWS set): the calls `security pentest` makes, for the Run buttons' e2e. The job's status is
 # $HOME/fake-pt-job (default IN_PROGRESS); $HOME/fake-pt-teardown=fail makes every stack deletion end DELETE_FAILED.
+# 1.21.12: $HOME/fake-pt-inprogress=N: the next N describe-stacks after a deletion say DELETE_IN_PROGRESS. The read-only
+# verification (batch-get-target-domains / -agent-spaces / -pentests) finds the resources until a delete call touched
+# $HOME/fake-pt-sa-deleted (fake cdk deploy removes it), unless $HOME/fake-pt-sa-stays exists.
 if [ -n "$FAKE_PT" ] && { [ "$FAKE_AWS" = "in-progress" ] || [ "$FAKE_AWS" = "complete" ]; }; then
   JOB=IN_PROGRESS; [ -f "$HOME/fake-pt-job" ] && JOB=$(cat "$HOME/fake-pt-job")
   case "$1 $2" in
     "cloudformation describe-stacks")
       if [ -f "$HOME/fake-pt-deleting" ]; then
         if [ "$(cat "$HOME/fake-pt-teardown" 2>/dev/null)" = "fail" ]; then echo '{"Stacks":[{"StackStatus":"DELETE_FAILED","StackStatusReason":"The following resource(s) failed to delete: [AgentSg]. (demo)"}]}'; exit 0; fi
+        N=$(cat "$HOME/fake-pt-inprogress" 2>/dev/null || echo 0)
+        if [ "$N" -gt 0 ] 2>/dev/null; then echo $((N - 1)) > "$HOME/fake-pt-inprogress"; echo '{"Stacks":[{"StackStatus":"DELETE_IN_PROGRESS"}]}'; exit 0; fi
         echo "" >&2; echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id demo does not exist" >&2; exit 254
       fi
       echo '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"VpcArn","OutputValue":"arn:aws:ec2:us-west-2:111122223333:vpc/vpc-demo"},{"OutputKey":"SubnetArns","OutputValue":"arn:aws:ec2:us-west-2:111122223333:subnet/subnet-a,arn:aws:ec2:us-west-2:111122223333:subnet/subnet-b"},{"OutputKey":"AgentSecurityGroupArn","OutputValue":"arn:aws:ec2:us-west-2:111122223333:security-group/sg-agent"},{"OutputKey":"ServiceRoleArn","OutputValue":"arn:aws:iam::111122223333:role/prism-pentest-demo"},{"OutputKey":"AgentLogGroup","OutputValue":"/aws/securityagent/prism-pentest-demo"},{"OutputKey":"PrivateHost","OutputValue":"app.demo-shop.prism.internal"},{"OutputKey":"SourceBucket","OutputValue":"prism-pentest-demo-src"},{"OutputKey":"TargetGroupArn","OutputValue":"arn:aws:elasticloadbalancing:us-west-2:111122223333:targetgroup/app/1"},{"OutputKey":"AppLogGroup","OutputValue":"PrismPentest-demo-AppLogs"},{"OutputKey":"ExpiresAt","OutputValue":"2026-11-18T10:00:00Z"}]}]}'; exit 0 ;;
@@ -65,7 +70,13 @@ if [ -n "$FAKE_PT" ] && { [ "$FAKE_AWS" = "in-progress" ] || [ "$FAKE_AWS" = "co
       ID=""; prev=""; for a in "$@"; do [ "$prev" = "--pentest-job-ids" ] && ID=$a; prev=$a; done
       echo "{\"pentestJobs\":[{\"pentestJobId\":\"$ID\",\"status\":\"$JOB\",\"createdAt\":\"2026-11-17T10:00:00Z\",\"updatedAt\":\"2026-11-17T12:50:00Z\",\"steps\":[{\"name\":\"PENTEST\",\"status\":\"$JOB\"}]}]}"; exit 0 ;;
     "securityagent list-findings") echo '{"findingsSummaries":[]}'; exit 0 ;;
-    "securityagent stop-pentest-job"|"securityagent batch-delete-pentests"|"securityagent delete-agent-space"|"securityagent delete-target-domain") echo '{}'; exit 0 ;;
+    "securityagent stop-pentest-job") echo '{}'; exit 0 ;;
+    "securityagent batch-delete-pentests"|"securityagent delete-agent-space"|"securityagent delete-target-domain")
+      [ -f "$HOME/fake-pt-sa-stays" ] || touch "$HOME/fake-pt-sa-deleted"; echo '{}'; exit 0 ;;
+    "securityagent batch-get-target-domains"|"securityagent batch-get-agent-spaces"|"securityagent batch-get-pentests")
+      ID=""; prev=""; for a in "$@"; do case "$prev" in --target-domain-ids|--agent-space-ids|--pentest-ids) ID=$a ;; esac; prev=$a; done
+      case "$2" in batch-get-target-domains) K=targetDomains; F=targetDomainId ;; batch-get-agent-spaces) K=agentSpaces; F=agentSpaceId ;; *) K=pentests; F=pentestId ;; esac
+      if [ -f "$HOME/fake-pt-sa-deleted" ]; then echo "{\"$K\":[],\"notFound\":[\"$ID\"]}"; else echo "{\"$K\":[{\"$F\":\"$ID\"}],\"notFound\":[]}"; fi; exit 0 ;;
   esac
 fi
 if [ "$FAKE_AWS" = "complete" ]; then

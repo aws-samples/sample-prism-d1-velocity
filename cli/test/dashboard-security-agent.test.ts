@@ -963,7 +963,7 @@ test('run drill-down: a pentest whose teardown failed shows the reason and Clean
   const page = await runPage([{ ...p, security_runs: [run] }], '#security/run/' + id + '/run-pt-9', SETUP, routes);
   await page.settle();
   const sec = page.dom.byId.security;
-  assert.match(sec.textContent, /Teardown failed/);
+  assert.match(sec.textContent, /Cleanup failed/);
   assert.match(sec.textContent, /Reason: DELETE_FAILED: AgentSg in account ••••3333/);
   assert.ok(sec.textContent.includes('--cleanup --job ptj-9'), 'the terminal command');
   const b = sec.querySelectorAll('button').find((x) => x.getAttribute('data-cleanup') !== null)!;

@@ -205,6 +205,35 @@ export interface PentestInfo {
   wall_s?: number | null;
   /** The deploy that stood the environment up (1.21.7): kept on the pending and finished record. Absent before 1.21.7. */
   deploy?: PentestDeploy | null;
+  /** 1.21.12: the cleanup after the job finished. Absent on older records and while the job runs. */
+  cleanup?: PentestCleanup | null;
+}
+
+/**
+ * security-pentest only (1.21.12): where the teardown after the job stands. cleaning_up: findings saved, the
+ * teardown is under way or queued; cleanup_failed: it stopped (reason says why), Clean up retries it; kept: started
+ * with --keep, the environment is up on purpose; verified: the stack and the Security Agent resources the run
+ * recorded were checked gone.
+ */
+export interface PentestCleanup {
+  state: 'cleaning_up' | 'cleanup_failed' | 'kept' | 'verified';
+  /** When the cleanup started (the job was seen finished), ISO. */
+  since: string;
+  /** The last cleanup step or check, ISO. */
+  at: string;
+  /** What is still there, one short line each; empty once verified. */
+  left: string[];
+  /** cleanup_failed: why, redacted. */
+  reason?: string | null;
+  /** Stack deletions the dashboard's cycle has requested (it gives up after the teardown's own retry). */
+  attempts?: number;
+  /** How many times the Security Agent deletes were sent (the second time only for what was still there). */
+  sa_deletes?: number;
+  /** Checks in a row that could not tell whether something is gone (a read failed); the cleanup fails after CLEANUP_UNCHECKED_MAX. */
+  unchecked?: number;
+  /** When the agent's network interfaces were first seen still attached. */
+  eni_since?: string | null;
+  verified_at?: string | null;
 }
 
 /** security-pentest only: the deploy before the job starts (status deploying), written before anything is deployed. */
