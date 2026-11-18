@@ -55,6 +55,13 @@ export function needsYou(d: NeedsInput): NeedsItem[] {
   if (p.outdated) add('agents', `Claude Code plugin ${p.version ?? ''} is installed; the harness hooks need 0.3.0 or newer.`, PLUGIN_UPDATE);
   const kc = d.machine.find((i) => i.id === 'kirocrew-app');
   if (kc && /^outdated/.test(kc.detail)) add('agents', `Kiro Crew app: ${kc.detail}`, [kc.fix]);
+  const st = d.machine.find((i) => i.id === 'kirocrew-steering');
+  const kiroRow = d.agentHooks.rows.find((r) => r.client === 'kiro' && (r.state === 'installed' || r.state === 'outdated'));
+  if (st && /^(outdated|missing)/.test(st.detail)) add('agents', `Kiro Crew steering note ${st.detail}`, [st.fix]);
+  // Kiro hooks installed without the Kiro Crew app: the same note, fixed by re-running the Kiro hooks install.
+  else if (!st && kiroRow && (d.agentHooks.steering === 'outdated' || d.agentHooks.steering === 'missing')) {
+    add('agents', `Kiro steering note ~/.kiro/steering/prism-codewatch.md is ${d.agentHooks.steering}`, [`prism-cli enable agent-hooks --client kiro${kiroRow.scope === 'global' ? ' --global' : ''}`]);
+  }
   if (d.version.update) add('updates', `prism-cli ${d.version.latest ?? ''} is available (you have ${d.version.installed}).`, [UPDATE_CMD]);
   return out;
 }

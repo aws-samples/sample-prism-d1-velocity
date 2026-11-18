@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -244,4 +244,92 @@ test('the command is still `enable agent-hooks` although its file is harness-hoo
   assert.match(help.stdout, /--client <client>/);
   // The group listing (`enable --help`) needs the built .js files, so it is checked against dist in the release build, not here.
   assert.doesNotMatch(run('enable', 'harness-hooks', '--help').stdout, /Usage: prism-cli enable harness-hooks/, 'the file name is not a command');
+});
+
+// ---- the steering note (~/.kiro/steering/prism-codewatch.md), written by --client kiro too ----
+
+const MARK = '<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->';
+const NOTE = `---\ninclusion: always\n---\n${MARK}\n\n# PRISM codewatch\n`;
+const notePath = (home: string) => join(home, '.kiro', 'steering', 'prism-codewatch.md');
+const putNote = (home: string, t: string) => { mkdirSync(dirname(notePath(home)), { recursive: true }); writeFileSync(notePath(home), t); };
+
+test('kiro steering: dry run shows it; install writes it (also when the hooks are already current); claude does not', () => {
+  const x = rig({ steeringNote: () => NOTE });
+  assert.equal(x.run({ client: 'kiro', dryRun: true }), 0);
+  assert.match(x.text(), /would write the steering note ~\/\.kiro\/steering\/prism-codewatch\.md/);
+  assert.ok(!existsSync(notePath(x.home)));
+  assert.equal(x.run({ client: 'kiro' }), 0);
+  assert.equal(readFileSync(notePath(x.home), 'utf8'), NOTE);
+  // Hooks already installed, our note older: re-running updates only the note.
+  putNote(x.home, `${MARK}\nold\n`);
+  x.out.length = 0;
+  assert.equal(x.run({ client: 'kiro' }), 0);
+  assert.match(x.text(), /Already installed; nothing to do[\s\S]*✓ Updated the steering note/);
+  assert.equal(readFileSync(notePath(x.home), 'utf8'), NOTE);
+  const c = rig({ steeringNote: () => NOTE });
+  c.run({ client: 'claude' });
+  assert.ok(!existsSync(notePath(c.home)), 'claude has no use for ~/.kiro steering');
+});
+
+test('kiro steering: a file without the marker is left alone; --uninstall --global removes ours only, project --uninstall keeps it', () => {
+  const x = rig({ steeringNote: () => NOTE });
+  putNote(x.home, 'my rules\n');
+  assert.equal(x.run({ client: 'kiro' }), 0);
+  assert.match(x.text(), /exists without the prism-cli marker; it is yours and is left as it is/);
+  assert.equal(x.run({ client: 'kiro', uninstall: true, global: true }), 0);
+  assert.equal(readFileSync(notePath(x.home), 'utf8'), 'my rules\n');
+
+  const y = rig({ steeringNote: () => NOTE });
+  y.run({ client: 'kiro' });
+  y.out.length = 0;
+  y.run({ client: 'kiro', uninstall: true });
+  assert.ok(existsSync(notePath(y.home)));
+  assert.match(y.text(), /is kept: it is global/);
+  y.run({ client: 'kiro', uninstall: true, global: true, dryRun: true });
+  assert.ok(existsSync(notePath(y.home)));
+  // The PRISM Kiro Crew app is installed: it uses the same note, so it stays.
+  mkdirSync(join(y.home, '.kiro', 'crew', 'apps', 'prism'), { recursive: true });
+  writeFileSync(join(y.home, '.kiro', 'crew', 'apps', 'prism', 'installed.json'), JSON.stringify({ version: '0.4.1' }));
+  y.out.length = 0;
+  y.run({ client: 'kiro', uninstall: true, global: true });
+  assert.ok(existsSync(notePath(y.home)));
+  assert.match(y.text(), /the PRISM Kiro Crew app uses it too/);
+  rmSync(join(y.home, '.kiro', 'crew'), { recursive: true });
+  y.run({ client: 'kiro', uninstall: true, global: true });
+  assert.ok(!existsSync(notePath(y.home)));
+});
+
+test('kiro steering: no bundled note: a missing note is reported, nothing is written', () => {
+  const x = rig({ steeringNote: () => null });
+  assert.equal(x.run({ client: 'kiro' }), 0);
+  assert.match(x.text(), /Steering note ~\/\.kiro\/steering\/prism-codewatch\.md is missing: this prism-cli has no bundled note/);
+  assert.ok(!existsSync(notePath(x.home)));
+});
+
+test('kiro steering: --status and the dashboard status report its state', async () => {
+  const { agentHookStatus } = await import('../src/commands/enable/harness-hooks.js');
+  const x = rig({ steeringNote: () => NOTE });
+  assert.equal(agentHookStatus({ ...x.d }).steering, 'missing');
+  x.run({ status: true, client: 'kiro' });
+  assert.match(x.text(), /kiro steering note: missing \(~\/\.kiro\/steering\/prism-codewatch\.md\)/);
+  putNote(x.home, NOTE);
+  assert.equal(agentHookStatus({ ...x.d }).steering, 'installed');
+  putNote(x.home, `${MARK}\nold\n`);
+  assert.equal(agentHookStatus({ ...x.d }).steering, 'outdated');
+  putNote(x.home, 'mine\n');
+  assert.equal(agentHookStatus({ ...x.d }).steering, 'user-owned');
+});
+
+test('kiro steering: Needs you has one item for an outdated or missing note when the kiro hooks are installed (and the Kiro Crew app is not)', async () => {
+  const { needsYou } = await import('../src/dashboard/needs-you.js');
+  const base = { machine: [], setup: [], suggestions: [], version: { installed: '1.0.0', latest: null, update: false } };
+  const hooks = (state: any, steering: any) => ({ rows: [{ client: 'kiro' as const, scope: 'global' as const, state, path: null, others: 0, error: null }], plugin: { active: false, version: null, outdated: false }, steering });
+  const items = needsYou({ ...base, agentHooks: hooks('installed', 'missing') });
+  assert.deepEqual(items.map((i) => [i.tab, i.fixes]), [['agents', ['prism-cli enable agent-hooks --client kiro --global']]]);
+  assert.match(items[0].text, /Kiro steering note ~\/\.kiro\/steering\/prism-codewatch\.md is missing/);
+  assert.equal(needsYou({ ...base, agentHooks: hooks('installed', 'user-owned') }).length, 0);
+  assert.equal(needsYou({ ...base, agentHooks: hooks('missing', 'missing') }).length, 0, 'no kiro hooks: nothing points at the note');
+  // With the Kiro Crew app row present, only its item shows (one item, not two).
+  const row = { id: 'kirocrew-steering', label: 'Kiro Crew steering note', status: 'info' as const, detail: 'missing: x', fix: 'prism-cli enable kirocrew' };
+  assert.deepEqual(needsYou({ ...base, machine: [row], agentHooks: hooks('installed', 'missing') }).map((i) => i.fixes[0]), ['prism-cli enable kirocrew']);
 });

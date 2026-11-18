@@ -10,6 +10,11 @@ environment, on a registry install and on every registry update (a local-folder 
   3. Runs `npm install -g @prism-d1/cli@^MIN_CLI_VERSION`: the newest release of the same major,
      so a later 1.x fix comes along but a 2.x, which may change what the app talks to, does not.
 Never sudo. On a failure it exits 1 with the command to run by hand. It never removes prism-cli.
+
+Before that it installs the steering note steering/prism-codewatch.md as ~/.kiro/steering/prism-codewatch.md
+(install_steering), with the rules of `prism-cli enable kirocrew`: written when missing, replaced only when
+the file there carries STEERING_MARKER and differs, never touched when it lacks the marker. A failure there
+is reported and never fails the install.
 """
 from __future__ import annotations
 
@@ -24,6 +29,9 @@ from prism_cli_path import cli_env, resolve_cli  # noqa: E402
 from ui_bridge import CLI_SPEC as SPEC, MIN_CLI_TEXT as MIN_TEXT, MIN_CLI_VERSION, UPDATE_CMD as HAND_CMD, version_tuple  # noqa: E402
 
 NODE_MIN = (22, 0, 0)
+#: The same marker as cli/src/utils/kirocrew.ts STEERING_MARKER: only a file with it is ours to replace.
+STEERING_MARKER = "<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->"
+STEERING_SRC = Path(__file__).resolve().parent.parent / "steering" / "prism-codewatch.md"
 VERSION_TIMEOUT_S = 20
 #: Well under the 300 s onInstall limit, so a stalled npm ends with our message, not Crew's kill.
 NPM_TIMEOUT_S = 240
@@ -57,7 +65,45 @@ def fail(why: str) -> int:
     return 1
 
 
+def install_steering(env: Mapping[str, str], src: Path = STEERING_SRC) -> str:
+    """Installs or updates the steering note; returns what it did: wrote, updated, current, user-owned,
+    unreadable (a read error other than a missing file: never written over) or failed."""
+    home = env.get("HOME") or os.path.expanduser("~")
+    dest = Path(home) / ".kiro" / "steering" / "prism-codewatch.md"
+    shown = "~/.kiro/steering/prism-codewatch.md"
+    why = lambda e: getattr(e, "strerror", None) or e  # noqa: E731
+    try:
+        have = dest.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        have = None
+    except (OSError, ValueError) as e:  # EACCES, EISDIR, ENOTDIR, or not UTF-8 text
+        say(f"{shown} cannot be read ({why(e)}); left as it is")
+        return "unreadable"
+    if have is not None and STEERING_MARKER not in have:
+        say(f"{shown} exists without the prism-cli marker; left as it is")
+        return "user-owned"
+    tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
+    try:
+        text = src.read_text(encoding="utf-8")
+        if have == text:
+            return "current"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, dest)
+    except (OSError, ValueError) as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        say(f"could not write the steering note {shown} ({why(e)}); run: prism-cli enable kirocrew")
+        return "failed"
+    did = "wrote" if have is None else "updated"
+    say(f"{did} the steering note {shown} (agents check codewatch findings before finishing)")
+    return did
+
+
 def main(env: Mapping[str, str] = os.environ) -> int:
+    install_steering(env)
     cli, _ = resolve_cli(None, env)
     if cli:
         have = cli_version(cli, env)

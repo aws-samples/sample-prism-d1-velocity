@@ -144,6 +144,92 @@ class InstallTest(unittest.TestCase):
         self.run_script()
         self.assertFalse((self.home / "aws-calls.log").exists())
 
+    # ---- the steering note ----
+
+    def note(self) -> Path:
+        return self.home / ".kiro" / "steering" / "prism-codewatch.md"
+
+    def test_steering_note_written_when_missing(self):
+        self.prism_cli("1.22.0")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout)
+        shipped = (APP / "steering" / "prism-codewatch.md").read_text(encoding="utf-8")
+        self.assertIn("<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->", shipped)
+        self.assertIn("inclusion: always", shipped)
+        self.assertEqual(self.note().read_text(encoding="utf-8"), shipped)
+        self.assertIn("wrote the steering note ~/.kiro/steering/prism-codewatch.md", p.stdout)
+        self.assertNotIn(str(self.home), p.stdout.splitlines()[0], "no home path in the steering line")
+        # A second run: already current, says nothing about it.
+        p = self.run_script()
+        self.assertNotIn("steering", p.stdout)
+
+    def test_steering_note_ours_and_old_is_updated(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().write_text("<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->\nold\n", encoding="utf-8")
+        p = self.run_script()
+        self.assertIn("updated the steering note", p.stdout)
+        self.assertEqual(self.note().read_text(encoding="utf-8"), (APP / "steering" / "prism-codewatch.md").read_text(encoding="utf-8"))
+
+    def test_steering_note_without_marker_is_left_alone(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().write_text("my own note\n", encoding="utf-8")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("exists without the prism-cli marker; left as it is", p.stdout)
+        self.assertEqual(self.note().read_text(encoding="utf-8"), "my own note\n")
+
+    def test_steering_note_failure_does_not_fail_the_install(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().parent.chmod(0o555)
+        self.addCleanup(self.note().parent.chmod, 0o755)
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("could not write the steering note", p.stdout)
+        self.assertIn("nothing to install", p.stdout)
+        self.assertEqual(os.listdir(self.note().parent), [], "no note, no temp file")
+
+    def test_steering_note_failed_rename_removes_the_temp_file(self):
+        sys.path.insert(0, str(APP / "scripts"))
+        import install_prism_cli as ip  # noqa: E402
+        dest = self.note()
+        dest.parent.mkdir(parents=True)
+        real = os.replace
+        def boom(a, b):
+            raise OSError(28, "No space left on device")
+        ip.os.replace = boom
+        try:
+            self.assertEqual(ip.install_steering({"HOME": str(self.home)}), "failed")
+        finally:
+            ip.os.replace = real
+        self.assertEqual(os.listdir(dest.parent), [])
+
+    def test_steering_note_unreadable_is_left_alone(self):
+        # Only a missing file counts as missing: a folder at the path (EISDIR) or ~/.kiro as a file (ENOTDIR) is never written over.
+        self.prism_cli("1.22.0")
+        self.note().mkdir(parents=True)
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("cannot be read", p.stdout)
+        self.assertTrue(self.note().is_dir())
+        shutil.rmtree(self.home / ".kiro")
+        (self.home / ".kiro").write_text("a file", encoding="utf-8")
+        p = self.run_script()
+        self.assertIn("cannot be read", p.stdout)
+        self.assertEqual((self.home / ".kiro").read_text(encoding="utf-8"), "a file")
+
+    def test_steering_note_not_utf8_does_not_fail_the_install(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().write_bytes(b"\xff\xfe not text")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("cannot be read", p.stdout)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertEqual(self.note().read_bytes(), b"\xff\xfe not text")
+
 
 if __name__ == "__main__":
     unittest.main()

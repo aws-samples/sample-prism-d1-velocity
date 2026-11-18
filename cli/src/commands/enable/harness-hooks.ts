@@ -11,6 +11,12 @@
  *   with the hooks already there. Skipped when the PRISM plugin is installed,
  *   so the hooks never run twice.
  *
+ * --client kiro also writes the steering note ~/.kiro/steering/prism-codewatch.md
+ * (kiro-cli, Kiro IDE and Kiro Crew load it), with the marker rules of
+ * utils/kirocrew.ts: written when missing, replaced only when ours and
+ * different, a file without the marker left alone. --uninstall --global
+ * removes it only when it is ours.
+ *
  * Every write prints a diff, backs the file up first (`<name>.bak-<timestamp>`)
  * and is idempotent. PRISM entries are found by their command
  * (`prism-cli ... codewatch hook --client <c>`), so --uninstall removes only
@@ -22,6 +28,7 @@ import { join } from 'node:path';
 import { run } from '../../utils/exec.js';
 import { backup, configDir, lineDiff, ownCliLocation, pluginState, PLUGIN_ID, prismCliCommand, render, writeAtomic } from './claude-code.js';
 import { runGuarded } from './security.js';
+import { bundledAppDir, bundledSteering, installedAppVersion, removeSteering, steeringPath, steeringState, writeSteering, type SteeringState } from '../../utils/kirocrew.js';
 
 export const CLIENTS = ['kiro', 'claude'] as const;
 export type Client = typeof CLIENTS[number];
@@ -48,6 +55,8 @@ export interface AgentHooksDeps {
   log: (line?: string) => void;
   error: (line: string) => void;
   now: () => Date;
+  /** The bundled steering note text (kirocrew-app/steering/prism-codewatch.md); null when this CLI has none. */
+  steeringNote?: () => string | null;
 }
 
 /**
@@ -139,7 +148,7 @@ function write(path: string, before: string, exists: boolean, after: string, o: 
 function kiroNotes(o: AgentHooksOptions, d: AgentHooksDeps): void {
   d.log('\n  Notes:');
   d.log('  - Hooks run only on the Kiro CLI V3 engine. kiro-cli chat --no-interactive defaults to v2, where no hook fires: pass --agent-engine v3.');
-  d.log('  - Kiro Crew sessions do not load these hooks; there the prism-fix-findings skill is the check.');
+  d.log('  - Kiro Crew sessions do not load these hooks; there the prism-fix-findings skill is the check (the steering note points to it).');
   d.log('  - The push check runs on every shell command (about 0.1 s for one that is not a git push).');
   d.log('  - Finish gate: off until harness.finish_gate is true in .prism/config.json or PRISM_HARNESS_FINISH_GATE=1. Kiro runs it once per prompt.');
   if (!o.global) d.log('  - Commit .kiro/hooks/prism-harness.json yourself: a push by the agent that carries hook files is held as a change to the checks.');
@@ -164,6 +173,34 @@ function kiroInstall(o: AgentHooksOptions, d: AgentHooksDeps): number {
   kiroWarnings(o, d, dir);
   kiroNotes(o, d);
   return 0;
+}
+
+/** The steering note step of --client kiro: install or update it (marker rules), or say why not. */
+function kiroSteering(o: AgentHooksOptions, d: AgentHooksDeps): void {
+  const note = (d.steeringNote ?? (() => bundledSteering(bundledAppDir())))();
+  const p = tilde(steeringPath(d.home), d.home);
+  const st = steeringState(d.home, note);
+  if (o.uninstall) {
+    if (!o.global) { if (st === 'installed' || st === 'outdated') d.log(`  Steering note ${p} is kept: it is global (remove it with --uninstall --global).`); return; }
+    if (st === 'user-owned' || st === 'unreadable') { d.log(`  - ${p} ${st === 'user-owned' ? 'has no prism-cli marker' : 'cannot be read'}; it is left as it is.`); return; }
+    if (st === 'missing') return;
+    if (installedAppVersion(d.home, d.env)) { d.log(`  Steering note ${p} is kept: the PRISM Kiro Crew app uses it too (prism-cli enable kirocrew --uninstall removes it).`); return; }
+    if (o.dryRun) { d.log(`  → would remove the steering note ${p}`); return; }
+    if (removeSteering(d.home)) d.log(`  ✓ Removed the steering note ${p}`);
+    return;
+  }
+  if (st === 'user-owned') { d.log(`  - Steering note: ${p} exists without the prism-cli marker; it is yours and is left as it is.`); return; }
+  if (st === 'unreadable') { d.log(`  ⚠ Steering note: ${p} cannot be read; it is left as it is (check its permissions).`); return; }
+  if (st === 'installed') { d.log(`  Steering note: installed (${p}).`); return; }
+  if (!note) { d.log(`  - Steering note ${p} is ${st}: this prism-cli has no bundled note (reinstall it: npm i -g @prism-d1/cli).`); return; }
+  const verb = st === 'missing' ? 'write' : 'update';
+  if (o.dryRun) { d.log(`  → would ${verb} the steering note ${p} (kiro-cli, Kiro IDE and Kiro Crew load it: check codewatch findings before finishing)`); return; }
+  try {
+    writeSteering(d.home, note);
+    d.log(`  ✓ ${st === 'missing' ? 'Wrote' : 'Updated'} the steering note ${p} (kiro-cli, Kiro IDE and Kiro Crew load it)`);
+  } catch (e) {
+    d.log(`  ⚠ could not write the steering note ${p}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
+  }
 }
 
 function kiroWarnings(o: AgentHooksOptions, d: AgentHooksDeps, dir: string): void {
@@ -314,6 +351,8 @@ export interface AgentHookStatus {
   rows: AgentHookRow[];
   /** The PRISM Claude Code plugin: installed and enabled, its version, and whether it predates the harness hooks (0.3.0). */
   plugin: { active: boolean; version: string | null; outdated: boolean };
+  /** The steering note ~/.kiro/steering/prism-codewatch.md, which --client kiro and enable kirocrew install. */
+  steering?: SteeringState;
 }
 
 /** True for a plugin version below 0.PLUGIN_HOOKS_MINOR.0. */
@@ -323,7 +362,7 @@ export function pluginPredatesHooks(version: string | null): boolean {
 }
 
 /** Installed, outdated or missing per client and scope, and the Claude plugin state. Reads files only. */
-export function agentHookStatus(d: FileDeps, clients: readonly Client[] = CLIENTS): AgentHookStatus {
+export function agentHookStatus(d: FileDeps & Pick<AgentHooksDeps, 'steeringNote'>, clients: readonly Client[] = CLIENTS): AgentHookStatus {
   const rows: AgentHookRow[] = [];
   for (const client of clients) {
     for (const global of [false, true]) {
@@ -346,7 +385,8 @@ export function agentHookStatus(d: FileDeps, clients: readonly Client[] = CLIENT
     }
   }
   const p = pluginActive(d);
-  return { rows, plugin: { active: p.active, version: p.version, outdated: p.active && pluginPredatesHooks(p.version) } };
+  const steering = steeringState(d.home, (d.steeringNote ?? (() => bundledSteering(bundledAppDir())))());
+  return { rows, plugin: { active: p.active, version: p.version, outdated: p.active && pluginPredatesHooks(p.version) }, steering };
 }
 
 function status(clients: Client[], d: AgentHooksDeps): number {
@@ -364,6 +404,7 @@ function status(clients: Client[], d: AgentHooksDeps): number {
       d.log(`  claude plugin: ${p.active ? `${PLUGIN_ID}${p.version ? ` ${p.version}` : ''} (the plugin runs the harness hooks itself from 0.${PLUGIN_HOOKS_MINOR}.0)` : 'not installed or disabled'}`);
     }
   }
+  if (clients.includes('kiro')) d.log(`  kiro steering note: ${s.steering} (${tilde(steeringPath(d.home), d.home)})`);
   d.log(`\n  outdated: PRISM hooks are there but differ from what this prism-cli writes (command path or entries); re-run prism-cli enable agent-hooks --client <c>.`);
   d.log(`  cursor, codex: planned.\n`);
   return 0;
@@ -386,7 +427,11 @@ export function enableAgentHooks(o: AgentHooksOptions, d: AgentHooksDeps): numbe
   d.log(`\n🔌 enable agent-hooks --client ${client}${o.global ? ' --global' : ''}${o.uninstall ? ' --uninstall' : ''}${o.dryRun ? ': dry run, nothing is changed' : ''}\n`);
   d.log(`  Command: ${d.cli} codewatch hook --client ${client} ...`);
   try {
-    if (client === 'kiro') return o.uninstall ? kiroUninstall(o, d) : kiroInstall(o, d);
+    if (client === 'kiro') {
+      const code = o.uninstall ? kiroUninstall(o, d) : kiroInstall(o, d);
+      if (code === 0) kiroSteering(o, d);
+      return code;
+    }
     return o.uninstall ? claudeUninstall(o, d) : claudeInstall(o, d);
   } catch (e) {
     if (e instanceof UserError) { d.error(`Error: ${e.message}`); return 1; }
@@ -406,13 +451,13 @@ export function defaultDeps(): AgentHooksDeps {
 }
 
 export default {
-  description: 'Install the agent harness loop hooks (push check, opt-in finish check) for a coding client without a PRISM plugin: Kiro CLI V3 / IDE (.kiro/hooks/prism-harness.json) or Claude Code (.claude/settings.json hooks; skipped when the PRISM plugin is installed). Backs up, merges, and prints what it changed',
+  description: 'Install the agent harness loop hooks (push check, opt-in finish check) for a coding client without a PRISM plugin: Kiro CLI V3 / IDE (.kiro/hooks/prism-harness.json, plus the ~/.kiro/steering/prism-codewatch.md note) or Claude Code (.claude/settings.json hooks; skipped when the PRISM plugin is installed). Backs up, merges, and prints what it changed',
   options: [
     { flags: '--client <client>', description: `Coding client: ${CLIENTS.join(' | ')} (${PLANNED.join(', ')}: planned)` },
     { flags: '--global', description: 'User level for every repo: ~/.kiro/hooks, or the Claude Code user settings (CLAUDE_CONFIG_DIR respected)' },
     { flags: '--dry-run', description: 'Print the plan and the diff; write nothing' },
     { flags: '--status', description: 'Show installed, outdated or missing per client and scope (read-only)' },
-    { flags: '--uninstall', description: 'Remove only the PRISM hook entries (the file is backed up first)' },
+    { flags: '--uninstall', description: 'Remove only the PRISM hook entries (the file is backed up first); kiro --global also removes the steering note if prism-cli wrote it' },
     { flags: '--force', description: 'kiro: replace a prism-harness.json that holds hooks that are not PRISM\'s' },
   ],
   action: (opts: AgentHooksOptions) => runGuarded(async () => enableAgentHooks(opts, defaultDeps())),

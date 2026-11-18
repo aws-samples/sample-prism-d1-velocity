@@ -10,6 +10,11 @@
  *
  * Kiro Crew itself is never installed, and trusting the app is left to the
  * person: Kiro Crew refuses to run a third-party app until they do.
+ *
+ * It also writes the steering note ~/.kiro/steering/prism-codewatch.md (the
+ * bundle's steering/prism-codewatch.md), which kiro-cli, Kiro IDE and Kiro Crew
+ * load into every session: check codewatch findings before finishing. Only a file with STEERING_MARKER is
+ * overwritten or removed; a file without it is the person's and is left alone.
  */
 import { createInterface } from 'node:readline';
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from 'node:fs';
@@ -17,7 +22,10 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, type RunResult } from '../../utils/exec.js';
-import { bundledAppDir, ENABLE_KIROCREW_CMD, findKirocrew, KIROCREW_APP_NAME as APP, KIROCREW_INSTALL_DOCS, readManifest } from '../../utils/kirocrew.js';
+import {
+  bundledAppDir, bundledSteering, ENABLE_KIROCREW_CMD, findKirocrew, KIROCREW_APP_NAME as APP, KIROCREW_INSTALL_DOCS, readManifest,
+  removeSteering, steeringPath, steeringState, writeSteering, type SteeringState,
+} from '../../utils/kirocrew.js';
 import { compareVersions, findPackageDir, installsOnPath } from '../_top/version.js';
 import { runGuarded } from './security.js';
 
@@ -209,6 +217,17 @@ async function confirm(question: string, opts: KirocrewOptions, d: KirocrewDeps)
   return false;
 }
 
+// ---- The steering note ----
+
+export function steeringText(state: SteeringState, home: string): string {
+  const p = tilde(steeringPath(home), home);
+  if (state === 'installed') return `installed (${p})`;
+  if (state === 'outdated') return `outdated (${p}); ${ENABLE_KIROCREW_CMD} updates it`;
+  if (state === 'missing') return `missing; ${ENABLE_KIROCREW_CMD} writes ${p}`;
+  if (state === 'unreadable') return `${p} cannot be read; it is left as it is (check its permissions)`;
+  return `${p} exists without the prism-cli marker; it is yours and is left as it is`;
+}
+
 // ---- --status ----
 
 function cronLine(kc: string, cronName: string, d: KirocrewDeps): string {
@@ -234,6 +253,7 @@ export function grantsLine(info: AppInfo): string {
 
 function showStatus(kc: string, info: AppInfo | null, bundled: Record<string, any> | null, d: KirocrewDeps): number {
   const target = targetDir(d.home);
+  const steering = steeringState(d.home, bundledSteering(d.bundleDir));
   d.log('\n📊 Kiro Crew app status\n');
   d.log(`  ✓ kirocrew: ${tilde(kc, d.home)}`);
   d.log(`  Installed:   ${info ? `${APP} ${info.version}` : 'not installed'}`);
@@ -247,7 +267,9 @@ function showStatus(kc: string, info: AppInfo | null, bundled: Record<string, an
     const cron = Array.isArray(bundled?.crons) && bundled!.crons[0]?.name ? String(bundled!.crons[0].name) : 'prism-daily-digest';
     d.log(`  Digest cron: ${cronLine(kc, cron, d)}`);
   }
-  if (!info || (bundled?.version && compareVersions(info.version, bundled.version) < 0)) d.log(`\n  → ${ENABLE_KIROCREW_CMD}`);
+  d.log(`  Steering:    ${steeringText(steering, d.home)}`);
+  const behind = !info || (bundled?.version && compareVersions(info.version, bundled.version) < 0);
+  if (behind || steering === 'missing' || steering === 'outdated') d.log(`\n  → ${ENABLE_KIROCREW_CMD}`);
   d.log('');
   return 0;
 }
@@ -261,13 +283,17 @@ async function uninstall(kc: string, info: AppInfo | null, opts: KirocrewOptions
   if (info) d.log(`  → ${opts.dryRun ? 'would run' : 'runs'}: kirocrew ${args.join(' ')}`);
   else d.log(`  ${APP} is not installed in Kiro Crew.`);
   if (existsSync(target)) d.log(`  → ${opts.dryRun ? 'would remove' : 'removes'} ${tilde(target, d.home)}`);
+  const steering = steeringState(d.home, null);
+  const note = tilde(steeringPath(d.home), d.home);
+  if (steering === 'installed') d.log(`  → ${opts.dryRun ? 'would remove' : 'removes'} the steering note ${note}`);
+  else if (steering === 'user-owned') d.log(`  - ${note} has no prism-cli marker; it is left as it is`);
   if (opts.purgeData) {
     d.log('  ⚠ --purge-data permanently deletes the app\'s data in Kiro Crew (~/.kiro/crew/apps/prism/data by default:');
     d.log('    digest state, data/config.json). This cannot be undone.');
   } else if (info) {
     d.log('  Kiro Crew keeps the app\'s data (~/.kiro/crew/apps/prism/data by default); --purge-data deletes it.');
   }
-  if (!info && !existsSync(target)) { d.log('  Nothing to remove.\n'); return 0; }
+  if (!info && !existsSync(target) && steering !== 'installed') { d.log('  Nothing to remove.\n'); return 0; }
   if (opts.dryRun) { d.log(''); return 0; }
   if (!await confirm(opts.purgeData ? '  Uninstall and DELETE the app data? [y/N] ' : '  Uninstall? [y/N] ', opts, d)) return 1;
   if (info) {
@@ -279,7 +305,9 @@ async function uninstall(kc: string, info: AppInfo | null, opts: KirocrewOptions
     d.log(`  ✓ kirocrew ${args.join(' ')}`);
   }
   for (const p of [target, `${target}.prev`]) rmSync(p, { recursive: true, force: true });
-  d.log(`  ✓ Removed ${tilde(target, d.home)}\n`);
+  d.log(`  ✓ Removed ${tilde(target, d.home)}`);
+  if (removeSteering(d.home)) d.log(`  ✓ Removed ${note}`);
+  d.log('');
   return 0;
 }
 
@@ -317,16 +345,39 @@ export async function enableKirocrew(opts: KirocrewOptions, d: KirocrewDeps): Pr
   d.log(`  Target:    ${tilde(plan.target, d.home)}`);
   d.log(`  Plan:      ${PLAN_TEXT[plan.action](plan)}`);
   if (plan.action === 'update' && plan.sourceMoves) d.log(`             and move its source from ${tilde(info!.source || 'an unknown folder', d.home)} to ${tilde(plan.target, d.home)}`);
+  const note = bundledSteering(d.bundleDir);
+  const steering = steeringState(d.home, note);
+  const writeNote = !!note && (steering === 'missing' || steering === 'outdated');
+  const notePath = tilde(steeringPath(d.home), d.home);
+  d.log(`  Steering:  ${steeringText(steering, d.home)}`);
   checkPrismCliOnPath(d);
+  const verb = dry ? '  → would' : '  →';
+  const noteStep = `${verb} ${steering === 'missing' ? 'write' : 'update'} the steering note ${notePath} (kiro-cli, Kiro IDE and Kiro Crew load it: check codewatch findings before finishing)`;
+  const putNote = (): boolean => {
+    try {
+      writeSteering(d.home, note!);
+    } catch (e) {
+      d.error(`  ⚠ could not write ${notePath}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
+      return false;
+    }
+    d.log(`  ✓ ${steering === 'missing' ? 'Wrote' : 'Updated'} ${notePath}`);
+    return true;
+  };
   if (!args) {
     if (info && !info.enabled) d.log(`\n  The app is installed but not enabled: kirocrew app enable ${APP}`);
+    if (writeNote) {
+      d.log(noteStep);
+      if (dry) { d.log('\n  Dry run complete. Re-run without --dry-run to apply.\n'); return 0; }
+      if (!await confirm('\n  Proceed? [y/N] ', opts, d)) return 1;
+      if (!putNote()) return 1;
+    }
     d.log('');
     return 0;
   }
-  const verb = dry ? '  → would' : '  →';
   d.log(`${verb} copy the bundled app to ${tilde(plan.target, d.home)} (the previous copy is kept as .prev until Kiro Crew accepts it)`);
   d.log(`${verb} run: kirocrew ${args.map((a) => tilde(a, d.home)).join(' ')}`);
   if (!info) d.log(`${verb} run: kirocrew app enable ${APP}`);
+  if (writeNote) d.log(noteStep);
   d.log('    Kiro Crew keeps the app\'s data in its own apps folder (~/.kiro/crew/apps/prism/data by default); it is not touched.');
   if (dry) {
     d.log('\n  Dry run complete. Re-run without --dry-run to apply.\n');
@@ -346,6 +397,7 @@ export async function enableKirocrew(opts: KirocrewOptions, d: KirocrewDeps): Pr
   }
   staged.commit();
   d.log(`  ✓ kirocrew ${args.map((a) => tilde(a, d.home)).join(' ')}`);
+  if (writeNote) putNote();
 
   if (!info) {
     const e = d.run(kc, ['app', 'enable', APP], WRITE_TIMEOUT_MS);
@@ -399,12 +451,12 @@ export async function runEnableKirocrew(opts: KirocrewOptions, hooks: KirocrewHo
 }
 
 export default {
-  description: 'Install or update the PRISM Kiro Crew app bundled with this prism-cli (a PRISM page, the PRISM MCP tools, a fix-findings skill and a daily digest)',
+  description: 'Install or update the PRISM Kiro Crew app bundled with this prism-cli (a PRISM page, the PRISM MCP tools, a fix-findings skill and a daily digest) and its steering note in ~/.kiro/steering',
   options: [
     { flags: '--yes', description: 'Do not ask before installing, updating or uninstalling' },
-    { flags: '--dry-run', description: 'Print the plan with the exact kirocrew commands; change nothing' },
-    { flags: '--status', description: 'Show the installed and bundled app versions, its source folder, enabled, API grants and the digest cron (read-only)' },
-    { flags: '--uninstall', description: 'kirocrew app uninstall prism (keeps the app data), then remove ~/.prism/kirocrew-app' },
+    { flags: '--dry-run', description: 'Print the plan with the exact kirocrew commands and the steering note it would write; change nothing' },
+    { flags: '--status', description: 'Show the installed and bundled app versions, its source folder, enabled, API grants, the digest cron and the steering note (read-only)' },
+    { flags: '--uninstall', description: 'kirocrew app uninstall prism (keeps the app data), then remove ~/.prism/kirocrew-app and the steering note if prism-cli wrote it' },
     { flags: '--purge-data', description: 'With --uninstall: also delete the app data in Kiro Crew permanently' },
   ],
   action: runEnableKirocrew,

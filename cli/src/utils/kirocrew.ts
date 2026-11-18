@@ -3,8 +3,8 @@
  * where kirocrew is, which app version is bundled, and the quick installed
  * version read that `prism-cli version` and the dashboard Settings view use.
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { findOnPath } from './tool-check.js';
 import { getAssetPath } from './root.js';
 
@@ -70,4 +70,65 @@ export function kirocrewAppState(o: { pathEnv?: string; home: string; env?: Node
   const dir = o.bundleDir === undefined ? bundledAppDir() : o.bundleDir;
   const v = dir ? readManifest(dir)?.version : null;
   return { installed: installedAppVersion(o.home, o.env), bundled: typeof v === 'string' ? v : null };
+}
+
+// ---- The steering note (kirocrew-app/steering/prism-codewatch.md) ----
+//
+// kiro-cli, Kiro IDE and Kiro Crew load every ~/.kiro/steering/**/*.md into every
+// session (a Kiro Crew app cannot ship steering). The note tells agents to check
+// codewatch findings before finishing: with the prism-fix-findings skill where it
+// exists (Kiro Crew), else with `prism-cli codewatch review`. Installed by
+// enable kirocrew, enable agent-hooks --client kiro, and
+// kirocrew-app/scripts/install_prism_cli.py, all with the same marker rules.
+
+/** The line that marks the file as ours: only a file with it is overwritten or removed. */
+export const STEERING_MARKER = '<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->';
+export const STEERING_FILE = 'prism-codewatch.md';
+
+/** ~/.kiro/steering/prism-codewatch.md under `home`. */
+export const steeringPath = (home: string) => join(home, '.kiro', 'steering', STEERING_FILE);
+
+/** The note shipped in the app bundle, or null. */
+export function bundledSteering(bundleDir: string | null): string | null {
+  if (!bundleDir) return null;
+  try { return readFileSync(join(bundleDir, 'steering', STEERING_FILE), 'utf8'); } catch { return null; }
+}
+
+/**
+ * installed: ours and the same as the bundled note (or no bundled note to compare with);
+ * outdated: ours, different; missing: no file (ENOENT only); user-owned: a file without the marker;
+ * unreadable: any other read error (EACCES, EISDIR, ENOTDIR...): never written over.
+ */
+export type SteeringState = 'installed' | 'outdated' | 'missing' | 'user-owned' | 'unreadable';
+
+export function steeringState(home: string, bundled: string | null): SteeringState {
+  let have: string;
+  try {
+    have = readFileSync(steeringPath(home), 'utf8');
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable';
+  }
+  if (!have.includes(STEERING_MARKER)) return 'user-owned';
+  return bundled === null || have === bundled ? 'installed' : 'outdated';
+}
+
+/** Writes the note (temp file, then rename). Call only for missing or outdated. */
+export function writeSteering(home: string, text: string): void {
+  const p = steeringPath(home);
+  mkdirSync(dirname(p), { recursive: true });
+  const tmp = `${p}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, p);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+/** Removes the note only when it is ours; true when it removed one. */
+export function removeSteering(home: string): boolean {
+  if (steeringState(home, null) !== 'installed') return false;
+  rmSync(steeringPath(home), { force: true });
+  return true;
 }
