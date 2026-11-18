@@ -1058,3 +1058,105 @@ test('Bootstrapping: a stopped deploy shows the step it stopped at and Clean up;
   const link = drawer.querySelectorAll('a').find((a) => a.textContent === 'View progress →');
   assert.equal(link?.getAttribute('href'), '#security/run/' + id + '/run-pt-new');
 });
+
+// ---------------------------------------------------------------- 1.21.8: the picker's Retry, the remembered repo
+
+test('pentest picker: a listing that failed shows Retry with the error text (redacted); Retry lists again at once', async () => {
+  const p = await pagePayload();
+  const id = p.repos[0].id;
+  const { routes } = ptRoutes(p);
+  const listing = routes['/api/security-agent/pentest?repo=' + id];
+  let n = 0;
+  const page = await runPage([p], '#security', SETUP, { ...routes, ['/api/security-agent/pentest?repo=' + id]: () => {
+    if (n++ === 0) throw new Error('stdio host went away (account 999988887777)\nsecond line');
+    return listing;
+  } });
+  await page.settle();
+  const sec = page.dom.byId.security;
+  const failed = sec.querySelectorAll('[data-pt-failed]')[0];
+  assert.ok(failed, 'the failure callout');
+  assert.match(failed.textContent, /The Dockerfile picker could not load: stdio host went away \(account ••••7777\)\. These commands/);
+  assert.doesNotMatch(failed.textContent, /999988887777|second line/);
+  const retry = sec.querySelectorAll('button').find((b) => b.hasAttribute('data-pt-retry'))!;
+  assert.ok(retry, 'Retry');
+  retry.listeners.click();
+  await page.settle();
+  assert.equal(n, 2, 'listed again');
+  assert.equal(page.dom.byId.security.querySelectorAll('[data-pt-failed]').length, 0);
+  assert.ok(page.dom.byId.security.querySelectorAll('input').some((i) => i.getAttribute('type') === 'radio' && i.getAttribute('value') === 'sample-app/Dockerfile'), 'the radios are back');
+});
+
+test('remembered repo: GET names it by id while discovered; a missing one is ignored and dropped; a corrupt file is ignored; POST saves the real path', async () => {
+  const { securityAgentRemember } = await import('../src/dashboard/security-agent.js');
+  const { prefsPath } = await import('../src/dashboard/dashboard-prefs.js');
+  const { readFileSync, symlinkSync } = await import('node:fs');
+  const home = tmp('rem');
+  const a = join(home, 'src', 'a'), b = join(home, 'src', 'b');
+  mkdirSync(a, { recursive: true }); mkdirSync(b, { recursive: true });
+  const repos = [{ id: repoId(a), name: 'a', path: a, current: true }, { id: repoId(b), name: 'b', path: b, current: false }];
+  const d = saDeps(home, repos);
+  assert.equal((await securityAgentView(d)).remembered, null, 'no file');
+  assert.equal((await securityAgentRemember(d, { repo: 'nothex' })).status, 400);
+  assert.equal((await securityAgentRemember(d, { repo: 'ffffffffffffffff' })).status, 400, 'not in the scan list');
+  assert.equal((await securityAgentRemember(d, { repo: repoId(b), path: '/etc' })).status, 400, 'no other fields');
+  assert.ok(!existsSync(prefsPath(home)), 'nothing written by a refused request');
+  mkdirSync(join(home, '.prism'), { recursive: true });
+  writeFileSync(prefsPath(home), JSON.stringify({ other: 1 }));
+  const r = await securityAgentRemember(d, { repo: repoId(b) });
+  assert.deepEqual([r.status, r.json], [200, { remembered: repoId(b) }], 'the answer names the id, not the path');
+  assert.deepEqual(JSON.parse(readFileSync(prefsPath(home), 'utf8')), { other: 1, securityAgentRepo: b }, 'the real path, other keys kept');
+  const v = await securityAgentView(d);
+  assert.equal(v.remembered, repoId(b));
+  assert.ok(!JSON.stringify(v).includes(home), 'no absolute path in the answer');
+  // Discovered through a symlinked path: the real path still matches.
+  const link = join(home, 'link-b');
+  symlinkSync(b, link);
+  assert.equal((await securityAgentView(saDeps(home, [{ id: repoId(link), name: 'b', path: link, current: false }]))).remembered, repoId(link));
+  // No longer discovered: ignored, and dropped from the file.
+  assert.equal((await securityAgentView(saDeps(home, [repos[0]]))).remembered, null);
+  assert.deepEqual(JSON.parse(readFileSync(prefsPath(home), 'utf8')), { other: 1 });
+  // A corrupt file is ignored and left alone; the next pick replaces it.
+  writeFileSync(prefsPath(home), '{not json');
+  assert.equal((await securityAgentView(d)).remembered, null);
+  assert.equal(readFileSync(prefsPath(home), 'utf8'), '{not json');
+  writeFileSync(prefsPath(home), JSON.stringify([b]));
+  assert.equal((await securityAgentView(d)).remembered, null, 'not an object');
+  assert.equal((await securityAgentRemember(d, { repo: repoId(a) })).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(prefsPath(home), 'utf8')), { securityAgentRepo: a });
+  // Mounted on the same postApi record the HTTP server and the stdio host both serve.
+  const api = setupApi({ runner: runnerWith([]), cwd: '/work', repoPaths: async () => [], identity: { env: {}, home, repoRoot: null }, refresh: async () => ({}), securityAgent: d });
+  assert.equal((await api.postApi['/api/security-agent/repo']({ repo: repoId(b) })).status, 200);
+  assert.equal((await securityAgentView(d)).remembered, repoId(b));
+  // --serve-stdio (VS Code, Kiro Crew): the same route through its dispatcher, and the same file.
+  const { dispatch } = await import('../src/dashboard/stdio.js');
+  const viaStdio = await dispatch(api as never, { id: 7, op: 'act', path: '/api/security-agent/repo', body: { repo: repoId(a) } });
+  assert.deepEqual([viaStdio.status, viaStdio.json], [200, { remembered: repoId(a) }]);
+  assert.deepEqual(JSON.parse(readFileSync(prefsPath(home), 'utf8')), { securityAgentRepo: a });
+  const got = await dispatch(api as never, { id: 8, op: 'get', path: '/api/security-agent', query: {} });
+  assert.equal((got.json as { remembered: string }).remembered, repoId(a));
+});
+
+test('remembered repo, page: preselected on load over the current repo; a pick posts its id; a stale or missing one falls back to the current repo', async () => {
+  const p = await pagePayload();
+  const [first, second] = p.repos;
+  const page = await runPage([p], '#security', SETUP, { '/api/security-agent': { ...saAnswer(p, GOOD), remembered: second.id }, '/api/security-agent/repo': { remembered: first.id } });
+  await page.settle();
+  const sel = () => page.dom.byId.security.querySelectorAll('select')[0];
+  const picked = () => sel().all().find((o) => o.hasAttribute('selected'))!.getAttribute('value');
+  assert.equal(picked(), second.id, 'the remembered repo, not the current one');
+  sel().value = first.id;
+  sel().listeners.change();
+  await page.settle();
+  assert.deepEqual(posts(page, '/api/security-agent/repo').map((r) => r.body), [{ repo: first.id }], 'only the id goes to the server');
+  page.go(page.location.hash);
+  await page.settle();
+  assert.equal(picked(), first.id);
+  // The server dropped it (not discovered any more): the page uses its old default, silently.
+  const none = await runPage([p], '#security', SETUP, { '/api/security-agent': { ...saAnswer(p, GOOD), remembered: null } });
+  await none.settle();
+  assert.equal(none.dom.byId.security.querySelectorAll('select')[0].all().find((o) => o.hasAttribute('selected'))!.getAttribute('value'), first.id);
+  assert.equal(posts(none, '/api/security-agent/repo').length, 0, 'loading never writes');
+  const stale = await runPage([p], '#security', SETUP, { '/api/security-agent': { ...saAnswer(p, GOOD), remembered: 'ffffffffffffffff' } });
+  await stale.settle();
+  assert.equal(stale.dom.byId.security.querySelectorAll('select')[0].all().find((o) => o.hasAttribute('selected'))!.getAttribute('value'), first.id);
+});

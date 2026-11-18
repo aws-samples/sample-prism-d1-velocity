@@ -1463,7 +1463,12 @@ step.
 ![The setup gate at 390 px: Security Agent is set up for a different account, with the --repo and --replace commands, each wrapping only at spaces, and Copy buttons](assets/images/prism-cli/dashboard-security-gate-mismatch-390-dark.png)
 
 - **Target repo.** A picker over the repos the dashboard found, starting with the one it was
-  started in. Every command on the page runs with that repo as its working directory, and the
+  started in. The repo you pick is remembered in `~/.prism/dashboard.json` (key
+  `securityAgentRepo`, the repo's real path; a local file, no AWS call), so the page opens on it
+  after a restart and in every host: the browser, VS Code and Kiro Crew. It is used only while the
+  dashboard still finds that repo; otherwise the page starts on the default repo and the entry is
+  dropped. A file that does not read as JSON is ignored until the next pick replaces it. Every
+  command on the page runs with that repo as its working directory, and the
   confirm dialog shows the exact line, for example
   `cd ~/src/demo-shop && prism-cli security findings --profile demo --region us-west-2`. The page
   sends only the action and the repo's id; the server looks the path up in its own list, adds
@@ -1680,6 +1685,16 @@ first, with the spend cards showing "loading", then fills usage in. A cache olde
 shown at once and refreshed in the background. A failed or missing codeburn is shown as such and
 never cached.
 
+Before there is a month to draw, the Spend card stays in its place with an empty state. Without
+codeburn it says what the card will show once codeburn is set up, with **Set up codeburn** and the
+command once to copy, `prism-cli enable codeburn`. The button runs `prism-cli enable codeburn --yes`
+after a confirm dialog: it installs codeburn from npm when it is missing, then sets up its sync in
+the mode saved on the machine (local only by default; the scheduled push when the machine already
+syncs to a team PRISM). With codeburn set up and no usage this month yet, the card says so, with no
+button. A static snapshot shows the command only. The repo table's spend column shows `-` either way.
+
+![The Spend card with demo data before codeburn is installed: what the card shows once it is set up, Set up codeburn, and prism-cli enable codeburn to copy](assets/images/prism-cli/dashboard-spend-empty-light.png)
+
 **Security runs.** The latest 5 Security Agent runs (code reviews, threat models and pentests) in
 every repo, newest first, read from each repo's `.prism/results/`. Reading them makes no AWS call.
 While a run is pending, the open page has the dashboard check its job with AWS: when the page
@@ -1722,9 +1737,9 @@ fails by severity, passing and could-not-check counts, and **Open AccountGuard â
 fixes and baseline are. With none cached, it points to `prism-cli aws check` and AccountGuard. Local
 files only; no AWS calls.
 
-**Get more from PRISM.** A section with nothing recorded yet (codewatch, spend, Security Agent
-results, AWS account checks) is not shown; instead this strip lists it with the command that
-fills it.
+**Get more from PRISM.** A section with nothing recorded yet (codewatch, Security Agent results,
+AWS account checks) is not shown; instead this strip lists it with the command that fills it.
+Spend keeps its card with an empty state (above).
 
 Data is read when the page loads, and again every minute while the tab is visible (usage from the
 cache). The **Refresh** button also runs new codeburn exports.
@@ -2312,7 +2327,17 @@ Dockerfile; otherwise the reason is shown under the field. The **Pentest** comma
 pentest** runs it with `--yes`, after a confirm dialog that lists what it deploys (see
 [Security Agent Page](#security-agent-page)). `--dry-run` is CLI only: run it in a terminal. The choice is asked each time: nothing is written to the repo or to
 `.prism/pentest.json`, and the page keeps it only until you reload it. A `.prism/pentest.json`
-that does not load is named on the card and its values are not used.
+that does not load is named on the card and its values are not used. If the Dockerfile list itself
+cannot load (the dashboard or its host went away for a moment), the card says why and offers
+**Retry**, which lists the files again without a reload; until then the plain commands stay
+available to copy.
+
+![The Pentest target item with demo data after the Dockerfile list failed to load: the reason, Retry, and the plain pentest command to copy](assets/images/prism-cli/dashboard-pentest-picker-retry-dark.png)
+
+`security pentest` checks its own flags by the same rules as the picker (one shared check): a
+folder and a Dockerfile relative to the repo that stay inside it, symlinks included, at most 400
+characters and no control characters; a health path that starts with `/`, with the same limits; a
+port from 1 to 65535. A flag given empty (`--port ''`) is an error, not the default.
 
 **Flags.** Every flag, with its default (`--timeout` 360 minutes for `--wait`):
 [`prism-cli security pentest`](docs/CLI-REFERENCE.md#prism-cli-security-pentest).

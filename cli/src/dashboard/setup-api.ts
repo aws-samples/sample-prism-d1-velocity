@@ -13,6 +13,7 @@
  *   GET  /api/security-agent/pentest?repo=<id>  the pentest picker: tracked Dockerfiles, .prism/pentest.json (read-only)
  *   GET  /api/security-agent/pentest/check?repo=<id>&dockerfile=&app_dir=&port=&health_path=  one choice checked, its commands
  *   POST /api/security-agent/spaces  {repo, refresh?}: the read-only agent-space lookup
+ *   POST /api/security-agent/repo    {repo}: remember the page's picked repo in ~/.prism/dashboard.json (local file, no AWS)
  *   GET  /api/codewatch/reviewer?repo=<id>[&scope=&reviewer=&model=&reset=1]  the repo page's reviewer and model (git config, .prism/config.json; read-only)
  *   GET  /api/codewatch/defaults     your default reviewer and model (git config --global) and the repos that override it
  *   GET  /api/security-run?repo=<id>&run=<id>  one security run's findings (local result files; security-runs.ts)
@@ -24,7 +25,7 @@ import { profileChoices, resolveAwsIdentity, type IdentityDeps } from './aws-ide
 import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountguard.js';
 import { tildeHome } from './payload.js';
 import type { VersionInfo } from './update-check.js';
-import { commandLine, securityAgentGate, securityAgentLookup, securityAgentScope, securityAgentView, securityTargetIn, type SecurityAgentDeps } from './security-agent.js';
+import { commandLine, securityAgentGate, securityAgentLookup, securityAgentRemember, securityAgentScope, securityAgentView, securityTargetIn, type SecurityAgentDeps } from './security-agent.js';
 import { securityAgentPentest, securityAgentPentestCheck } from './security-pentest.js';
 import { securityRunDetail, securityRunLog, type CheckLookup } from './security-runs.js';
 import { ApiAnswer } from './server.js';
@@ -134,6 +135,8 @@ export function setupApi(d: SetupApiDeps) {
       '/api/action': (body: unknown): Promise<ApiResult> => d.runner.start(body),
       '/api/security-agent/spaces': async (body: unknown): Promise<ApiResult> =>
         d.securityAgent ? securityAgentLookup(d.securityAgent, body) : { status: 400, json: { error: 'the Security Agent page is not available here' } },
+      '/api/security-agent/repo': async (body: unknown): Promise<ApiResult> =>
+        d.securityAgent ? securityAgentRemember(d.securityAgent, body) : { status: 400, json: { error: 'the Security Agent page is not available here' } },
       '/api/accountguard/baseline': async (body: unknown): Promise<ApiResult> =>
         d.accountGuard ? setBaseline(d.accountGuard, body) : { status: 400, json: { error: 'AccountGuard is not available here' } },
       '/api/update-check': async (body: unknown): Promise<ApiResult> => {

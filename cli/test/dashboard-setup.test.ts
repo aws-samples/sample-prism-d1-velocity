@@ -203,6 +203,7 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'codeburn-team': { args: ['enable', 'codeburn', '--url', 'https://collector.example.com/otel?x=1'], cwd: '/work', body: { url: 'https://collector.example.com/otel?x=1' } },
     'codeburn-remove': { args: ['enable', 'codeburn', '--remove'], cwd: '/work', body: { confirm: true } },
     'codeburn-status': { args: ['enable', 'codeburn', '--status'], cwd: '/work' },
+    'codeburn-setup': { args: ['enable', 'codeburn', '--yes'], cwd: '/work', body: { confirm: true } },
     'team-info': { args: ['team', 'info'], cwd: '/work' },
     'aws-connect': { args: ['aws', 'connect', '--profile', 'demo', '--region', 'us-west-2'], cwd: '/work', body: { profile: 'demo', region: 'us-west-2' } },
     'aws-connect-status': { args: ['aws', 'connect', '--status'], cwd: '/work' },

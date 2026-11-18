@@ -17,7 +17,7 @@ import { collectUsage, codeburnStats, heatmapStart, priorRange, type CodeburnExp
 import { UsageCache, USAGE_CACHE_SCHEMA } from '../src/dashboard/usage-cache.js';
 import { readCapped, UpdateCheck, UPDATE_CACHE_SCHEMA, UPDATE_CHECK_INTERVAL_MS, type RegistryFetch } from '../src/dashboard/update-check.js';
 import { renderPage } from '../src/dashboard/page.js';
-import { FakeElement, runPage } from './page-dom.js';
+import { FakeElement, runPage, SETUP_STUB } from './page-dom.js';
 
 process.env.GIT_CONFIG_GLOBAL = join(mkdtempSync(join(tmpdir(), 'prism-rd-gcfg-')), 'gitconfig');
 const tmp = (p: string) => realpathSync(mkdtempSync(join(tmpdir(), `prism-rd-${p}-`)));
@@ -272,8 +272,54 @@ test('page: empty sections are hidden and listed in the Get more from PRISM stri
   none.machine.secretScanning.banner = null;
   const t2 = (await runPage([none])).text();
   assert.match(t2, /Codewatch: prism-cli enable codewatch/);
-  assert.match(t2, /Spend: codeburn is not installed\. prism-cli enable codeburn/);
+  // 1.21.8: Spend keeps its card with an empty state (spend-empty tests below), not a line in the strip.
+  assert.doesNotMatch(t2, /Get more from PRISM[^]*Spend:/);
   assert.doesNotMatch(t2, /Trend \(last 12 runs\)|By model/);
+});
+
+/** The redesign fixture with codeburn in `status`; `setup` answers /api/setup (null: none). */
+async function spendEmptyPage(status: 'not-installed' | 'no-data', setup: unknown) {
+  const { p } = await fixture();
+  const none = JSON.parse(JSON.stringify(p)) as DashboardPayload;
+  none.usage = { ...none.usage, status, message: status === 'no-data' ? 'codeburn found no usage this month.' : 'codeburn is not installed.' };
+  return runPage([none], '', setup);
+}
+const SETUP_CB = { ...SETUP_STUB, actions: [{ id: 'codeburn-setup', label: 'Set up codeburn', command: 'prism-cli enable codeburn --yes', confirm: true, installs: true, note: 'Installs codeburn with npm.', confirmLabel: 'Yes, install codeburn', timeoutSec: 300, available: true }] };
+
+test('page: Spend without codeburn keeps its card: what it will show, Set up codeburn (confirmed), the command once', async () => {
+  const page = await spendEmptyPage('not-installed', SETUP_CB);
+  const card = page.dom.byId.main.all().find((e) => e.getAttribute('id') === 'spend')!;
+  assert.ok(card, 'the Spend card is drawn in place');
+  const t = card.textContent;
+  assert.match(t, /Once codeburn is set up, this card shows your monthly AI spend from codeburn: a heatmap of daily spend, and the spend by model, project and activity\./);
+  assert.equal(t.split('prism-cli enable codeburn').length - 1, 1, 'the command once: ' + t);
+  assert.doesNotMatch(page.text(), /Get more from PRISM[^]*Spend:/, 'not in the strip');
+  const btn = card.all().find((e) => e.nodeName === 'BUTTON' && e.textContent === 'Set up codeburn')!;
+  assert.ok(btn, 'Set up codeburn');
+  assert.equal(card.querySelectorAll('[data-spend-setup]')[0].hidden, false);
+  btn.listeners.click();
+  const dlg = page.dom.document.body.all().find((e) => e.nodeName === 'DIALOG')!;
+  assert.ok(dlg.modal, 'the confirm dialog opens');
+  assert.match(dlg.textContent, /prism-cli enable codeburn --yes/);
+  assert.match(dlg.textContent, /Installs software from the npm registry on this machine/);
+  const run = dlg.all().find((e) => e.nodeName === 'BUTTON' && e.textContent === 'Run')!;
+  assert.equal(run.disabled, true, 'Run waits for the checkbox');
+});
+
+test('page: Spend without codeburn and no action list (or a snapshot) has no button, only the command to copy', async () => {
+  const page = await spendEmptyPage('not-installed', null);
+  const card = page.dom.byId.main.all().find((e) => e.getAttribute('id') === 'spend')!;
+  assert.ok(!card.all().some((e) => e.nodeName === 'BUTTON' && e.textContent === 'Set up codeburn'));
+  assert.equal(card.querySelectorAll('[data-spend-setup]')[0].hidden, true, 'the empty slot stays hidden');
+  assert.match(card.textContent, /Or run in a terminal:prism-cli enable codeburn/);
+});
+
+test('page: Spend with codeburn set up and nothing this month says so, with no button', async () => {
+  const page = await spendEmptyPage('no-data', SETUP_CB);
+  const card = page.dom.byId.main.all().find((e) => e.getAttribute('id') === 'spend')!;
+  assert.match(card.textContent, /codeburn is set up but has no usage for this month yet\./);
+  assert.ok(!card.all().some((e) => e.nodeName === 'BUTTON'), 'no button');
+  assert.doesNotMatch(card.textContent, /prism-cli enable codeburn/);
 });
 
 test('page: severity pills share one shape per level everywhere', async () => {

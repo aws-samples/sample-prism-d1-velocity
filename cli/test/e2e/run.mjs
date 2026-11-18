@@ -8,7 +8,7 @@
 // exits 1 when a verdict fails.
 import { chromium } from 'playwright-core';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, realpathSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -149,6 +149,46 @@ const routesFor = (data) => [
   '#settings', ...['overview', 'machine', 'repos', 'agents', 'sync', 'aws', 'updates'].map((t) => '#settings/' + t), '#setup',
   '#repo/0000000000000000', '#security/0000000000000000', '#settings/bogus', '#nonsense'];
 const shotName = (s) => s.replace(/[#/]+/g, '_').replace(/^_|_$/g, '') || 'dashboard';
+
+/**
+ * The shared UI over `dashboard --serve-stdio` in a page with the hosts' CSP (VS Code, Kiro Crew): every request
+ * goes over the child's stdin and stdout. Returns the page, `ask` (a raw request) and `close`.
+ */
+async function stdioUi(home, envExtra, opt = {}, viewport = { width: 1280, height: 900 }) {
+  const cwd = readFileSync(join(home, '.start-dir'), 'utf8').trim();
+  const child = spawn(process.execPath, [ENTRY, 'dashboard', '--serve-stdio'], { cwd, env: demoEnv(home, envExtra, opt), stdio: ['pipe', 'pipe', 'pipe'] });
+  running.push(child);
+  const waiting = new Map(); let buf = '', seq = 0, helloOk;
+  const helloP = new Promise((r) => { helloOk = r; });
+  child.stdout.on('data', (b) => { buf += b; for (let i; (i = buf.indexOf('\n')) >= 0;) { const o = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (o.hello) { helloOk(o); continue; } waiting.get(o.id)?.(o); waiting.delete(o.id); } });
+  const hello = await Promise.race([helloP, sleep(20000).then(() => { throw new Error('no stdio hello in 20 s'); })]);
+  const ask = (m) => new Promise((ok) => { const id = ++seq; waiting.set(id, ok); child.stdin.write(JSON.stringify({ id, ...m }) + '\n'); });
+  const ORIGIN = 'https://prism-ui.test', nonce = 'bm9uY2Vub25jZQ==';
+  const files = JSON.parse(readFileSync(join(hello.uiDir, 'manifest.json'), 'utf8')).files;
+  const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src ${ORIGIN}; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'`;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><link rel="stylesheet" href="${ORIGIN}/prism-ui.css"></head>`
+    + `<body><div class="wrap">${readFileSync(join(hello.uiDir, 'body.html'), 'utf8')}</div><script nonce="${nonce}" src="${ORIGIN}/bridge.js"></script><script nonce="${nonce}" src="${ORIGIN}/prism-ui.js"></script></body></html>`;
+  const ctx = await browser.newContext({ viewport, colorScheme: opt.scheme || 'light' });
+  const page = await ctx.newPage();
+  const log = [];
+  page.on('pageerror', (e) => log.push({ tag: 'stdio-ui', type: 'pageerror', text: String(e).slice(0, 300) }));
+  await page.route(`${ORIGIN}/**`, (route) => {
+    const name = new URL(route.request().url()).pathname.slice(1);
+    if (name === 'index.html') return route.fulfill({ status: 200, contentType: 'text/html', body: html });
+    if (!files.includes(name)) return route.fulfill({ status: 404, body: '' });
+    route.fulfill({ status: 200, contentType: name.endsWith('.css') ? 'text/css' : 'text/javascript', body: readFileSync(join(hello.uiDir, name)) });
+  });
+  await page.exposeBinding('__hostPost', async (_s, m) => {
+    if (!m || m.type !== 'prism-ui:request' || !(m.op === 'get' ? hello.routes.get : hello.routes.act).includes(m.path)) return;
+    const a = await ask(m.op === 'get' ? { op: 'get', path: m.path, query: m.query || {} } : { op: 'act', path: m.path, body: m.body });
+    await page.evaluate((msg) => window.dispatchEvent(new MessageEvent('message', { data: msg })), { type: 'prism-ui:response', id: m.id, status: a.status, json: a.json });
+  });
+  await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: (m) => window.__hostPost(m), getState: () => undefined, setState: () => {} }); });
+  await page.goto(`${ORIGIN}/index.html`);
+  await page.waitForSelector('#summary', { timeout: 30000 }).catch(() => {});
+  await sleep(1500);
+  return { page, ask, hello, log, close: async () => { await ctx.close(); child.stdin.end(); } };
+}
 
 try {
   // ---------- 1. auth, token, Host, Origin, CSRF (raw HTTP, no browser) ----------
@@ -1784,6 +1824,183 @@ try {
     const callLog = join(home, 'aws-calls.log');
     out.fakeAwsCalls = existsSync(callLog) ? readFileSync(callLog, 'utf8').trim().split('\n').filter(Boolean) : [];
   }
+
+  // ---------- 1.21.8: the Spend empty states, the picker's Retry, the remembered Security Agent repo ----------
+  if (want('v1218')) {
+    const REPORT = process.env.PRISM_E2E_REPORT;
+    const shot = async (page, name, opt = {}) => {
+      await page.screenshot({ path: join(SHOTS, name + '.png'), fullPage: true, ...opt });
+      if (REPORT) { mkdirSync(REPORT, { recursive: true }); await page.screenshot({ path: join(REPORT, name + '.png'), fullPage: true, ...opt }); }
+    };
+    const shotEl = async (loc, name) => {
+      await loc.screenshot({ path: join(SHOTS, name + '.png') }).catch(() => {});
+      if (REPORT) await loc.screenshot({ path: join(REPORT, name + '.png') }).catch(() => {});
+    };
+    const out = { log: [], spend: {}, remember: {} };
+    R.suites.v1218 = out;
+    /** The Spend card as the page draws it: its text, buttons, the command count, the strip and sideways scroll. */
+    const spendOf = (page) => page.evaluate(() => {
+      const c = document.getElementById('spend');
+      const more = document.getElementById('more');
+      return {
+        card: !!c, text: c ? c.innerText : '', buttons: c ? [...c.querySelectorAll('button')].filter((b) => b.offsetParent).map((b) => b.innerText.trim()) : [],
+        cmdCount: c ? (c.innerText.match(/prism-cli enable codeburn/g) || []).length : 0, inStrip: !!more && /Spend:/.test(more.innerText),
+        scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        order: [...document.querySelectorAll('#main > section')].map((s) => s.id || s.className),
+      };
+    });
+    // A. codeburn not installed (not on PATH): the card in place, Set up codeburn opens the confirm dialog (not run: it would install from npm).
+    {
+      const srv = await live('v-nocb', 'full', { PRISM_NO_UPDATE_CHECK: '1' }, null, { noCodeburn: true });
+      const o = out.spend.notInstalled = {};
+      for (const [width, theme] of [[1280, 'light'], [1280, 'dark'], [390, 'light'], [390, 'dark']]) {
+        const { ctx, page, log } = await openCtx(srv, { width, height: 900 });
+        out.log.push(...log);
+        await setTheme(page, theme);
+        await page.waitForSelector('#spend [data-spend-setup]:not([hidden]) button', { timeout: 15000 }).catch(() => {});
+        const s = await spendOf(page);
+        const l = await layoutCheck(page);
+        o[width + '-' + theme] = { ...s, lowContrast: l.lowContrast.filter((x) => /spend|codeburn|Set up/i.test(x)) };
+        await page.locator('#spend').scrollIntoViewIfNeeded().catch(() => {});
+        await shot(page, `spend-empty-not-installed-${width}-${theme}`, { fullPage: width === 390 });
+        // The card alone (the guide's picture): no repo paths in it.
+        if (width === 1280) await shotEl(page.locator('#spend'), `dashboard-spend-empty-${theme}`);
+        if (width === 1280 && theme === 'light') {
+          await page.click('#spend button:has-text("Set up codeburn")');
+          await sleep(300);
+          o.dialog = await page.evaluate(() => { const d = document.querySelector('dialog.confirm[open]'); return d ? { text: d.innerText, run: [...d.querySelectorAll('button')].find((b) => b.innerText === 'Run')?.disabled, focused: document.activeElement?.innerText } : null; });
+          await shot(page, 'spend-empty-setup-dialog-1280-light', { fullPage: false });
+          await page.click('dialog.confirm button:has-text("Cancel")');
+          await sleep(200);
+          o.actionAfterCancel = await page.evaluate(() => fetch('/api/action/status').then((r) => r.json()).then((j) => j.state));
+        }
+        await ctx.close();
+      }
+      // Over --serve-stdio (VS Code, Kiro Crew): the same card and button, at 390 px.
+      const ui = await stdioUi(srv.home, { PRISM_NO_UPDATE_CHECK: '1' }, { noCodeburn: true }, { width: 390, height: 900 });
+      await ui.page.waitForSelector('#spend [data-spend-setup]:not([hidden]) button', { timeout: 15000 }).catch(() => {});
+      o.stdio = await spendOf(ui.page);
+      await ui.page.click('#spend button:has-text("Set up codeburn")').catch(() => {});
+      await sleep(300);
+      o.stdioDialog = await ui.page.evaluate(() => document.querySelector('dialog.confirm[open]')?.innerText || null);
+      await shot(ui.page, 'spend-empty-not-installed-stdio-390', { fullPage: false });
+      out.log.push(...ui.log);
+      await ui.close();
+    }
+    // B. codeburn installed, nothing this month: a sentence, no button.
+    {
+      const srv = await live('v-cbempty', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_CB: 'empty' });
+      for (const [width, theme] of [[1280, 'light'], [390, 'dark']]) {
+        const { ctx, page, log } = await openCtx(srv, { width, height: 900 });
+        out.log.push(...log);
+        await setTheme(page, theme);
+        await page.waitForFunction(() => /no usage for this month yet/.test(document.getElementById('spend')?.innerText || ''), null, { timeout: 15000 }).catch(() => {});
+        out.spend['noData-' + width + '-' + theme] = await spendOf(page);
+        await shot(page, `spend-empty-no-data-${width}-${theme}`, { fullPage: true });
+        await ctx.close();
+      }
+    }
+    // C. the static snapshot without codeburn: the card and the command, no button.
+    {
+      const home = seed('v-snap', 'full');
+      const file = join(SCRATCH, 'e2e-v1218-snapshot.html');
+      const cwd = readFileSync(join(home, '.start-dir'), 'utf8').trim();
+      const sp = spawnSync(process.execPath, [ENTRY, 'dashboard', '--snapshot', file], { cwd, encoding: 'utf8', timeout: 120000, env: demoEnv(home, { PRISM_NO_UPDATE_CHECK: '1' }, { noCodeburn: true }) });
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const page = await ctx.newPage(); const log = []; watch(page, log, () => 'v1218 snapshot');
+      await page.goto('file://' + file); await sleep(1200);
+      out.spend.snapshot = { exit: sp.status, ...(await spendOf(page)) };
+      out.log.push(...log);
+      await ctx.close();
+    }
+    // D. the picker's Retry: the first listing fails, Retry lists again without a reload.
+    {
+      const srv = await live('v-retry', 'full', { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }, (h) => {
+        const shop = join(h, 'src', 'demo-shop');
+        writeFileSync(join(shop, 'Dockerfile'), 'FROM scratch\n');
+        execFileSync('git', ['add', 'Dockerfile'], { cwd: shop, env: { ...process.env, HOME: h, GIT_CONFIG_NOSYSTEM: '1' } });
+        execFileSync('git', ['commit', '-q', '-m', 'Dockerfile'], { cwd: shop, env: { ...process.env, HOME: h, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Demo Dev', GIT_AUTHOR_EMAIL: 'demo@example.com', GIT_COMMITTER_NAME: 'Demo Dev', GIT_COMMITTER_EMAIL: 'demo@example.com' } });
+      });
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const page = await ctx.newPage(); const log = []; let tag = 'v1218 retry'; watch(page, log, () => tag);
+      let failed = 0;
+      // The failed listing is a dropped connection: the transport's error text, which the page keeps.
+      await page.route(/\/api\/security-agent\/pentest\?repo=/, (route) => (failed++ === 0 ? route.abort('connectionreset') : route.continue()));
+      await page.goto(srv.url); await page.waitForSelector('#meta:not(:empty)');
+      const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+      const repo = sa.repos.find((r) => r.path.endsWith('/src/demo-shop'));
+      tag = 'expected-pt-fail';
+      await page.goto(srv.base + '/#security/' + repo.id); await saReady(page);
+      await page.waitForSelector('[data-pt-retry]', { timeout: 15000 }).catch(() => {});
+      out.retry = { before: await page.evaluate(() => document.querySelector('[data-pt-failed]')?.innerText || null) };
+      await page.locator('[data-pt-failed]').scrollIntoViewIfNeeded().catch(() => {});
+      await shot(page, 'pentest-picker-retry-1280-dark', { fullPage: false });
+      await shotEl(page.locator('li', { has: page.locator('[data-pt-failed]') }), 'dashboard-pentest-picker-retry-dark');
+      tag = 'v1218 retry after';
+      await page.click('[data-pt-retry]');
+      await page.waitForSelector('[data-pt-repo] input[type=radio]', { timeout: 15000 }).catch(() => {});
+      out.retry.after = await page.evaluate(() => ({ failed: !!document.querySelector('[data-pt-failed]'), radios: [...document.querySelectorAll('[data-pt-repo] input[type=radio]')].map((r) => r.value) }));
+      out.retry.requests = failed;
+      out.log.push(...log.filter((l) => l.tag !== 'expected-pt-fail'));
+      await ctx.close();
+    }
+    // E. the remembered repo: picked in the browser, kept across a restart, shared with --serve-stdio; a stale or corrupt file is ignored.
+    {
+      const R2 = out.remember;
+      const env = { PRISM_NO_UPDATE_CHECK: '1', FAKE_AWS: 'in-progress', FAKE_SA: 'ready' };
+      let srv = await live('v-remember', 'full', env);
+      const prefs = join(srv.home, '.prism', 'dashboard.json');
+      const selected = (page) => page.evaluate(() => { const s = document.getElementById('sa-repo'); return s ? s.value : null; });
+      const open = async (s) => { const c = await openCtx(s); await c.page.goto(s.base + '/#security'); await saReady(c.page); await sleep(400); return c; };
+      let c = await open(srv);
+      const sa = await c.page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+      const shop = sa.repos.find((r) => r.path.endsWith('/src/demo-shop')), pay = sa.repos.find((r) => r.path.endsWith('/src/payments-api'));
+      R2.first = await selected(c.page);
+      R2.answerHasPath = JSON.stringify(sa).includes(srv.home);
+      await c.page.selectOption('#sa-repo', pay.id); await sleep(800);
+      R2.file = existsSync(prefs) ? JSON.parse(readFileSync(prefs, 'utf8')) : null;
+      R2.wantPath = realpathSync(join(srv.home, 'src', 'payments-api'));
+      out.log.push(...c.log);
+      await c.ctx.close();
+      // A restart: a new server process, the same HOME.
+      srv.proc.kill(); await sleep(500);
+      const s2 = await startDashboard(srv.home, env); running.push(s2.proc);
+      srv = { ...srv, ...s2, base: `http://127.0.0.1:${s2.port}` };
+      c = await open(srv);
+      R2.afterRestart = await selected(c.page);
+      await shot(c.page, 'security-agent-remembered-repo-1280', { fullPage: false });
+      out.log.push(...c.log);
+      await c.ctx.close();
+      // --serve-stdio (VS Code, Kiro Crew) reads and writes the same file: its page preselects it; a pick there is seen by HTTP.
+      const ui = await stdioUi(srv.home, env);
+      await ui.page.evaluate(() => { location.hash = '#security'; });
+      await ui.page.waitForSelector('#sa-ready', { timeout: 30000 }).catch(() => {});
+      await sleep(400);
+      R2.stdioRoute = ui.hello.routes.act.includes('/api/security-agent/repo');
+      R2.stdioSelected = await ui.page.evaluate(() => document.getElementById('sa-repo')?.value || null);
+      await ui.page.selectOption('#sa-repo', shop.id); await sleep(800);
+      R2.stdioRead = (await ui.ask({ op: 'get', path: '/api/security-agent', query: {} })).json?.remembered;
+      out.log.push(...ui.log);
+      await ui.close();
+      c = await open(srv);
+      R2.afterStdio = await selected(c.page);
+      out.log.push(...c.log);
+      await c.ctx.close();
+      // A path no longer discovered: the default repo, silently, and the entry is dropped.
+      writeFileSync(prefs, JSON.stringify({ securityAgentRepo: join(srv.home, 'src', 'gone') }));
+      c = await open(srv);
+      R2.stale = { selected: await selected(c.page), file: JSON.parse(readFileSync(prefs, 'utf8')), text: await c.page.evaluate(() => document.getElementById('security').innerText) };
+      out.log.push(...c.log);
+      await c.ctx.close();
+      writeFileSync(prefs, '{corrupt');
+      c = await open(srv);
+      R2.corrupt = { selected: await selected(c.page), file: readFileSync(prefs, 'utf8') };
+      out.log.push(...c.log);
+      await c.ctx.close();
+      R2.ids = { shop: shop.id, pay: pay.id };
+      R2.calls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').split('\n').filter(Boolean) : [];
+    }
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -2198,6 +2415,39 @@ function verdicts(R) {
     add('U5', 'a confirmed action runs over stdio: Run disabled until the checkbox, exit 0, the saved connection file removed', U.runDisabled === true && /exit 0/.test(U.actionResult || '') && U.connectionFileGone, JSON.stringify({ d: U.runDisabled, a: U.actionResult, g: U.connectionFileGone }));
     add('U6', 'the embedded page cannot fetch (connect-src none), breaks no CSP rule before that probe, and only allowlisted routes were relayed', U.fetch === 'blocked' && U.cspBeforeProbe === 0 && !U.dropped.length, JSON.stringify({ f: U.fetch, c: U.cspBeforeProbe, d: U.dropped }));
     add('U7', 'the stdio child listens on no port, exits when stdin closes, and the fake aws saw no write call', !U.listen && U.exitedOnStdinClose && U.fakeAwsCalls.every((c) => READ_ONLY_AWS.test(c)), JSON.stringify({ l: U.listen, e: U.exitedOnStdinClose, a: U.fakeAwsCalls }));
+  }
+  if (S.v1218) {
+    const V = S.v1218, N = V.spend.notInstalled || {};
+    const views = ['1280-light', '1280-dark', '390-light', '390-dark'].map((k) => [k, N[k] || {}]);
+    const SENT = /Once codeburn is set up, this card shows your monthly AI spend from codeburn: a heatmap of daily spend, and the spend by model, project and activity\./;
+    const badView = views.filter(([, s]) => !(s.card && SENT.test(s.text) && s.buttons.includes('Set up codeburn') && s.cmdCount === 1 && !s.inStrip && s.scroll <= 1 && s.order.indexOf('spend') === s.order.indexOf('codewatch') + 1));
+    add('SP1', 'codeburn missing: the Spend card stays in place with what it will show, Set up codeburn and the command once (not in the strip), at 1280 and 390 px, light and dark',
+      !badView.length, badView.map(([k, s]) => `${k}: ${JSON.stringify({ card: s.card, b: s.buttons, n: s.cmdCount, strip: s.inStrip, scroll: s.scroll, order: s.order, t: (s.text || '').slice(0, 160) })}`).join('; '));
+    const low = views.flatMap(([k, s]) => (s.lowContrast || []).map((x) => `${k}: ${x}`));
+    add('SP2', 'the Spend empty state keeps 4.5:1 text contrast in light and dark', !low.length, low.slice(0, 4).join('; '));
+    add('SP3', 'Set up codeburn opens the confirm dialog: prism-cli enable codeburn --yes, installs from npm, Run disabled until the box, Cancel focused; Cancel runs nothing',
+      /prism-cli enable codeburn --yes/.test(N.dialog?.text || '') && /Installs software from the npm registry/.test(N.dialog.text) && /Yes, install codeburn/.test(N.dialog.text) && N.dialog.run === true && N.dialog.focused === 'Cancel' && N.actionAfterCancel === 'idle',
+      JSON.stringify({ d: N.dialog, after: N.actionAfterCancel }).slice(0, 400));
+    add('SP4', 'over --serve-stdio (VS Code, Kiro Crew) the same card and Set up codeburn, which confirms first',
+      !!N.stdio?.card && N.stdio.buttons.includes('Set up codeburn') && N.stdio.cmdCount === 1 && N.stdio.scroll <= 1 && /prism-cli enable codeburn --yes/.test(N.stdioDialog || ''), JSON.stringify({ s: N.stdio, d: (N.stdioDialog || '').slice(0, 120) }));
+    const nd = ['noData-1280-light', 'noData-390-dark'].map((k) => [k, V.spend[k] || {}]).filter(([, s]) => !(s.card && /codeburn is set up but has no usage for this month yet\./.test(s.text) && !s.buttons.length && !s.cmdCount && !s.inStrip && s.scroll <= 1));
+    add('SP5', 'codeburn set up, nothing this month: the card says so, with no button and no command', !nd.length, nd.map(([k, s]) => k + ': ' + JSON.stringify(s).slice(0, 200)).join('; '));
+    const sn = V.spend.snapshot || {};
+    add('SP6', 'the static snapshot without codeburn: the card and the command to copy, no Set up button', sn.exit === 0 && sn.card && SENT.test(sn.text) && !sn.buttons.includes('Set up codeburn') && sn.cmdCount === 1, JSON.stringify(sn).slice(0, 300));
+    const rt = V.retry || {};
+    add('PR1', 'the Dockerfile picker: a failed listing keeps the error text and shows Retry; Retry lists again without a reload',
+      /The Dockerfile picker could not load: .+\. These commands/.test(rt.before || '') && !/could not load: the Dockerfile list could not load/.test(rt.before || '') && rt.after && !rt.after.failed && rt.after.radios.includes('Dockerfile') && rt.requests === 2,
+      JSON.stringify(rt).slice(0, 400));
+    const M = V.remember || {};
+    add('RM1', 'the picked Security Agent repo is saved in ~/.prism/dashboard.json (its real path) and preselected after a restart; no home path in the answer',
+      M.first === M.ids?.shop && M.file?.securityAgentRepo === M.wantPath && M.afterRestart === M.ids?.pay && !M.answerHasPath, JSON.stringify({ first: M.first, file: M.file, want: M.wantPath, after: M.afterRestart, ids: M.ids, leak: M.answerHasPath }));
+    add('RM2', '--serve-stdio shares it: its page preselects the same repo, and a pick there is what the browser shows next',
+      M.stdioRoute && M.stdioSelected === M.ids?.pay && M.stdioRead === M.ids?.shop && M.afterStdio === M.ids?.shop, JSON.stringify({ r: M.stdioRoute, s: M.stdioSelected, read: M.stdioRead, after: M.afterStdio }));
+    add('RM3', 'a remembered repo no longer discovered: the default repo, silently, and the entry dropped; a corrupt file is ignored',
+      M.stale?.selected === M.ids?.shop && !!M.stale?.file && !('securityAgentRepo' in M.stale.file) && !/dashboard\.json|could not/i.test(M.stale.text || '') && M.corrupt?.selected === M.ids?.shop,
+      JSON.stringify({ stale: M.stale && { s: M.stale.selected, f: M.stale.file }, corrupt: M.corrupt }));
+    const writes = (M.calls || []).filter((c) => !READ_ONLY_AWS.test(c) && !/^(cloudformation describe|securityagent batch-get-code-review-jobs|securityagent list-findings|securityagent batch-get-findings|securityagent list-code-reviews|s3api head-object)/.test(c));
+    add('RM4', 'remembering a repo makes no AWS write call', !writes.length, writes.join('; '));
   }
   return out;
 }
