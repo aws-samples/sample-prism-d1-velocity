@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import type { RunResult } from '../src/utils/exec.js';
 import {
   enableKirocrew, grantsLine, makePlan, parseCronList, parseJsonAfterLogs, planArgs, stageApp, targetDir, toAppInfo, type KirocrewDeps,
 } from '../src/commands/enable/kirocrew.js';
-import { findKirocrew, installedAppVersion, kirocrewAppState, STEERING_MARKER, steeringPath, steeringState } from '../src/utils/kirocrew.js';
+import { findKirocrew, installedAppVersion, kirocrewAppState, STEERING_MARKER, steeringPath, steeringState, writeSteering } from '../src/utils/kirocrew.js';
 import { appOutdated, buildReport, kirocrewVersionLine, printReport } from '../src/commands/_top/version.js';
 import { kirocrewAppCheck, kirocrewSteeringCheck, machineChecks } from '../src/dashboard/setup.js';
 import { needsYou } from '../src/dashboard/needs-you.js';
@@ -397,12 +397,30 @@ test('steering: --uninstall removes our note (also when the app is already gone)
   assert.match(m.text(), /✓ Removed ~\/\.kiro\/steering\/prism-codewatch\.md/);
 });
 
-test('steering: a note that cannot be written is reported; the app install still enables the app', async () => {
+test('steering: a note that cannot be written is reported, leaves no temp file; the app install still enables the app', async () => {
   const m = machine();
-  writeFileSync(join(m.home, '.kiro'), 'a file, not a folder');
+  mkdirSync(join(m.home, '.kiro', 'steering'), { recursive: true });
+  chmodSync(join(m.home, '.kiro', 'steering'), 0o555);
   assert.equal(await enableKirocrew({ yes: true }, m.deps), 0);
+  chmodSync(join(m.home, '.kiro', 'steering'), 0o755);
   assert.match(m.text(), /⚠ could not write ~\/\.kiro\/steering\/prism-codewatch\.md: E[A-Z]+/);
+  assert.deepEqual(readdirSync(join(m.home, '.kiro', 'steering')), [], 'no note, no temp file');
   assert.deepEqual(writes(m.calls).map((a) => a.slice(0, 2).join(' ')), ['app install', 'app enable']);
+});
+
+test('steering: only ENOENT is missing; a note that cannot be read is unreadable and never written over', async () => {
+  const m = machine();
+  mkdirSync(steeringPath(m.home), { recursive: true }); // EISDIR on read
+  writeFileSync(join(steeringPath(m.home), 'keep'), 'x');
+  assert.equal(steeringState(m.home, NOTE), 'unreadable');
+  assert.equal(await enableKirocrew({ yes: true }, m.deps), 0);
+  assert.match(m.text(), /cannot be read; it is left as it is/);
+  assert.ok(existsSync(join(steeringPath(m.home), 'keep')));
+  assert.equal(kirocrewSteeringCheck('unreadable').fix, '');
+  assert.match(kirocrewSteeringCheck('unreadable').detail, /^unreadable:/);
+  // A failed rename (the target is a non-empty folder) removes the temp file.
+  assert.throws(() => writeSteering(m.home, NOTE));
+  assert.deepEqual(readdirSync(dirname(steeringPath(m.home))), ['prism-codewatch.md']);
 });
 
 test('steering: states and --status', async () => {

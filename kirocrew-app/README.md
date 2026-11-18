@@ -115,6 +115,8 @@ script all write it with the same rules:
 - A file with the line `<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->`
   is ours: it is replaced when it differs from the bundled note.
 - A file without that line is yours: it is left as it is, and each of them says so.
+- A file that cannot be read (no permission, a folder at that path) is left as it is too, and
+  shows as unreadable. Only a missing file is written.
 
 `prism-cli enable kirocrew --status` and the dashboard's **Settings → Agent hooks** tab (the Agent
 hooks card and the Kiro Crew app card) show it as installed, outdated, missing or yours. An outdated

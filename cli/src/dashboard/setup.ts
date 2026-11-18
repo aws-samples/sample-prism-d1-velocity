@@ -139,6 +139,7 @@ export function kirocrewSteeringCheck(s: SteeringState): CheckItem {
   if (s === 'missing') return row(`missing: ${p} has agents check codewatch findings before finishing (prism-fix-findings in Kiro Crew)`, ENABLE_KIROCREW_CMD);
   if (s === 'outdated') return row(`outdated: ${p} differs from the note bundled with this prism-cli`, ENABLE_KIROCREW_CMD);
   if (s === 'user-owned') return row(`${p} has no prism-cli marker: yours, left as it is`);
+  if (s === 'unreadable') return row(`unreadable: ${p} cannot be read, so it is left as it is (check its permissions)`);
   return row(`installed (${p})`);
 }
 

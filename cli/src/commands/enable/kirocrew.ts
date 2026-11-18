@@ -224,6 +224,7 @@ export function steeringText(state: SteeringState, home: string): string {
   if (state === 'installed') return `installed (${p})`;
   if (state === 'outdated') return `outdated (${p}); ${ENABLE_KIROCREW_CMD} updates it`;
   if (state === 'missing') return `missing; ${ENABLE_KIROCREW_CMD} writes ${p}`;
+  if (state === 'unreadable') return `${p} cannot be read; it is left as it is (check its permissions)`;
   return `${p} exists without the prism-cli marker; it is yours and is left as it is`;
 }
 

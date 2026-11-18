@@ -182,11 +182,43 @@ class InstallTest(unittest.TestCase):
 
     def test_steering_note_failure_does_not_fail_the_install(self):
         self.prism_cli("1.22.0")
-        (self.home / ".kiro").write_text("a file, not a folder", encoding="utf-8")
+        self.note().parent.mkdir(parents=True)
+        self.note().parent.chmod(0o555)
+        self.addCleanup(self.note().parent.chmod, 0o755)
         p = self.run_script()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("could not write the steering note", p.stdout)
         self.assertIn("nothing to install", p.stdout)
+        self.assertEqual(os.listdir(self.note().parent), [], "no note, no temp file")
+
+    def test_steering_note_failed_rename_removes_the_temp_file(self):
+        sys.path.insert(0, str(APP / "scripts"))
+        import install_prism_cli as ip  # noqa: E402
+        dest = self.note()
+        dest.parent.mkdir(parents=True)
+        real = os.replace
+        def boom(a, b):
+            raise OSError(28, "No space left on device")
+        ip.os.replace = boom
+        try:
+            self.assertEqual(ip.install_steering({"HOME": str(self.home)}), "failed")
+        finally:
+            ip.os.replace = real
+        self.assertEqual(os.listdir(dest.parent), [])
+
+    def test_steering_note_unreadable_is_left_alone(self):
+        # Only a missing file counts as missing: a folder at the path (EISDIR) or ~/.kiro as a file (ENOTDIR) is never written over.
+        self.prism_cli("1.22.0")
+        self.note().mkdir(parents=True)
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("cannot be read", p.stdout)
+        self.assertTrue(self.note().is_dir())
+        shutil.rmtree(self.home / ".kiro")
+        (self.home / ".kiro").write_text("a file", encoding="utf-8")
+        p = self.run_script()
+        self.assertIn("cannot be read", p.stdout)
+        self.assertEqual((self.home / ".kiro").read_text(encoding="utf-8"), "a file")
 
     def test_steering_note_not_utf8_does_not_fail_the_install(self):
         self.prism_cli("1.22.0")
@@ -194,7 +226,7 @@ class InstallTest(unittest.TestCase):
         self.note().write_bytes(b"\xff\xfe not text")
         p = self.run_script()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("could not write the steering note", p.stdout)
+        self.assertIn("cannot be read", p.stdout)
         self.assertNotIn("Traceback", p.stderr)
         self.assertEqual(self.note().read_bytes(), b"\xff\xfe not text")
 

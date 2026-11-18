@@ -96,13 +96,18 @@ export function bundledSteering(bundleDir: string | null): string | null {
 
 /**
  * installed: ours and the same as the bundled note (or no bundled note to compare with);
- * outdated: ours, different; missing: no file; user-owned: a file without the marker.
+ * outdated: ours, different; missing: no file (ENOENT only); user-owned: a file without the marker;
+ * unreadable: any other read error (EACCES, EISDIR, ENOTDIR...): never written over.
  */
-export type SteeringState = 'installed' | 'outdated' | 'missing' | 'user-owned';
+export type SteeringState = 'installed' | 'outdated' | 'missing' | 'user-owned' | 'unreadable';
 
 export function steeringState(home: string, bundled: string | null): SteeringState {
   let have: string;
-  try { have = readFileSync(steeringPath(home), 'utf8'); } catch { return 'missing'; }
+  try {
+    have = readFileSync(steeringPath(home), 'utf8');
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable';
+  }
   if (!have.includes(STEERING_MARKER)) return 'user-owned';
   return bundled === null || have === bundled ? 'installed' : 'outdated';
 }
@@ -112,8 +117,13 @@ export function writeSteering(home: string, text: string): void {
   const p = steeringPath(home);
   mkdirSync(dirname(p), { recursive: true });
   const tmp = `${p}.tmp-${process.pid}`;
-  writeFileSync(tmp, text);
-  try { renameSync(tmp, p); } catch (e) { rmSync(tmp, { force: true }); throw e; }
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, p);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 /** Removes the note only when it is ours; true when it removed one. */

@@ -66,24 +66,36 @@ def fail(why: str) -> int:
 
 
 def install_steering(env: Mapping[str, str], src: Path = STEERING_SRC) -> str:
-    """Installs or updates the steering note; returns what it did: wrote, updated, current, user-owned or failed."""
+    """Installs or updates the steering note; returns what it did: wrote, updated, current, user-owned,
+    unreadable (a read error other than a missing file: never written over) or failed."""
     home = env.get("HOME") or os.path.expanduser("~")
     dest = Path(home) / ".kiro" / "steering" / "prism-codewatch.md"
     shown = "~/.kiro/steering/prism-codewatch.md"
+    why = lambda e: getattr(e, "strerror", None) or e  # noqa: E731
+    try:
+        have = dest.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        have = None
+    except (OSError, ValueError) as e:  # EACCES, EISDIR, ENOTDIR, or not UTF-8 text
+        say(f"{shown} cannot be read ({why(e)}); left as it is")
+        return "unreadable"
+    if have is not None and STEERING_MARKER not in have:
+        say(f"{shown} exists without the prism-cli marker; left as it is")
+        return "user-owned"
+    tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
     try:
         text = src.read_text(encoding="utf-8")
-        have = dest.read_text(encoding="utf-8") if dest.exists() else None
-        if have is not None and STEERING_MARKER not in have:
-            say(f"{shown} exists without the prism-cli marker; left as it is")
-            return "user-owned"
         if have == text:
             return "current"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, dest)
-    except (OSError, ValueError) as e:  # ValueError: a note that is not UTF-8 text
-        say(f"could not write the steering note {shown} ({getattr(e, 'strerror', None) or e}); run: prism-cli enable kirocrew")
+    except (OSError, ValueError) as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        say(f"could not write the steering note {shown} ({why(e)}); run: prism-cli enable kirocrew")
         return "failed"
     did = "wrote" if have is None else "updated"
     say(f"{did} the steering note {shown} (agents check codewatch findings before finishing)")

@@ -261,7 +261,7 @@ function agentsPane(data) {
   });
   const kc = machineRow(data, 'kirocrew-app');
   const st = machineRow(data, 'kirocrew-steering');
-  const STEER = { installed: ['ok', 'installed'], outdated: ['medium', 'outdated'], missing: ['zero', 'not installed'], 'user-owned': ['zero', 'yours, left as it is'] };
+  const STEER = { installed: ['ok', 'installed'], outdated: ['medium', 'outdated'], missing: ['zero', 'not installed'], 'user-owned': ['zero', 'yours, left as it is'], unreadable: ['medium', 'unreadable, left as it is'] };
   const steer = ah.steering && STEER[ah.steering];
   return [
     section('Agent hooks', 'the push check and finish check for coding agents (enable agent-hooks)', table(['Client', 'Scope', 'Status', 'File', ''], rows),
