@@ -86,7 +86,7 @@ export async function runPage(payloads: unknown[], hash = '', setup: unknown = n
     if (url === '/api/setup' && setup) return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(setup)) };
     if (Object.prototype.hasOwnProperty.call(routes, url)) {
       const v = routes[url];
-      const answer = typeof v === 'function' ? (v as (b: unknown) => unknown)(requests[requests.length - 1].body) : v;
+      const answer = await (typeof v === 'function' ? (v as (b: unknown) => unknown)(requests[requests.length - 1].body) : v);
       // { __status, body }: an answer with another HTTP status (a 404 from the server).
       if (answer && typeof answer === 'object' && '__status' in (answer as object)) {
         const a = answer as { __status: number; body: unknown };

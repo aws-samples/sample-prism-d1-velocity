@@ -1275,11 +1275,16 @@ and links straight to it as `#settings/<tab>`:
 
 - **Overview:** how many machine checks pass, how many repos have codewatch and how many agent hook
   files are installed, then **Needs you**: every item to fix, with its command and a link to its
-  tab. The Settings tab in the header shows the same count. **Check now** under the tabs re-runs the
-  local checks and redraws the counts.
+  tab. The Settings tab in the header, the Dashboard's **Settings warnings** card and
+  `prism-cli dashboard --json` (`summary.warnings`, and the whole list as `needsYou`) show the same
+  count, from one list the dashboard builds. **Check now** under the tabs re-runs the local checks
+  and redraws the counts.
 - **This machine:** codeburn, gitleaks and the global codewatch hooks.
 - **Repos:** the repos with codewatch, with their reviewer and Security Agent state; the repos
-  without it are collapsed behind one item with **Enable for every repo**
+  without it are collapsed behind one item with **Enable for every repo**. After **Enable
+  codewatch** or **Enable for every repo** finishes, the rows show the new state at once, even when
+  another refresh is still running; after a change made in a terminal (`enable codewatch
+  --uninstall`), **Re-check status** shows it
   (`enable codewatch --global`).
 - **Agent hooks:** the [agent harness loop](#agent-harness-loop) hooks for kiro and claude, for the repo
   the dashboard started in (project) and for your user (global), from the same files
@@ -1466,8 +1471,10 @@ step.
   started in. The repo you pick is remembered in `~/.prism/dashboard.json` (key
   `securityAgentRepo`, the repo's real path; a local file, no AWS call), so the page opens on it
   after a restart and in every host: the browser, VS Code and Kiro Crew. It is used only while the
-  dashboard still finds that repo; otherwise the page starts on the default repo and the entry is
-  dropped. A file that does not read as JSON is ignored until the next pick replaces it. Every
+  dashboard still finds that repo; otherwise the page starts on the default repo, and the entry
+  stays in the file until the next pick replaces it (reading never rewrites the file). A file that
+  does not read as JSON is ignored until the next pick replaces it. When a pick cannot be saved, a
+  short note under the picker says why; the pick still applies until the page reloads. Every
   command on the page runs with that repo as its working directory, and the
   confirm dialog shows the exact line, for example
   `cd ~/src/demo-shop && prism-cli security findings --profile demo --region us-west-2`. The page
@@ -1656,9 +1663,11 @@ to scan somewhere else. The repo you started it in is listed first.
 ![The PRISM dashboard in the dark theme with demo data: four summary cards, the Codewatch table with a Trend column of stacked severity bars, the Spend section with a 12-week heatmap and the codeburn strip, the Security runs card with four runs (one running with an amber marker, one failed with a red marker, severity chips with greyed zeros) and See all 4 runs, and the AWS account line](assets/images/prism-cli/dashboard-main-dark.png)
 
 **Summary cards.** The latest codewatch review in any repo (severity pills, or skipped / failed),
-spend today and this month, and **Settings warnings**: the checklist items that are missing or warn,
-plus repos whose own hooks bypass the global hooks (info items never count), with a link to the
-Settings view.
+spend today and this month, and **Settings warnings**: how many items the Settings view's **Needs
+you** list has (machine checks that are missing or warn, repos whose own hooks bypass the global
+hooks, repos without codewatch, outdated or unreadable agent hooks, an outdated Claude Code plugin
+or Kiro Crew app, a prism-cli update; info items never count) and the first one, with a link to the
+Settings view. It always matches the Settings badge.
 
 **Codewatch.** One row per repo with codewatch installed or results: the findings in the latest
 review of each branch, a **Trend** column with the last 12 pre-push reviews as stacked high / medium

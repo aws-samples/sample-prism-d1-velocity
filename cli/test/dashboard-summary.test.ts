@@ -17,7 +17,8 @@ import { buildPayload, ROW_TREND_RUNS, rowTrend, type DashboardPayload } from '.
 import { renderPage } from '../src/dashboard/page.js';
 import { FakeElement, runPage, SETUP_STUB } from './page-dom.js';
 import { repoLabels } from '../src/dashboard/repos.js';
-import { machineChecks, securitySetup, type CheckItem } from '../src/dashboard/setup.js';
+import { machineChecks, securitySetup, type CheckItem, type CodewatchSetup } from '../src/dashboard/setup.js';
+import { needsYou } from '../src/dashboard/needs-you.js';
 import { LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, SETUP_DOCS, TEAM_NO_URL_HELP } from '../src/utils/sync-mode.js';
 import { buildSummary } from '../src/dashboard/summary.js';
 import { emptyUsage, localDate, spendByRepo, type CodeburnExport, type UsagePanel } from '../src/dashboard/usage.js';
@@ -54,6 +55,10 @@ function syncedHome(p: string): string {
   return home;
 }
 
+/** The Needs you list for these machine checks and setup rows, with no agent hooks, suggestion or update. */
+const needsOf = (machine: CheckItem[], setup: { status: CodewatchSetup['status']; label: string; detail: string; fix: string }[] = []) =>
+  needsYou({ machine, setup, suggestions: [], agentHooks: { rows: [], plugin: { active: false, version: null, outdated: false } }, version: { installed: '1.0.0', latest: null, update: false } });
+
 const machineDeps = (home = syncedHome('mh')) => ({ home, env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', systemdAvailable: () => false });
 
 // ---------------------------------------------------------------- summary
@@ -71,10 +76,10 @@ test('summary: newest review across repos, spend, and setup warnings with the fi
     { id: 'codeburn-sync', label: 'Scheduled codeburn sync push', status: 'warn', detail: 'cannot read your crontab', fix: 'x' },
     { id: 'codewatch-global', label: 'Codewatch global hooks', status: 'missing', detail: 'optional', fix: 'y' },
   ];
-  const s = buildSummary(repos, usage, machine);
+  const s = buildSummary(repos, usage, needsOf(machine, repos.map((r) => ({ status: r.setup.status, label: r.label, detail: r.setup.detail, fix: '' }))));
   assert.deepEqual(s.review, { repo: 'work/b', path: '/r/b', at: '2026-11-09T00:00:00Z', status: 'skipped', reason: 'no changes against upstream', high: 0, medium: 1, low: 2, reviewer: 'kiro', id: 'b2' });
   assert.deepEqual(s.spend, { status: 'ok', currency: 'USD', today: 1.25, month: 40, message: null, updatedAt: null });
-  assert.deepEqual(s.warnings, { count: 3, first: 'Scheduled codeburn sync push: cannot read your crontab' }, 'warn, missing and the repo warn');
+  assert.deepEqual(s.warnings, { count: 4, first: 'Scheduled codeburn sync push: cannot read your crontab' }, 'warn, missing, the repo warn and the repo without codewatch');
 
   const none = buildSummary([], emptyUsage('not-installed', 'codeburn is not installed.'), []);
   assert.equal(none.review, null);
@@ -187,7 +192,8 @@ test('page: four cards on top, codewatch rows open their repo view, empty sectio
   assert.match(t, /Latest codewatch reviewskippedcw · .* · kiro · no changes against upstream/);
   assert.match(t, /Spend today\$1\.50codeburn, all projects/);
   assert.match(t, /Spend this month\$9\.00codeburn, this calendar month/);
-  assert.match(t, /Settings warnings4codeburn installed: not on PATH.*Open Settings →/, 'every missing or warn machine item counts; the optional global hooks (info) do not');
+  assert.match(t, /Settings warnings5codeburn installed: not on PATH.*Open Settings →/, 'the Needs you list: every missing or warn machine item and the repos without codewatch; the optional global hooks (info) do not');
+  assert.deepEqual([p.needsYou.length, p.summary.warnings.count, p.summary.warnings.first], [5, 5, p.needsYou[0].text], '--json summary.warnings is the same list');
   const link = page.dom.byId.main.byClass('scard')[3].querySelectorAll('a')[0];
   assert.equal(link.getAttribute('href'), '#settings');
   assert.doesNotMatch(t, /other repos: not set up|Setup checklist/, 'the checklist moved to the Settings view');
@@ -238,7 +244,7 @@ test('page: four summary cards, two per row below 860px and one below 520px; lon
 
   const { p } = await payloadFixture();
   const long = 'Scheduled codeburn sync push: ' + 'cannot read your crontab '.repeat(10);
-  p.summary.warnings = { count: 2, first: long };
+  p.needsYou = [{ tab: 'sync', text: long, fixes: [] }, { tab: 'machine', text: 'codeburn installed: not on PATH', fixes: [] }];
   p.summary.review = { ...p.summary.review!, status: 'findings', reason: null, high: 3, medium: 1, low: 0 };
   const page = await runPage([p]);
   const cards = page.dom.byId.main.byClass('scard');
@@ -291,7 +297,7 @@ test('sync mode local (no mode, no endpoint): info row, one setup link, not a wa
   assert.match(row.detail, /^local only: codeburn usage stays on this machine$/);
   assert.deepEqual(row.help, LOCAL_MODE_HELP);
   assert.match(row.help!.text, /^If your team uses PRISM, ask your platform team for the collector URL and a telemetry account, then run prism-cli enable codeburn --url <collector URL>\.$/);
-  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), [row]).warnings, { count: 0, first: null });
+  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), needsOf([row])).warnings, { count: 0, first: null });
 
   const { p } = await payloadFixture(machineDeps(modeHome('loc2')));
   const json = JSON.parse(JSON.stringify(p));
@@ -320,7 +326,7 @@ test('sync mode team without a URL: the platform-team hint with both links, coun
   ]);
   const { p } = await payloadFixture(machineDeps(modeHome('tnu2', { mode: 'team' })));
   assert.equal(p.summary.warnings.first, 'codeburn installed: not on PATH', 'codeburn missing is listed first');
-  const sum = buildSummary([], emptyUsage('ok', ''), [row]);
+  const sum = buildSummary([], emptyUsage('ok', ''), needsOf([row]));
   assert.deepEqual(sum.warnings, { count: 1, first: TEAM_NO_URL_HELP.text }, 'the hint is the first warning when it is the first one');
   assert.deepEqual(JSON.parse(JSON.stringify(p)).machine.codeburnSync, { mode: 'team', source: 'saved', help: TEAM_NO_URL_HELP });
   const page = await runPage([p], '#setup', SETUP_STUB);
@@ -368,7 +374,7 @@ test('sync mode admin: info row with the platform-team steps, the team commands 
 test('setup warnings count every missing or warn item in the checklist, never ok or info', () => {
   const it = (id: string, status: CheckItem['status']): CheckItem => ({ id, label: id, status, detail: 'd', fix: status === 'ok' || status === 'info' ? '' : 'f' });
   const machine = [it('a', 'missing'), it('b', 'info'), it('c', 'warn'), it('d', 'missing'), it('e', 'missing'), it('f', 'ok'), it('g', 'missing')];
-  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), machine).warnings, { count: 5, first: 'a: d' });
+  assert.deepEqual(buildSummary([], emptyUsage('ok', ''), needsOf(machine)).warnings, { count: 5, first: 'a: d' });
 });
 
 test('page: light theme text colours keep 4.5:1 on every light surface (WCAG AA)', () => {

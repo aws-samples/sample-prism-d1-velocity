@@ -6,11 +6,13 @@
  *
  * 1.21.8 keeps one key, securityAgentRepo: the real path of the repo last
  * picked on the Security Agent page. It leaves the server only as that repo's
- * id, and only while the repo is still in the discovered list; a path that is
- * not is dropped from the file. A file that is not a JSON object is ignored
- * (and left alone) until the next pick replaces it.
+ * id, and only while the repo is still in the discovered list. Reading never
+ * writes: a path that is no longer discovered is ignored, and replaced by the
+ * next pick. A file that is not a JSON object is ignored (and left alone)
+ * until the next pick replaces it.
  */
-import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ScanRepo } from './actions.js';
 
@@ -29,32 +31,37 @@ function readPrefs(home: string): Record<string, unknown> | null {
   } catch { return null; }
 }
 
-/** Writes the whole file through a temp file and a rename, so a crash never leaves half of it. */
-function writePrefs(home: string, prefs: Record<string, unknown>): void {
+/**
+ * Changes the file: re-reads it just before the write, so a key another dashboard
+ * (the browser server, --serve-stdio) wrote since is kept, then writes through a
+ * temp file and a rename, so a crash never leaves half of it. The temp file is
+ * removed when the write or the rename fails.
+ */
+function updatePrefs(home: string, change: (prefs: Record<string, unknown>) => Record<string, unknown>): void {
   const file = prefsPath(home);
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(prefs, null, 2) + '\n', { mode: 0o600 });
-  renameSync(tmp, file);
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(change(readPrefs(home) ?? {}), null, 2) + '\n', { mode: 0o600 });
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 /**
  * The id of the remembered Security Agent repo when its path is still one of
- * `repos` (compared as real paths), else null. A remembered path that is no
- * longer listed is removed from the file; a write that fails is not an error.
+ * `repos` (compared as real paths), else null. Never writes the file.
  */
 export function rememberedRepo(home: string, repos: ScanRepo[]): string | null {
-  const prefs = readPrefs(home);
-  const want = prefs?.[SECURITY_AGENT_REPO_KEY];
+  const want = readPrefs(home)?.[SECURITY_AGENT_REPO_KEY];
   if (typeof want !== 'string' || !want) return null;
-  const hit = repos.find((r) => r.path === want || real(r.path) === want);
-  if (hit) return hit.id;
-  const { [SECURITY_AGENT_REPO_KEY]: _gone, ...rest } = prefs!;
-  try { writePrefs(home, rest); } catch { /* the stale entry stays; it is ignored again next time */ }
-  return null;
+  return repos.find((r) => r.path === want || real(r.path) === want)?.id ?? null;
 }
 
 /** Saves `repo` (one of the server's own discovered repos) as the remembered one, keeping every other key. */
 export function rememberRepo(home: string, repo: ScanRepo): void {
-  writePrefs(home, { ...(readPrefs(home) ?? {}), [SECURITY_AGENT_REPO_KEY]: real(repo.path) ?? repo.path });
+  const path = real(repo.path) ?? repo.path;
+  updatePrefs(home, (prefs) => ({ ...prefs, [SECURITY_AGENT_REPO_KEY]: path }));
 }

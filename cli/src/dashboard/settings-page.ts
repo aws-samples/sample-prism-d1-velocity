@@ -9,6 +9,7 @@
  * Run buttons send only an action id (see actions.ts) and show the exact
  * command in the confirm dialog first.
  */
+import { PLUGIN_UPDATE, UPDATE_CMD } from './needs-you.js';
 
 export const SETTINGS_STYLE = `
 .setup-layout { display:grid; grid-template-columns:200px minmax(0,1fr); gap:22px; align-items:start; }
@@ -79,38 +80,11 @@ function selectTab(id) {
   for (const p of document.querySelectorAll('[data-pane]')) p.hidden = p.getAttribute('data-pane') !== id;
 }
 
-const PLUGIN_UPDATE = ['claude plugin marketplace update prism-d1-velocity', 'claude plugin update prism@prism-d1-velocity'];
-const hookCmd = (r) => 'prism-cli enable agent-hooks --client ' + r.client + (r.scope === 'global' ? ' --global' : '');
+const PLUGIN_UPDATE = ${JSON.stringify(PLUGIN_UPDATE)};
 const machineRow = (data, id) => (data.machine.setup || []).find((i) => i.id === id) || null;
-const needs = (s) => s === 'missing' || s === 'warn';
 
-/**
- * Everything that needs the person, each with the tab it belongs to and its
- * fix commands. The tab badges and the Settings badge count these.
- */
-function needsYou(data) {
-  const out = [];
-  const add = (tab, text, fixes) => out.push({ tab, text, fixes: (fixes || []).filter(Boolean) });
-  for (const i of data.machine.setup || []) {
-    if (!needs(i.status)) continue;
-    const tab = i.id === 'codeburn-sync' ? 'sync' : i.id === 'aws-credentials' ? 'aws' : 'machine';
-    add(tab, i.help && i.status === 'missing' ? txt(i.help.text) : i.label + ': ' + txt(i.detail), [i.fix]);
-  }
-  for (const r of (data.overview.setup || []).filter((x) => x.status === 'warn')) add('repos', labelOf(r) + ': ' + txt(r.detail), [r.fix]);
-  const missing = (data.overview.setup || []).filter((x) => x.status === 'missing').length;
-  const sg = (data.suggestions || []).find((x) => x.id === 'codewatch-global');
-  if (missing) add('repos', missing + ' repo' + (missing === 1 ? " doesn't" : "s don't") + ' have codewatch yet.', [sg ? sg.command : 'prism-cli enable codewatch']);
-  const ah = data.agentHooks || { rows: [], plugin: {} };
-  for (const r of ah.rows.filter((x) => x.state === 'outdated' || x.state === 'unreadable')) {
-    add('agents', r.client + ' agent hooks (' + r.scope + ') are ' + (r.state === 'outdated' ? 'outdated' : 'unreadable: ' + txt(r.error)), r.state === 'outdated' ? [hookCmd(r)] : []);
-  }
-  if (ah.plugin && ah.plugin.outdated) add('agents', 'Claude Code plugin ' + txt(ah.plugin.version) + ' is installed; the harness hooks need 0.3.0 or newer.', PLUGIN_UPDATE);
-  const kc = machineRow(data, 'kirocrew-app');
-  if (kc && /^outdated/.test(txt(kc.detail))) add('agents', 'Kiro Crew app: ' + txt(kc.detail), [kc.fix]);
-  const v = data.version || {};
-  if (v.update) add('updates', 'prism-cli ' + txt(v.latest) + ' is available (you have ' + txt(v.installed) + ').', [UPDATE_CMD]);
-  return out;
-}
+/** Everything that needs the person, built once on the server (needs-you.ts); the card, the badges and the Needs you list read it. */
+const needsYou = (data) => data.needsYou || [];
 
 /** A fix: a Copy button when it is one plain command, else its text (some fixes are instructions). */
 const fixLine = (f) => /^[a-z][\\w-]* [^();]*$/.test(txt(f)) ? el('div', {}, copyButton(f)) : el('div', { class: 'fix' }, 'Fix: ' + txt(f));
@@ -298,8 +272,8 @@ function agentsPane(data) {
   ];
 }
 
-/** The update command; the Update button runs it as a fixed action id, never as text from the page. */
-const UPDATE_CMD = 'npm i -g @prism-d1/cli@latest';
+/** The update command (needs-you.ts); the Update button runs it as a fixed action id, never as text from the page. */
+const UPDATE_CMD = ${JSON.stringify(UPDATE_CMD)};
 
 function updatesPane(data) {
   const v = data.version || {};

@@ -101,10 +101,16 @@ function saRepo() {
   return by(r && r.id) || by(SA_PICK) || by(SA && SA.remembered) || list.find((x) => x.current) || list[0] || null;
 }
 
-/** Saves the pick on the server, for every host and the next start. A failed save changes nothing on the page. */
+/** Why the last pick was not saved, shown under the picker ('' when it was), and the picker's note element. */
+let SA_REMEMBER_ERR = '', SA_REMEMBER_NOTE = null;
+/** Saves the pick on the server, for every host and the next start. A failed save keeps the pick for this load and says so under the picker. */
 async function saRemember(id) {
   if (SNAPSHOT) return;
-  try { const r = await api('/api/security-agent/repo', { repo: id }); if (r.ok && SA) SA.remembered = id; } catch (e) { /* the page keeps the pick for this load */ }
+  let r;
+  try { r = await api('/api/security-agent/repo', { repo: id }); } catch (e) { r = { ok: false, json: { error: e.message } }; }
+  if (r.ok && SA) SA.remembered = id;
+  SA_REMEMBER_ERR = r.ok ? '' : 'Not remembered for next time: ' + (txt((r.json || {}).error) || 'the save failed') + '.';
+  if (SA_REMEMBER_NOTE) { SA_REMEMBER_NOTE.textContent = SA_REMEMBER_ERR; SA_REMEMBER_NOTE.hidden = !SA_REMEMBER_ERR; }
 }
 
 /** This repo's latest cached results, from the /api/data payload (no AWS call), matched by repo id. */
@@ -283,6 +289,7 @@ function saSelect(repo) {
 function saPicker(repo) {
   return saCard('Target repo', 'every command on this page runs in this repo, as if you ran it there',
     el('div', { class: 'srow-ctl' }, el('label', { for: 'sa-repo' }, 'Repo'), saSelect(repo), el('code', { class: 'path' }, txt(repo.path))),
+    SA_REMEMBER_NOTE = el('p', { class: 'fix', role: 'status', id: 'sa-remember-note', hidden: SA_REMEMBER_ERR ? null : '' }, SA_REMEMBER_ERR),
     el('p', { class: 'fix' }, saSetupLine(repo.setup)));
 }
 

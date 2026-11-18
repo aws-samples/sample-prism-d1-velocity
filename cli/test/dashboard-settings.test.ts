@@ -143,8 +143,8 @@ test('settings: each tab has a count badge or a green dot; Needs you lists the i
 
 test('settings: badges recompute after Check now (a reload with new data)', async () => {
   const before = await payload({ update: true });
-  const after = JSON.parse(JSON.stringify(before)) as DashboardPayload;
-  after.version = { ...after.version, latest: '1.13.0', update: false };
+  // The list is built on the server: the reload's payload is a new build with no update.
+  const after = await payload();
   const page = await runPage([before, after], '#settings/updates', SETUP);
   assert.equal((tab(page, 'updates').childNodes[1] as FakeElement).textContent, '1');
   await page.reload();

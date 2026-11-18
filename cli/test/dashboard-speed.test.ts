@@ -19,6 +19,7 @@ import { UsageCache, USAGE_CACHE_SCHEMA } from '../src/dashboard/usage-cache.js'
 import { cachedToolVersion } from '../src/utils/tool-check.js';
 import { codewatchSetup, codewatchSetupFrom, gitBool, GIT_CONFIG_LIST, gitFactsFromConfig, globalHooksCheck, machineChecks, readGitFacts, type GitFacts, type GitRunner } from '../src/dashboard/setup.js';
 import { buildSummary } from '../src/dashboard/summary.js';
+import { needsYou } from '../src/dashboard/needs-you.js';
 import { buildPayload, GIT_CONCURRENCY } from '../src/dashboard/payload.js';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
 import { installHooks } from '../src/codewatch/hooks.js';
@@ -310,7 +311,7 @@ test('optional items are info: shown with the info badge, not counted as setup w
   assert.equal(g.status, 'info');
   assert.match(g.detail, /optional/);
   const machine = machineChecks({ pathEnv: tmp('none'), home: tmp('h'), env: {}, scheduleExists: () => false, schedulerName: () => 'crontab', global: NOT_INSTALLED });
-  const s = buildSummary([], emptyUsage('ok', ''), machine);
+  const s = buildSummary([], emptyUsage('ok', ''), needsYou({ machine, setup: [], suggestions: [], agentHooks: { rows: [], plugin: { active: false, version: null, outdated: false } }, version: { installed: '1.0.0', latest: null, update: false } }));
   const checklist = machine.filter((i) => i.status === 'missing' || i.status === 'warn');
   assert.equal(s.warnings.count, checklist.length, 'count matches the checklist');
   assert.ok(!checklist.some((i) => i.id === 'codewatch-global'));

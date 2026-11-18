@@ -45,7 +45,7 @@ export function checkRepoPath(root: string, input: string): PathCheck {
 /** Why `hp` is not a health check path (starts with /, at most MAX_TARGET_INPUT characters, no control character); null when it is. */
 export function healthPathError(hp: string): string | null {
   if (!hp.startsWith('/')) return 'the health path must start with /';
-  if (hp.length > MAX_TARGET_INPUT || CONTROL_RE.test(hp)) return 'the health path is too long or has a control character';
+  if (hp.length > MAX_TARGET_INPUT || CONTROL_RE.test(hp)) return `the health path must be at most ${MAX_TARGET_INPUT} characters with no control character`;
   return null;
 }
 
