@@ -194,10 +194,9 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'security-code-review-full-force': { label: 'Start another code review of the whole repo', args: ['security', 'code-review', '--full', '--no-wait', '--force'], repo: true, awsTarget: true, writesAws: true, confirm: true, timeoutMs: 5 * MIN },
   // The pentest buttons (1.21.6), with the picker's --app-dir/--dockerfile/--port/--health-path appended by pentestArgs.
   // --yes: no terminal to answer the prompt; the page's dialog is the confirmation. No --wait: the job runs for hours, and
-  // the dashboard's background --status check tears the environment down when it finishes. 45 min: cdk deploy (VPC,
-  // endpoints, internal ALB, Fargate) takes 10-20 min, the first run also installs the CDK app's packages and builds and
-  // pushes the image, then up to 10 min for the ALB health check. Stopping it mid-deploy would leave a stack with no record.
-  // Detached (1.21.7): the deploy runs in the background with its own run record (status deploying); the drawer links to it.
+  // the dashboard's background --status check tears the environment down when it finishes. Detached (1.21.7): the deploy
+  // (10-20+ min) runs in the background with its run record written first (status deploying), so timeoutMs does not apply
+  // to it (it stays because every action has one); the drawer links to the run.
   'security-pentest-start': { label: 'Start a pentest', args: ['security', 'pentest', '--yes'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'choice', detached: true, timeoutMs: 45 * MIN },
   // 90 min: teardown waits up to 10 min for the agent's network interfaces, up to 30 min for the stack deletion, then once more of each.
   'security-pentest-cleanup': { label: 'Clean up the pentest environment', args: ['security', 'pentest', '--cleanup'], repo: true, awsTarget: true, writesAws: true, confirm: true, pentest: 'run', timeoutMs: 90 * MIN },
@@ -518,6 +517,7 @@ export class ActionRunner {
     }
     let child: ChildProcess;
     try {
+      // The same environment as every other action: the command resolves the same profile and credentials as the page.
       child = (this.d.spawn ?? nodeSpawn)(this.d.execPath, [this.d.entry, ...args], {
         cwd: repo.path, shell: false, windowsHide: true, detached: true, stdio: ['ignore', fd, fd],
         env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0', [PENTEST_RUN_ENV]: prep.run },

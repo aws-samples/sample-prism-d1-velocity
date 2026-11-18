@@ -324,11 +324,15 @@ export function securityRunLog(repos: RunRepo[], repoArg: string | null, runArg:
   const e = read(repo.path).find((x) => x.id === runArg);
   if (!e || !runDeploy(e)?.log) return { found: false, error: 'this run has no deploy log (it was started from a terminal, or before 1.21.7)' };
   const file = join(resolve(repo.path, RESULTS_DIR), deployLogName(e.id));
-  let size: number, mtime: string;
-  try { const st = statSync(file); size = st.size; mtime = st.mtime.toISOString(); } catch { return { found: true, text: '', truncated: false, updated_at: null }; }
-  const n = Math.min(size, LOG_TAIL_BYTES), buf = Buffer.alloc(n);
-  const fd = openSync(file, 'r');
-  try { readSync(fd, buf, 0, n, size - n); } finally { closeSync(fd); }
+  let size: number, mtime: string, n: number, buf: Buffer;
+  // A log not written yet, or removed or unreadable meanwhile: shown as empty, never a failed route.
+  try {
+    const st = statSync(file); size = st.size; mtime = st.mtime.toISOString();
+    n = Math.min(size, LOG_TAIL_BYTES); buf = Buffer.alloc(n);
+    const fd = openSync(file, 'r');
+    try { n = readSync(fd, buf, 0, n, size - n); } finally { closeSync(fd); }
+  } catch { return { found: true, text: '', truncated: false, updated_at: null }; }
+  buf = buf.subarray(0, n);
   let lines = buf.toString('utf8').split('\n');
   if (size > n) lines = lines.slice(1);
   const truncated = size > n || lines.length > LOG_TAIL_LINES;

@@ -197,11 +197,14 @@ export class SecurityAutoCheck {
     const now = new Date(this.now());
     const seen: string[] = [];
     let changed = 0;
+    const deployingIn = (es: ResultEntry[]) => es.filter((e) => e.result.kind === 'security-pentest' && e.result.status === 'deploying');
     for (const repo of repos) {
-      const entries = read(repo.path).filter((e) => e.result.kind === 'security-pentest' && e.result.status === 'deploying');
+      let entries = deployingIn(read(repo.path));
       if (!entries.length) continue;
-      changed += interruptGoneDeploys(repo.path, now, this.d.alive ?? pidAlive, entries);
-      for (const e of read(repo.path)) if (e.result.kind === 'security-pentest' && e.result.status === 'deploying') seen.push(`${repo.id}/${e.id}:${e.result.pentest?.deploy?.phase}`);
+      const n = interruptGoneDeploys(repo.path, now, this.d.alive ?? pidAlive, entries);
+      // Read again only when a record was just marked interrupted.
+      if (n) { changed += n; entries = deployingIn(read(repo.path)); }
+      for (const e of entries) seen.push(`${repo.id}/${e.id}:${e.result.pentest?.deploy?.phase}`);
     }
     const sig = seen.sort().join(',');
     if (changed || sig !== this.deploySeen) { this.deploySeen = sig; this.changed(); }
