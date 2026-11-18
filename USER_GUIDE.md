@@ -1743,7 +1743,7 @@ started with `--keep`. Since 1.21.12 a finished pentest goes through these state
 | Status | Meaning |
 |---|---|
 | **Cleaning up** (amber) | The job has finished and its findings are saved; the environment is being removed. The row shows for how long and what is still there (for example the stack, `DELETE_IN_PROGRESS`). Each check takes the cleanup one step on without waiting, so a stack deletion that takes over an hour never holds a check. |
-| **Cleanup failed** (red) | The stack failed to delete twice (the teardown's own retry), or a Security Agent resource was still there after a second delete. The reason is shown; **Clean up** on the run's page tries again and verifies. |
+| **Cleanup failed** (red) | The stack failed to delete twice (the teardown's own retry), or a Security Agent resource was still there after a second delete, or the cleanup could not be checked (a read kept failing, for example access denied) for 6 checks in a row. The reason is shown; **Clean up** on the run's page tries again and verifies. |
 | **Environment kept** | Started with `--keep`: the environment stays up on purpose until you press **Clean up**. |
 | **Complete · cleaned up** | A check confirmed, read-only, that the CloudFormation stack is gone (`DELETE_COMPLETE` or it no longer exists) and that the target domain and agent space (or pentest) the run recorded are gone in Security Agent. A pentest whose job failed shows **failed** at this point instead. |
 

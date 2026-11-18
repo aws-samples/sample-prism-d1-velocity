@@ -229,6 +229,8 @@ export interface PentestCleanup {
   attempts?: number;
   /** How many times the Security Agent deletes were sent (the second time only for what was still there). */
   sa_deletes?: number;
+  /** Checks in a row that could not tell whether something is gone (a read failed); the cleanup fails after CLEANUP_UNCHECKED_MAX. */
+  unchecked?: number;
   /** When the agent's network interfaces were first seen still attached. */
   eni_since?: string | null;
   verified_at?: string | null;
