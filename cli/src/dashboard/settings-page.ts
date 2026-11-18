@@ -260,6 +260,7 @@ function agentsPane(data) {
     return [r.client, r.scope, pill(st[0], st[1]), r.path ? el('code', { class: 'path' }, r.path + (r.others ? ' (+' + r.others + ' other)' : '')) : '-', hookButton(r, p)];
   });
   const kc = machineRow(data, 'kirocrew-app');
+  const st = machineRow(data, 'kirocrew-steering');
   return [
     section('Agent hooks', 'the push check and finish check for coding agents (enable agent-hooks)', table(['Client', 'Scope', 'Status', 'File', ''], rows),
       el('p', { class: 'note' }, 'Project hooks are for the repo the dashboard started in. Cursor and Codex: planned.')),
@@ -267,8 +268,11 @@ function agentsPane(data) {
       ['Installed', p.active ? el('span', {}, txt(p.version || 'version unknown'), ' ', p.outdated ? sevPill('medium', 'needs 0.3.0 or newer') : sevPill('ok', 'ok')) : 'not installed or disabled'],
       ['Update', el('div', {}, PLUGIN_UPDATE.map((c) => el('div', {}, copyButton(c))))]]),
       el('p', { class: 'note' }, 'From 0.3.0 the plugin runs the harness hooks itself, so the claude rows above stay uninstalled.')),
-    section('Kiro Crew app', null, kc ? kv([['Installed', txt(kc.detail)], ['Install or update', runButton('kirocrew-app', { label: 'Run enable kirocrew' }) || copyOnly('prism-cli enable kirocrew')]])
-      : el('p', { class: 'empty' }, 'Kiro Crew is not on this machine.')),
+    section('Kiro Crew app', null, kc ? kv([['Installed', txt(kc.detail)],
+      ...(st ? [['Steering note', el('span', {}, txt(st.detail), ' ', /^(outdated|missing)/.test(st.detail) ? sevPill('medium', 'needs update') : null)]] : []),
+      ['Install or update', runButton('kirocrew-app', { label: 'Run enable kirocrew' }) || copyOnly('prism-cli enable kirocrew')]])
+      : el('p', { class: 'empty' }, 'Kiro Crew is not on this machine.'),
+      st ? el('p', { class: 'note' }, 'The steering note tells every Kiro Crew session to load the prism-fix-findings skill in a repo with codewatch. prism-cli enable kirocrew --uninstall removes it.') : null),
   ];
 }
 
@@ -319,7 +323,7 @@ async function renderSetup(data) {
   if (badge) { badge.textContent = items.length ? String(items.length) : ''; if (items.length) badge.removeAttribute('hidden'); else badge.setAttribute('hidden', ''); }
   root.replaceChildren();
   if (!SETUP) { root.append(el('section', { class: 'card' }, pill('error'), ' could not load the settings data')); return; }
-  const machine = { ...data, machine: { ...data.machine, setup: (data.machine.setup || []).filter((i) => i.id !== 'kirocrew-app') } };
+  const machine = { ...data, machine: { ...data.machine, setup: (data.machine.setup || []).filter((i) => i.id !== 'kirocrew-app' && i.id !== 'kirocrew-steering') } };
   const panes = { overview: overviewPane(data, items), machine: [machineSection(machine)], repos: reposPane(data), agents: agentsPane(data), sync: [syncSection(data)], aws: awsSection(SETUP.aws || {}), updates: updatesPane(data) };
   const nav = el('nav', { class: 'stabs', role: 'tablist', 'aria-label': 'Settings sections' });
   const box = el('div', { class: 'spanes' });

@@ -55,6 +55,8 @@ export function needsYou(d: NeedsInput): NeedsItem[] {
   if (p.outdated) add('agents', `Claude Code plugin ${p.version ?? ''} is installed; the harness hooks need 0.3.0 or newer.`, PLUGIN_UPDATE);
   const kc = d.machine.find((i) => i.id === 'kirocrew-app');
   if (kc && /^outdated/.test(kc.detail)) add('agents', `Kiro Crew app: ${kc.detail}`, [kc.fix]);
+  const st = d.machine.find((i) => i.id === 'kirocrew-steering');
+  if (st && /^(outdated|missing)/.test(st.detail)) add('agents', `Kiro Crew steering note ${st.detail}`, [st.fix]);
   if (d.version.update) add('updates', `prism-cli ${d.version.latest ?? ''} is available (you have ${d.version.installed}).`, [UPDATE_CMD]);
   return out;
 }

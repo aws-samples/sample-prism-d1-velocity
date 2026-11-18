@@ -19,7 +19,7 @@ import { readSecurityMarker } from '../security/marker.js';
 import { readMachineSetup } from '../security/config.js';
 import { last4 } from '../aws/connection.js';
 import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
-import { ENABLE_KIROCREW_CMD, kirocrewAppState, type KirocrewAppState } from '../utils/kirocrew.js';
+import { bundledAppDir, bundledSteering, ENABLE_KIROCREW_CMD, kirocrewAppState, steeringState, type KirocrewAppState, type SteeringState } from '../utils/kirocrew.js';
 import { appOutdated } from '../commands/_top/version.js';
 import { effectiveMode, LOCAL_MODE_HELP, PLATFORM_TEAM_HELP, TEAM_NO_URL_HELP, TEAM_URL_CMD, type CheckHelp } from '../utils/sync-mode.js';
 
@@ -52,6 +52,8 @@ export interface MachineDeps {
   versionCache?: string;
   /** Kiro Crew app versions; null when kirocrew is not on this machine (then there is no row). */
   kirocrewApp?: () => KirocrewAppState | null;
+  /** The steering note's state (~/.kiro/steering/prism-codewatch.md); read only when the app is installed. */
+  kirocrewSteering?: () => SteeringState;
 }
 
 export const GLOBAL_INSTALL_CMD = 'prism-cli enable codewatch --global';
@@ -127,6 +129,19 @@ export function kirocrewAppCheck(s: KirocrewAppState): CheckItem {
   return row(`${s.installed} installed`);
 }
 
+/**
+ * The Kiro Crew steering note row (only when the app is installed): info like the app row;
+ * a detail starting with outdated or missing puts it in Needs you (needs-you.ts).
+ */
+export function kirocrewSteeringCheck(s: SteeringState): CheckItem {
+  const row = (detail: string, fix = ''): CheckItem => ({ id: 'kirocrew-steering', label: 'Kiro Crew steering note', status: 'info', detail, fix });
+  const p = '~/.kiro/steering/prism-codewatch.md';
+  if (s === 'missing') return row(`missing: ${p} tells Kiro Crew agents to load the prism-fix-findings skill`, ENABLE_KIROCREW_CMD);
+  if (s === 'outdated') return row(`outdated: ${p} differs from the note bundled with this prism-cli`, ENABLE_KIROCREW_CMD);
+  if (s === 'user-owned') return row(`${p} has no prism-cli marker: yours, left as it is`);
+  return row(`installed (${p})`);
+}
+
 /** Checks that do not depend on a repository. */
 export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   const env = deps.env || process.env;
@@ -159,6 +174,7 @@ export function machineChecks(deps: MachineDeps = {}): CheckItem[] {
   out.push(globalHooksCheck(deps.global || globalStatus(home)));
   const kc = (deps.kirocrewApp || (() => kirocrewAppState({ pathEnv: deps.pathEnv, home, env })))();
   if (kc) out.push(kirocrewAppCheck(kc));
+  if (kc?.installed) out.push(kirocrewSteeringCheck((deps.kirocrewSteering || (() => steeringState(home, bundledSteering(bundledAppDir()))))()));
   return out;
 }
 

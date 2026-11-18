@@ -730,8 +730,19 @@ or `kirocrew app update prism --source ~/.prism/kirocrew-app`, then `kirocrew ap
 a first install. It does not install Kiro Crew. Two steps stay with you: trust the app and approve
 `/api/apps/prism/*` under **Apps → PRISM** in the Kiro Crew dashboard, then reload the dashboard
 to see the **PRISM** sidebar entry. `prism-cli enable kirocrew --status` shows the installed and
-bundled versions, the source folder, the API grants and the digest cron. `--uninstall` removes
-the app and keeps its data; add `--purge-data` to delete the data too. `prism-cli version` and the
+bundled versions, the source folder, the API grants, the digest cron and the steering note. `--uninstall` removes
+the app and keeps its data; add `--purge-data` to delete the data too.
+
+The command also writes a short steering note, `~/.kiro/steering/prism-codewatch.md`. Kiro Crew
+loads every `~/.kiro/steering/*.md` into every session but loads skills only on demand, so the
+note tells an agent that changes code in a repo with a `.prism/` folder to load the
+`prism-fix-findings` skill before it reports done or pushes. A note with the line
+`<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->` is replaced when it is
+out of date; a file there without that line is yours and is never changed. The App Store install
+writes it with the same rules. `--status` and the Settings view show it as installed, outdated,
+missing or yours, and an outdated or missing note is a Needs you item. `--uninstall` removes it
+only when it carries that line; you can also delete the file. See
+[The steering note](kirocrew-app/README.md#the-steering-note). `prism-cli version` and the
 dashboard's Settings view say when the installed app is older than the one bundled with your
 prism-cli.
 

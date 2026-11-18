@@ -1,6 +1,6 @@
 {
   "name": "prism",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "displayName": "PRISM",
   "description": "The PRISM dashboard inside Kiro Crew (the same pages and actions as prism-cli dashboard), codewatch findings, AI spend and setup status for Kiro Crew agents, and a daily digest that speaks only when something changed. Needs prism-cli 1.21.3 or later, which the App Store install sets up with npm.",
   "author": "aws-samples",

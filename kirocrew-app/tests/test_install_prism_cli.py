@@ -144,6 +144,50 @@ class InstallTest(unittest.TestCase):
         self.run_script()
         self.assertFalse((self.home / "aws-calls.log").exists())
 
+    # ---- the steering note ----
+
+    def note(self) -> Path:
+        return self.home / ".kiro" / "steering" / "prism-codewatch.md"
+
+    def test_steering_note_written_when_missing(self):
+        self.prism_cli("1.22.0")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout)
+        shipped = (APP / "steering" / "prism-codewatch.md").read_text(encoding="utf-8")
+        self.assertIn("<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->", shipped)
+        self.assertIn("inclusion: always", shipped)
+        self.assertEqual(self.note().read_text(encoding="utf-8"), shipped)
+        self.assertIn("wrote the steering note ~/.kiro/steering/prism-codewatch.md", p.stdout)
+        self.assertNotIn(str(self.home), p.stdout.splitlines()[0], "no home path in the steering line")
+        # A second run: already current, says nothing about it.
+        p = self.run_script()
+        self.assertNotIn("steering", p.stdout)
+
+    def test_steering_note_ours_and_old_is_updated(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().write_text("<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->\nold\n", encoding="utf-8")
+        p = self.run_script()
+        self.assertIn("updated the steering note", p.stdout)
+        self.assertEqual(self.note().read_text(encoding="utf-8"), (APP / "steering" / "prism-codewatch.md").read_text(encoding="utf-8"))
+
+    def test_steering_note_without_marker_is_left_alone(self):
+        self.prism_cli("1.22.0")
+        self.note().parent.mkdir(parents=True)
+        self.note().write_text("my own note\n", encoding="utf-8")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("exists without the prism-cli marker; left as it is", p.stdout)
+        self.assertEqual(self.note().read_text(encoding="utf-8"), "my own note\n")
+
+    def test_steering_note_failure_does_not_fail_the_install(self):
+        self.prism_cli("1.22.0")
+        (self.home / ".kiro").write_text("a file, not a folder", encoding="utf-8")
+        p = self.run_script()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("could not write the steering note", p.stdout)
+        self.assertIn("nothing to install", p.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

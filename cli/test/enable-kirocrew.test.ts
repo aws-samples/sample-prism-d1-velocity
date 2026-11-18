@@ -8,16 +8,20 @@ import type { RunResult } from '../src/utils/exec.js';
 import {
   enableKirocrew, grantsLine, makePlan, parseCronList, parseJsonAfterLogs, planArgs, stageApp, targetDir, toAppInfo, type KirocrewDeps,
 } from '../src/commands/enable/kirocrew.js';
-import { findKirocrew, installedAppVersion, kirocrewAppState } from '../src/utils/kirocrew.js';
+import { findKirocrew, installedAppVersion, kirocrewAppState, STEERING_MARKER, steeringPath, steeringState } from '../src/utils/kirocrew.js';
 import { appOutdated, buildReport, kirocrewVersionLine, printReport } from '../src/commands/_top/version.js';
-import { kirocrewAppCheck, machineChecks } from '../src/dashboard/setup.js';
+import { kirocrewAppCheck, kirocrewSteeringCheck, machineChecks } from '../src/dashboard/setup.js';
+import { needsYou } from '../src/dashboard/needs-you.js';
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
+const NOTE = `---\ninclusion: always\n---\n${STEERING_MARKER}\n\n# PRISM codewatch\n`;
 
 /** A fake bundle: the app plus the files the copy must leave out. */
 function bundle(version = '0.2.2'): string {
   const d = tmp('prism-kc-bundle-');
   writeFileSync(join(d, 'app.json'), JSON.stringify({ name: 'prism', version, crons: [{ name: 'prism-daily-digest' }] }));
+  mkdirSync(join(d, 'steering'));
+  writeFileSync(join(d, 'steering', 'prism-codewatch.md'), NOTE);
   mkdirSync(join(d, 'scripts', '__pycache__'), { recursive: true });
   writeFileSync(join(d, 'scripts', 'digest.py'), '# digest\n');
   writeFileSync(join(d, 'scripts', '__pycache__', 'digest.pyc'), 'x');
@@ -138,6 +142,8 @@ test('current: same version from the target folder runs nothing', async () => {
   const m = machine();
   const t = targetDir(m.home);
   m.deps.run = ((orig) => (f, a, ms) => (a[1] === 'info' ? { ok: true, stdout: infoJson({ version: '0.2.2', source: t }), stderr: '' } : orig(f, a, ms)))(m.deps.run);
+  mkdirSync(dirname(steeringPath(m.home)), { recursive: true });
+  writeFileSync(steeringPath(m.home), NOTE);
   assert.equal(await enableKirocrew({}, m.deps), 0);
   assert.deepEqual(writes(m.calls), []);
   assert.match(m.text(), /already current \(0\.2\.2\)/);
@@ -322,4 +328,123 @@ test('bundle: the build copies kirocrew-app without tests, data or caches', () =
     const bundled = JSON.parse(readFileSync(join(built, 'app.json'), 'utf8')).version;
     assert.equal(bundled, JSON.parse(readFileSync(join(cli, '..', 'kirocrew-app', 'app.json'), 'utf8')).version);
   }
+});
+
+// ---- the steering note (~/.kiro/steering/prism-codewatch.md) ----
+
+/** A machine where prism 0.2.2 is installed from the target folder: the app plan is "current". */
+function currentMachine() {
+  const m = machine();
+  const t = targetDir(m.home);
+  m.deps.run = ((orig) => (f: string, a: string[], ms: number) => (a[1] === 'info' ? { ok: true, stdout: infoJson({ version: '0.2.2', source: t }), stderr: '' } : orig(f, a, ms)))(m.deps.run);
+  return m;
+}
+const putNote = (home: string, text: string) => { mkdirSync(dirname(steeringPath(home)), { recursive: true }); writeFileSync(steeringPath(home), text); };
+
+test('steering: a first install writes the note, the same text as the bundle, under HOME', async () => {
+  const m = machine();
+  assert.equal(await enableKirocrew({ yes: true }, m.deps), 0);
+  assert.equal(readFileSync(steeringPath(m.home), 'utf8'), NOTE);
+  assert.match(m.text(), /Steering: {2}missing; prism-cli enable kirocrew writes ~\/\.kiro\/steering\/prism-codewatch\.md/);
+  assert.match(m.text(), /✓ Wrote ~\/\.kiro\/steering\/prism-codewatch\.md/);
+  assert.ok(!m.text().includes(m.home), 'no home path printed');
+});
+
+test('steering: app current, our old note: --dry-run shows it and changes nothing; --yes updates it; then nothing to do', async () => {
+  const old = `${STEERING_MARKER}\nold text\n`;
+  const m = currentMachine();
+  putNote(m.home, old);
+  assert.equal(await enableKirocrew({ dryRun: true }, m.deps), 0);
+  assert.match(m.text(), /would update the steering note ~\/\.kiro\/steering\/prism-codewatch\.md/);
+  assert.equal(readFileSync(steeringPath(m.home), 'utf8'), old);
+  assert.equal(await enableKirocrew({ yes: true }, m.deps), 0);
+  assert.equal(readFileSync(steeringPath(m.home), 'utf8'), NOTE);
+  assert.deepEqual(writes(m.calls), [], 'no kirocrew write for the note alone');
+  const again = currentMachine();
+  putNote(again.home, NOTE);
+  assert.equal(await enableKirocrew({}, again.deps), 0, 'nothing to confirm when all is current');
+  assert.match(again.text(), /Steering: {2}installed/);
+});
+
+test('steering: app current, note missing, no terminal and no --yes: asks for --yes and writes nothing', async () => {
+  const m = currentMachine();
+  assert.equal(await enableKirocrew({}, m.deps), 1);
+  assert.match(m.text(), /Re-run with --yes/);
+  assert.equal(existsSync(steeringPath(m.home)), false);
+});
+
+test('steering: a file without the marker is the user\'s: left as it is, with a note, on install and uninstall', async () => {
+  const m = machine();
+  putNote(m.home, 'my own rules\n');
+  assert.equal(await enableKirocrew({ yes: true }, m.deps), 0);
+  assert.equal(readFileSync(steeringPath(m.home), 'utf8'), 'my own rules\n');
+  assert.match(m.text(), /exists without the prism-cli marker; it is yours and is left as it is/);
+  const u = currentMachine();
+  u.deps.home = m.home;
+  assert.equal(await enableKirocrew({ uninstall: true, yes: true }, u.deps), 0);
+  assert.equal(readFileSync(steeringPath(m.home), 'utf8'), 'my own rules\n');
+  assert.match(u.text(), /has no prism-cli marker; it is left as it is/);
+});
+
+test('steering: --uninstall removes our note (also when the app is already gone); --dry-run does not', async () => {
+  const m = machine();
+  putNote(m.home, `${STEERING_MARKER}\nany version\n`);
+  assert.equal(await enableKirocrew({ uninstall: true, dryRun: true }, m.deps), 0);
+  assert.ok(existsSync(steeringPath(m.home)));
+  assert.match(m.text(), /would remove the steering note/);
+  assert.equal(await enableKirocrew({ uninstall: true, yes: true }, m.deps), 0);
+  assert.equal(existsSync(steeringPath(m.home)), false);
+  assert.match(m.text(), /✓ Removed ~\/\.kiro\/steering\/prism-codewatch\.md/);
+});
+
+test('steering: states and --status', async () => {
+  const home = tmp('prism-kc-home-');
+  assert.equal(steeringState(home, NOTE), 'missing');
+  putNote(home, NOTE);
+  assert.equal(steeringState(home, NOTE), 'installed');
+  assert.equal(steeringState(home, null), 'installed', 'ours, nothing to compare with');
+  putNote(home, `${STEERING_MARKER}\nolder\n`);
+  assert.equal(steeringState(home, NOTE), 'outdated');
+  putNote(home, 'mine\n');
+  assert.equal(steeringState(home, NOTE), 'user-owned');
+  for (const [text, want, arrow] of [[null, /Steering: {4}missing/, true], [`${STEERING_MARKER}\nold\n`, /Steering: {4}outdated/, true], [NOTE, /Steering: {4}installed/, false], ['mine\n', /Steering: {4}.*yours/, false]] as const) {
+    const m = currentMachine();
+    if (text !== null) putNote(m.home, text);
+    assert.equal(await enableKirocrew({ status: true }, m.deps), 0);
+    assert.match(m.text(), want);
+    assert.equal(/→ prism-cli enable kirocrew/.test(m.text()), arrow, String(text));
+    assert.deepEqual(writes(m.calls), []);
+  }
+});
+
+test('steering: the Settings row exists only with the app installed; outdated or missing is one Needs you item', () => {
+  const home = tmp('prism-kc-home-');
+  const ids = (installed: string | null) => machineChecks({ pathEnv: '', home, kirocrewApp: () => ({ installed, bundled: '0.2.2' }), kirocrewSteering: () => 'missing' }).map((i) => i.id);
+  assert.ok(!ids(null).includes('kirocrew-steering'));
+  assert.ok(ids('0.2.2').includes('kirocrew-steering'));
+  const base = { setup: [], suggestions: [], agentHooks: { rows: [], plugin: {} } as any, version: { installed: '1.0.0', latest: null, update: false } };
+  for (const s of ['installed', 'outdated', 'missing', 'user-owned'] as const) {
+    const row = kirocrewSteeringCheck(s);
+    assert.equal(row.status, 'info');
+    const items = needsYou({ ...base, machine: [row] });
+    if (s === 'outdated' || s === 'missing') {
+      assert.equal(items.length, 1, s);
+      assert.equal(items[0].tab, 'agents');
+      assert.deepEqual(items[0].fixes, ['prism-cli enable kirocrew']);
+      assert.match(items[0].text, new RegExp(`^Kiro Crew steering note ${s}`));
+    } else {
+      assert.equal(items.length, 0, s);
+    }
+  }
+});
+
+test('steering: the shipped note is the bundle\'s, carries the marker and inclusion: always, and names the skill', () => {
+  const app = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'kirocrew-app');
+  const text = readFileSync(join(app, 'steering', 'prism-codewatch.md'), 'utf8');
+  assert.ok(text.includes(STEERING_MARKER));
+  assert.match(text, /^---\ninclusion: always\n/);
+  assert.match(text, /prism-fix-findings/);
+  assert.ok(text.length < 2000, 'kept short: it loads into every session');
+  // The Python install script uses the same marker.
+  assert.ok(readFileSync(join(app, 'scripts', 'install_prism_cli.py'), 'utf8').includes(STEERING_MARKER));
 });
