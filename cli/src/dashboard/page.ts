@@ -219,8 +219,11 @@ const detail = (...parts) => {
 /** One summary card: label, large value, one detail line. */
 const scard = (label, value, det) => el('div', { class: 'card scard' }, el('div', { class: 'k' }, label), value, det);
 
-/** The four cards: latest review, spend today, spend this month, settings warnings. Same object as summary in --json. */
-function summaryCards(sum) {
+/**
+ * The four cards: latest review, spend today, spend this month, settings warnings. Same object as summary in --json;
+ * the warnings card counts the Needs you list (needs-you.ts), as the Settings badges do.
+ */
+function summaryCards(sum, needs) {
   const box = el('div', { class: 'cards', id: 'summary' });
   const rv = sum && sum.review;
   if (rv) {
@@ -241,10 +244,10 @@ function summaryCards(sum) {
     detail(ok ? det + updated : txt((sp && sp.message) || (sp && sp.status) || 'no codeburn data')));
   box.append(spendCard('Spend today', 'sum:today', sp && sp.today, 'codeburn, all projects'));
   box.append(spendCard('Spend this month', 'sum:month', sp && sp.month, 'codeburn, this calendar month'));
-  const w = (sum && sum.warnings) || { count: 0, first: null };
+  const items = needs || [];
   box.append(scard('Settings warnings',
-    track('sum:warnings', w.count, el('div', { class: 'v' + (w.count ? ' s-warn' : '') }, String(w.count))),
-    detail(w.first ? txt(w.first) + ' ' : 'Nothing needs attention. ', el('a', { href: '#settings' }, 'Open Settings →'))));
+    track('sum:warnings', items.length, el('div', { class: 'v' + (items.length ? ' s-warn' : '') }, String(items.length))),
+    detail(items.length ? txt(items[0].text) + ' ' : 'Nothing needs attention. ', el('a', { href: '#settings' }, 'Open Settings →'))));
   return box;
 }
 
@@ -544,22 +547,39 @@ let historyPolls = 0, historyTimer = null;
 const historyPending = () => !!(LAST && LAST.usage && LAST.usage.history && LAST.usage.history.status === 'pending');
 
 /**
+ * One render at a time. A call while one runs is not dropped: it draws once more when that one ends, so the newest
+ * /api/data always lands last (an action that finishes during a refresh shows its result at once, not a minute later).
+ */
+let RENDERING = null, RENDER_AGAIN = false;
+function renderLatest() {
+  if (RENDERING) { RENDER_AGAIN = true; return RENDERING; }
+  RENDERING = (async () => {
+    let data;
+    do { RENDER_AGAIN = false; data = await render(); } while (RENDER_AGAIN);
+    return data;
+  })().finally(() => { RENDERING = null; });
+  return RENDERING;
+}
+
+/**
  * Two stages: /api/data (local checks, with cached usage or "loading") paints
  * at once; then /api/usage, and when its usage differs from what was painted,
  * /api/data again (cheap: the server rebuilds it from the cache). fresh: the
  * Refresh button, which runs new codeburn exports; auto-refresh uses the cache.
+ * A load while another one runs (an action finished, Re-check status) draws
+ * the current data now and leaves the usage stage to the running one.
  */
 async function load(fresh) {
-  if (loading) return;
+  if (loading) { await renderLatest(); return; }
   loading = true;
   try {
-    const data = await render();
+    const data = await renderLatest();
     if (!data) return;
     let u;
     try { u = await getJson('/api/usage' + (fresh ? '?fresh=1' : '')); } catch (e) { return; }
     const was = data.usage || {};
     const hist = (x) => JSON.stringify((x && x.history) || null);
-    if (u && u.usage && (u.usage.updatedAt !== was.updatedAt || u.usage.status !== was.status || hist(u.usage) !== hist(was))) await render();
+    if (u && u.usage && (u.usage.updatedAt !== was.updatedAt || u.usage.status !== was.status || hist(u.usage) !== hist(was))) await renderLatest();
   } finally {
     loading = false; lastLoad = Date.now();
     // One poll chain at a time, whichever load (refresh, auto-refresh, poll) found the weeks pending.
@@ -586,7 +606,7 @@ async function getJson(path) {
 /** The dashboard view: cards, then each section with data; empty ones become "Get more from PRISM" items. */
 function renderMain(main, data) {
   MORE = [];
-  const parts = [summaryCards(data.summary), codewatchPanel(data), spendPanel(data.usage), (data.security_runs || []).length ? securityRunsCard() : securityPanel(data.security), awsPanel(data.aws)];
+  const parts = [summaryCards(data.summary, data.needsYou), codewatchPanel(data), spendPanel(data.usage), (data.security_runs || []).length ? securityRunsCard() : securityPanel(data.security), awsPanel(data.aws)];
   if (data.scope.error) main.append(el('section', { class: 'card' }, pill('error'), ' ', data.scope.error));
   main.append(...parts.filter(Boolean));
   if (MORE.length) main.append(el('div', { class: 'more', id: 'more' }, el('b', {}, 'Get more from PRISM'), ...MORE));

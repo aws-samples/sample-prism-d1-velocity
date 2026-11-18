@@ -7,6 +7,7 @@ import { collectCodewatch, combineSecretScanning, type CodewatchPanel, type Secr
 import { discoverRepos, repoLabels, type DiscoverOptions } from './repos.js';
 import { codewatchSetup, GLOBAL_FORCE_CMD, type GitRunner, GLOBAL_INSTALL_CMD, machineChecks, SECURITY_RESULT_KINDS, securitySetup, type CheckItem, type CodewatchSetup, type MachineDeps, type SecuritySetup } from './setup.js';
 import { buildSummary, type DashboardSummary } from './summary.js';
+import { needsYou, type NeedsItem } from './needs-you.js';
 import { effectiveMode, type CheckHelp, type SyncMode, type SyncModeSource } from '../utils/sync-mode.js';
 import { readResultEntries } from '../codewatch/results.js';
 import { globalStatus, type GlobalStatus } from '../codewatch/globalHooks.js';
@@ -182,6 +183,8 @@ export interface DashboardPayload {
   aws: AwsPanel;
   /** The one-glance summary shown at the top of the page (buildSummary). */
   summary: DashboardSummary;
+  /** Everything that needs the person (needs-you.ts): the Settings warnings card, the Settings badges and Needs you all read it. */
+  needsYou: NeedsItem[];
   /** This prism-cli and the latest on npm (update-check.ts); the page's version pill. */
   version: VersionInfo;
   /**
@@ -315,6 +318,12 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
     gitleaksWarning: r.codewatch.secretScanning.unscannedCommits > 0,
     trend: rowTrend(r.codewatch.scans),
   })));
+  const suggestions = [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null);
+  const version = await versionP;
+  const agentHooks = (opts.agentHooks || ((repoRoot) => agentHookStatus({
+    home: opts.machineDeps?.home || opts.home || homedir(), env: opts.machineDeps?.env || process.env, repoRoot, cli: prismCliCommand(ownCliLocation()),
+  })))(d.currentRepo);
+  const needs = needsYou({ machine: machineSetup, setup: setupRows, suggestions, agentHooks, version });
   return {
     schema: PAYLOAD_SCHEMA,
     generated_at: new Date().toISOString(),
@@ -327,17 +336,16 @@ export async function buildPayload(opts: PayloadOptions): Promise<DashboardPaylo
       codeburnSync: { ...effectiveMode(opts.machineDeps?.home || homedir()), help: machineSetup.find((i) => i.id === 'codeburn-sync')?.help ?? null },
       secretScanning: combineSecretScanning(repos.map((r) => r.codewatch.secretScanning), gitleaksAvailable),
     },
-    suggestions: [globalSuggestion(g, setupRows.filter((r) => r.status === 'missing').length)].filter((x): x is Suggestion => x !== null),
+    suggestions,
     usage,
     security: collectSecurity(repos, (p) => results.get(p) ?? readResultEntries(p).map((e) => e.result), new Date(), opts.securityCheck?.lookup),
     security_runs: collectSecurityRuns(repos.map((r) => ({ id: r.id, name: r.label, path: r.path })), (p) => entries.get(p) ?? readResultEntries(p), new Date(), opts.securityCheck?.lookup),
     security_check_gen: checkGen,
     aws: collectAws([...repos.map((r) => r.path), opts.home || homedir()]),
-    summary: buildSummary(repos, usage, machineSetup),
-    version: await versionP,
-    agentHooks: (opts.agentHooks || ((repoRoot) => agentHookStatus({
-      home: opts.machineDeps?.home || opts.home || homedir(), env: opts.machineDeps?.env || process.env, repoRoot, cli: prismCliCommand(ownCliLocation()),
-    })))(d.currentRepo),
+    summary: buildSummary(repos, usage, needs),
+    needsYou: needs,
+    version,
+    agentHooks,
     timing: { scan: tScan - t0, setup: setupMs, usage: usageMs, total: Date.now() - t0, cacheHit },
   };
 }

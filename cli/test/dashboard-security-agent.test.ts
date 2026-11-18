@@ -1086,7 +1086,7 @@ test('pentest picker: a listing that failed shows Retry with the error text (red
   assert.ok(page.dom.byId.security.querySelectorAll('input').some((i) => i.getAttribute('type') === 'radio' && i.getAttribute('value') === 'sample-app/Dockerfile'), 'the radios are back');
 });
 
-test('remembered repo: GET names it by id while discovered; a missing one is ignored and dropped; a corrupt file is ignored; POST saves the real path', async () => {
+test('remembered repo: GET names it by id while discovered; a missing one is ignored and the file left alone; a corrupt file is ignored; POST saves the real path', async () => {
   const { securityAgentRemember } = await import('../src/dashboard/security-agent.js');
   const { prefsPath } = await import('../src/dashboard/dashboard-prefs.js');
   const { readFileSync, symlinkSync } = await import('node:fs');
@@ -1112,9 +1112,10 @@ test('remembered repo: GET names it by id while discovered; a missing one is ign
   const link = join(home, 'link-b');
   symlinkSync(b, link);
   assert.equal((await securityAgentView(saDeps(home, [{ id: repoId(link), name: 'b', path: link, current: false }]))).remembered, repoId(link));
-  // No longer discovered: ignored, and dropped from the file.
+  // No longer discovered: ignored. A read never writes (1.21.9): the stale entry stays until the next pick replaces it.
+  const kept = readFileSync(prefsPath(home), 'utf8');
   assert.equal((await securityAgentView(saDeps(home, [repos[0]]))).remembered, null);
-  assert.deepEqual(JSON.parse(readFileSync(prefsPath(home), 'utf8')), { other: 1 });
+  assert.equal(readFileSync(prefsPath(home), 'utf8'), kept, 'the file is not rewritten by a read');
   // A corrupt file is ignored and left alone; the next pick replaces it.
   writeFileSync(prefsPath(home), '{not json');
   assert.equal((await securityAgentView(d)).remembered, null);
@@ -1159,4 +1160,58 @@ test('remembered repo, page: preselected on load over the current repo; a pick p
   const stale = await runPage([p], '#security', SETUP, { '/api/security-agent': { ...saAnswer(p, GOOD), remembered: 'ffffffffffffffff' } });
   await stale.settle();
   assert.equal(stale.dom.byId.security.querySelectorAll('select')[0].all().find((o) => o.hasAttribute('selected'))!.getAttribute('value'), first.id);
+});
+
+// ---------------------------------------------------------------- 1.21.9: the remembered repo's save and the prefs file
+
+test('remembered repo, page: a failed save shows a short note under the picker; the next good save clears it', async () => {
+  const p = await pagePayload();
+  const [first, second] = p.repos;
+  let fail = true;
+  const page = await runPage([p], '#security', SETUP, {
+    '/api/security-agent': saAnswer(p, GOOD),
+    '/api/security-agent/repo': () => (fail ? { __status: 500, body: { error: 'could not save ~/.prism/dashboard.json: EACCES' } } : { remembered: first.id }),
+  });
+  await page.settle();
+  const note = () => page.dom.byId.security.all().find((e) => e.getAttribute('id') === 'sa-remember-note')!;
+  assert.equal(note().hidden, true, 'nothing to say before a pick');
+  const sel = () => page.dom.byId.security.querySelectorAll('select')[0];
+  sel().value = second.id;
+  sel().listeners.change();
+  await page.settle();
+  assert.equal(note().hidden, false);
+  assert.equal(note().textContent, 'Not remembered for next time: could not save ~/.prism/dashboard.json: EACCES.');
+  assert.equal(note().getAttribute('role'), 'status');
+  page.go(page.location.hash);
+  await page.settle();
+  assert.equal(sel().all().find((o) => o.hasAttribute('selected'))!.getAttribute('value'), second.id, 'the pick still applies on this page');
+  assert.equal(note().hidden, false, 'and the note stays after a redraw');
+  fail = false;
+  sel().value = first.id;
+  sel().listeners.change();
+  await page.settle();
+  assert.equal(note().hidden, true, 'cleared by a save that worked');
+});
+
+test('prefs file: a read never writes; a write keeps a key another dashboard wrote since; a failed rename leaves no temp file', async () => {
+  const { prefsPath, rememberedRepo, rememberRepo } = await import('../src/dashboard/dashboard-prefs.js');
+  const { readdirSync, readFileSync, statSync } = await import('node:fs');
+  const home = tmp('prefs');
+  const a = join(home, 'src', 'a'), b = join(home, 'src', 'b');
+  mkdirSync(a, { recursive: true }); mkdirSync(b, { recursive: true });
+  const ra = { id: repoId(a), name: 'a', path: a }, rb = { id: repoId(b), name: 'b', path: b };
+  rememberRepo(home, ra);
+  // A stale entry: read, ignored, and the file is byte-for-byte the same with the same mtime.
+  const before = { text: readFileSync(prefsPath(home), 'utf8'), mtime: statSync(prefsPath(home)).mtimeMs };
+  assert.equal(rememberedRepo(home, [rb]), null);
+  assert.deepEqual({ text: readFileSync(prefsPath(home), 'utf8'), mtime: statSync(prefsPath(home)).mtimeMs }, before);
+  // Another dashboard (the other host) adds a key after this one last read: the next write keeps it.
+  writeFileSync(prefsPath(home), JSON.stringify({ ...JSON.parse(before.text), otherHost: 'kept' }));
+  rememberRepo(home, rb);
+  assert.deepEqual(JSON.parse(readFileSync(prefsPath(home), 'utf8')), { securityAgentRepo: b, otherHost: 'kept' }, 'the stale entry is replaced on this write only');
+  // The rename cannot replace a directory: the error is thrown and the temp file is gone.
+  const blocked = tmp('prefs-blocked');
+  mkdirSync(prefsPath(blocked), { recursive: true });
+  assert.throws(() => rememberRepo(blocked, ra));
+  assert.deepEqual(readdirSync(join(blocked, '.prism')), ['dashboard.json'], 'no .tmp left behind');
 });

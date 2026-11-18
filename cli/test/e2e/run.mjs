@@ -1989,7 +1989,7 @@ try {
       // A path no longer discovered: the default repo, silently, and the entry is dropped.
       writeFileSync(prefs, JSON.stringify({ securityAgentRepo: join(srv.home, 'src', 'gone') }));
       c = await open(srv);
-      R2.stale = { selected: await selected(c.page), file: JSON.parse(readFileSync(prefs, 'utf8')), text: await c.page.evaluate(() => document.getElementById('security').innerText) };
+      R2.stale = { wrote: join(srv.home, 'src', 'gone'), selected: await selected(c.page), file: JSON.parse(readFileSync(prefs, 'utf8')), text: await c.page.evaluate(() => document.getElementById('security').innerText) };
       out.log.push(...c.log);
       await c.ctx.close();
       writeFileSync(prefs, '{corrupt');
@@ -1999,6 +1999,139 @@ try {
       await c.ctx.close();
       R2.ids = { shop: shop.id, pay: pay.id };
       R2.calls = existsSync(join(srv.home, 'aws-calls.log')) ? readFileSync(join(srv.home, 'aws-calls.log'), 'utf8').split('\n').filter(Boolean) : [];
+    }
+  }
+
+  // ---------- 1.21.9: one Needs you list, the refresh after a codewatch action, the remembered repo's failed save ----------
+  if (want('v1219')) {
+    const REPORT = process.env.PRISM_E2E_REPORT;
+    const shot = async (page, name, opt = {}) => {
+      await page.screenshot({ path: join(SHOTS, name + '.png'), fullPage: true, ...opt });
+      if (REPORT) { mkdirSync(REPORT, { recursive: true }); await page.screenshot({ path: join(REPORT, name + '.png'), fullPage: true, ...opt }); }
+    };
+    const out = { log: [], needs: {}, refresh: {}, remember: {} };
+    R.suites.v1219 = out;
+    const env = { PRISM_NO_UPDATE_CHECK: '1' };
+    /** Every machine check ok: a fake gitleaks beside the fake codeburn (the full seed has ~/.aws/config). */
+    const withGitleaks = (h) => { mkdirSync(join(h, 'bin'), { recursive: true }); writeFileSync(join(h, 'bin', 'gitleaks'), '#!/bin/sh\necho 8.18.0\n', { mode: 0o755 }); };
+    /** The PRISM Claude Code plugin 0.1.0, installed and enabled (it predates the harness hooks). */
+    const oldPlugin = (h) => { mkdirSync(join(h, '.claude', 'plugins'), { recursive: true }); writeFileSync(join(h, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'prism@prism-d1-velocity': [{ version: '0.1.0' }] } })); };
+    const cli = (home, args, cwd) => spawnSync(process.execPath, [ENTRY, ...args], { cwd: cwd || readFileSync(join(home, '.start-dir'), 'utf8').trim(), encoding: 'utf8', timeout: 120000, env: demoEnv(home, env) });
+    /** The card, the Settings badge, every section badge and the Needs you heading, as drawn. */
+    const needsView = (page) => page.evaluate(() => {
+      const card = document.querySelectorAll('#summary .scard')[3];
+      const b = document.getElementById('settings-badge');
+      const tabs = Object.fromEntries([...document.querySelectorAll('[data-tab]')].map((a) => { const x = a.querySelector('.badge'); return [a.getAttribute('data-tab'), x ? Number(x.textContent) : 0]; }));
+      const head = [...document.querySelectorAll('#pane-overview h2')].find((h) => h.textContent.startsWith('Needs you'));
+      return { card: card.querySelector('.v').textContent, cardText: card.querySelector('.d').innerText, badge: b.hidden ? 0 : Number(b.textContent), tabs, head: head ? head.textContent : null, items: document.querySelectorAll('#pane-overview ul.todo li').length };
+    });
+    // A. the user's case: repos without codewatch and an old Claude Code plugin. B. nothing needed.
+    for (const [name, seedExtra, before] of [
+      ['two', (h) => { withGitleaks(h); oldPlugin(h); }, null],
+      ['none', withGitleaks, (h) => cli(h, ['enable', 'codewatch', '--global', '--yes'], h)],
+    ]) {
+      const home = seed('v1219-' + name, 'full', seedExtra);
+      const o = out.needs[name] = {};
+      if (before) { const r = before(home); o.setup = r.status; }
+      const j = cli(home, ['dashboard', '--json']);
+      const json = j.status === 0 ? JSON.parse(j.stdout) : null;
+      o.json = json && { warnings: json.summary.warnings, needs: json.needsYou.map((i) => [i.tab, i.text]) };
+      const s = await startDashboard(home, env); running.push(s.proc);
+      const srv = { ...s, home, base: `http://127.0.0.1:${s.port}` };
+      const { ctx, page, log } = await openCtx(srv);
+      out.log.push(...log);
+      await page.goto(srv.base + '/#settings'); await sleep(600);
+      o.http = await needsView(page);
+      await shot(page, `needs-you-${name}-settings-1280`, { fullPage: false });
+      await page.goto(srv.base + '/#'); await sleep(400);
+      await page.locator('#summary').screenshot({ path: join(SHOTS, `needs-you-${name}-card.png`) });
+      if (REPORT) await page.locator('#summary').screenshot({ path: join(REPORT, `needs-you-${name}-card.png`) });
+      await ctx.close();
+      // The same list over --serve-stdio (VS Code, Kiro Crew).
+      const ui = await stdioUi(home, env);
+      await ui.page.evaluate(() => { location.hash = '#settings'; }); await sleep(600);
+      o.stdio = await needsView(ui.page);
+      out.log.push(...ui.log);
+      await ui.close();
+      srv.proc.kill();
+    }
+    // C. the refresh after an action, with another refresh running (its /api/usage held), over HTTP.
+    {
+      const srv = await live('v1219-refresh', 'full', env, withGitleaks);
+      const { ctx, page, log, setTag } = await openCtx(srv);
+      out.log.push(...log);
+      let holding = false, release = () => {};
+      await page.route('**/api/usage**', async (route) => { if (holding) await new Promise((r) => { release = r; }); await route.continue().catch(() => {}); });
+      const hold = async () => { holding = true; await page.click('#refresh'); await sleep(500); };
+      const free = async () => { holding = false; release(); await sleep(300); };
+      const openAll = () => page.evaluate(() => { for (const d of document.querySelectorAll('#pane-repos details')) d.open = true; });
+      const rowOf = (label) => page.evaluate((l) => { const tr = [...document.querySelectorAll('#pane-repos tr')].find((t) => t.querySelector('td') && t.querySelector('td').textContent.trim().startsWith(l)); return tr ? [...tr.cells].map((c) => c.textContent).join(' ').replace(/\s+/g, ' ') : null; }, label);
+      const okCount = () => page.evaluate(() => /Repos with codewatch(\d+) of (\d+)/.exec(document.getElementById('pane-repos').textContent)?.slice(1).map(Number));
+      const doneOf = async () => { for (let t = Date.now(); Date.now() - t < 60000; await sleep(250)) { const d = await page.evaluate(() => document.querySelector('#action-drawer .srow-head')?.innerText || ''); if (d && !/running|starting/.test(d)) return Date.now(); } return null; };
+      const until = async (fn, ms = 5000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return Date.now() - t; await sleep(200); } return null; };
+      const run = async (loc) => { await openAll(); await page.locator(loc).first().click(); await sleep(250); await page.click('dialog.confirm button:has-text("Run")'); return doneOf(); };
+      await page.goto(srv.base + '/#settings/repos'); await sleep(800);
+      out.refresh.before = { pay: await rowOf('payments-api'), counts: await okCount() };
+      // Per repo: Enable codewatch on payments-api while a refresh waits for usage.
+      setTag('v1219 repo');
+      await hold();
+      const t1 = await run('#pane-repos tr:has-text("payments-api") button:has-text("Enable codewatch")');
+      const ms1 = await until(async () => /\bok\b/.test((await rowOf('payments-api')) || ''));
+      out.refresh.repo = { doneAt: !!t1, ms: ms1, held: holding, row: await rowOf('payments-api'), counts: await okCount(), hooks: existsSync(join(srv.home, 'src', 'payments-api', '.git', 'hooks', 'pre-push')) };
+      await shot(page, 'codewatch-enable-repo-row-ok-1280', { fullPage: false });
+      await free();
+      // Enable for every repo (--global), the same way.
+      setTag('v1219 global');
+      await hold();
+      const t2 = await run('#pane-repos button:has-text("Enable for every repo")');
+      const all = await until(async () => { const c = await okCount(); return c && c[0] === c[1]; });
+      out.refresh.global = { doneAt: !!t2, ms: all, held: holding, counts: await okCount(), shop: await rowOf('src/demo-shop') };
+      await free();
+      // Disable from a terminal, then Re-check status while a refresh waits: the row goes back to missing at once.
+      setTag('v1219 disable');
+      const un = cli(srv.home, ['enable', 'codewatch', '--global', '--uninstall'], srv.home);
+      await hold();
+      await page.click('#pane-repos button:has-text("Re-check status")');
+      const back = await until(async () => { const c = await okCount(); return c && c[0] === 1; });
+      await openAll();
+      out.refresh.disable = { exit: un.status, ms: back, held: holding, counts: await okCount(), shop: await rowOf('src/demo-shop'), pay: await rowOf('payments-api') };
+      await shot(page, 'codewatch-disable-recheck-1280', { fullPage: false });
+      await free();
+      await ctx.close();
+      // The same per-repo action over --serve-stdio (the Kiro Crew page): the row turns ok right after it ends.
+      const ui = await stdioUi(srv.home, env);
+      await ui.page.evaluate(() => { location.hash = '#settings/repos'; }); await sleep(800);
+      await ui.page.evaluate(() => { for (const d of document.querySelectorAll('#pane-repos details')) d.open = true; });
+      await ui.page.locator('#pane-repos tr:has-text("src/demo-shop") button:has-text("Enable codewatch")').first().click(); await sleep(250);
+      await ui.page.click('dialog.confirm button:has-text("Run")');
+      const t0 = Date.now(); let srow = null;
+      while (Date.now() - t0 < 20000) {
+        srow = await ui.page.evaluate(() => { const tr = [...document.querySelectorAll('#pane-repos tr')].find((t) => t.querySelector('td') && t.querySelector('td').textContent.trim().startsWith('src/demo-shop')); return tr ? [...tr.cells].map((c) => c.textContent).join(' ').replace(/\s+/g, ' ') : null; });
+        if (/\bok\b/.test(srow || '')) break;
+        await sleep(250);
+      }
+      out.refresh.stdio = { ms: Date.now() - t0, row: srow };
+      out.log.push(...ui.log);
+      await ui.close();
+    }
+    // D. the remembered repo: a save that fails (the prefs path is a folder) says so under the picker; no temp file is left.
+    {
+      const srv = await live('v1219-remember', 'full', { ...env, FAKE_AWS: 'in-progress', FAKE_SA: 'ready' }, (h) => mkdirSync(join(h, '.prism', 'dashboard.json'), { recursive: true }));
+      const { ctx, page, log } = await openCtx(srv);
+      out.log.push(...log);
+      await page.goto(srv.base + '/#security'); await saReady(page); await sleep(400);
+      const sa = await page.evaluate(() => fetch('/api/security-agent').then((r) => r.json()));
+      const pay = sa.repos.find((r) => r.path.endsWith('/src/payments-api'));
+      await page.selectOption('#sa-repo', pay.id); await sleep(900);
+      out.remember = {
+        note: await page.evaluate(() => { const n = document.getElementById('sa-remember-note'); return n && !n.hidden ? n.innerText : null; }),
+        selected: await page.evaluate(() => document.getElementById('sa-repo')?.value),
+        want: pay.id,
+        prism: readdirSync(join(srv.home, '.prism')),
+      };
+      await page.locator('#sa-remember-note').scrollIntoViewIfNeeded().catch(() => {});
+      await shot(page, 'security-agent-remember-failed-1280', { fullPage: false });
+      await ctx.close();
     }
   }
 } catch (e) {
@@ -2443,11 +2576,34 @@ function verdicts(R) {
       M.first === M.ids?.shop && M.file?.securityAgentRepo === M.wantPath && M.afterRestart === M.ids?.pay && !M.answerHasPath, JSON.stringify({ first: M.first, file: M.file, want: M.wantPath, after: M.afterRestart, ids: M.ids, leak: M.answerHasPath }));
     add('RM2', '--serve-stdio shares it: its page preselects the same repo, and a pick there is what the browser shows next',
       M.stdioRoute && M.stdioSelected === M.ids?.pay && M.stdioRead === M.ids?.shop && M.afterStdio === M.ids?.shop, JSON.stringify({ r: M.stdioRoute, s: M.stdioSelected, read: M.stdioRead, after: M.afterStdio }));
-    add('RM3', 'a remembered repo no longer discovered: the default repo, silently, and the entry dropped; a corrupt file is ignored',
-      M.stale?.selected === M.ids?.shop && !!M.stale?.file && !('securityAgentRepo' in M.stale.file) && !/dashboard\.json|could not/i.test(M.stale.text || '') && M.corrupt?.selected === M.ids?.shop,
+    // 1.21.9: a read never writes the file; the stale entry stays until the next pick replaces it.
+    add('RM3', 'a remembered repo no longer discovered: the default repo, silently, and the file left as it was; a corrupt file is ignored',
+      M.stale?.selected === M.ids?.shop && !!M.stale?.file && M.stale.file.securityAgentRepo === M.stale.wrote && !/dashboard\.json|could not/i.test(M.stale.text || '') && M.corrupt?.selected === M.ids?.shop,
       JSON.stringify({ stale: M.stale && { s: M.stale.selected, f: M.stale.file }, corrupt: M.corrupt }));
     const writes = (M.calls || []).filter((c) => !READ_ONLY_AWS.test(c) && !/^(cloudformation describe|securityagent batch-get-code-review-jobs|securityagent list-findings|securityagent batch-get-findings|securityagent list-code-reviews|s3api head-object)/.test(c));
     add('RM4', 'remembering a repo makes no AWS write call', !writes.length, writes.join('; '));
+  }
+  if (S.v1219) {
+    const V = S.v1219;
+    const same = (o, n) => !!o && !!o.json && o.json.warnings.count === n && o.json.needs.length === n
+      && [o.http, o.stdio].every((v) => v && Number(v.card) === n && v.badge === n && v.tabs.overview === n && v.items === n && (n ? v.head === 'Needs you' + n + ' items' : v.head === 'Needs younothing'));
+    const two = V.needs.two || {}, none = V.needs.none || {};
+    add('NY1', 'repos without codewatch and an old Claude Code plugin: 2 on the card, the Settings badge, the Overview badge, Needs you and --json, over HTTP and --serve-stdio',
+      same(two, 2) && two.http.tabs.repos === 1 && two.http.tabs.agents === 1 && JSON.stringify(two.json.needs.map((x) => x[0])) === '["repos","agents"]' && /repos don't have codewatch yet\./.test(two.http.cardText),
+      JSON.stringify(two).slice(0, 600));
+    add('NY2', 'nothing needed: 0 everywhere, the Settings badge hidden, the card says nothing needs attention',
+      none.setup === 0 && same(none, 0) && Object.values(none.http.tabs).every((x) => x === 0) && /Nothing needs attention/.test(none.http.cardText), JSON.stringify(none).slice(0, 600));
+    const F = V.refresh || {};
+    add('CW1', 'Enable codewatch in a repo: the row turns ok right after the action, while another refresh is still waiting',
+      /\bmissing\b/.test(F.before?.pay || '') && F.repo?.hooks && F.repo.ms !== null && F.repo.ms <= 3000 && F.repo.held === true && /\bok\b/.test(F.repo.row || ''), JSON.stringify({ before: F.before, repo: F.repo }));
+    add('CW2', 'Enable for every repo (--global): every row ok right after the action, with a refresh waiting',
+      F.global?.ms !== null && F.global?.ms <= 3000 && F.global?.held === true && F.global.counts?.[0] === F.global.counts?.[1], JSON.stringify(F.global));
+    add('CW3', 'disabled in a terminal: Re-check status shows it at once, with a refresh waiting',
+      F.disable?.exit === 0 && F.disable.ms !== null && F.disable.ms <= 3000 && F.disable.held === true && /\bmissing\b/.test(F.disable.shop || '') && /\bok\b/.test(F.disable.pay || ''), JSON.stringify(F.disable));
+    add('CW4', 'over --serve-stdio (the Kiro Crew page) the row turns ok right after the action', /\bok\b/.test(F.stdio?.row || '') && F.stdio.ms < 15000, JSON.stringify(F.stdio));
+    const M = V.remember || {};
+    add('RM5', 'a failed save of the remembered repo says so under the picker, keeps the pick, and leaves no temp file',
+      /^Not remembered for next time: could not save ~\/\.prism\/dashboard\.json: E[A-Z]+\.$/.test(M.note || '') && M.selected === M.want && !(M.prism || []).some((f) => f.endsWith('.tmp')), JSON.stringify(M));
   }
   return out;
 }

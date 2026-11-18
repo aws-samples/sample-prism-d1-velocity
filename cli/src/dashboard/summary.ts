@@ -4,7 +4,7 @@
  * `--json` and any later status line print the same object.
  */
 import type { CodewatchPanel } from './codewatch.js';
-import type { CheckItem, CodewatchSetup } from './setup.js';
+import type { NeedsItem } from './needs-you.js';
 import type { UsagePanel } from './usage.js';
 
 export interface DashboardSummary {
@@ -25,7 +25,7 @@ export interface DashboardSummary {
   } | null;
   /** updatedAt: when the usage was collected (it may come from the cache). */
   spend: { status: UsagePanel['status']; currency: string; today: number | null; month: number | null; message: string | null; updatedAt: string | null };
-  /** Machine checks that are missing or warn (as in the checklist), then repos whose own hooks bypass codewatch. */
+  /** The Needs you list (needs-you.ts), the same one the Settings badges count: how many, and the first item's text. */
   warnings: { count: number; first: string | null };
 }
 
@@ -33,10 +33,9 @@ export interface SummaryRepo {
   path: string;
   label: string;
   codewatch: Pick<CodewatchPanel, 'scans'>;
-  setup: Pick<CodewatchSetup, 'status' | 'detail'>;
 }
 
-export function buildSummary(repos: SummaryRepo[], usage: UsagePanel, machine: CheckItem[]): DashboardSummary {
+export function buildSummary(repos: SummaryRepo[], usage: UsagePanel, needs: NeedsItem[]): DashboardSummary {
   let review: DashboardSummary['review'] = null;
   for (const r of repos) {
     const s = r.codewatch.scans[0]; // newest first
@@ -44,14 +43,9 @@ export function buildSummary(repos: SummaryRepo[], usage: UsagePanel, machine: C
       review = { repo: r.label, path: r.path, at: s.started_at, status: s.status, reason: s.reason, high: s.high, medium: s.medium, low: s.low, reviewer: s.tool, id: s.id };
     }
   }
-  const warnings = [
-    // Same as the checklist: every missing or warn item counts; ok and info never do. A hint, when there is one, is the text.
-    ...machine.filter((i) => i.status === 'missing' || i.status === 'warn').map((i) => i.help ? i.help.text : `${i.label}: ${i.detail}`),
-    ...repos.filter((r) => r.setup.status === 'warn').map((r) => `${r.label}: ${r.setup.detail}`),
-  ];
   return {
     review,
     spend: { status: usage.status, currency: usage.currency, today: usage.today?.cost ?? null, month: usage.month?.cost ?? null, message: usage.message, updatedAt: usage.updatedAt },
-    warnings: { count: warnings.length, first: warnings[0] ?? null },
+    warnings: { count: needs.length, first: needs[0]?.text ?? null },
   };
 }

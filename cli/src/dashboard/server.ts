@@ -253,17 +253,24 @@ export function startServer(opts: StartOptions): Promise<RunningServer> {
 /** Memoises the payload for `ttlMs` and shares one in-flight build between requests. `invalidate()` forces the next build. */
 export function cachedPayload(build: () => Promise<unknown>, ttlMs = 30_000): (() => Promise<unknown>) & { invalidate(): void } {
   let at = 0;
-  let pending: Promise<unknown> | null = null;
   let value: unknown;
-  // An invalidate() during a build must outlive it: that build may have read the files before the change.
+  let valueEpoch = -1;
+  // An invalidate() during a build must outlive it: that build may have read the files before the change
+  // (an action that just finished), so a request after invalidate() never shares it but starts a new one.
   let epoch = 0;
+  let pending: { epoch: number; p: Promise<unknown> } | null = null;
   const get = () => {
-    if (value !== undefined && Date.now() - at < ttlMs) return Promise.resolve(value);
-    if (!pending) {
+    if (value !== undefined && valueEpoch === epoch && Date.now() - at < ttlMs) return Promise.resolve(value);
+    if (!pending || pending.epoch !== epoch) {
       const started = epoch;
-      pending = build().then((v) => { value = v; at = started === epoch ? Date.now() : 0; return v; }).finally(() => { pending = null; });
+      const p = build().then((v) => {
+        // An older build that finishes after a newer one never replaces it.
+        if (started >= valueEpoch) { value = v; valueEpoch = started; at = Date.now(); }
+        return v;
+      }).finally(() => { if (pending?.p === p) pending = null; });
+      pending = { epoch: started, p };
     }
-    return pending;
+    return pending.p;
   };
-  return Object.assign(get, { invalidate: () => { at = 0; epoch++; } });
+  return Object.assign(get, { invalidate: () => { epoch++; } });
 }
