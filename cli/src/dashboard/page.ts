@@ -47,7 +47,7 @@ h2 { font-size:15px; margin:0 0 12px; font-weight:650; display:flex; align-items
 h2 .sub { color:var(--muted); font-weight:450; font-size:12px; }
 h3 { font-size:12px; margin:16px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; font-weight:600; }
 .muted { color:var(--muted); }
-.empty { color:var(--muted); padding:8px 0; } code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; background:var(--raised); padding:1px 5px; border-radius:4px; }
+.empty { color:var(--muted); padding:8px 0; } .spend-empty > p { margin:6px 0 12px; max-width:72ch; } .spend-empty > .srow-ctl { margin:0 0 12px; } code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; background:var(--raised); padding:1px 5px; border-radius:4px; }
 .tablewrap { overflow-x:auto; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
@@ -413,10 +413,41 @@ function usageUpdated(u) {
     + (u.refreshError ? ' · refresh failed: ' + txt(u.refreshError) : u.stale ? ' · refreshing in the background' : ''));
 }
 
+/** The Spend card's one command, shown once as copy text when codeburn is missing. */
+const SPEND_SETUP_CMD = 'prism-cli enable codeburn';
+
+/**
+ * The Spend card before it has a month to draw, in its usual place: codeburn missing (what the card shows
+ * once it is set up, Set up codeburn, and the command), or set up with no usage this month yet. The button
+ * needs the action list, so fillSpendSetup adds it after /api/setup; a snapshot gets none.
+ */
+function spendEmpty(s, u) {
+  if (u.status === 'no-data') {
+    s.append(el('p', { class: 'empty', 'data-spend-empty': 'no-data' }, 'codeburn is set up but has no usage for this month yet.'), usageUpdated(u) || '');
+    return s;
+  }
+  s.append(el('div', { class: 'spend-empty', 'data-spend-empty': 'not-installed' },
+    el('p', {}, 'Once codeburn is set up, this card shows your monthly AI spend from codeburn: a heatmap of daily spend, and the spend by model, project and activity.'),
+    el('div', { class: 'srow-ctl', 'data-spend-setup': '', hidden: '' }),
+    el('div', { class: 'fix' }, SNAPSHOT ? 'To set it up, run in a terminal:' : 'Or run in a terminal:'), copyButton(SPEND_SETUP_CMD)));
+  return s;
+}
+
+/** Puts Set up codeburn into the Spend card's empty state once the action list is in (live page only; it confirms first). */
+function fillSpendSetup() {
+  const main = document.getElementById('main');
+  const slot = main && main.querySelectorAll('[data-spend-setup]')[0];
+  if (!slot || SNAPSHOT) return;
+  const b = runButton('codeburn-setup', { label: 'Set up codeburn' });
+  if (!b) return;
+  slot.replaceChildren(b);
+  slot.removeAttribute('hidden');
+}
+
 function spendPanel(u) {
   const s = el('section', { class: 'card', id: 'spend' }, el('h2', {}, 'Spend', el('span', { class: 'sub' }, u.month ? 'codeburn · ' + u.month.from + ' to ' + u.month.to : 'codeburn')));
   if (u.status === 'loading') { s.append(el('p', { class: 'empty loading' }, txt(u.message))); return s; }
-  if (u.status === 'not-installed' || u.status === 'no-data') return moreItem('Spend', txt(u.message), ' ', el('code', {}, 'prism-cli enable codeburn'));
+  if (u.status === 'not-installed' || u.status === 'no-data') return spendEmpty(s, u);
   if (u.status !== 'ok') { s.append(el('p', { class: 'empty' }, pill('error', u.status), ' ', txt(u.message))); return s; }
   const fmt = (n) => money(n, u.currency);
   const busy = (u.daily || []).slice().sort((a, b) => b.cost - a.cost)[0];
@@ -594,6 +625,7 @@ async function render() {
   const r = repoRoute();
   if (r) renderRepo(r);
   await renderSetup(data);
+  fillSpendSetup();
   await renderSecurity();
   await renderAccountGuard();
   for (const d of document.querySelectorAll('details[data-key]')) {

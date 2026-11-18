@@ -190,7 +190,7 @@ function resolveExporter(opts: { exporter?: CodeburnExport; pathEnv?: string }):
  */
 export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string; prior?: PriorDays | null; history?: 'wait' | 'defer' } = {}): Promise<UsagePanel> {
   const exporter = resolveExporter(opts);
-  if (!exporter) return emptyUsage('not-installed', 'codeburn is not installed. Set it up with: prism-cli enable codeburn');
+  if (!exporter) return emptyUsage('not-installed', 'codeburn is not installed.');
   const now = opts.now || new Date();
   const to = localDate(now);
   const from = `${to.slice(0, 8)}01`;

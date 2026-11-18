@@ -53,7 +53,7 @@ export type ActionId = 'codewatch-repo' | 'codewatch-global'
   | 'codewatch-reviewer-clone' | 'codewatch-reviewer-team' | 'codewatch-reviewer-global'
   | 'codewatch-reviewer-clone-reset' | 'codewatch-reviewer-team-reset' | 'codewatch-reviewer-global-reset' | 'codewatch-reviewer-apply-all'
   | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
-  | 'codeburn-remove' | 'codeburn-status' | 'team-info'
+  | 'codeburn-remove' | 'codeburn-status' | 'codeburn-setup' | 'team-info'
   | 'aws-connect' | 'aws-connect-status' | 'aws-disconnect' | 'accountguard-check' | 'accountguard-recommend'
   | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
   | 'agent-hooks-kiro-remove' | 'agent-hooks-kiro-global-remove' | 'agent-hooks-claude-remove' | 'agent-hooks-claude-global-remove'
@@ -156,6 +156,11 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'codeburn-team': { label: "Sync to my team's PRISM", args: ['enable', 'codeburn', '--url'], url: true, timeoutMs: 10 * MIN },
   'codeburn-remove': { label: 'Remove the sync schedule', args: ['enable', 'codeburn', '--remove'], confirm: true, confirmLabel: 'Yes, remove the scheduled codeburn sync push from this machine', timeoutMs: 2 * MIN },
   'codeburn-status': { label: 'codeburn status', args: ['enable', 'codeburn', '--status'], timeoutMs: MIN },
+  // The Dashboard's Spend card when codeburn is missing (1.21.8). --yes: no terminal to answer the install prompt; the
+  // page's confirm dialog is the confirmation. No mode flag: the mode already saved here, else local only.
+  'codeburn-setup': { label: 'Set up codeburn', args: ['enable', 'codeburn', '--yes'], installs: true, confirm: true, timeoutMs: 5 * MIN,
+    confirmLabel: 'Yes, install codeburn from the npm registry on this machine',
+    note: 'Installs codeburn with npm (npm install -g codeburn) when it is missing, then sets up its usage sync in the mode saved on this machine: local only by default (no endpoint, no schedule), or the scheduled push to your team\'s PRISM when this machine already syncs there.' },
   'team-info': { label: 'Team stack info (read-only)', args: ['team', 'info'], readOnlyAws: true, timeoutMs: 2 * MIN },
   // Settings › AWS: prism-cli aws connect. Read-only in AWS; writes only ~/.prism/aws.json (no credentials).
   'aws-connect': { label: 'Connect the AWS account', args: ['aws', 'connect'], choose: true, readOnlyAws: true, timeoutMs: 2 * MIN,
@@ -415,6 +420,8 @@ export class ActionRunner {
       if (!r.args.every((a) => typeof a === 'string')) return bad('the pentest arguments are not valid');
       pentest = r.args;
     }
+    // Checked again on purpose (the first check is above): pentestArgs awaits, and another start can take the lock
+    // in the meantime. The first one refuses early, before the pentest checks read any file.
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
     if (def.writesAws) {
       if (!repo) return bad('an AWS-writing action needs a repo');

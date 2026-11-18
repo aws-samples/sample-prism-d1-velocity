@@ -49,6 +49,7 @@ import { tildeHome } from './payload.js';
 import { computeGate, type Gate } from './security-gate.js';
 import { startGuard, type StartGuard } from './security-runs.js';
 import { pendingPentestIn } from './security-pentest.js';
+import { DASHBOARD_PREFS_FILE, rememberedRepo, rememberRepo } from './dashboard-prefs.js';
 
 export const LOOKUP_TIMEOUT_MS = 20_000;
 /** Pages of list-agent-spaces read at most (a page holds many spaces; this only bounds a runaway nextToken). */
@@ -471,7 +472,25 @@ export async function securityAgentView(d: SecurityAgentDeps) {
     }),
     machine: setupView(setupIn(d, null)),
     setupCommand: displayCommand([...ENABLE_SECURITY_ARGS, ...targetArgs(securityTargetIn(d, null))]),
+    // The repo last picked here (~/.prism/dashboard.json), as its id, while it is still discovered; else null.
+    remembered: rememberedRepo(d.identity.home, repos),
   };
+}
+
+/** POST /api/security-agent/repo {repo}: remembers the picked repo in ~/.prism/dashboard.json. A local file only; no AWS call. */
+export async function securityAgentRemember(d: Pick<SecurityAgentDeps, 'repos' | 'identity'>, body: unknown): Promise<ApiResult> {
+  const bad = (error: string): ApiResult => ({ status: 400, json: { error } });
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return bad('expected a JSON object');
+  const b = body as Record<string, unknown>;
+  const extra = Object.keys(b).filter((k) => k !== 'repo');
+  if (extra.length) return bad(`unexpected field ${extra[0]}`);
+  if (typeof b.repo !== 'string' || !/^[a-f0-9]{16}$/.test(b.repo)) return bad('repo must be an id from the scan list');
+  const repo = (await d.repos()).find((r) => r.id === b.repo);
+  if (!repo) return bad('repo is not in the scan list');
+  try { rememberRepo(d.identity.home, repo); } catch (e) {
+    return { status: 500, json: { error: `could not save ~/${DASHBOARD_PREFS_FILE}: ${(e as NodeJS.ErrnoException).code || 'write failed'}` } };
+  }
+  return { status: 200, json: { remembered: repo.id } };
 }
 
 /** POST /api/security-agent/spaces {repo, refresh?}: the lookup for the account and region of that repo. */

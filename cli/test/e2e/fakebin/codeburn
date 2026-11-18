@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fake `codeburn export -f json -o <file> --from A --to B` for the dashboard e2e run. Demo numbers only.
-// FAKE_CB=none -> exits 1 on every call; FAKE_CB_HISTORY=slow|fail -> the earlier-weeks export
+// FAKE_CB=none -> exits 1 on every call; FAKE_CB=empty -> a valid export with no usage (the "no data yet" state);
+// FAKE_CB_HISTORY=slow|fail -> the earlier-weeks export
 // (a range that ends before this month) sleeps FAKE_CB_DELAY_MS (default 20000) or fails.
 const fs = require('fs');
 const a = process.argv.slice(2);
@@ -16,6 +17,7 @@ const days = [];
 for (let d = new Date(from + 'T12:00:00'); ; d.setDate(d.getDate() + 1)) {
   const s = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   if (s > to) break;
+  if (process.env.FAKE_CB === 'empty') continue;
   const n = d.getDate() * 7 + d.getMonth() * 3;
   if (n % 5 === 0) continue; // some days without usage
   days.push({ Date: s, 'Cost (USD)': Math.round(((n % 23) + 1) * 37) / 100, 'API Calls': (n % 40) + 3, Sessions: (n % 4) + 1,

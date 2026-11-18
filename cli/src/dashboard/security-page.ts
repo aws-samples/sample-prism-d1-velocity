@@ -68,6 +68,14 @@ let SA_TIMER = null;
 /** What a branch review would review, per repo id (GET /api/security-agent/scope, local git): a scope, or null when unknown. */
 const SA_SCOPE = new Map();
 let SA_SCOPE_LOADING = null;
+/** Why the last scope check failed, per repo id (shown under the code review item). */
+const SA_SCOPE_ERR = new Map();
+/**
+ * A request's failure as the page shows it: one line, at most 200 characters, a 12-digit run as its last 4
+ * digits and the home directory as ~ (the server redacts its own answers; this is for the transport's errors).
+ */
+const saErrText = (e) => txt((e && e.message) || e || 'the request failed').split('\\n')[0].slice(0, 200)
+  .replace(/\\b\\d{12}\\b/g, (m) => '••••' + m.slice(-4)).split(' ').map((w) => tildePath(w)).join(' ');
 /** Repo|profile|region keys whose automatic lookup already ran on this page load: step 3 starts once each, never on a refresh. */
 const SA_AUTO = new Set();
 /** The repo id of the lookup in flight (one at a time), and the last refused request per repo (another action running, a network error). */
@@ -82,12 +90,21 @@ function securityRoute() {
   return run ? { id: run.repo, run } : null;
 }
 
-/** The picked repo: the route's id, else the last pick, else the repo the dashboard started in, else the first. */
+/**
+ * The picked repo: the route's id, else the last pick, else the remembered one (~/.prism/dashboard.json, which the
+ * server names only while that repo is still discovered), else the repo the dashboard started in, else the first.
+ */
 function saRepo() {
   const list = (SA && SA.repos) || [];
   const r = securityRoute();
   const by = (id) => (id ? list.find((x) => x.id === id) : null);
-  return by(r && r.id) || by(SA_PICK) || list.find((x) => x.current) || list[0] || null;
+  return by(r && r.id) || by(SA_PICK) || by(SA && SA.remembered) || list.find((x) => x.current) || list[0] || null;
+}
+
+/** Saves the pick on the server, for every host and the next start. A failed save changes nothing on the page. */
+async function saRemember(id) {
+  if (SNAPSHOT) return;
+  try { const r = await api('/api/security-agent/repo', { repo: id }); if (r.ok && SA) SA.remembered = id; } catch (e) { /* the page keeps the pick for this load */ }
 }
 
 /** This repo's latest cached results, from the /api/data payload (no AWS call), matched by repo id. */
@@ -259,7 +276,7 @@ function saSelect(repo) {
     if (r.id === repo.id) o.setAttribute('selected', '');
     sel.append(o);
   }
-  sel.addEventListener('change', () => { SA_PICK = sel.value; navigate('#security/' + sel.value); });
+  sel.addEventListener('change', () => { SA_PICK = sel.value; saRemember(sel.value); navigate('#security/' + sel.value); });
   return sel;
 }
 
@@ -340,9 +357,11 @@ async function saScopeLoad(repo) {
   if (SNAPSHOT || SA_SCOPE.has(repo.id) || SA_SCOPE_LOADING) return;
   SA_SCOPE_LOADING = repo.id;
   let r;
-  try { r = await api('/api/security-agent/scope?repo=' + repo.id); } catch (e) { r = { ok: false }; }
+  try { r = await api('/api/security-agent/scope?repo=' + repo.id); } catch (e) { r = { ok: false, json: { error: saErrText(e) } }; }
   SA_SCOPE_LOADING = null;
-  SA_SCOPE.set(repo.id, r.ok && r.json && r.json.scope ? r.json.scope : null);
+  const scope = r.ok && r.json && r.json.scope ? r.json.scope : null;
+  SA_SCOPE.set(repo.id, scope);
+  if (scope) SA_SCOPE_ERR.delete(repo.id); else SA_SCOPE_ERR.set(repo.id, txt((r.json || {}).error) || 'the check could not run');
   drawSecurity();
 }
 
@@ -372,8 +391,11 @@ function saBranchItem(repo) {
   }
   const full = saRun('security-code-review-full', repo, 'Review the whole repo');
   if (full && full.nodeName === 'BUTTON') full.setAttribute('data-full-start', '');
+  // The scope check failed: say why; both Starts stay, and the CLI decides (the check runs again on the next load).
+  const scopeErr = !s && SA_SCOPE.has(repo.id) ? SA_SCOPE_ERR.get(repo.id) : null;
   return el('li', { 'data-branch-review': s ? (note ? 'blocked' : 'ok') : 'unknown' }, el('div', { class: 'sa-head' }, el('b', {}, 'Code review')),
     note ? el('div', { class: 'callout', role: 'note' }, note) : null,
+    scopeErr ? el('div', { class: 'fix', 'data-scope-error': '' }, 'Could not read what a branch review would review: ' + scopeErr + '.') : null,
     el('div', { class: 'fix' }, why.join(' ')), el('div', { class: 'srow-ctl' }, branch, full));
 }
 
@@ -390,13 +412,13 @@ const SA_PT_WAIT_MS = 250;
 /** A listed path's folder: "." for the top. */
 const saPtDir = (p) => (p.lastIndexOf('/') > 0 ? p.slice(0, p.lastIndexOf('/')) : '.');
 
-/** Reads the picker's listing once per repo on this page load. shortcut: a Dockerfile added later shows after a reload; refresh on each data load if that matters. */
+/** Reads the picker's listing once per repo on this page load (Retry reads it again). shortcut: a Dockerfile added later shows after a reload; refresh on each data load if that matters. */
 async function saPtLoad(repo) {
   if (SNAPSHOT || SA_PT.has(repo.id)) return;
   const st = { list: 'loading', choice: null, check: null, seq: 0, timer: null, pending: false };
   SA_PT.set(repo.id, st);
   let r;
-  try { r = await api('/api/security-agent/pentest?repo=' + repo.id); } catch (e) { r = { ok: false }; }
+  try { r = await api('/api/security-agent/pentest?repo=' + repo.id); } catch (e) { r = { ok: false, json: { error: saErrText(e) } }; }
   if (!r.ok || !r.json) { st.list = { failed: txt((r.json || {}).error) || 'the Dockerfile list could not load' }; drawSecurity(); return; }
   const a = r.json, p = a.preselect;
   st.list = a;
@@ -423,7 +445,7 @@ function saPtCheck(id) {
     const q = new URLSearchParams({ repo: id, dockerfile: c.pick === SA_PT_OTHER ? c.other : c.pick, port: c.port, health_path: c.healthPath });
     if (c.appDir !== null) q.set('app_dir', c.appDir);
     let r;
-    try { r = await api('/api/security-agent/pentest/check?' + q.toString()); } catch (e) { r = { ok: false }; }
+    try { r = await api('/api/security-agent/pentest/check?' + q.toString()); } catch (e) { r = { ok: false, json: { error: saErrText(e) } }; }
     if (seq !== st.seq) return;
     st.pending = false;
     st.check = r.ok && r.json ? r.json : { ok: false, errors: { dockerfile: txt((r.json || {}).error) || 'the check could not run' } };
@@ -529,7 +551,13 @@ function saPentestItems(repo, item) {
   saPtLoad(repo);
   const st = SA_PT.get(repo.id);
   if (!st || st.list === 'loading') return [el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, 'Pentest')), el('p', { class: 'loading' }, 'Reading the repo\\'s Dockerfiles…'))];
-  if (st.list.failed) return [el('li', {}, el('div', { class: 'callout warn', role: 'note' }, 'The Dockerfile picker could not load: ' + txt(st.list.failed) + '. These commands use .prism/pentest.json or the defaults.')), ...plain()];
+  if (st.list.failed) {
+    // Retry reads the listing again now, rather than at the next reload.
+    const retry = el('button', { type: 'button', class: 'run', 'data-pt-retry': '' }, 'Retry');
+    retry.addEventListener('click', () => { retry.disabled = true; SA_PT.delete(repo.id); saPtLoad(repo); drawSecurity(); });
+    return [el('li', {}, el('div', { class: 'callout warn', role: 'note', 'data-pt-failed': '' }, 'The Dockerfile picker could not load: ' + txt(st.list.failed) + '. These commands use .prism/pentest.json or the defaults.',
+      el('div', { class: 'srow-ctl' }, retry))), ...plain()];
+  }
   const chk = st.pending ? null : st.check, ok = !!(chk && chk.ok && chk.copy);
   const status = st.pending ? 'checking…' : ok ? null : chk ? 'fix the choice above' : 'choose a Dockerfile above';
   const head = (label, why, ctl) => el('li', {}, el('div', { class: 'sa-head' }, el('b', {}, label)), el('div', { class: 'fix' }, why), ctl);
