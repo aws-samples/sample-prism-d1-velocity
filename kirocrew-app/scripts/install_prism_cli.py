@@ -86,7 +86,7 @@ def install_steering(env: Mapping[str, str], src: Path = STEERING_SRC) -> str:
         say(f"could not write the steering note {shown} ({getattr(e, 'strerror', None) or e}); run: prism-cli enable kirocrew")
         return "failed"
     did = "wrote" if have is None else "updated"
-    say(f"{did} the steering note {shown} (agents load the prism-fix-findings skill)")
+    say(f"{did} the steering note {shown} (agents check codewatch findings before finishing)")
     return did
 
 

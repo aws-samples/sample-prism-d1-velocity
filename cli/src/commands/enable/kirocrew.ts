@@ -12,8 +12,8 @@
  * person: Kiro Crew refuses to run a third-party app until they do.
  *
  * It also writes the steering note ~/.kiro/steering/prism-codewatch.md (the
- * bundle's steering/prism-codewatch.md), which tells every Kiro Crew session to
- * load the prism-fix-findings skill. Only a file with STEERING_MARKER is
+ * bundle's steering/prism-codewatch.md), which kiro-cli, Kiro IDE and Kiro Crew
+ * load into every session: check codewatch findings before finishing. Only a file with STEERING_MARKER is
  * overwritten or removed; a file without it is the person's and is left alone.
  */
 import { createInterface } from 'node:readline';
@@ -351,7 +351,7 @@ export async function enableKirocrew(opts: KirocrewOptions, d: KirocrewDeps): Pr
   d.log(`  Steering:  ${steeringText(steering, d.home)}`);
   checkPrismCliOnPath(d);
   const verb = dry ? '  → would' : '  →';
-  const noteStep = `${verb} ${steering === 'missing' ? 'write' : 'update'} the steering note ${notePath} (tells Kiro Crew agents to load the prism-fix-findings skill)`;
+  const noteStep = `${verb} ${steering === 'missing' ? 'write' : 'update'} the steering note ${notePath} (kiro-cli, Kiro IDE and Kiro Crew load it: check codewatch findings before finishing)`;
   const putNote = (): boolean => {
     try {
       writeSteering(d.home, note!);

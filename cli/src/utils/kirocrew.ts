@@ -74,10 +74,12 @@ export function kirocrewAppState(o: { pathEnv?: string; home: string; env?: Node
 
 // ---- The steering note (kirocrew-app/steering/prism-codewatch.md) ----
 //
-// Kiro Crew loads every ~/.kiro/steering/**/*.md into every session, but an app
-// cannot ship steering. The note tells agents to load the app's
-// prism-fix-findings skill, which they otherwise never do (skills load on demand).
-// The same rules live in kirocrew-app/scripts/install_prism_cli.py.
+// kiro-cli, Kiro IDE and Kiro Crew load every ~/.kiro/steering/**/*.md into every
+// session (a Kiro Crew app cannot ship steering). The note tells agents to check
+// codewatch findings before finishing: with the prism-fix-findings skill where it
+// exists (Kiro Crew), else with `prism-cli codewatch review`. Installed by
+// enable kirocrew, enable agent-hooks --client kiro, and
+// kirocrew-app/scripts/install_prism_cli.py, all with the same marker rules.
 
 /** The line that marks the file as ours: only a file with it is overwritten or removed. */
 export const STEERING_MARKER = '<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->';

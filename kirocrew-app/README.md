@@ -98,26 +98,31 @@ was installed from another folder, such as a clone, too. It never installs Kiro 
 ### The steering note
 
 Kiro Crew loads skills only when something points to them, and an app cannot ship steering. So the
-app installs one short steering file, `~/.kiro/steering/prism-codewatch.md`, which Kiro Crew loads
-into every session (the text is [`steering/prism-codewatch.md`](steering/prism-codewatch.md)). It
-says: when you change code in a git repo that has a `.prism/` folder, load the
-`prism-fix-findings` skill before you report the change done or push it, run `prism_review` (or
-read the last push's findings with `prism_findings`), fix the real high and medium findings in at
-most 2 rounds and report what remains; skip it for repos without `.prism/` and when the person only
-asks what codewatch found.
+app installs one short steering file, `~/.kiro/steering/prism-codewatch.md`. That folder is the
+global steering root of kiro-cli and Kiro IDE as well as Kiro Crew, so all three load the note into
+every session (the text is [`steering/prism-codewatch.md`](steering/prism-codewatch.md)). It says:
+when you change code in a git repo that has a `.prism/` folder, check the change before you report
+it done or push it. Use the `prism-fix-findings` skill when it is available (Kiro Crew with this
+app); otherwise run `prism-cli codewatch review` (exit 0 pass, 3 fix the findings and run it again,
+4 stop and report). Fix the real high and medium findings in at most 2 rounds and report what
+remains. Skip it for repos without `.prism/`, when the person only asks what codewatch found, and
+when the PRISM harness hooks already ran the review for the session.
 
-Both `prism-cli enable kirocrew` and the App Store install script write it with the same rules:
+`prism-cli enable kirocrew`, `prism-cli enable agent-hooks --client kiro` and the App Store install
+script all write it with the same rules:
 
 - No file there: it is written.
 - A file with the line `<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->`
   is ours: it is replaced when it differs from the bundled note.
-- A file without that line is yours: it is left as it is, and both say so.
+- A file without that line is yours: it is left as it is, and each of them says so.
 
-`prism-cli enable kirocrew --status` and the dashboard's **Settings → Agent hooks → Kiro Crew app**
-card show it as installed, outdated, missing or yours. With the app installed, an outdated or
-missing note is a Needs you item with the fix `prism-cli enable kirocrew`. To remove it, run
-`prism-cli enable kirocrew --uninstall` (it removes the note only when it carries the marker), or
-delete the file. Uninstalling the app from Kiro Crew alone leaves the note in place.
+`prism-cli enable kirocrew --status` and the dashboard's **Settings → Agent hooks** tab (the Agent
+hooks card and the Kiro Crew app card) show it as installed, outdated, missing or yours. An outdated
+or missing note is one Needs you item: with the app installed, the fix is `prism-cli enable kirocrew`;
+with only the Kiro hooks installed, it is `prism-cli enable agent-hooks --client kiro`. To remove it,
+run `prism-cli enable kirocrew --uninstall` or `prism-cli enable agent-hooks --client kiro --uninstall --global`
+(each removes the note only when it carries the marker), or delete the file. Uninstalling the app
+from Kiro Crew alone leaves the note in place.
 
 ### Install from a folder
 

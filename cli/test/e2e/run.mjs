@@ -2167,6 +2167,28 @@ try {
       await ctx.close();
       srv.proc.kill();
     }
+    // D. no Kiro Crew: the global Kiro hooks write the note; with the note deleted, the Agent hooks card and Needs you say so.
+    {
+      const home = seed('steering-kiro', 'full');
+      const cli = (args) => spawnSync(process.execPath, [ENTRY, ...args], { cwd: home, encoding: 'utf8', timeout: 120000, env: demoEnv(home, env) });
+      const o = out.cases.kiro = {};
+      o.install = cli(['enable', 'agent-hooks', '--client', 'kiro', '--global']).status;
+      const p = join(home, '.kiro', 'steering', 'prism-codewatch.md');
+      o.wrote = existsSync(p) && readFileSync(p, 'utf8') === note;
+      rmSync(p);
+      const s = await startDashboard(home, env); running.push(s.proc);
+      const srv = { ...s, home, base: `http://127.0.0.1:${s.port}` };
+      const { ctx, page, log } = await openCtx(srv);
+      out.log.push(...log);
+      await page.goto(srv.base + '/#settings/agents'); await sleep(800);
+      o.card = await page.evaluate(() => { const s = [...document.querySelectorAll('#pane-agents section')].find((x) => /^Agent hooks/.test(x.querySelector('h2')?.textContent || '')); return s ? s.innerText.replace(/\s+/g, ' ') : null; });
+      await page.goto(srv.base + '/#settings/overview'); await sleep(500);
+      o.todo = await page.evaluate(() => [...document.querySelectorAll('#pane-overview ul.todo li')].map((li) => li.innerText.replace(/\s+/g, ' ')).filter((t) => /steering/i.test(t)));
+      await page.goto(srv.base + '/#settings/agents'); await sleep(400);
+      await page.screenshot({ path: join(SHOTS, 'steering-kiro-agents-1280.png'), fullPage: false });
+      await ctx.close();
+      srv.proc.kill();
+    }
   }
 } catch (e) {
   R.fatal = String(e.stack || e);
@@ -2647,6 +2669,9 @@ function verdicts(R) {
     add('ST2', 'the bundled note in place: the card says installed and nothing about it needs you; a file without the marker reads as yours, is not an item, and is not changed',
       /Steering note installed \(~\/\.kiro\/steering\/prism-codewatch\.md\)/.test(i.card || '') && Array.isArray(i.json) && !i.json.length && !i.todo?.length
         && /no prism-cli marker: yours, left as it is/.test(u.card || '') && Array.isArray(u.json) && !u.json.length && u.after === 'my own rules\n', JSON.stringify({ i, u }).slice(0, 600));
+    const k = C.kiro || {};
+    add('ST3', 'no Kiro Crew: enable agent-hooks --client kiro --global writes the note; deleted, the Agent hooks card says not installed and Needs you has one item with the agent-hooks fix',
+      k.install === 0 && k.wrote && /Steering note not installed ~\/\.kiro\/steering\/prism-codewatch\.md/.test(k.card || '') && k.todo?.length === 1 && /prism-cli enable agent-hooks --client kiro --global/.test(k.todo[0]), JSON.stringify(k).slice(0, 600));
   }
   return out;
 }

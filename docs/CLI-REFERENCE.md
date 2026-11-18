@@ -45,7 +45,7 @@ Every command and option of prism-cli 1.21.11, exactly as `--help` prints it. Fo
 | &nbsp;&nbsp;[`prism-cli enable claude-code`](#prism-cli-enable-claude-code) | Set Claude Code's status line to prism-cli statusline in your Claude Code user settings (CLAUDE_CONFIG_DIR respected), after a diff, a backup and your confirmation |
 | &nbsp;&nbsp;[`prism-cli enable codeburn`](#prism-cli-enable-codeburn) | Set up codeburn: local only (default), sync to your team's PRISM every 12h (--url), or the platform-team steps (--admin) |
 | &nbsp;&nbsp;[`prism-cli enable codewatch`](#prism-cli-enable-codewatch) | Install codewatch git hooks: gitleaks pre-commit (blocks) and a report-only pre-push code review (kiro-cli or Claude Code). Turn them off in a repo with "git config prism.codewatch false" |
-| &nbsp;&nbsp;[`prism-cli enable agent-hooks`](#prism-cli-enable-agent-hooks) | Install the agent harness loop hooks (push check, opt-in finish check) for a coding client without a PRISM plugin: Kiro CLI V3 / IDE (.kiro/hooks/prism-harness.json) or Claude Code (.claude/settings.json hooks; skipped when the PRISM plugin is installed). Backs up, merges, and prints what it changed |
+| &nbsp;&nbsp;[`prism-cli enable agent-hooks`](#prism-cli-enable-agent-hooks) | Install the agent harness loop hooks (push check, opt-in finish check) for a coding client without a PRISM plugin: Kiro CLI V3 / IDE (.kiro/hooks/prism-harness.json, plus the ~/.kiro/steering/prism-codewatch.md note) or Claude Code (.claude/settings.json hooks; skipped when the PRISM plugin is installed). Backs up, merges, and prints what it changed |
 | &nbsp;&nbsp;[`prism-cli enable kirocrew`](#prism-cli-enable-kirocrew) | Install or update the PRISM Kiro Crew app bundled with this prism-cli (a PRISM page, the PRISM MCP tools, a fix-findings skill and a daily digest) and its steering note in ~/.kiro/steering |
 | &nbsp;&nbsp;[`prism-cli enable security`](#prism-cli-enable-security) | Set up AWS Security Agent once per machine, from any directory: deploy only its stack (after a diff and your confirmation), then the application, and save ~/.prism/security.json |
 | [`prism-cli export`](#prism-cli-export) | Push local usage data to PRISM now |
@@ -931,10 +931,11 @@ Commands:
   agent-hooks [options]  Install the agent harness loop hooks (push check,
                          opt-in finish check) for a coding client without a
                          PRISM plugin: Kiro CLI V3 / IDE
-                         (.kiro/hooks/prism-harness.json) or Claude Code
-                         (.claude/settings.json hooks; skipped when the PRISM
-                         plugin is installed). Backs up, merges, and prints
-                         what it changed
+                         (.kiro/hooks/prism-harness.json, plus the
+                         ~/.kiro/steering/prism-codewatch.md note) or Claude
+                         Code (.claude/settings.json hooks; skipped when the
+                         PRISM plugin is installed). Backs up, merges, and
+                         prints what it changed
   kirocrew [options]     Install or update the PRISM Kiro Crew app bundled with
                          this prism-cli (a PRISM page, the PRISM MCP tools, a
                          fix-findings skill and a daily digest) and its
@@ -1036,9 +1037,9 @@ Usage: prism-cli enable agent-hooks [options]
 
 Install the agent harness loop hooks (push check, opt-in finish check) for a
 coding client without a PRISM plugin: Kiro CLI V3 / IDE
-(.kiro/hooks/prism-harness.json) or Claude Code (.claude/settings.json hooks;
-skipped when the PRISM plugin is installed). Backs up, merges, and prints what
-it changed
+(.kiro/hooks/prism-harness.json, plus the ~/.kiro/steering/prism-codewatch.md
+note) or Claude Code (.claude/settings.json hooks; skipped when the PRISM
+plugin is installed). Backs up, merges, and prints what it changed
 
 Options:
   --client <client>  Coding client: kiro | claude (cursor, codex: planned)
@@ -1048,7 +1049,8 @@ Options:
   --status           Show installed, outdated or missing per client and scope
                      (read-only)
   --uninstall        Remove only the PRISM hook entries (the file is backed up
-                     first)
+                     first); kiro --global also removes the steering note if
+                     prism-cli wrote it
   --force            kiro: replace a prism-harness.json that holds hooks that
                      are not PRISM's
   -h, --help         display help for command

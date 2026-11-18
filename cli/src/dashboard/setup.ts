@@ -136,7 +136,7 @@ export function kirocrewAppCheck(s: KirocrewAppState): CheckItem {
 export function kirocrewSteeringCheck(s: SteeringState): CheckItem {
   const row = (detail: string, fix = ''): CheckItem => ({ id: 'kirocrew-steering', label: 'Kiro Crew steering note', status: 'info', detail, fix });
   const p = '~/.kiro/steering/prism-codewatch.md';
-  if (s === 'missing') return row(`missing: ${p} tells Kiro Crew agents to load the prism-fix-findings skill`, ENABLE_KIROCREW_CMD);
+  if (s === 'missing') return row(`missing: ${p} has agents check codewatch findings before finishing (prism-fix-findings in Kiro Crew)`, ENABLE_KIROCREW_CMD);
   if (s === 'outdated') return row(`outdated: ${p} differs from the note bundled with this prism-cli`, ENABLE_KIROCREW_CMD);
   if (s === 'user-owned') return row(`${p} has no prism-cli marker: yours, left as it is`);
   return row(`installed (${p})`);

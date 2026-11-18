@@ -261,9 +261,13 @@ function agentsPane(data) {
   });
   const kc = machineRow(data, 'kirocrew-app');
   const st = machineRow(data, 'kirocrew-steering');
+  const STEER = { installed: ['ok', 'installed'], outdated: ['medium', 'outdated'], missing: ['zero', 'not installed'], 'user-owned': ['zero', 'yours, left as it is'] };
+  const steer = ah.steering && STEER[ah.steering];
   return [
     section('Agent hooks', 'the push check and finish check for coding agents (enable agent-hooks)', table(['Client', 'Scope', 'Status', 'File', ''], rows),
-      el('p', { class: 'note' }, 'Project hooks are for the repo the dashboard started in. Cursor and Codex: planned.')),
+      el('p', { class: 'note' }, 'Project hooks are for the repo the dashboard started in. Cursor and Codex: planned.'),
+      steer ? kv([['Steering note', el('span', {}, sevPill(steer[0], steer[1]), ' ', el('code', { class: 'path' }, '~/.kiro/steering/prism-codewatch.md'))]]) : null,
+      steer ? el('p', { class: 'note' }, 'kiro-cli, Kiro IDE and Kiro Crew load it in every session: check codewatch findings before finishing. Installing the kiro hooks or the Kiro Crew app writes it; a file there without the prism-cli marker is left alone.') : null),
     section('Claude Code plugin', null, kv([
       ['Installed', p.active ? el('span', {}, txt(p.version || 'version unknown'), ' ', p.outdated ? sevPill('medium', 'needs 0.3.0 or newer') : sevPill('ok', 'ok')) : 'not installed or disabled'],
       ['Update', el('div', {}, PLUGIN_UPDATE.map((c) => el('div', {}, copyButton(c))))]]),
@@ -272,7 +276,7 @@ function agentsPane(data) {
       ...(st ? [['Steering note', el('span', {}, txt(st.detail), ' ', /^(outdated|missing)/.test(st.detail) ? sevPill('medium', 'needs update') : null)]] : []),
       ['Install or update', runButton('kirocrew-app', { label: 'Run enable kirocrew' }) || copyOnly('prism-cli enable kirocrew')]])
       : el('p', { class: 'empty' }, 'Kiro Crew is not on this machine.'),
-      st ? el('p', { class: 'note' }, 'The steering note tells every Kiro Crew session to load the prism-fix-findings skill in a repo with codewatch. prism-cli enable kirocrew --uninstall removes it.') : null),
+      st ? el('p', { class: 'note' }, 'The steering note has kiro-cli, Kiro IDE and Kiro Crew agents check codewatch findings before finishing (in Kiro Crew with the prism-fix-findings skill). prism-cli enable kirocrew --uninstall removes it.') : null),
   ];
 }
 

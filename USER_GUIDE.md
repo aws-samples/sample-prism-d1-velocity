@@ -733,10 +733,14 @@ to see the **PRISM** sidebar entry. `prism-cli enable kirocrew --status` shows t
 bundled versions, the source folder, the API grants, the digest cron and the steering note. `--uninstall` removes
 the app and keeps its data; add `--purge-data` to delete the data too.
 
-The command also writes a short steering note, `~/.kiro/steering/prism-codewatch.md`. Kiro Crew
-loads every `~/.kiro/steering/*.md` into every session but loads skills only on demand, so the
-note tells an agent that changes code in a repo with a `.prism/` folder to load the
-`prism-fix-findings` skill before it reports done or pushes. A note with the line
+The command also writes a short steering note, `~/.kiro/steering/prism-codewatch.md`. That folder is
+the global steering root of kiro-cli, Kiro IDE and Kiro Crew, so the note applies to all three. Kiro
+Crew loads skills only on demand, so without the note its agents never load `prism-fix-findings`.
+The note tells an agent that changes code in a repo with a `.prism/` folder to check the change
+before it reports done or pushes: with the `prism-fix-findings` skill where it exists, else with
+`prism-cli codewatch review` (exit 0 pass, 3 fix and rerun, 4 stop), and not again when the PRISM
+harness hooks already ran the review. `prism-cli enable agent-hooks --client kiro` writes the same
+note. A note with the line
 `<!-- prism-codewatch steering: installed by prism-cli enable kirocrew -->` is replaced when it is
 out of date; a file there without that line is yours and is never changed. The App Store install
 writes it with the same rules. `--status` and the Settings view show it as installed, outdated,
@@ -1169,6 +1173,13 @@ prism-cli enable agent-hooks --client kiro --uninstall
 
 - Every write shows a diff and backs the file up first as `<file>.bak-<timestamp>`. Running it
   again with nothing to change writes nothing.
+- `--client kiro` also writes the steering note `~/.kiro/steering/prism-codewatch.md`, which
+  kiro-cli, Kiro IDE and Kiro Crew load into every session: check codewatch findings before
+  finishing, with `prism-cli codewatch review` (or the `prism-fix-findings` skill in Kiro Crew),
+  and skip it when these hooks already ran the review. A file there without the prism-cli marker
+  line is left alone. `--status` and **Settings → Agent hooks** show its state; project
+  `--uninstall` keeps it, `--uninstall --global` removes it when it carries the marker. See
+  [The steering note](kirocrew-app/README.md#the-steering-note).
 - The hooks call `prism-cli`. A project file always does, because it is committed and shared, so
   prism-cli must be on the PATH the agent starts with (it warns when it is not on the system PATH).
   With `--global` it writes this machine's absolute node and script path when prism-cli is not on
