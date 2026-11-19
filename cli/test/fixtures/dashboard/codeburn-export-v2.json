@@ -1,0 +1,153 @@
+{
+ "schema": "codeburn.export.v2",
+ "generated": "2026-11-04T18:00:00.000Z",
+ "currency": {
+  "code": "USD",
+  "rate": 1,
+  "symbol": "$"
+ },
+ "summary": [
+  {
+   "Period": "2026-11-01 to 2026-11-04",
+   "Cost (USD)": 4.5,
+   "Saved (USD)": 0,
+   "API Calls": 36,
+   "Sessions": 6,
+   "Projects": 2
+  }
+ ],
+ "periods": [
+  {
+   "label": "2026-11-01 to 2026-11-04",
+   "daily": [
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Date": "2026-11-02",
+     "Cost (USD)": 1.25,
+     "Saved (USD)": 0,
+     "API Calls": 10,
+     "Sessions": 2,
+     "Input Tokens": 1000,
+     "Output Tokens": 200,
+     "Cache Read Tokens": 3000,
+     "Cache Write Tokens": 100
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Date": "2026-11-03",
+     "Cost (USD)": 2.5,
+     "Saved (USD)": 0,
+     "API Calls": 20,
+     "Sessions": 3,
+     "Input Tokens": 2000,
+     "Output Tokens": 400,
+     "Cache Read Tokens": 6000,
+     "Cache Write Tokens": 200
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Date": "2026-11-04",
+     "Cost (USD)": 0.75,
+     "Saved (USD)": 0,
+     "API Calls": 6,
+     "Sessions": 1,
+     "Input Tokens": 500,
+     "Output Tokens": 100,
+     "Cache Read Tokens": 1500,
+     "Cache Write Tokens": 50
+    }
+   ],
+   "activity": [
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Activity": "Feature Dev",
+     "Cost (USD)": 3,
+     "Share (%)": 66.67,
+     "Turns": 14
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Activity": "Debugging",
+     "Cost (USD)": 1.5,
+     "Share (%)": 33.33,
+     "Turns": 6
+    }
+   ],
+   "models": [
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Model": "demo-model-large",
+     "Cost (USD)": 3.5,
+     "Saved (USD)": 0,
+     "Share (%)": 77.78,
+     "API Calls": 24,
+     "Edit Turns": 0,
+     "One-shot Rate (%)": "",
+     "Retries/Edit": "",
+     "Cost/Edit (USD)": "",
+     "Input Tokens": 2600,
+     "Output Tokens": 520,
+     "Cache Read Tokens": 7800,
+     "Cache Write Tokens": 260
+    },
+    {
+     "Period": "2026-11-01 to 2026-11-04",
+     "Model": "demo-model-small",
+     "Cost (USD)": 1,
+     "Saved (USD)": 0,
+     "Share (%)": 22.22,
+     "API Calls": 12,
+     "Edit Turns": 0,
+     "One-shot Rate (%)": "",
+     "Retries/Edit": "",
+     "Cost/Edit (USD)": "",
+     "Input Tokens": 900,
+     "Output Tokens": 180,
+     "Cache Read Tokens": 2700,
+     "Cache Write Tokens": 90
+    }
+   ]
+  }
+ ],
+ "projects": [
+  {
+   "Project": "/work/demo-shop",
+   "Cost (USD)": 3.25,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 0.81,
+   "Share (%)": 72.22,
+   "API Calls": 26,
+   "Sessions": 4
+  },
+  {
+   "Project": "/work/payments-api",
+   "Cost (USD)": 1.25,
+   "Saved (USD)": 0,
+   "Avg/Session (USD)": 0.63,
+   "Share (%)": 27.78,
+   "API Calls": 10,
+   "Sessions": 2
+  }
+ ],
+ "sessions": [],
+ "records": [],
+ "tools": [
+  {
+   "Tool": "Read",
+   "Calls": 40,
+   "Share (%)": 62.5
+  },
+  {
+   "Tool": "Edit",
+   "Calls": 15,
+   "Share (%)": 23.44
+  },
+  {
+   "Tool": "Bash",
+   "Calls": 9,
+   "Share (%)": 14.06
+  }
+ ],
+ "mcp": [],
+ "shellCommands": []
+}

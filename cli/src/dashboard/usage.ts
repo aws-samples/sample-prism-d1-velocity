@@ -1,6 +1,9 @@
 /**
- * Usage panel data, from `codeburn export -f json` (schema codeburn.export.v2,
- * checked against codeburn 0.9.24).
+ * Usage panel data, from `codeburn export -f json`: schema codeburn.export.v2
+ * (codeburn 0.9.24 to 0.9.27, CSV-style keys such as 'Cost (USD)') or
+ * codeburn.export.v3 (0.9.28, camelCase keys such as `cost`), checked against
+ * codeburn's source and real exports. Any other schema is refused with an
+ * error that names it, never read as zeros (EXPORT_KEYS).
  *
  * One `--from <1st of month> --to <today>` export gives this calendar month,
  * its top models and projects, and "Today" from its per-day breakdown
@@ -14,7 +17,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { findOnPath } from '../utils/tool-check.js';
+import { findOnPath, toolVersion } from '../utils/tool-check.js';
 
 const execFileP = promisify(execFile);
 export const TOP_N = 5;
@@ -124,8 +127,73 @@ export function exportFailure(e: any, dir: string | null, home: string = homedir
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
-function totalsFrom(row: any): Totals {
-  return { cost: num(row?.['Cost (USD)']), calls: num(row?.['API Calls']), sessions: num(row?.['Sessions']) };
+/** The keys prism-cli reads from an export's rows, by schema. */
+export interface ExportKeys {
+  /** summary, daily, models, projects and activity rows */
+  cost: string; calls: string; sessions: string;
+  /** summary row */
+  projects: string;
+  /** daily rows */
+  date: string; input: string; output: string; cacheRead: string;
+  /** models[].model, projects[].project, activity[].activity, tools[].tool and tools[].calls */
+  model: string; project: string; activity: string; tool: string; toolCalls: string;
+}
+
+export const EXPORT_V2 = 'codeburn.export.v2';
+export const EXPORT_V3 = 'codeburn.export.v3';
+
+/** v3 (codeburn 0.9.28): fixed camelCase keys; the currency is stated once, in currency.code. */
+const V3_KEYS: ExportKeys = {
+  cost: 'cost', calls: 'apiCalls', sessions: 'sessions', projects: 'projects',
+  date: 'date', input: 'inputTokens', output: 'outputTokens', cacheRead: 'cacheReadTokens',
+  model: 'model', project: 'project', activity: 'activity', tool: 'tool', toolCalls: 'calls',
+};
+
+/** v2 (codeburn 0.9.24 to 0.9.27): the CSV headers; cost columns carry the currency code, e.g. 'Cost (EUR)'. */
+const v2Keys = (code: string): ExportKeys => ({
+  cost: `Cost (${code})`, calls: 'API Calls', sessions: 'Sessions', projects: 'Projects',
+  date: 'Date', input: 'Input Tokens', output: 'Output Tokens', cacheRead: 'Cache Read Tokens',
+  model: 'Model', project: 'Project', activity: 'Activity', tool: 'Tool', toolCalls: 'Calls',
+});
+
+const currencyOf = (j: any) => String(j?.currency?.code || 'USD');
+
+/** The keys for this export's schema; null for a schema prism-cli does not read. */
+export function exportKeys(j: any): ExportKeys | null {
+  if (j?.schema === EXPORT_V3) return V3_KEYS;
+  if (j?.schema === EXPORT_V2) return v2Keys(currencyOf(j));
+  return null;
+}
+
+/** For the exported helpers, called on exports collectUsage has already checked: v2 keys when the schema is not known. */
+const keysOf = (j: any): ExportKeys => exportKeys(j) ?? v2Keys(currencyOf(j));
+
+function totalsFrom(row: any, k: ExportKeys): Totals {
+  return { cost: num(row?.[k.cost]), calls: num(row?.[k.calls]), sessions: num(row?.[k.sessions]) };
+}
+
+/** "codeburn 0.9.28", or "codeburn" when the version is not known. */
+const codeburnName = (version: string | null) => (version ? `codeburn ${version.replace(/^codeburn\s+/i, '').slice(0, 40)}` : 'codeburn');
+
+/**
+ * Why prism-cli cannot read this export, or null when it can: a schema it does
+ * not know, or a known schema whose summary or first per-day row has none of
+ * the keys it reads. Either would otherwise show as "no usage".
+ */
+export function unreadableExport(j: any, version: () => string | null): string | null {
+  const k = exportKeys(j);
+  const cb = () => codeburnName(version());
+  if (!k) {
+    const schema = typeof j?.schema === 'string' ? `"${j.schema.slice(0, 40)}"` : 'no schema';
+    return `${cb()} wrote an export with ${schema}; prism-cli reads ${EXPORT_V2} and ${EXPORT_V3}. Update prism-cli: npm i -g @prism-d1/cli`;
+  }
+  const lacks = (row: any, keys: string[]) => row && typeof row === 'object' && !keys.some((key) => key in row);
+  const summary = Array.isArray(j?.summary) ? j.summary[0] : null;
+  const day = Array.isArray(j?.periods?.[0]?.daily) ? j.periods[0].daily[0] : null;
+  if (lacks(summary, [k.cost, k.calls, k.sessions]) || lacks(day, [k.date])) {
+    return `${cb()} wrote a ${j.schema} export without the fields prism-cli reads (${k.cost}, ${k.calls}, ${k.sessions}, ${k.date}). Update prism-cli: npm i -g @prism-d1/cli`;
+  }
+  return null;
 }
 
 /** Local calendar date, YYYY-MM-DD. */
@@ -161,8 +229,6 @@ export function spendByRepo(projects: UsagePanel['projects'], repoPaths: string[
   return out;
 }
 
-const isExport = (j: any) => String(j?.schema || '').startsWith('codeburn.export.');
-
 /**
  * Today's totals from a month export's per-day rows; null when the export has
  * no per-day breakdown. No row for today means no usage today (codeburn lists
@@ -171,15 +237,24 @@ const isExport = (j: any) => String(j?.schema || '').startsWith('codeburn.export
 export function todayFromDaily(month: any, today: string): Totals | null {
   const daily = month?.periods?.[0]?.daily;
   if (!Array.isArray(daily)) return null;
-  const row = daily.find((r: any) => r?.Date === today);
-  return row ? totalsFrom(row) : { cost: 0, calls: 0, sessions: 0 };
+  const k = keysOf(month);
+  const row = daily.find((r: any) => r?.[k.date] === today);
+  return row ? totalsFrom(row, k) : { cost: 0, calls: 0, sessions: 0 };
+}
+
+/** Options shared by collectUsage and collectHistory. */
+interface ExporterOpts {
+  exporter?: CodeburnExport;
+  pathEnv?: string;
+  /** codeburn's version, for an error about its export; only asked for then. Defaults to `codeburn --version` when codeburn is found on PATH. */
+  codeburnVersion?: () => string | null;
 }
 
 /** The given exporter, else codeburn on PATH; null when there is none. */
-function resolveExporter(opts: { exporter?: CodeburnExport; pathEnv?: string }): CodeburnExport | null {
-  if (opts.exporter) return opts.exporter;
+function resolveExporter(opts: ExporterOpts): { exporter: CodeburnExport; version: () => string | null } | null {
+  if (opts.exporter) return { exporter: opts.exporter, version: opts.codeburnVersion || (() => null) };
   const bin = findOnPath('codeburn', opts.pathEnv);
-  return bin ? realCodeburnExport(bin) : null;
+  return bin ? { exporter: realCodeburnExport(bin), version: opts.codeburnVersion || (() => toolVersion(bin)) } : null;
 }
 
 /**
@@ -188,14 +263,15 @@ function resolveExporter(opts: { exporter?: CodeburnExport; pathEnv?: string }):
  * export alone, with history pending unless today's copy is reused; the caller
  * runs collectHistory and merges it in (usage-cache.ts).
  */
-export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string; prior?: PriorDays | null; history?: 'wait' | 'defer' } = {}): Promise<UsagePanel> {
-  const exporter = resolveExporter(opts);
-  if (!exporter) return emptyUsage('not-installed', 'codeburn is not installed.');
+export async function collectUsage(opts: ExporterOpts & { now?: Date; prior?: PriorDays | null; history?: 'wait' | 'defer' } = {}): Promise<UsagePanel> {
+  const resolved = resolveExporter(opts);
+  if (!resolved) return emptyUsage('not-installed', 'codeburn is not installed.');
+  const { exporter } = resolved;
   const now = opts.now || new Date();
   const to = localDate(now);
   const from = `${to.slice(0, 8)}01`;
   const failed = (e: any) => emptyUsage('error', `codeburn export failed: ${String(e?.message || e).split('\n')[0].slice(0, 200)}`);
-  const badSchema = (j: any) => emptyUsage('error', `unrecognised codeburn export schema: ${String(j?.schema).slice(0, 40)}`);
+  const unreadable = (j: any) => { const why = unreadableExport(j, resolved.version); return why ? emptyUsage('error', why) : null; };
   // The weeks before this month are exported at most once a day: a copy from today for the same range is reused.
   const range = priorRange(now);
   const reuse = range && opts.prior && opts.prior.from === range.from && opts.prior.to === range.to && opts.prior.day === to ? opts.prior : null;
@@ -205,15 +281,18 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
       : collectPrior(exporter, range, to);
   let month: any;
   try { month = await exporter(['--from', from, '--to', to]); } catch (e) { return failed(e); }
-  if (!isExport(month)) return badSchema(month);
+  const bad = unreadable(month);
+  if (bad) return bad;
+  const k = exportKeys(month)!;
 
   let today = todayFromDaily(month, to);
   if (!today) {
     // An export without per-day rows: ask for today alone (a small range).
     let t: any;
     try { t = await exporter(['--from', to, '--to', to]); } catch (e) { return failed(e); }
-    if (!isExport(t)) return badSchema(t);
-    today = Array.isArray(t.summary) && t.summary[0] ? totalsFrom(t.summary[0]) : { cost: 0, calls: 0, sessions: 0 };
+    const badT = unreadable(t);
+    if (badT) return badT;
+    today = Array.isArray(t.summary) && t.summary[0] ? totalsFrom(t.summary[0], exportKeys(t)!) : { cost: 0, calls: 0, sessions: 0 };
   }
 
   const monthRow = Array.isArray(month?.summary) ? month.summary[0] : null;
@@ -223,22 +302,22 @@ export async function collectUsage(opts: { now?: Date; exporter?: CodeburnExport
   const panel: UsagePanel = {
     status: 'ok',
     message: null,
-    currency: String(month?.currency?.code || 'USD'),
+    currency: currencyOf(month),
     today,
-    month: monthRow ? { ...totalsFrom(monthRow), from, to } : { cost: 0, calls: 0, sessions: 0, from, to },
+    month: monthRow ? { ...totalsFrom(monthRow, k), from, to } : { cost: 0, calls: 0, sessions: 0, from, to },
     topModels: monthModels
-      .map((m) => ({ name: String(m?.Model || 'unknown'), cost: num(m?.['Cost (USD)']), calls: num(m?.['API Calls']) }))
+      .map((m) => ({ name: String(m?.[k.model] || 'unknown'), cost: num(m?.[k.cost]), calls: num(m?.[k.calls]) }))
       .sort((a, b) => b.cost - a.cost).slice(0, TOP_N),
     topProjects: monthProjects
-      .map((p) => { const path = String(p?.Project || 'unknown'); return { name: basename(path.replace(/[\\/]+$/, '')) || path, path, cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) }; })
+      .map((p) => { const path = String(p?.[k.project] || 'unknown'); return { name: basename(path.replace(/[\\/]+$/, '')) || path, path, cost: num(p?.[k.cost]), sessions: num(p?.[k.sessions]) }; })
       .sort((a, b) => b.cost - a.cost).slice(0, TOP_N),
     projects: monthProjects
-      .filter((p) => typeof p?.Project === 'string' && p.Project)
-      .map((p) => ({ path: real(String(p.Project).replace(/[\\/]+$/, '')), cost: num(p?.['Cost (USD)']), sessions: num(p?.Sessions) })),
+      .filter((p) => typeof p?.[k.project] === 'string' && p[k.project])
+      .map((p) => ({ path: real(String(p[k.project]).replace(/[\\/]+$/, '')), cost: num(p?.[k.cost]), sessions: num(p?.[k.sessions]) })),
     // any: codeburn export rows are untyped JSON; each field is checked or read through num().
     daily: (Array.isArray(month?.periods?.[0]?.daily) ? month.periods[0].daily : [])
-      .filter((r: any) => typeof r?.Date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.Date))
-      .map((r: any) => ({ date: r.Date as string, ...totalsFrom(r) }))
+      .filter((r: any) => typeof r?.[k.date] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r[k.date]))
+      .map((r: any) => ({ date: r[k.date] as string, ...totalsFrom(r, k) }))
       .sort((a: { date: string }, b: { date: string }) => a.date.localeCompare(b.date)),
     generated: typeof month?.generated === 'string' ? month.generated : null,
     updatedAt: now.toISOString(),
@@ -291,10 +370,11 @@ async function collectPrior(exporter: CodeburnExport, range: { from: string; to:
   const fail = (error: string): HistoryResult => ({ prior: null, history: { status: 'error', ...range, error } });
   try {
     const j = await exporter(['--from', range.from, '--to', range.to]);
-    if (!isExport(j) || !Array.isArray(j?.periods?.[0]?.daily)) return fail('unrecognised codeburn export');
+    const k = exportKeys(j);
+    if (!k || unreadableExport(j, () => null) || !Array.isArray(j?.periods?.[0]?.daily)) return fail(`unrecognised codeburn export (${String(j?.schema).slice(0, 40)})`);
     const daily = (j.periods[0].daily as any[])
-      .filter((r) => typeof r?.Date === 'string' && r.Date >= range.from && r.Date <= range.to)
-      .map((r) => ({ date: r.Date as string, cost: num(r['Cost (USD)']) }))
+      .filter((r) => typeof r?.[k.date] === 'string' && r[k.date] >= range.from && r[k.date] <= range.to)
+      .map((r) => ({ date: r[k.date] as string, cost: num(r[k.cost]) }))
       .sort((a, b) => a.date.localeCompare(b.date));
     return { prior: { ...range, day, daily }, history: { status: 'ready', ...range } };
   } catch (e) {
@@ -303,26 +383,27 @@ async function collectPrior(exporter: CodeburnExport, range: { from: string; to:
 }
 
 /** The earlier weeks' export on its own: what a deferred panel (collectUsage history 'defer') is missing. */
-export async function collectHistory(opts: { now?: Date; exporter?: CodeburnExport; pathEnv?: string } = {}): Promise<HistoryResult> {
+export async function collectHistory(opts: ExporterOpts & { now?: Date } = {}): Promise<HistoryResult> {
   const now = opts.now || new Date();
   const range = priorRange(now);
   if (!range) return readyHistory(now, null);
-  const exporter = resolveExporter(opts);
-  if (!exporter) return { prior: null, history: { status: 'error', ...range, error: 'codeburn is not installed' } };
-  return collectPrior(exporter, range, localDate(now));
+  const resolved = resolveExporter(opts);
+  if (!resolved) return { prior: null, history: { status: 'error', ...range, error: 'codeburn is not installed' } };
+  return collectPrior(resolved.exporter, range, localDate(now));
 }
 
-/** Calls, sessions, projects, tokens, activity and tools from the month export (codeburn.export.v2). */
+/** Calls, sessions, projects, tokens, activity and tools from the month export (v2 or v3). */
 export function codeburnStats(month: any): CodeburnStats {
+  const k = keysOf(month);
   const s = Array.isArray(month?.summary) ? month.summary[0] : null;
   const daily: any[] = Array.isArray(month?.periods?.[0]?.daily) ? month.periods[0].daily : [];
-  const sum = (k: string) => daily.reduce((n, r) => n + num(r?.[k]), 0);
+  const sum = (key: string) => daily.reduce((n, r) => n + num(r?.[key]), 0);
   const activity: any[] = Array.isArray(month?.periods?.[0]?.activity) ? month.periods[0].activity : [];
   const tools: any[] = Array.isArray(month?.tools) ? month.tools : [];
   return {
-    calls: num(s?.['API Calls']), sessions: num(s?.Sessions), projects: num(s?.Projects),
-    tokens: { input: sum('Input Tokens'), output: sum('Output Tokens'), cacheRead: sum('Cache Read Tokens') },
-    activity: activity.map((a) => ({ name: String(a?.Activity || 'other'), cost: num(a?.['Cost (USD)']) })).sort((a, b) => b.cost - a.cost),
-    tools: tools.map((t) => ({ name: String(t?.Tool || 'unknown'), calls: num(t?.Calls) })).sort((a, b) => b.calls - a.calls).slice(0, TOP_TOOLS),
+    calls: num(s?.[k.calls]), sessions: num(s?.[k.sessions]), projects: num(s?.[k.projects]),
+    tokens: { input: sum(k.input), output: sum(k.output), cacheRead: sum(k.cacheRead) },
+    activity: activity.map((a) => ({ name: String(a?.[k.activity] || 'other'), cost: num(a?.[k.cost]) })).sort((a, b) => b.cost - a.cost),
+    tools: tools.map((t) => ({ name: String(t?.[k.tool] || 'unknown'), calls: num(t?.[k.toolCalls]) })).sort((a, b) => b.calls - a.calls).slice(0, TOP_TOOLS),
   };
 }

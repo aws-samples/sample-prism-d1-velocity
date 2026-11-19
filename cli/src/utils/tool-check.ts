@@ -54,16 +54,10 @@ export function checkTool(binary: string, opts: { pathEnv?: string; versionArgs?
  * (null) is not cached.
  */
 export function cachedToolVersion(path: string, args: string[] = ['--version'], cacheFile: string): string | null {
-  let key: string, mtimeMs: number, size: number;
-  try {
-    const real = realpathSync(path);
-    const st = statSync(real);
-    key = `${real}\0${args.join(' ')}`;
-    mtimeMs = st.mtimeMs;
-    size = st.size;
-  } catch {
-    return toolVersion(path, args);
-  }
+  const stamp = binaryStamp(path);
+  if (!stamp) return toolVersion(path, args);
+  const key = `${stamp.real}\0${args.join(' ')}`;
+  const { mtimeMs, size } = stamp;
   const all = readJson(cacheFile);
   const entries: Record<string, { mtimeMs: number; size: number; version: string }> = all?.schema === TOOL_VERSION_SCHEMA && all.entries && typeof all.entries === 'object' ? all.entries : {};
   const hit = Object.prototype.hasOwnProperty.call(entries, key) ? entries[key] : undefined;
@@ -78,3 +72,21 @@ export function cachedToolVersion(path: string, args: string[] = ['--version'], 
 }
 
 export const TOOL_VERSION_SCHEMA = 'prism.tool-versions.v1';
+
+/** A binary's real path, mtime and size: what changes when it is installed, upgraded or replaced. null when it cannot be read. */
+export function binaryStamp(path: string): { real: string; mtimeMs: number; size: number } | null {
+  try {
+    const real = realpathSync(path);
+    const st = statSync(real);
+    return { real, mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return null;
+  }
+}
+
+/** binaryStamp of `binary` on PATH as one string; null when it is not on PATH. */
+export function binaryStampOnPath(binary: string, pathEnv?: string): string | null {
+  const p = findOnPath(binary, pathEnv);
+  const s = p ? binaryStamp(p) : null;
+  return s ? `${s.real}\0${s.mtimeMs}\0${s.size}` : null;
+}

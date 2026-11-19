@@ -1,0 +1,162 @@
+{
+ "schema": "codeburn.export.v3",
+ "generated": "2026-11-04T18:00:00.000Z",
+ "currency": {
+  "code": "USD",
+  "rate": 1,
+  "symbol": "$"
+ },
+ "summary": [
+  {
+   "period": "2026-11-01 to 2026-11-04",
+   "cost": 4.5,
+   "saved": 0,
+   "apiCalls": 36,
+   "sessions": 6,
+   "projects": 2
+  }
+ ],
+ "periods": [
+  {
+   "label": "2026-11-01 to 2026-11-04",
+   "daily": [
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "date": "2026-11-02",
+     "cost": 1.25,
+     "saved": 0,
+     "apiCalls": 10,
+     "sessions": 2,
+     "inputTokens": 1000,
+     "outputTokens": 200,
+     "cacheReadTokens": 3000,
+     "cacheWriteTokens": 100,
+     "costBasis": {
+      "calculated": 100
+     }
+    },
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "date": "2026-11-03",
+     "cost": 2.5,
+     "saved": 0,
+     "apiCalls": 20,
+     "sessions": 3,
+     "inputTokens": 2000,
+     "outputTokens": 400,
+     "cacheReadTokens": 6000,
+     "cacheWriteTokens": 200,
+     "costBasis": {
+      "calculated": 100
+     }
+    },
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "date": "2026-11-04",
+     "cost": 0.75,
+     "saved": 0,
+     "apiCalls": 6,
+     "sessions": 1,
+     "inputTokens": 500,
+     "outputTokens": 100,
+     "cacheReadTokens": 1500,
+     "cacheWriteTokens": 50,
+     "costBasis": {
+      "calculated": 100
+     }
+    }
+   ],
+   "activity": [
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "activity": "Feature Dev",
+     "cost": 3,
+     "share": 66.67,
+     "turns": 14
+    },
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "activity": "Debugging",
+     "cost": 1.5,
+     "share": 33.33,
+     "turns": 6
+    }
+   ],
+   "models": [
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "model": "demo-model-large",
+     "cost": 3.5,
+     "saved": 0,
+     "share": 77.78,
+     "apiCalls": 24,
+     "editTurns": 0,
+     "oneShotRate": "",
+     "retriesPerEdit": "",
+     "costPerEdit": "",
+     "inputTokens": 2600,
+     "outputTokens": 520,
+     "cacheReadTokens": 7800,
+     "cacheWriteTokens": 260
+    },
+    {
+     "period": "2026-11-01 to 2026-11-04",
+     "model": "demo-model-small",
+     "cost": 1,
+     "saved": 0,
+     "share": 22.22,
+     "apiCalls": 12,
+     "editTurns": 0,
+     "oneShotRate": "",
+     "retriesPerEdit": "",
+     "costPerEdit": "",
+     "inputTokens": 900,
+     "outputTokens": 180,
+     "cacheReadTokens": 2700,
+     "cacheWriteTokens": 90
+    }
+   ]
+  }
+ ],
+ "projects": [
+  {
+   "project": "/work/demo-shop",
+   "cost": 3.25,
+   "saved": 0,
+   "avgPerSession": 0.81,
+   "share": 72.22,
+   "apiCalls": 26,
+   "sessions": 4
+  },
+  {
+   "project": "/work/payments-api",
+   "cost": 1.25,
+   "saved": 0,
+   "avgPerSession": 0.63,
+   "share": 27.78,
+   "apiCalls": 10,
+   "sessions": 2
+  }
+ ],
+ "sessions": [],
+ "records": [],
+ "tools": [
+  {
+   "tool": "Read",
+   "calls": 40,
+   "share": 62.5
+  },
+  {
+   "tool": "Edit",
+   "calls": 15,
+   "share": 23.44
+  },
+  {
+   "tool": "Bash",
+   "calls": 9,
+   "share": 14.06
+  }
+ ],
+ "mcp": [],
+ "shellCommands": []
+}
