@@ -17,7 +17,7 @@ import { profileChoices } from './aws-identity.js';
 import { connectionArgs } from './accountguard.js';
 import { LookupCache, securityTargetIn, targetArgs, writeGateIn } from './security-agent.js';
 import { repoRootOf } from '../aws/connection.js';
-import { systemdUserAvailable } from '../utils/otel-sync-schedule.js';
+import { configuredSyncUrl, systemdUserAvailable } from '../utils/otel-sync-schedule.js';
 import { emptyUsage } from './usage.js';
 import type { UsageCache } from './usage-cache.js';
 import type { UpdateCheck } from './update-check.js';
@@ -78,6 +78,8 @@ export function buildDashboardApi(o: DashboardApiOptions): DashboardApi {
     repos: async () => (await repos()).map((r) => ({ id: repoId(r.path), name: r.name, path: r.path })),
     systemdAvailable: () => (systemd ??= systemdUserAvailable()),
     npmPath: () => findOnPath('npm'),
+    codeburnInstalled: () => !!findOnPath('codeburn'),
+    storedSyncUrl: () => configuredSyncUrl(homedir()) || null,
     onDone: () => payload.invalidate(),
     awsArgs: (repo) => targetArgs(targetIn(repo.path)),
     // The setup gate passes in the repo, the lookup named the space and the bucket, and the account is the same right now.

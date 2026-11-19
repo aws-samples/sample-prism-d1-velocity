@@ -52,7 +52,7 @@ import { PENTEST_RUN_ENV } from '../security/pentest-deploy.js';
 export type ActionId = 'codewatch-repo' | 'codewatch-global'
   | 'codewatch-reviewer-clone' | 'codewatch-reviewer-team' | 'codewatch-reviewer-global'
   | 'codewatch-reviewer-clone-reset' | 'codewatch-reviewer-team-reset' | 'codewatch-reviewer-global-reset' | 'codewatch-reviewer-apply-all'
-  | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
+  | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team' | 'codeburn-team-yes' | 'codeburn-team-rerun'
   | 'codeburn-remove' | 'codeburn-status' | 'codeburn-setup' | 'team-info'
   | 'aws-connect' | 'aws-connect-status' | 'aws-disconnect' | 'accountguard-check' | 'accountguard-recommend'
   | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
@@ -73,6 +73,10 @@ export interface ActionDef {
   repo?: true;
   /** Takes the collector URL. */
   url?: true;
+  /** Appends the sync URL codeburn stores on this machine (RunnerDeps.storedSyncUrl), never one from the request. */
+  storedUrl?: true;
+  /** Refused when codeburn is not on PATH (RunnerDeps.codeburnInstalled), so its --yes cannot install it. */
+  needsCodeburn?: true;
   /** Needs `confirm: true` in the request (a second confirmation on the page). */
   confirm?: true;
   /** Makes read-only AWS calls (describe/get/list) only. */
@@ -154,6 +158,16 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'codeburn-systemd': { label: 'Schedule with a systemd user timer', args: ['enable', 'codeburn', '--schedule', 'systemd'], systemd: true, timeoutMs: 5 * MIN },
   // codeburn sync setup opens a browser to sign in, so this one gets longer.
   'codeburn-team': { label: "Sync to my team's PRISM", args: ['enable', 'codeburn', '--url'], url: true, timeoutMs: 10 * MIN },
+  // Over an existing sync config (1.21.13). --yes: there is no terminal to answer enable codeburn's question; the page's
+  // dialog, which names both URLs, is the confirmation. needsCodeburn: refused when codeburn is missing, so --yes never
+  // installs it from here (Set up codeburn does that, with its own dialog).
+  'codeburn-team-yes': { label: 'Switch the codeburn sync URL', args: ['enable', 'codeburn', '--yes', '--url'], url: true, confirm: true, needsCodeburn: true, timeoutMs: 10 * MIN,
+    confirmLabel: 'Yes, replace this machine\'s codeburn sync setup and sign in again',
+    note: 'Runs codeburn sync setup for the new URL: you sign in again in a browser, and codeburn then pushes your usage there.' },
+  // The same URL again (sign in again): the URL codeburn stores on this machine, read server side (RunnerDeps.storedSyncUrl).
+  'codeburn-team-rerun': { label: 'Re-run the codeburn sync setup', args: ['enable', 'codeburn', '--yes', '--url'], storedUrl: true, confirm: true, needsCodeburn: true, timeoutMs: 10 * MIN,
+    confirmLabel: 'Yes, run the codeburn sync setup again and sign in again',
+    note: 'Runs codeburn sync setup again for the URL codeburn already syncs to: you sign in again in a browser.' },
   'codeburn-remove': { label: 'Remove the sync schedule', args: ['enable', 'codeburn', '--remove'], confirm: true, confirmLabel: 'Yes, remove the scheduled codeburn sync push from this machine', timeoutMs: 2 * MIN },
   'codeburn-status': { label: 'codeburn status', args: ['enable', 'codeburn', '--status'], timeoutMs: MIN },
   // The Dashboard's Spend card when codeburn is missing (1.21.8). --yes: no terminal to answer the install prompt; the
@@ -274,6 +288,10 @@ export interface RunnerDeps {
   detach?: (id: ActionId, repo: ScanRepo, body: Record<string, unknown>) => { run: string; log: string; failed: (reason: string) => void } | { error: string; status: number };
   /** Finds the run a Security Agent action wrote (default: security-runs.ts runWrittenSince); a test seam. */
   runWritten?: typeof runWrittenSince;
+  /** For a storedUrl action: the URL codeburn syncs to on this machine (configuredSyncUrl), or null. Absent: refused. */
+  storedSyncUrl?: () => string | null;
+  /** For a needsCodeburn action: whether codeburn is on PATH. Absent: refused. */
+  codeburnInstalled?: () => boolean;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
   /** After the child exits, how long to keep reading output a process it started may still write (default EXIT_GRACE_MS). */
@@ -314,6 +332,33 @@ export interface ActionStatus {
    * Read from the file the command wrote, never from its output.
    */
   result?: { repo: string; run: string; status: RunStatus } | null;
+  /** codeburn-team(-yes): the sign-in link codeburn sync setup printed, for a machine where no browser opened. */
+  signIn?: SignIn | null;
+}
+
+/** The sign-in page codeburn sync setup asks for, and the loopback port its login returns to on this machine. */
+export interface SignIn { url: string; callbackPort: number | null }
+
+const CODEBURN_SETUP_ACTIONS = new Set<ActionId>(['codeburn-team', 'codeburn-team-yes', 'codeburn-team-rerun']);
+
+/**
+ * The sign-in link in `codeburn sync setup` output. codeburn (0.9.24 to 0.9.28) prints, on stderr,
+ * "If the browser doesn't open, visit:" and the authorization URL on the next line, whose redirect_uri
+ * is http://127.0.0.1:<port>/callback on the machine running it. It has no no-browser or device-code
+ * flag. Only an https URL is returned (codeburn refuses any other), so the page can link it.
+ */
+export function signInLink(output: string): SignIn | null {
+  const m = /If the browser doesn't open, visit:\s*\n\s*(\S+)/.exec(output);
+  if (!m) return null;
+  let u: URL;
+  try { u = new URL(m[1]); } catch { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password) return null;
+  let port: number | null = null;
+  try {
+    const r = new URL(u.searchParams.get('redirect_uri') ?? '');
+    if (r.hostname === '127.0.0.1' && /^\d+$/.test(r.port)) port = Number(r.port);
+  } catch { /* no loopback redirect: no port to forward */ }
+  return { url: u.href, callbackPort: port };
 }
 
 /** Actions that write a Security Agent result file in their repo. */
@@ -410,6 +455,15 @@ export class ActionRunner {
     if (def.confirm && b.confirm !== true) return bad('this action needs confirm: true');
     if (b.confirm !== undefined && typeof b.confirm !== 'boolean') return bad('confirm must be true or false');
     if (this.busy) return bad('another action is running; wait for it to finish', 409);
+    if (def.needsCodeburn && !this.d.codeburnInstalled?.()) {
+      return bad('codeburn is not installed on this machine. Install it first with Set up codeburn (the Dashboard\'s Spend card) or npm install -g codeburn; this action does not install software.', 409);
+    }
+    let stored: string[] = [];
+    if (def.storedUrl) {
+      const u = this.d.storedSyncUrl?.() ?? null;
+      if (!u || collectorUrlError(u)) return bad('no usable codeburn sync URL is saved on this machine: use Sync to team with the collector URL', 409);
+      stored = [u];
+    }
     // The pentest flags: built server side from the checked choice or the resolved run (local files only).
     let pentest: string[] = [];
     if (def.pentest) {
@@ -443,7 +497,7 @@ export class ActionRunner {
     const every = def.allRepos ? (await this.d.repos()).map((r) => r.path) : [];
     if (!every.every((p) => isAbsolute(p) && !p.startsWith('-'))) return bad('a discovered repo path is not absolute');
     if (def.allRepos && !every.length) return bad('no repos in the scan list');
-    const args = [...def.args, ...pentest, ...chosen, ...picked, ...target, ...every, ...(def.url ? [b.url as string] : [])];
+    const args = [...def.args, ...pentest, ...chosen, ...picked, ...target, ...every, ...(def.url ? [b.url as string] : []), ...stored];
     const cwd = repo ? repo.path : def.inHome ? this.d.home : this.d.cwd;
     const now = this.d.now ?? (() => new Date());
     if (def.detached) return repo ? this.startDetached(id, repo, args, b) : bad('a detached action needs a repo');
@@ -590,6 +644,9 @@ export class ActionRunner {
     // Both spellings of a symlinked home (/home/x -> /local/home/x): repo paths come back resolved.
     const homes = [...new Set([this.d.home, realHome(this.d.home)])];
     const mask = (t: string) => homes.reduce((x, h) => maskHome(x, h), t);
-    return { ...rest, ...(rest.cwd ? { cwd: homes.reduce((x, h) => tildeHome(x, h), rest.cwd) } : {}), output: mask(redact(buf)) };
+    // The command carries a collector URL for the codeburn-team actions: redacted like the output.
+    return { ...rest, ...(rest.command ? { command: mask(redact(rest.command)) } : {}), ...(rest.cwd ? { cwd: homes.reduce((x, h) => tildeHome(x, h), rest.cwd) } : {}), output: mask(redact(buf)),
+      // From the unredacted output: redact masks the PKCE code_challenge, which the sign-in link needs as printed.
+      ...(rest.action && CODEBURN_SETUP_ACTIONS.has(rest.action) ? { signIn: signInLink(mask(buf)) } : {}) };
   }
 }

@@ -63,6 +63,27 @@ export function configuredSyncUrl(home: string): string | null {
   }
 }
 
+/**
+ * A collector URL in a form two spellings of one endpoint share: scheme and host lower case, the
+ * default port dropped (URL does both), trailing slashes dropped (codeburn sync setup stores the
+ * URL as given minus one trailing slash, path and query kept). The fragment is ignored. null when
+ * `s` is not a URL.
+ */
+export function syncUrlKey(s: string): string | null {
+  try {
+    const u = new URL(s);
+    return u.origin + u.pathname.replace(/\/+$/, '') + u.search;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether codeburn's stored URL and `url` name the same collector. Exact after syncUrlKey: a prefix is a different URL. */
+export function sameSyncUrl(stored: string, url: string): boolean {
+  const a = syncUrlKey(stored);
+  return a !== null && a === syncUrlKey(url);
+}
+
 export function linuxCrontabAvailable(): boolean {
   return run('which', ['crontab']).ok;
 }

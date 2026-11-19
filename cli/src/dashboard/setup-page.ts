@@ -224,18 +224,59 @@ function runButton(id, o) {
       if (p) { if (o.msg) o.msg.textContent = p; return; }
       if (o.msg) o.msg.textContent = '';
     }
-    confirmRun(a, { repo: o.repo, where: o.where, url });
+    if (o.open) o.open(url); else confirmRun(a, { repo: o.repo, where: o.where, url });
   });
   return b;
+}
+
+/** Client-side copy of the CLI's syncUrlKey (utils/otel-sync-schedule.ts): one key for two spellings of a collector URL. */
+function syncUrlKey(s) {
+  try { const u = new URL(s); return u.origin + u.pathname.replace(/[/]+$/, '') + u.search; } catch (e) { return null; }
+}
+
+/** Client-side copies of SECRET_QUERY_KEY and redactUrl (utils/redact.ts): a URL as the page shows it. */
+const SECRET_QUERY_KEY = /token|key|secret|sig|signature|password|auth|code/i;
+function redactUrl(s) {
+  let u;
+  try { u = new URL(s); } catch (e) { return null; }
+  const q = [...u.searchParams].map(([k, v]) => encodeURIComponent(k) + '=' + (SECRET_QUERY_KEY.test(k) ? 'REDACTED' : encodeURIComponent(v)));
+  return u.origin + (u.pathname === '/' ? '' : u.pathname) + (q.length ? '?' + q.join('&') : '');
+}
+
+/** Re-run sync setup for the URL codeburn stores: the server appends it (codeburn-team-rerun); the page only names it, redacted. */
+function rerunSync() {
+  const cur = SETUP && SETUP.codeburnSyncUrl, a = actionDef('codeburn-team-rerun');
+  if (!cur || !a) return;
+  confirmRun(a, { shownUrl: cur, title: 'Re-run sync setup for ' + cur, runLabel: 'Re-run sync setup',
+    lead: ['codeburn already syncs to ' + cur + '. This runs its sync setup again for the same URL, so you sign in again.'] });
+}
+
+/**
+ * Sync to team. With no sync URL on this machine: codeburn-team, as before. Over one: a dialog naming the
+ * current URL and the new one, then codeburn-team-yes (--yes), because the run has no terminal to answer
+ * enable codeburn's question; the same URL is the re-run. The page has the stored URL only redacted, so a typed
+ * URL with a secret-looking query value is never taken for it: that one is a switch, and enable codeburn
+ * compares the real URLs. An unparseable URL is never the same as another.
+ */
+function teamSync(url) {
+  const cur = SETUP && SETUP.codeburnSyncUrl;
+  const again = actionDef('codeburn-team-yes');
+  if (!cur || !again || !again.available) { confirmRun(actionDef('codeburn-team'), { url }); return; }
+  const shown = redactUrl(url) || url;
+  const k = syncUrlKey(cur);
+  if (k !== null && k === syncUrlKey(shown) && ![...new URL(url).searchParams.keys()].some((x) => SECRET_QUERY_KEY.test(x))) { rerunSync(); return; }
+  confirmRun(again, { url, shownUrl: shown, title: 'Switch to ' + shown, runLabel: 'Switch', lead: ['codeburn syncs to ' + cur + ' now.', 'After this it syncs to ' + shown + ' instead.'] });
 }
 
 function confirmRun(a, o) {
   if (!DIALOG) { DIALOG = el('dialog', { class: 'confirm', 'aria-labelledby': 'confirm-title' }); document.body.append(DIALOG); }
   // o.command: the server's exact line (it appends --profile/--region itself); o.profile/o.region: aws-connect's picked names.
-  const cmd = o.command || (a.command + (o.profile ? ' --profile ' + o.profile + ' --region ' + o.region : '') + (o.url ? ' ' + o.url : ''));
-  const run = el('button', { type: 'button', class: 'run' + (a.confirm ? ' danger' : '') }, 'Run');
+  // o.shownUrl: the URL as the dialog shows it (redacted); o.url is still what the request sends.
+  const cmd = o.command || (a.command + (o.profile ? ' --profile ' + o.profile + ' --region ' + o.region : '') + ((o.shownUrl || o.url) ? ' ' + (o.shownUrl || o.url) : ''));
+  const run = el('button', { type: 'button', class: 'run' + (a.confirm ? ' danger' : '') }, o.runLabel || 'Run');
   const cancel = el('button', { type: 'button' }, 'Cancel');
-  const kids = [el('h2', { id: 'confirm-title' }, a.label), el('p', {}, 'This will run:'), el('pre', { class: 'cmd' }, cmd),
+  // o.title / o.lead: a heading and lines naming what this run changes (Sync to team names both URLs).
+  const kids = [el('h2', { id: 'confirm-title' }, txt(o.title || a.label)), ...(o.lead || []).map((t) => el('p', { 'data-confirm-lead': '' }, txt(t))), el('p', {}, 'This will run:'), el('pre', { class: 'cmd' }, cmd),
     o.command ? null : el('p', { class: 'fix' }, 'in ' + txt(o.where || (a.inHome ? '~' : (SETUP && SETUP.cwd)) || '')),
     el('p', { class: 'note' }, a.readOnlyAws ? 'Read-only in AWS: describe, get and list calls only. Nothing in AWS is changed.'
       : a.installs ? 'Installs software from the npm registry on this machine. No AWS calls.' : a.note ? null : 'Changes setup on this machine only. No AWS calls.'),
@@ -302,9 +343,19 @@ function showStatus(s) {
     nothing ? el('span', { class: 'fix', 'data-nothing-hint': '' }, 'No changes against the branch\\'s base, so no job was started and nothing was uploaded. Uncommitted changes are never reviewed.') : null,
     nothing && typeof saFullOffer === 'function' ? saFullOffer(s.repoId) : null,
     // A Security Agent action that saved a finished run: the server read its id from the result file.
+    s.state === 'running' && s.signIn ? signInHint(s.signIn) : null,
     s.state === 'done' && typeof runDoneBar === 'function' ? runDoneBar(s.result) : null].filter(Boolean));
   OUT.pre.textContent = txt(s.output) || (s.state === 'running' ? '(no output yet)' : '(no output)');
   OUT.pre.scrollTop = OUT.pre.scrollHeight;
+}
+
+/** codeburn sync setup is waiting for a sign-in: its link, for a machine where no browser opened (the server checked it is https). */
+function signInHint(si) {
+  const port = si.callbackPort;
+  return el('span', { class: 'fix', 'data-signin': '' }, 'No browser opened? ',
+    el('a', { href: si.url, target: '_blank', rel: 'noopener noreferrer', class: 'rlink' }, 'Open the codeburn sign-in page'),
+    port ? '. On a remote machine, forward port ' + port + ' to it first (ssh -L ' + port + ':127.0.0.1:' + port + ' <this machine>): the sign-in returns to 127.0.0.1:' + port + ' on this machine.'
+      : '.', ' codeburn waits 5 min for it.');
 }
 
 function poll() {
@@ -355,8 +406,10 @@ function syncSection(data) {
   input.value = URL_DRAFT;
   input.addEventListener('input', () => { URL_DRAFT = input.value; });
   const msg = el('span', { class: 'msg', role: 'status' });
-  s.append(srow(null, "Sync to my team's PRISM", 'Sets up codeburn sync for the collector URL and schedules the push. codeburn opens a browser to sign in.',
-    input, runButton('codeburn-team', { label: 'Sync to team', urlInput: input, msg }), msg));
+  const cur = SETUP && SETUP.codeburnSyncUrl;
+  if (cur) s.append(srow(null, 'Current collector', cur, runButton('codeburn-team-rerun', { label: 'Re-run sync setup', open: rerunSync })));
+  s.append(srow(null, "Sync to my team's PRISM", 'Sets up codeburn sync for the collector URL and schedules the push. codeburn opens a browser to sign in.' + (cur ? ' Asks first, naming both URLs, before it replaces the current one.' : ''),
+    input, runButton('codeburn-team', { label: 'Sync to team', urlInput: input, msg, open: teamSync }), msg));
   if (actionDef('codeburn-systemd') && actionDef('codeburn-systemd').available) {
     s.append(srow(null, 'Use a systemd user timer', mode === 'team' ? 'Schedules the sync push with a systemd user timer; your crontab is not touched.' : 'Team mode only: set up sync to your team first.',
       mode === 'team' ? runButton('codeburn-systemd', { label: 'Use systemd timer' }) : null));

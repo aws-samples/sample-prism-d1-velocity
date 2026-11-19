@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
-import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, redact, repoId, type ActionId, type SpawnFn } from '../src/dashboard/actions.js';
+import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, redact, repoId, signInLink, type ActionId, type SpawnFn } from '../src/dashboard/actions.js';
 import { setupApi } from '../src/dashboard/setup-api.js';
 import { classifyProfile, iniKeys, resolveAwsIdentity, STATIC_DEFAULT_WARNING, NO_CREDENTIALS_WARNING } from '../src/dashboard/aws-identity.js';
 import { readConnectionFile, writeConnectionFile, loadConnection } from '../src/aws/connection.js';
@@ -201,6 +201,8 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'codeburn-local': { args: ['enable', 'codeburn', '--local'], cwd: '/work' },
     'codeburn-systemd': { args: ['enable', 'codeburn', '--schedule', 'systemd'], cwd: '/work' },
     'codeburn-team': { args: ['enable', 'codeburn', '--url', 'https://collector.example.com/otel?x=1'], cwd: '/work', body: { url: 'https://collector.example.com/otel?x=1' } },
+    'codeburn-team-yes': { args: ['enable', 'codeburn', '--yes', '--url', 'https://collector.example.com'], cwd: '/work', body: { url: 'https://collector.example.com', confirm: true } },
+    'codeburn-team-rerun': { args: ['enable', 'codeburn', '--yes', '--url', 'https://stored.example.com/otel'], cwd: '/work', body: { confirm: true } },
     'codeburn-remove': { args: ['enable', 'codeburn', '--remove'], cwd: '/work', body: { confirm: true } },
     'codeburn-status': { args: ['enable', 'codeburn', '--status'], cwd: '/work' },
     'codeburn-setup': { args: ['enable', 'codeburn', '--yes'], cwd: '/work', body: { confirm: true } },
@@ -237,6 +239,7 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     const r = runner(calls, { home, awsArgs: () => ['--profile', 'dev', '--region', 'us-west-2'], writeGate: () => null,
       pentestArgs: (pid) => ({ args: pid === 'security-pentest-cleanup' ? ['--job', 'ptj-1'] : ['--app-dir', '.', '--dockerfile', 'Dockerfile', '--port', '8080', '--health-path', '/health'] }),
       awsChoices: () => ({ profiles: ['demo'], regions: ['us-west-2'] }), connectionArgs: () => ['--profile', 'demo', '--region', 'us-west-2'],
+      codeburnInstalled: () => true, storedSyncUrl: () => 'https://stored.example.com/otel',
       // Start pentest (1.21.7) is detached: its record and log first.
       detach: () => ({ run: 'run-1', log: join(home, 'run-1.log'), failed: () => {} }) });
     const res = await r.start({ action: id, ...e.body });
@@ -464,4 +467,54 @@ test('page: theme boot script runs in <head>; dark is the default, light applies
   assert.match(html, /data-theme-set="light">Light<\/button><button type="button" data-theme-set="dark">Dark<\/button><button type="button" data-theme-set="system">System/);
   for (const s of [...html.matchAll(/<script nonce="N">([\s\S]*?)<\/script>/g)].map((m) => m[1])) new vm.Script(s);
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(html));
+});
+
+test('codeburn-team: the drawer status carries the sign-in link codeburn sync setup printed, https only, with its callback port', async () => {
+  const AUTH = 'https://auth.example.com/oauth2/authorize?response_type=code&client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2Fcallback&state=s1&code_challenge=c1&code_challenge_method=S256';
+  assert.deepEqual(signInLink(`Opening browser for login...\nIf the browser doesn't open, visit:\n  ${AUTH}\n\nWaiting for login (5 min timeout)...\n`), { url: AUTH, callbackPort: 53682 });
+  assert.equal(signInLink("If the browser doesn't open, visit:\n  http://auth.example.com/x\n"), null, 'http is not linked');
+  assert.equal(signInLink("If the browser doesn't open, visit:\n  javascript:alert(1)\n"), null);
+  assert.equal(signInLink('no link here'), null);
+  const calls: Spawned[] = [];
+  const r = runner(calls);
+  await r.start({ action: 'codeburn-team-yes', url: 'https://collector.example.com', confirm: true });
+  assert.equal(calls.length, 0, 'refused: no codeburnInstalled dep');
+  const r2 = runner(calls, { codeburnInstalled: () => true });
+  await r2.start({ action: 'codeburn-team-yes', url: 'https://collector.example.com', confirm: true });
+  calls[0].child.stderr.emit('data', `If the browser doesn't open, visit:\n  ${AUTH}\n`);
+  assert.deepEqual(r2.status().signIn, { url: AUTH, callbackPort: 53682 }, 'the link as printed, though the output masks its code_challenge');
+  assert.match(r2.status().output!, /code_challenge=\[REDACTED\]/);
+  assert.equal((await runner([]).start({ action: 'codeburn-team-yes', url: 'https://collector.example.com' })).status, 400, 'needs confirm: true');
+});
+
+test('codeburn-team-yes and -rerun: refused while codeburn is missing (their --yes would install it); rerun takes the stored URL only', async () => {
+  const calls: Spawned[] = [];
+  const missing = runner(calls, { codeburnInstalled: () => false, storedSyncUrl: () => 'https://collector.example.com' });
+  for (const body of [{ action: 'codeburn-team-yes', url: 'https://collector.example.com', confirm: true }, { action: 'codeburn-team-rerun', confirm: true }]) {
+    const res = await missing.start(body);
+    assert.equal(res.status, 409, body.action);
+    assert.match((res.json as { error: string }).error, /codeburn is not installed.*Set up codeburn.*does not install software/);
+  }
+  const ok = runner(calls, { codeburnInstalled: () => true, storedSyncUrl: () => null });
+  assert.equal((await ok.start({ action: 'codeburn-team-rerun', confirm: true, url: 'https://evil.example.com' })).status, 400, 'no URL from the request');
+  assert.equal((await ok.start({ action: 'codeburn-team-rerun', confirm: true })).status, 409, 'nothing stored');
+  assert.equal(calls.length, 0);
+  const secret = 'https://ops:hunter2@collector.example.com/otel?token=SECRETTOKEN&team=a';
+  const stored = runner(calls, { codeburnInstalled: () => true, storedSyncUrl: () => 'https://collector.example.com/otel?api_key=SECRETKEY&team=a' });
+  assert.equal((await stored.start({ action: 'codeburn-team-rerun', confirm: true })).status, 202);
+  assert.deepEqual(calls[0].args.slice(1), ['enable', 'codeburn', '--yes', '--url', 'https://collector.example.com/otel?api_key=SECRETKEY&team=a'], 'the real URL, server side');
+  await until(() => !stored.running);
+  assert.doesNotMatch(JSON.stringify(stored.status()), /SECRETKEY/, 'the command the page sees is redacted');
+  assert.equal(collectorUrlError(secret), 'the URL must not contain a user name or password');
+});
+
+test('/api/setup: codeburnSyncUrl is the stored URL redacted (no user name or password, secret query values masked)', async () => {
+  const home = tmp('synchome');
+  mkdirSync(join(home, '.config', 'codeburn'), { recursive: true });
+  writeFileSync(join(home, '.config', 'codeburn', 'sync.json'), JSON.stringify({ baseUrl: 'https://ops:hunter2@Collector.example.com/otel?token=SECRETTOKEN&auth=SECRETAUTH&team=a' }));
+  const api = setupApi({ runner: runner([]), cwd: '/work', repoPaths: async () => [], refresh: async () => ({}), identity: { env: {}, home, repoRoot: null, readText: () => null } });
+  const setup = await api.getApi['/api/setup']() as { codeburnSyncUrl: string };
+  assert.equal(setup.codeburnSyncUrl, 'https://collector.example.com/otel?token=REDACTED&auth=REDACTED&team=a');
+  const none = setupApi({ runner: runner([]), cwd: '/work', repoPaths: async () => [], refresh: async () => ({}), identity: { env: {}, home: tmp('nosync'), repoRoot: null, readText: () => null } });
+  assert.equal((await none.getApi['/api/setup']() as { codeburnSyncUrl: unknown }).codeburnSyncUrl, null);
 });

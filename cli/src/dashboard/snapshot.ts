@@ -46,7 +46,8 @@ export async function buildSnapshotHtml(o: SnapshotOptions): Promise<string> {
     identity: { env: o.env ?? process.env, home: o.home, repoRoot: repoRootOf(o.cwd) },
     refresh: async () => data,
   });
-  const setup = await api.getApi['/api/setup']();
+  // Run buttons are copy only in a snapshot, so it carries no sync URL.
+  const setup = { ...(await api.getApi['/api/setup']()), codeburnSyncUrl: null };
   return renderSnapshotPage({ data, setup, generatedAt: (o.now ?? (() => new Date()))().toISOString(), version: o.version });
 }
 
