@@ -505,6 +505,8 @@ export class ActionRunner {
     try {
       const a = await (this.d.loopbackGet ?? loopbackGet)(t.port, t.path, SIGN_IN_RETURN_TIMEOUT_MS);
       const m = signInReturnMessage(a);
+      // Another run started while the GET was out: codeburn's answer is about the earlier sign-in.
+      if (this.cur?.runId !== runId) return bad('that sign-in ended while the address was being sent; check the action output', 409);
       return { status: m.ok ? 200 : 502, json: { ok: m.ok, message: m.message, runId } };
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
