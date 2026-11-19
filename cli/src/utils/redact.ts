@@ -48,7 +48,27 @@ export function redact(s: string): string {
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 [REDACTED]')
     .replace(/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '[REDACTED]')
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[REDACTED]@')
-    .replace(/([?&#](?:token|access_token|id_token|code|signature|sig|key|x-amz-[a-z-]+)=)[^&\s#"']+/gi, '$1[REDACTED]');
+    .replace(/([?&#](?:token|access_token|id_token|code|signature|sig|key|x-amz-[a-z-]+)=)[^&\s#"']+/gi, '$1[REDACTED]')
+    // Any other query key that looks secret (api_key, client_secret, auth, password, ...).
+    .replace(/([?&]([^=&\s#"'?]+)=)([^&\s#"']+)/g, (m, kv: string, k: string, v: string) => (SECRET_QUERY_KEY.test(k) && v !== '[REDACTED]' ? kv + '[REDACTED]' : m));
+}
+
+/**
+ * A URL query key that may carry a secret. A substring match, so it over-masks (`zipcode`) rather than
+ * miss one (`authToken`, `X-Amz-Signature`, `client_secret`). The dashboard page keeps a copy (setup-page.ts).
+ */
+export const SECRET_QUERY_KEY = /token|key|secret|sig|signature|password|auth|code/i;
+
+/**
+ * `url` as it may leave this machine's terminal (the dashboard page, the Settings sync row): no user name or
+ * password, each query value under a secret-looking key replaced by REDACTED, no fragment. Scheme, host, port
+ * and path are kept (a bare `/` path is dropped, as codeburn stores it). null when `url` is not a URL.
+ */
+export function redactUrl(url: string): string | null {
+  let u: URL;
+  try { u = new URL(url); } catch { return null; }
+  const q = [...u.searchParams].map(([k, v]) => `${encodeURIComponent(k)}=${SECRET_QUERY_KEY.test(k) ? 'REDACTED' : encodeURIComponent(v)}`);
+  return u.origin + (u.pathname === '/' ? '' : u.pathname) + (q.length ? '?' + q.join('&') : '');
 }
 
 /**

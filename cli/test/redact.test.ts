@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accountIdsIn, redact } from '../src/utils/redact.js';
+import { accountIdsIn, redact, redactUrl } from '../src/utils/redact.js';
 import { makeResult, resultFileName } from '../src/codewatch/results.js';
 
 const ACCOUNT = '111122223333';
@@ -48,4 +48,13 @@ test('an id shape next to an account does not shield the account', () => {
   const out = redact(`Started job ${SHORT} in account ${ACCOUNT}; role arn:aws:iam::${ACCOUNT}:role/x`);
   assert.equal(out, `Started job ${SHORT} in account ••••3333; role arn:aws:iam::••••3333:role/x`);
   assert.deepEqual(accountIdsIn(`HEAD ${SHORT} ${OTHER}`), [OTHER]);
+});
+
+test('redactUrl drops the user name and password and masks secret-looking query values; redact masks them in output', () => {
+  assert.equal(redactUrl('https://ops:hunter2@collector.example.com:8443/otel?team=a&token=T1&api_key=K1&client_secret=S1&X-Amz-Signature=G1&password=P1&auth=A1&code=C1#frag'),
+    'https://collector.example.com:8443/otel?team=a&token=REDACTED&api_key=REDACTED&client_secret=REDACTED&X-Amz-Signature=REDACTED&password=REDACTED&auth=REDACTED&code=REDACTED');
+  assert.equal(redactUrl('https://collector.example.com'), 'https://collector.example.com', 'a bare host stays as codeburn stores it');
+  assert.equal(redactUrl('not a url'), null);
+  const out = redact('Endpoint: https://collector.example.com/otel?team=a&api_key=K1&authToken=A1&client_secret=S1');
+  assert.equal(out, 'Endpoint: https://collector.example.com/otel?team=a&api_key=[REDACTED]&authToken=[REDACTED]&client_secret=[REDACTED]');
 });

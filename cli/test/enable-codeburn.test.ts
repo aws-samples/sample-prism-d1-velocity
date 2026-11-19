@@ -553,6 +553,7 @@ test('sync URL key: scheme and host case, default port and trailing slashes comp
   assert.ok(!sameSyncUrl('https://collector.example.com:8443', 'https://collector.example.com'));
   assert.ok(!sameSyncUrl('https://collector.example.com/OTEL', 'https://collector.example.com/otel'), 'the path keeps its case');
   assert.ok(!sameSyncUrl('', 'https://collector.example.com'));
+  assert.ok(!sameSyncUrl('not a url', 'not a url'), 'an unparseable URL is never the same as another');
   assert.equal(syncUrlKey('not a url'), null);
 });
 

@@ -457,7 +457,11 @@ default port and trailing slashes do not matter. A path or a different port does
 In the dashboard, Settings › Usage sync shows the **Current collector** with a **Re-run sync setup**
 button. **Sync to team** with a URL, when one is already set, first opens a dialog naming both URLs
 (**Switch to <new>**, or **Re-run sync setup for <url>** when it is the same one); confirming runs
-`prism-cli enable codeburn --yes --url <url>`. With no URL set yet it runs as before.
+`prism-cli enable codeburn --yes --url <url>`. With no URL set yet it runs as before. The page shows
+the current URL without a user name or password, and with query values under secret-looking keys
+(token, key, secret, sig, password, auth, code) as `REDACTED`; **Re-run sync setup** runs with the
+real URL, which the dashboard reads on this machine. Both buttons are refused while codeburn is not
+installed (their `--yes` would install it): install it first with **Set up codeburn**.
 
 **Signing in on a remote machine.** `codeburn sync setup` opens a browser on the machine it runs on and
 has no no-browser or device-code option. On a remote machine (a dev desktop over SSH, no display) no
