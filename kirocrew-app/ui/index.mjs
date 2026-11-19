@@ -9,6 +9,9 @@
 // iframe only and relays them through useAppApi (scoped to /api/apps/prism/*, gateway-authenticated)
 // to the app's /ui/get and /ui/act routes; prism-cli checks every request again. A report opens in
 // a second iframe with an empty sandbox (no scripts at all) and a CSP that allows its inline styles only.
+// The frame has no allow-popups, so a link it asks to open (prism-ui:open-external, 0.4.2) is opened
+// here with noopener, and only when it is the codeburn sign-in URL prism-cli reported in its last
+// /api/action/status answer.
 
 export const API = '/api/apps/prism';
 /** The minimum version comes from the gateway's answer (ui_bridge.MIN_CLI_VERSION), not from here. */
@@ -22,6 +25,8 @@ const ACTION_STARTED = 202;
 const ACTION_WAIT_MAX_MS = 15 * 60 * 1000;
 /** server.ts REPORT_ROUTE: a result id, never a path. */
 const REPORT_ID = /^[A-Za-z0-9_-]{1,120}$/;
+/** The longest link the frame may ask this page to open (the codeburn sign-in URL is well under it). */
+const MAX_EXTERNAL_URL = 4096;
 export const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:";
 const str = (x) => (typeof x === 'string' ? x : x == null ? '' : String(x));
 const v = (name, fallback) => `var(--${name}, ${fallback})`;
@@ -38,10 +43,32 @@ export function srcdocFor(b, theme) {
     + `<script>${safe(b.bridge)}</script><script>${safe(b.js)}</script></body></html>`;
 }
 
-/** The iframe's message: a request, a report to open, or null. Shape only: the app route and prism-cli check again. */
+/** An https URL with a hostname, no user name or password, no spaces or control characters, at most 4096 characters; else null. */
+export function httpsUrl(s) {
+  if (typeof s !== 'string' || !s || s.length > MAX_EXTERNAL_URL || /[\s\u0000-\u001f\u007f]/.test(s)) return null;
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (u.protocol !== 'https:' || !u.hostname || u.username || u.password || /^https:\/\/[^/?#]*@/i.test(s)) return null;
+  return u.href;
+}
+
+/**
+ * The sign-in URL prism-cli reported in an /api/action/status answer (its signIn.url while codeburn sync setup
+ * waits), or '' when it reported none. The page may ask to open this URL and no other.
+ */
+export function reportedSignIn(path, json) {
+  if (path !== '/api/action/status' || !json || typeof json !== 'object') return null;
+  return json.state === 'running' && json.signIn && typeof json.signIn === 'object' ? httpsUrl(json.signIn.url) || '' : '';
+}
+
+/** True when the frame may have `url` opened: an https URL equal to the sign-in URL prism-cli last reported. */
+export const externalAllowed = (url, reported) => !!reported && httpsUrl(url) === reported;
+
+/** The iframe's message: a request, a report to open, a link to open, or null. Shape only: the app route and prism-cli check again. */
 export function checkMessage(m) {
   if (!m || typeof m !== 'object') return null;
   if (m.type === 'prism-ui:open-report') return typeof m.id === 'string' && REPORT_ID.test(m.id) ? { report: m.id } : null;
+  if (m.type === 'prism-ui:open-external') { const u = httpsUrl(m.url); return u ? { external: u } : null; }
   if (m.type !== 'prism-ui:request' || !Number.isSafeInteger(m.id)) return null;
   if ((m.op !== 'get' && m.op !== 'act') || typeof m.path !== 'string' || !m.path.startsWith('/api/') || m.path.length > 200) return null;
   if (m.op === 'get') return { id: m.id, op: 'get', path: m.path, query: m.query && typeof m.query === 'object' && !Array.isArray(m.query) ? m.query : {} };
@@ -123,6 +150,8 @@ export default function PrismPage() {
   const shownVersion = useRef('');
   /** When the running action started (0: none), from its start until its status says it is done. */
   const actionRunning = useRef(0);
+  /** The codeburn sign-in URL prism-cli last reported (reportedSignIn): the one link the frame may have opened. */
+  const signInUrl = useRef('');
   const [doc, setDoc] = useState('');
   const [error, setError] = useState('');
   const [update, setUpdate] = useState(null);
@@ -150,6 +179,11 @@ export default function PrismPage() {
       if (!f || e.source !== f.contentWindow) return;
       const m = checkMessage(e.data);
       if (!m) return;
+      // The frame has no allow-popups: this page opens the codeburn sign-in link for it, and no other URL.
+      if (m.external) {
+        if (externalAllowed(m.external, signInUrl.current)) window.open(m.external, '_blank', 'noopener,noreferrer');
+        return;
+      }
       if (m.report) {
         const a = await relay(api, { op: 'get', path: '/api/report', query: { id: m.report } });
         setReport(a.status === 200 && a.json && typeof a.json.html === 'string' ? { html: a.json.html } : { error: 'No report for that review (' + str(a.json && a.json.error) + ').' });
@@ -161,6 +195,8 @@ export default function PrismPage() {
       // Is an action running? Its start answers 202 and the drawer polls /api/action/status until it is done.
       if (m.op === 'act' && a.status === ACTION_STARTED) actionRunning.current = Date.now();
       else if (m.path === '/api/action/status' && a.json && a.json.state !== 'running') actionRunning.current = 0;
+      const si = a.status === 200 ? reportedSignIn(m.path, a.json) : null;
+      if (si !== null) signInUrl.current = si;
       // The drawer polls until the action ends; past the longest action timeout, stop waiting for it.
       if (actionRunning.current && Date.now() - actionRunning.current > ACTION_WAIT_MAX_MS) actionRunning.current = 0;
       // prism-cli was updated while this page was open: the backend already runs the new one. Redraw from its

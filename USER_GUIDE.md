@@ -466,9 +466,19 @@ installed (their `--yes` would install it): install it first with **Set up codeb
 **Signing in on a remote machine.** `codeburn sync setup` opens a browser on the machine it runs on and
 has no no-browser or device-code option. On a remote machine (a dev desktop over SSH, no display) no
 browser opens: open the link codeburn prints instead. In the dashboard, the action drawer shows it as
-**Open the codeburn sign-in page** while codeburn waits (5 minutes). The sign-in returns to
-`http://127.0.0.1:<port>/callback` on the machine running codeburn, so from your laptop forward that
-port first: `ssh -L <port>:127.0.0.1:<port> <remote machine>` (the drawer names the port).
+**Open the codeburn sign-in page** (with **Copy link** beside it) while codeburn waits (5 minutes). In
+the Kiro Crew app the link opens in a new browser tab through the Kiro Crew page (since 1.21.14 and
+app 0.4.2). The sign-in returns to `http://127.0.0.1:<port>/callback` on the machine running codeburn,
+so on your laptop that page does not load. Two ways to finish it:
+
+- **Paste the address** (1.21.14): copy the address your browser ended on
+  (`http://127.0.0.1:<port>/callback?code=…&state=…`) into **Paste the address your browser ended on**
+  and press **Submit**. The dashboard, on the machine running codeburn, sends it to codeburn's
+  listener there, and codeburn finishes the setup in the drawer's output. It accepts only an
+  `http://127.0.0.1` address on the port and path of the sign-in that is waiting, with that sign-in's
+  `state`, and never logs or shows the address.
+- **Forward the port** before you sign in: `ssh -L <port>:127.0.0.1:<port> <remote machine>` (the
+  drawer names the port).
 
 `--dry-run` prints the plan with the exact commands and changes nothing. `--status` shows codeburn,
 the sync config, the schedule, the last sync log lines and `codeburn sync status`. `--remove`

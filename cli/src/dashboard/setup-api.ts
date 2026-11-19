@@ -4,6 +4,7 @@
  *   GET  /api/action/status  the current or last action and its redacted output
  *   GET  /api/recheck    rebuilds the dashboard data now (status checks)
  *   POST /api/action     start an allowlisted action
+ *   POST /api/action/sign-in-return  {url}: hand the address the browser ended on to the running codeburn sign-in (127.0.0.1 only)
  *   GET  /api/accountguard           AccountGuard's data (cached aws check results; no AWS call; accountguard.ts)
  *   POST /api/accountguard/baseline  {run}: mark a run as the baseline (a local file only)
  *   POST /api/update-check  asks the npm registry for the latest prism-cli now (one GET)
@@ -139,6 +140,7 @@ export function setupApi(d: SetupApiDeps) {
     },
     postApi: {
       '/api/action': (body: unknown): Promise<ApiResult> => d.runner.start(body),
+      '/api/action/sign-in-return': (body: unknown): Promise<ApiResult> => d.runner.signInReturn(body),
       '/api/security-agent/spaces': async (body: unknown): Promise<ApiResult> =>
         d.securityAgent ? securityAgentLookup(d.securityAgent, body) : { status: 400, json: { error: 'the Security Agent page is not available here' } },
       '/api/security-agent/repo': async (body: unknown): Promise<ApiResult> =>

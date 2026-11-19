@@ -83,7 +83,7 @@ Uninstalling the app leaves prism-cli installed.
 
 ### Install with prism-cli
 
-prism-cli bundles this app (this version, 0.4.1, ships with prism-cli 1.21.11 and 1.21.12; 1.21.4 to 1.21.10 bundle 0.4.0, 1.21.3 bundles 0.3.2, 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
+prism-cli bundles this app (this version, 0.4.2, ships with prism-cli 1.21.14; 1.21.11 to 1.21.13 bundle 0.4.1, 1.21.4 to 1.21.10 bundle 0.4.0, 1.21.3 bundles 0.3.2, 1.21.2 bundles 0.3.1, 1.21.1 bundles 0.3.0 and 1.21.0 bundles 0.2.5):
 
 ```bash
 npm install -g @prism-d1/cli@latest && prism-cli enable kirocrew
@@ -222,6 +222,10 @@ How it works:
   origin that cannot read the gateway's cookies, storage or page, with its own CSP (the scripts and
   style allowed by their sha256 only, `connect-src 'none'`). Its only way out is `postMessage` to the
   PRISM page, which takes messages from that frame only.
+- The frame has no `allow-popups`, so its links cannot open a tab. For the codeburn sign-in link (0.4.2)
+  the frame asks the PRISM page (`prism-ui:open-external`), which opens it with `window.open(...,
+  'noopener,noreferrer')` only when it is an https URL equal to the sign-in URL prism-cli reported in
+  its last `/api/action/status` answer. Any other URL is ignored.
 - The PRISM page relays each read and action through the App SDK's `useAppApi()` (only the paths in
   `permissions.api`) to `GET /api/apps/prism/ui/get` and `POST /api/apps/prism/ui/act`. The gateway's
   token middleware authenticates every request (a dashboard session, or an app token scoped to
