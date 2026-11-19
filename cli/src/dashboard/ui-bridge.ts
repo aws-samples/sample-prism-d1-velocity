@@ -11,7 +11,8 @@
  *
  * Messages: {type:'prism-ui:request', id, op:'get'|'act', path, query, body}
  * out, {type:'prism-ui:response', id, status, json} back; and
- * {type:'prism-ui:open-report', id} out, for the host to show a report. The host checks the
+ * {type:'prism-ui:open-report', id} out, for the host to show a report; and (Kiro Crew only)
+ * {type:'prism-ui:open-external', url} out, for the host to open the codeburn sign-in link. The host checks the
  * shape and relays it to `prism-cli dashboard --serve-stdio`, which looks the
  * path up in the same route table as the browser server. Nothing here holds
  * a token: the page has none to leak.
@@ -54,6 +55,9 @@ export const BRIDGE_SCRIPT = `(function () {
     act: function (path, body) { return call('act', path, null, body); },
     // The host shows the report (it reads GET /api/report?id=); the id is a result id or nothing is sent.
     openReport: function (id) { if (/^[A-Za-z0-9_-]{1,120}$/.test(String(id))) post({ type: 'prism-ui:open-report', id: String(id) }); },
+    // Kiro Crew only (1.21.14): the frame has no allow-popups, so target=_blank does nothing there. The host opens an
+    // https URL, and only the sign-in URL prism-cli reported. VS Code opens a webview's https links itself.
+    openExternal: vs ? null : function (url) { if (/^https:\\/\\//.test(String(url))) post({ type: 'prism-ui:open-external', url: String(url) }); },
   });
 })();
 `;

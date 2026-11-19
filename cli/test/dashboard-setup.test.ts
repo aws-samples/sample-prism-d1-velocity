@@ -8,12 +8,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
-import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, redact, repoId, signInLink, type ActionId, type SpawnFn } from '../src/dashboard/actions.js';
+import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, loopbackGet, redact, repoId, signInLink, signInReturnMessage, signInReturnTarget, type ActionId, type LoopbackGet, type SpawnFn } from '../src/dashboard/actions.js';
 import { setupApi } from '../src/dashboard/setup-api.js';
 import { classifyProfile, iniKeys, resolveAwsIdentity, STATIC_DEFAULT_WARNING, NO_CREDENTIALS_WARNING } from '../src/dashboard/aws-identity.js';
 import { readConnectionFile, writeConnectionFile, loadConnection } from '../src/aws/connection.js';
@@ -517,4 +517,107 @@ test('/api/setup: codeburnSyncUrl is the stored URL redacted (no user name or pa
   assert.equal(setup.codeburnSyncUrl, 'https://collector.example.com/otel?token=REDACTED&auth=REDACTED&team=a');
   const none = setupApi({ runner: runner([]), cwd: '/work', repoPaths: async () => [], refresh: async () => ({}), identity: { env: {}, home: tmp('nosync'), repoRoot: null, readText: () => null } });
   assert.equal((await none.getApi['/api/setup']() as { codeburnSyncUrl: unknown }).codeburnSyncUrl, null);
+});
+
+// ---------------------------------------------------------------- sign-in return (1.21.14)
+
+const SIGN_AUTH = 'https://auth.example.com/oauth2/authorize?response_type=code&client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2Fcallback&state=s1&code_challenge=c1&code_challenge_method=S256';
+const SIGN_IN = { url: SIGN_AUTH, callbackPort: 53682 };
+
+test('sign-in return: only http://127.0.0.1 on the waiting sign-in\'s port and path, with its state and a code or error', () => {
+  assert.deepEqual(signInReturnTarget('http://127.0.0.1:53682/callback?code=CODE1&state=s1', SIGN_IN), { port: 53682, path: '/callback?code=CODE1&state=s1' });
+  assert.deepEqual(signInReturnTarget('http://127.0.0.1:53682/callback?error=access_denied&state=s1', SIGN_IN), { port: 53682, path: '/callback?error=access_denied&state=s1' }, 'an IdP error is handed on too');
+  const refused: [unknown, RegExp][] = [
+    ['', /paste the address/],
+    [42, /paste the address/],
+    ['https://127.0.0.1:53682/callback?code=c&state=s1', /must start with http:\/\/127\.0\.0\.1/],
+    ['http://localhost:53682/callback?code=c&state=s1', /must be on 127\.0\.0\.1/],
+    ['http://[::1]:53682/callback?code=c&state=s1', /must be on 127\.0\.0\.1/],
+    ['http://127.0.0.2:53682/callback?code=c&state=s1', /must be on 127\.0\.0\.1/],
+    ['http://evil.example.com:53682/callback?code=c&state=s1', /must be on 127\.0\.0\.1/],
+    ['http://0x7f000001:53682/callback?code=c&state=s1', /must be on 127\.0\.0\.1/],
+    ['http://2130706433:53682/callback?code=c&state=s1', /must be on 127\.0\.0\.1/],
+    ['http://user:pw@127.0.0.1:53682/callback?code=c&state=s1', /user name or password/],
+    ['http://x@127.0.0.1:53682/callback?code=c&state=s1', /user name or password/],
+    ['http://127.0.0.1:22/callback?code=c&state=s1', /must be on port 53682/],
+    ['http://127.0.0.1/callback?code=c&state=s1', /must be on port 53682/],
+    ['http://127.0.0.1:53682/other?code=c&state=s1', /must be \/callback/],
+    ['http://127.0.0.1:53682/callback/../admin?code=c&state=s1', /must be \/callback/],
+    ['http://127.0.0.1:53682/callback?code=c&state=s1#x', /# part/],
+    ['http://127.0.0.1:53682/callback?code=c&state=other', /another sign-in/],
+    ['http://127.0.0.1:53682/callback?code=c', /another sign-in/],
+    ['http://127.0.0.1:53682/callback?state=s1', /has no code/],
+    ['http://127.0.0.1:53682/callback?code=c&state=s1 ', /spaces or control/],
+    ['http://127.0.0.1:53682/callback?code=c\n&state=s1', /spaces or control/],
+    ['http://127.0.0.1:53682/callback?state=s1&code=' + 'a'.repeat(5000), /longer than 4096/],
+    ['::nope', /not a valid address/],
+  ];
+  for (const [url, re] of refused) {
+    const r = signInReturnTarget(url, SIGN_IN);
+    assert.ok('error' in r && re.test(r.error), `${String(url).slice(0, 80)} -> ${JSON.stringify(r)}`);
+    if ('error' in r) assert.doesNotMatch(r.error, /CODE1|code=c/, 'the message never quotes the address');
+  }
+  assert.ok('error' in signInReturnTarget('http://127.0.0.1:53682/callback?code=c&state=s1', null), 'no sign-in waiting');
+  assert.ok('error' in signInReturnTarget('http://127.0.0.1:53682/callback?code=c&state=s1', { url: SIGN_AUTH, callbackPort: null }), 'no loopback port');
+  assert.deepEqual(signInReturnMessage({ status: 200, type: 'text/html', body: '<h1>Login successful</h1>' }).ok, true);
+  assert.equal(signInReturnMessage({ status: 400, type: 'text/plain', body: 'Invalid state parameter' }).message, 'codeburn refused the address (HTTP 400: Invalid state parameter).');
+  assert.match(signInReturnMessage({ status: 400, type: 'text/html', body: '<h1>Login failed</h1>' }).message, /sign-in failed/);
+  assert.equal(signInReturnMessage({ status: 500, type: 'text/plain', body: '<script>x</script>' }).message, 'codeburn refused the address (HTTP 500).', 'other text is not quoted');
+});
+
+test('sign-in return: only while a codeburn setup waits; the GET goes to 127.0.0.1:<port><path> and the answer never carries the code', async () => {
+  const calls: Spawned[] = [];
+  const gets: [number, string][] = [];
+  const fake: LoopbackGet = async (port, path) => { gets.push([port, path]); return { status: 200, type: 'text/html', body: 'Login successful' }; };
+  const r = runner(calls, { loopbackGet: fake, codeburnInstalled: () => true, spawn: fakeSpawn(calls, false) });
+  const ret = 'http://127.0.0.1:53682/callback?code=SECRETCODE&state=s1';
+  assert.equal((await r.signInReturn({ url: ret })).status, 409, 'nothing running');
+  await r.start({ action: 'codeburn-status' });
+  assert.equal((await r.signInReturn({ url: ret })).status, 409, 'another action is running');
+  calls[0].child.emit('exit', 0); calls[0].child.emit('close', 0);
+  await until(() => !r.running);
+  await r.start({ action: 'codeburn-team', url: 'https://collector.example.com' });
+  assert.equal((await r.signInReturn({ url: ret })).status, 400, 'no sign-in printed yet');
+  calls[1].child.stderr.emit('data', `If the browser doesn't open, visit:\n  ${SIGN_AUTH}\n`);
+  assert.equal((await r.signInReturn({ url: ret, extra: 1 })).status, 400, 'unexpected field');
+  assert.equal((await r.signInReturn({ url: 'http://127.0.0.1:9999/callback?code=x&state=s1' })).status, 400, 'another port');
+  assert.equal(gets.length, 0, 'nothing sent for a refused address');
+  const ok = await r.signInReturn({ url: ret });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(gets, [[53682, '/callback?code=SECRETCODE&state=s1']]);
+  assert.doesNotMatch(JSON.stringify(ok.json), /SECRETCODE/);
+  const down = runner(calls, { loopbackGet: async () => { throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:53682'), { code: 'ECONNREFUSED' }); }, codeburnInstalled: () => true, spawn: fakeSpawn(calls, false) });
+  await down.start({ action: 'codeburn-team-yes', url: 'https://collector.example.com', confirm: true });
+  calls[calls.length - 1].child.stderr.emit('data', `If the browser doesn't open, visit:\n  ${SIGN_AUTH}\n`);
+  const d = await down.signInReturn({ url: ret });
+  assert.equal(d.status, 502);
+  assert.match((d.json as { error: string }).error, /Nothing is listening on 127\.0\.0\.1:53682.*Run the setup again/);
+});
+
+test('sign-in return: loopbackGet makes one GET with no redirect followed, and the route sits behind the POST gates', async () => {
+  const seen: string[] = [];
+  const srv = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    if (req.url === '/redirect') { res.writeHead(302, { Location: 'http://127.0.0.1:1/elsewhere' }); res.end(); return; }
+    res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('x'.repeat(10_000));
+  });
+  await new Promise<void>((ok) => srv.listen(0, '127.0.0.1', () => ok()));
+  const port = (srv.address() as { port: number }).port;
+  try {
+    const a = await loopbackGet(port, '/callback?code=c&state=s1', 2000);
+    assert.equal(a.status, 200);
+    assert.equal(a.body.length, 4096, 'the body is capped');
+    const b = await loopbackGet(port, '/redirect', 2000);
+    assert.equal(b.status, 302, 'the redirect is answered, not followed');
+    assert.deepEqual(seen, ['GET /callback?code=c&state=s1', 'GET /redirect']);
+  } finally { srv.close(); }
+  await withSetupServer(async ({ port: p, cookie, csrf }) => {
+    const h = { Cookie: cookie, Origin: `http://127.0.0.1:${p}`, 'X-Prism-CSRF': csrf, 'Content-Type': 'application/json' };
+    const body = JSON.stringify({ url: 'http://127.0.0.1:53682/callback?code=c&state=s1' });
+    assert.equal((await call(p, 'POST', '/api/action/sign-in-return', { ...h, 'X-Prism-CSRF': 'x'.repeat(43) }, body)).status, 403, 'wrong CSRF');
+    assert.equal((await call(p, 'POST', '/api/action/sign-in-return', { ...h, Origin: 'http://evil.example.com' }, body)).status, 403, 'foreign Origin');
+    assert.equal((await call(p, 'POST', '/api/action/sign-in-return', { ...h, Cookie: '' }, body)).status, 401, 'no cookie');
+    assert.equal((await call(p, 'GET', '/api/action/sign-in-return', { Cookie: cookie })).status, 405, 'POST only');
+    assert.equal((await call(p, 'POST', '/api/action/sign-in-return', h, body)).status, 409, 'gated, then refused: nothing waiting');
+  });
 });

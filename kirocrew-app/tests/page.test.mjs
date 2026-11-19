@@ -1,7 +1,7 @@
 // The page's pure parts, with a stub createElement; run with `node --test`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bundleOutdated, checkMessage, errorBody, relay, renderReport, renderUpdate, srcdocFor, updateCmd, withReportCsp } from '../ui/index.mjs';
+import { bundleOutdated, checkMessage, errorBody, externalAllowed, httpsUrl, relay, renderReport, renderUpdate, reportedSignIn, srcdocFor, updateCmd, withReportCsp } from '../ui/index.mjs';
 
 const h = (tag, props, ...children) => ({ tag, props: props || {}, children: children.flat() });
 const walk = (n, f) => { if (n && typeof n === 'object') { f(n); n.children.forEach((c) => walk(c, f)); } };
@@ -79,4 +79,24 @@ test('an answer from another prism-cli version means the bundle on screen is out
   assert.equal(bundleOutdated('1.21.3', a.version), false);
   assert.equal(bundleOutdated('', '1.21.3'), false, 'no bundle drawn yet');
   assert.equal(bundleOutdated('1.21.2', ''), false, 'an answer without a version (a refusal from the gateway) is not an update');
+});
+
+test('open-external (0.4.2): https only, no credentials, and only the sign-in URL prism-cli reported', () => {
+  const AUTH = 'https://auth.example.com/oauth2/authorize?client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2Fcallback&state=s1';
+  assert.deepEqual(checkMessage({ type: 'prism-ui:open-external', url: AUTH }), { external: AUTH });
+  for (const url of ['http://auth.example.com/x', 'javascript:alert(1)', 'https://user:pw@auth.example.com/', 'https://a@auth.example.com/', 'https://auth.example.com/a b',
+    'https://auth.example.com/\n', 'data:text/html,x', 'https://auth.example.com/' + 'a'.repeat(5000), 42, null, undefined]) {
+    assert.equal(checkMessage({ type: 'prism-ui:open-external', url }), null, String(url).slice(0, 60));
+    assert.equal(httpsUrl(url), null);
+  }
+  // The URL the host may open comes from the status answer, while the setup runs; anything else clears it.
+  const status = { state: 'running', action: 'codeburn-team', signIn: { url: AUTH, callbackPort: 53682 } };
+  assert.equal(reportedSignIn('/api/action/status', status), AUTH);
+  assert.equal(reportedSignIn('/api/action/status', { state: 'done', signIn: { url: AUTH } }), '', 'done: none');
+  assert.equal(reportedSignIn('/api/action/status', { state: 'running', signIn: { url: 'http://x.example.com' } }), '', 'not https: none');
+  assert.equal(reportedSignIn('/api/data', status), null, 'other routes leave it as it was');
+  assert.equal(externalAllowed(AUTH, AUTH), true);
+  assert.equal(externalAllowed('https://evil.example.com/', AUTH), false, 'another https URL');
+  assert.equal(externalAllowed(AUTH, ''), false, 'nothing reported');
+  assert.equal(externalAllowed(AUTH + '&x=1', AUTH), false);
 });

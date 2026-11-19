@@ -60,7 +60,7 @@ test('serve-stdio refuses hostile input by id and keeps serving', { timeout: 60_
     assert.equal(hello.api, STDIO_API);
     assert.match(hello.version, /^\d+\.\d+\.\d+/);
     assert.ok(hello.routes.get.includes('/api/data') && hello.routes.get.includes('/api/report'));
-    assert.deepEqual(hello.routes.act.sort(), ['/api/accountguard/baseline', '/api/action', '/api/security-agent/repo', '/api/security-agent/spaces', '/api/update-check']);
+    assert.deepEqual(hello.routes.act.sort(), ['/api/accountguard/baseline', '/api/action', '/api/action/sign-in-return', '/api/security-agent/repo', '/api/security-agent/spaces', '/api/update-check']);
 
     // An oversized line is dropped as it streams (one 413), and the next request is still answered.
     c.send('{"id":1,"op":"get","path":"/api/data","query":{"x":"' + 'a'.repeat(MAX_LINE + 10) + '"}}\n');

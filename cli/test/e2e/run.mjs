@@ -2443,6 +2443,42 @@ try {
       out.log.push(...ui.log.filter((l) => !/409/.test(l.type + ' ' + l.text)));
       await ui.ctx.close(); srvM.proc.kill();
     }
+
+    // G. Paste the return address (1.21.14): a fake codeburn with a real login listener on a free 127.0.0.1 port. The
+    // drawer shows the link, Copy link and the paste field; a wrong state is refused by the server before anything is
+    // sent, the right address reaches the listener and the setup finishes in the drawer.
+    {
+      const ph = join(SCRATCH, 'e2e-cburl-paste');
+      const srvP = await live('cburl-paste', 'full', { ...envFor(ph), FAKE_CB_CALLBACK: '1', FAKE_CB_SETUP_MS: '90000' }, synced);
+      const g = out.cases.paste = {};
+      const ui = await openCtx(srvP);
+      await ui.page.goto(srvP.base + '/#settings/sync'); await sleep(800);
+      await ui.page.click('button:has-text("Re-run sync setup")');
+      await sleep(300);
+      await ui.page.check('dialog.confirm input[type=checkbox]');
+      await ui.page.click('dialog.confirm .actions button.run');
+      await ui.page.waitForSelector('#action-drawer [data-signin] input[type=url]', { timeout: 20000 }).catch(() => {});
+      g.block = await ui.page.evaluate(() => { const s = document.querySelector('#action-drawer [data-signin]'); return s ? { text: s.innerText, copy: [...s.querySelectorAll('button')].map((b) => b.textContent), target: s.querySelector('a')?.getAttribute('target') } : null; });
+      const port = Number((/127\.0\.0\.1:(\d+)/.exec(g.block?.text || '') || [])[1]);
+      g.port = port;
+      await ui.page.fill('#action-drawer [data-signin] input[type=url]', `http://127.0.0.1:${port}/callback?code=FAKECODE&state=otherstate`);
+      g.typedKept = await (async () => { await sleep(2500); return ui.page.inputValue('#action-drawer [data-signin] input[type=url]'); })();
+      await ui.page.click('#action-drawer [data-signin] button:has-text("Submit")');
+      await sleep(800);
+      g.wrong = await ui.page.textContent('#action-drawer [data-signin-msg]');
+      g.callsAfterWrong = calls(ph).filter((l) => l.startsWith('callback'));
+      await ui.page.fill('#action-drawer [data-signin] input[type=url]', `http://127.0.0.1:${port}/callback?code=FAKECODE&state=fakestate`);
+      await ui.page.click('#action-drawer [data-signin] button:has-text("Submit")');
+      // The block goes away once codeburn finishes, so read the answer as soon as it is there.
+      g.right = await ui.page.waitForFunction(() => { const t = document.querySelector('#action-drawer [data-signin-msg]')?.textContent || ''; return /accepted|refused|Nothing|could not/.test(t) && t; }, null, { timeout: 15000 })
+        .then((h) => h.jsonValue()).catch(() => null);
+      await ui.page.locator('#action-drawer').screenshot({ path: join(SHOTS, 'codeburnurl-drawer-paste-1280.png') }).catch(() => {});
+      await drawerDone(ui.page);
+      g.drawer = await ui.page.evaluate(() => document.querySelector('#action-drawer')?.innerText);
+      g.calls = calls(ph).filter((l) => l.startsWith('callback'));
+      out.log.push(...ui.log.filter((l) => !/400/.test(l.type + ' ' + l.text)));
+      await ui.ctx.close(); srvP.proc.kill();
+    }
   }
 } catch (e) {
   R.fatal = String(e.stack || e);
@@ -2962,6 +2998,12 @@ function verdicts(R) {
       && !/SECRETTOKEN/.test(e.drawer || '') && e.html === false && e.setupApi === false && e.calls?.includes('sync setup https://collector.example.com/otel?token=SECRETTOKEN&team=a') && /exit 0/.test(e.drawer || ''), JSON.stringify(e).slice(0, 600));
     add('CU9', 'codeburn missing: Switch is refused, names Set up codeburn, and changes nothing',
       /refused/.test(f.drawer || '') && /codeburn is not installed/.test(f.drawer || '') && /Set up codeburn/.test(f.drawer || '') && f.stored === 'https://collector.example.com', JSON.stringify(f).slice(0, 400));
+    const g = C.paste || {};
+    add('CU10', '1.21.14: the drawer has Copy link and the paste field (kept across polls); a wrong state is refused before anything reaches codeburn; the right address completes the sign-in',
+      g.port > 0 && g.port !== 53682 && g.block?.copy?.includes('Copy link') && g.block.copy.includes('Submit') && g.block.target === '_blank' && /Paste the address your browser ended on/.test(g.block.text) && /forward port/.test(g.block.text)
+      && /state=otherstate/.test(g.typedKept || '') && /another sign-in/.test(g.wrong || '') && g.callsAfterWrong?.length === 0
+      && /codeburn accepted the sign-in/.test(g.right || '') && JSON.stringify(g.calls) === JSON.stringify(['callback /callback state=fakestate']) && /exit 0/.test(g.drawer || '') && /Sync configured/.test(g.drawer || '')
+      && !/FAKECODE/.test(g.drawer || ''), JSON.stringify(g).slice(0, 700));
     add('CU6', 'enable codeburn with stdin closed and no --yes: no prompt, keeps the URL, prints the re-run command, exits 0 at once',
       d.exit === 0 && d.ms < 20000 && !d.setupCalls?.length && d.stored === 'https://collector2.example.com' && /No terminal to ask, so kept/.test(d.out || '') && /prism-cli enable codeburn --url https:\/\/collector\.example\.com --yes/.test(d.out || ''), JSON.stringify(d).slice(0, 400));
     const errs = (S.codeburnurl.log || []).filter((l) => l.type === 'pageerror' || l.type === 'console.error');

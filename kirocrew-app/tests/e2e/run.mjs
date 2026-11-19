@@ -156,6 +156,20 @@ try {
   R.checks.K12 = clicks;
   await page.screenshot({ path: join(SHOTS, 'page-after-clicks.png') });
 
+  // 0.4.2: the frame can ask the page to open a link (prism-ui:open-external), but with no codeburn sign-in reported
+  // the page opens nothing, for an https URL, a javascript: URL or one with credentials.
+  {
+    const before = ctx.pages().length;
+    const fr = frame();
+    const hasOpen = await fr.evaluate(() => typeof TRANSPORT.openExternal === 'function');
+    await fr.evaluate(() => {
+      TRANSPORT.openExternal('https://auth.example.com/oauth2/authorize?state=x');
+      for (const url of ['https://auth.example.com/', 'javascript:alert(1)', 'https://u:p@auth.example.com/']) window.parent.postMessage({ type: 'prism-ui:open-external', url }, '*');
+    });
+    await sleep(1000);
+    R.checks.K13 = { hasOpen, tabs: ctx.pages().length - before };
+  }
+
   // A report link: the page reads /api/report and shows it in an empty-sandbox overlay.
   await f.locator('#codewatch a.rlink').first().click();
   await page.waitForSelector('iframe[title="Codewatch report"]', { timeout: 20000 }).catch(() => {});
@@ -280,6 +294,8 @@ const EXPECT_VIEW = { 'nav: Security Agent': 'security', 'nav: AccountGuard': 'a
   'repo link': 'repo', 'crumb back to Dashboard': 'main', 'findings link': 'security', 'nav: Settings by keyboard (Enter)': 'settings',
   'nav: Security Agent by middle click (stays in the frame)': 'security', 'nav: Dashboard by ctrl+click (stays in the frame)': 'main' };
 const badClick = (c) => c.missing || !/^about:srcdoc/.test(c.url || '') || c.view !== EXPECT_VIEW[c.name] || !(c.text > 50) || /rgba?\(255, 255, 255/.test(c.bg || '') || c.tabs !== 0;
+add('K13', 'the frame has openExternal; with no codeburn sign-in reported, open-external messages (https, javascript:, credentials) open no tab',
+  C.K13 && C.K13.hasOpen === true && C.K13.tabs === 0, C.K13);
 add('K12', 'clicking every kind of in-app link (top nav, a Settings tab, a repo, a crumb, a findings link; Enter, middle and ctrl click) keeps the frame on about:srcdoc, changes the view and opens no tab',
   Array.isArray(C.K12) && C.K12.length === Object.keys(EXPECT_VIEW).length && !C.K12.some(badClick), (C.K12 || []).filter(badClick));
 add('K11', 'on_shutdown stops the child and removes its pid file', C.K11?.stopped && !C.K11.pidFile, C.K11);

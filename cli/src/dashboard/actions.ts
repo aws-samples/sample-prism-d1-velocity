@@ -38,6 +38,7 @@
  */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { appendFileSync, closeSync, mkdirSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -292,6 +293,8 @@ export interface RunnerDeps {
   storedSyncUrl?: () => string | null;
   /** For a needsCodeburn action: whether codeburn is on PATH. Absent: refused. */
   codeburnInstalled?: () => boolean;
+  /** The GET that hands a pasted sign-in return address to codeburn's listener (default loopbackGet); a test seam. */
+  loopbackGet?: LoopbackGet;
   /** Kill grace after SIGTERM. */
   killGraceMs?: number;
   /** After the child exits, how long to keep reading output a process it started may still write (default EXIT_GRACE_MS). */
@@ -361,6 +364,66 @@ export function signInLink(output: string): SignIn | null {
   return { url: u.href, callbackPort: port };
 }
 
+/** The longest return address accepted: codeburn's own code and state are short; an IdP may add a few parameters. */
+export const MAX_RETURN_URL_LENGTH = 4096;
+
+/**
+ * The address the browser ended on after the codeburn sign-in (1.21.14), checked against the sign-in of the
+ * setup that is running now: http, host exactly 127.0.0.1 (codeburn listens there only, not on ::1, so
+ * localhost is refused), the port and path of that sign-in's redirect_uri, its state, and a code or an error.
+ * Answers the path and query to send to codeburn's listener, or why not. The message never quotes the URL.
+ */
+export function signInReturnTarget(s: unknown, si: SignIn | null): { port: number; path: string } | { error: string } {
+  const no = (error: string) => ({ error });
+  if (!si || !si.callbackPort) return no('this sign-in has no return address on this machine to complete');
+  if (typeof s !== 'string' || !s) return no('paste the address your browser ended on');
+  if (s.length > MAX_RETURN_URL_LENGTH) return no(`the address is longer than ${MAX_RETURN_URL_LENGTH} characters`);
+  if (/[\s\u0000-\u001f\u007f]/.test(s)) return no('the address contains spaces or control characters');
+  let u: URL, sign: URL, redirect: URL;
+  try { u = new URL(s); } catch { return no('not a valid address'); }
+  try { sign = new URL(si.url); redirect = new URL(sign.searchParams.get('redirect_uri') ?? ''); } catch { return no('this sign-in has no return address on this machine to complete'); }
+  if (u.protocol !== 'http:') return no('the address must start with http://127.0.0.1');
+  if (u.username || u.password || /^http:\/\/[^/?#]*@/i.test(s)) return no('the address must not contain a user name or password');
+  // As typed, not only as parsed: the URL parser reads 0x7f000001 or 2130706433 as 127.0.0.1 too.
+  if (u.hostname !== '127.0.0.1' || !/^http:\/\/127\.0\.0\.1[:/]/i.test(s)) return no('the address must be on 127.0.0.1 (where codeburn waits for the sign-in)');
+  if (u.port !== String(si.callbackPort)) return no(`the address must be on port ${si.callbackPort}, the port this sign-in returns to`);
+  if (u.pathname !== redirect.pathname) return no(`the address must be ${redirect.pathname} on that port`);
+  if (u.hash) return no('the address must not have a # part');
+  const state = u.searchParams.get('state');
+  if (!state || state !== sign.searchParams.get('state')) return no('the address is from another sign-in (its state does not match the one running now)');
+  if (!u.searchParams.get('code') && !u.searchParams.get('error')) return no('the address has no code: sign in first, then paste the address your browser ended on');
+  return { port: si.callbackPort, path: u.pathname + u.search };
+}
+
+/** How long codeburn's listener gets to answer the forwarded return address. */
+export const SIGN_IN_RETURN_TIMEOUT_MS = 10_000;
+const SIGN_IN_RETURN_MAX_BODY = 4096;
+
+export interface LoopbackAnswer { status: number; type: string; body: string }
+/** One GET to 127.0.0.1:<port><path>: no redirect is followed (node:http never does), a short timeout, a small body. */
+export type LoopbackGet = (port: number, path: string, timeoutMs: number) => Promise<LoopbackAnswer>;
+
+export const loopbackGet: LoopbackGet = (port, path, timeoutMs) => new Promise((resolve, reject) => {
+  const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET', agent: false, headers: { Accept: 'text/html, text/plain' } }, (res) => {
+    let body = '';
+    res.setEncoding('utf8');
+    res.on('data', (c: string) => { if (body.length < SIGN_IN_RETURN_MAX_BODY) body += c.slice(0, SIGN_IN_RETURN_MAX_BODY - body.length); });
+    res.on('end', () => resolve({ status: res.statusCode ?? 0, type: String(res.headers['content-type'] || ''), body }));
+    res.on('error', reject);
+  });
+  req.setTimeout(timeoutMs, () => req.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })));
+  req.on('error', reject);
+  req.end();
+});
+
+/** codeburn's answer as one plain sentence. Its own text is quoted only when it is a short plain-text line. */
+export function signInReturnMessage(a: LoopbackAnswer): { ok: boolean; message: string } {
+  if (a.status === 200) return { ok: true, message: 'codeburn accepted the sign-in. It finishes the setup now; its output follows below.' };
+  const line = /^text\/plain/i.test(a.type) && /^[A-Za-z0-9 .,'()-]{1,120}$/.test(a.body.trim()) ? `: ${a.body.trim()}` : '';
+  if (a.status === 400 && /Login failed/.test(a.body)) return { ok: false, message: 'codeburn says the sign-in failed (the identity provider returned an error). Run the setup again.' };
+  return { ok: false, message: `codeburn refused the address (HTTP ${a.status}${line}).` };
+}
+
 /** Actions that write a Security Agent result file in their repo. */
 const RESULT_ACTIONS = new Set<ActionId>(['security-findings', 'security-threats', 'security-pentest-findings', 'security-code-review', 'security-code-review-full', 'security-threat-model', 'security-code-review-force', 'security-code-review-full-force',
   'security-pentest-start', 'security-pentest-cleanup']);
@@ -392,6 +455,8 @@ export class ActionRunner {
   private seq = 0;
   /** The running action's process, while there is one. */
   private child: ChildProcess | null = null;
+  /** True while a pasted sign-in return address is being sent to codeburn (signInReturn). */
+  private returning = false;
   constructor(private d: RunnerDeps) {}
 
   /** Stops the running action, if any (SIGTERM): `dashboard --serve-stdio` calls it when its parent goes away, so no action outlives it. */
@@ -413,6 +478,36 @@ export class ActionRunner {
     const a = ACTIONS[id];
     if (a.program === 'npm') return this.d.platform !== 'win32' && !!this.d.npmPath?.();
     return !a.systemd || (this.d.platform === 'linux' && this.d.systemdAvailable());
+  }
+
+  /**
+   * POST /api/action/sign-in-return {url} (1.21.14): the address the browser ended on after the codeburn sign-in,
+   * when that browser is on another machine than codeburn's listener. Only while a codeburn sync setup runs and has
+   * printed its sign-in; signInReturnTarget checks the address against that sign-in, then this server (on codeburn's
+   * machine) makes the one GET to 127.0.0.1:<port>. The address, its code and state are never logged or echoed.
+   */
+  async signInReturn(body: unknown): Promise<ApiResult> {
+    const bad = (error: string, status = 400): ApiResult => ({ status, json: { error } });
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return bad('expected a JSON object');
+    const b = body as Record<string, unknown>;
+    const extra = Object.keys(b).filter((k) => k !== 'url');
+    if (extra.length) return bad(`unexpected field ${extra[0]}`);
+    const c = this.cur;
+    if (!c || c.state !== 'running' || !c.action || !CODEBURN_SETUP_ACTIONS.has(c.action)) return bad('no codeburn sign-in is waiting: run Sync to team (or Re-run sync setup) first', 409);
+    const t = signInReturnTarget(b.url, signInLink(c.buf));
+    if ('error' in t) return bad(t.error);
+    if (this.returning) return bad('the last address is still being sent to codeburn; wait for it', 409);
+    this.returning = true;
+    const runId = c.runId;
+    try {
+      const a = await (this.d.loopbackGet ?? loopbackGet)(t.port, t.path, SIGN_IN_RETURN_TIMEOUT_MS);
+      const m = signInReturnMessage(a);
+      return { status: m.ok ? 200 : 502, json: { ok: m.ok, message: m.message, runId } };
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      return bad(code === 'ECONNREFUSED' ? `Nothing is listening on 127.0.0.1:${t.port}: codeburn's sign-in has ended (it waits 5 min). Run the setup again.`
+        : code === 'ETIMEDOUT' ? `codeburn did not answer within ${SIGN_IN_RETURN_TIMEOUT_MS / 1000} s.` : 'could not reach codeburn\'s sign-in listener on this machine.', 502);
+    } finally { this.returning = false; }
   }
 
   /** Validates the request, then starts the action. 202 with the command, else 4xx with the reason. */

@@ -68,17 +68,20 @@ dialog.confirm h2 { margin-bottom:6px; } dialog.confirm p { margin:6px 0; }
 dialog.confirm .actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
 pre.cmd, pre.out { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px 10px; white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0; }
 pre.out { max-height:420px; overflow:auto; }
+.signin { padding:4px 0; overflow-wrap:anywhere; } .signin p { margin:4px 0; }
 label.extra { display:flex; gap:6px; align-items:flex-start; margin-top:10px; color:var(--bad); font-weight:600; }
 `;
 
 export const SETUP_SCRIPT = `
 const CSRF = (document.querySelector('meta[name="prism-csrf"]') || {}).content || '';
 let SETUP = null, POLL = null, DIALOG = null, URL_DRAFT = '';
-const OUT = { status: el('div', { class: 'srow-head' }), pre: el('pre', { class: 'out', 'aria-live': 'polite' }) };
+const OUT = { status: el('div', { class: 'srow-head' }), pre: el('pre', { class: 'out', 'aria-live': 'polite' }),
+  /** The codeburn sign-in (link, Copy link, paste the return address): drawn once per sign-in, so the 1 s poll keeps what was typed. */
+  signIn: el('div', { class: 'signin', 'data-signin': '', hidden: '' }), signInKey: '' };
 /** Action output: a drawer fixed to the bottom of the window, outside the redrawn Settings view, so a refresh keeps it. */
 const DRAWER_CLOSE = el('button', { type: 'button' }, 'Close');
 const ACTION_PANEL = el('div', { class: 'drawer', id: 'action-drawer', role: 'region', 'aria-label': 'Action output', hidden: '' },
-  el('div', { class: 'drawer-head' }, el('b', {}, 'Action output'), OUT.status, el('span', { class: 'spacer' }), DRAWER_CLOSE), OUT.pre,
+  el('div', { class: 'drawer-head' }, el('b', {}, 'Action output'), OUT.status, el('span', { class: 'spacer' }), DRAWER_CLOSE), OUT.signIn, OUT.pre,
   el('p', { class: 'note' }, 'Secrets are masked. Each run is logged to ~/.prism/logs/dashboard-actions.log (time, action, repo, exit code).'));
 DRAWER_CLOSE.addEventListener('click', () => { ACTION_PANEL.hidden = true; });
 document.body.append(ACTION_PANEL);
@@ -343,19 +346,63 @@ function showStatus(s) {
     nothing ? el('span', { class: 'fix', 'data-nothing-hint': '' }, 'No changes against the branch\\'s base, so no job was started and nothing was uploaded. Uncommitted changes are never reviewed.') : null,
     nothing && typeof saFullOffer === 'function' ? saFullOffer(s.repoId) : null,
     // A Security Agent action that saved a finished run: the server read its id from the result file.
-    s.state === 'running' && s.signIn ? signInHint(s.signIn) : null,
     s.state === 'done' && typeof runDoneBar === 'function' ? runDoneBar(s.result) : null].filter(Boolean));
+  showSignIn(s.state === 'running' && s.signIn ? s.signIn : null, s.runId);
   OUT.pre.textContent = txt(s.output) || (s.state === 'running' ? '(no output yet)' : '(no output)');
   OUT.pre.scrollTop = OUT.pre.scrollHeight;
 }
 
-/** codeburn sync setup is waiting for a sign-in: its link, for a machine where no browser opened (the server checked it is https). */
+/** The sign-in block under the drawer's head while codeburn waits; redrawn only when the sign-in changes. */
+function showSignIn(si, runId) {
+  const key = si ? txt(runId) + ' ' + txt(si.url) : '';
+  if (key === OUT.signInKey) return;
+  OUT.signInKey = key;
+  OUT.signIn.replaceChildren(...(si ? signInHint(si) : []));
+  OUT.signIn.hidden = !si;
+}
+
+/**
+ * codeburn sync setup is waiting for a sign-in: its link (the server checked it is https), Copy link, and, when the
+ * browser is on another machine, a field for the address it ended on (127.0.0.1:<port>/callback?...), which
+ * the server hands to codeburn's listener (POST /api/action/sign-in-return, checked there). The ssh -L forward stays
+ * as the other way. In an embedded host (Kiro Crew) the frame cannot open a window, so the link asks the host to
+ * open it (TRANSPORT.openExternal; the host opens only the sign-in URL the server reported).
+ */
 function signInHint(si) {
   const port = si.callbackPort;
-  return el('span', { class: 'fix', 'data-signin': '' }, 'No browser opened? ',
-    el('a', { href: si.url, target: '_blank', rel: 'noopener noreferrer', class: 'rlink' }, 'Open the codeburn sign-in page'),
-    port ? '. On a remote machine, forward port ' + port + ' to it first (ssh -L ' + port + ':127.0.0.1:' + port + ' <this machine>): the sign-in returns to 127.0.0.1:' + port + ' on this machine.'
-      : '.', ' codeburn waits 5 min for it.');
+  const link = el('a', { href: si.url, target: '_blank', rel: 'noopener noreferrer', class: 'rlink' }, 'Open the codeburn sign-in page');
+  if (EMBEDDED && typeof TRANSPORT.openExternal === 'function') {
+    link.setAttribute('data-own-click', '');
+    link.addEventListener('click', (e) => { e.preventDefault(); TRANSPORT.openExternal(si.url); });
+  }
+  const shown = el('input', { type: 'text', class: 'url', readonly: '', value: si.url, 'aria-label': 'codeburn sign-in link', hidden: '', spellcheck: 'false' });
+  const copy = el('button', { type: 'button', title: 'Copy the sign-in link' }, 'Copy link');
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(si.url); copy.textContent = 'Copied'; }
+    catch (e) { shown.hidden = false; shown.focus(); shown.select(); copy.textContent = 'Select the link to copy'; }
+    setTimeout(() => { copy.textContent = 'Copy link'; }, 1500);
+  });
+  const parts = [el('div', { class: 'srow-ctl' }, el('span', { class: 'fix' }, 'No browser opened?'), link, copy), el('div', { class: 'srow-ctl' }, shown)];
+  if (port) {
+    const input = el('input', { type: 'url', class: 'url', placeholder: '127.0.0.1:' + port + '/callback?code=…', maxlength: '4096', 'aria-label': 'The address your browser ended on', spellcheck: 'false', autocomplete: 'off' });
+    const submit = el('button', { type: 'button', class: 'run' }, 'Submit');
+    const msg = el('span', { class: 'fix', role: 'status', 'data-signin-msg': '' });
+    submit.addEventListener('click', async () => {
+      const url = input.value.trim();
+      if (!url) { msg.textContent = 'Paste the address first.'; return; }
+      submit.disabled = true; msg.textContent = 'Sending it to codeburn…';
+      let r;
+      try { r = await api('/api/action/sign-in-return', { url }); } catch (e) { r = { ok: false, json: { error: e.message } }; }
+      submit.disabled = false;
+      msg.textContent = txt(r.ok ? r.json.message : r.json.error || r.json.message);
+      if (r.ok) input.value = '';
+    });
+    parts.push(el('p', { class: 'fix' }, 'Browser on another machine? After you sign in it ends on a page at 127.0.0.1:' + port + ' that does not load. Paste the address your browser ended on:'),
+      el('div', { class: 'srow-ctl' }, input, submit), msg,
+      el('p', { class: 'fix' }, 'Or forward port ' + port + ' before you sign in (ssh -L ' + port + ':127.0.0.1:' + port + ' <this machine>): the sign-in returns to 127.0.0.1:' + port + ' on this machine.'));
+  }
+  parts.push(el('p', { class: 'fix' }, 'codeburn waits 5 min for it.'));
+  return parts;
 }
 
 function poll() {
