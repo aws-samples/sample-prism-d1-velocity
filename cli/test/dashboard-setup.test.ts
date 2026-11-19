@@ -599,6 +599,7 @@ test('sign-in return: loopbackGet makes one GET with no redirect followed, and t
   const srv = createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
     if (req.url === '/redirect') { res.writeHead(302, { Location: 'http://127.0.0.1:1/elsewhere' }); res.end(); return; }
+    if (req.url === '/trickle') { res.writeHead(200); const t = setInterval(() => res.write('x'), 50); res.on('close', () => clearInterval(t)); return; }
     res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('x'.repeat(10_000));
   });
   await new Promise<void>((ok) => srv.listen(0, '127.0.0.1', () => ok()));
@@ -609,7 +610,10 @@ test('sign-in return: loopbackGet makes one GET with no redirect followed, and t
     assert.equal(a.body.length, 4096, 'the body is capped');
     const b = await loopbackGet(port, '/redirect', 2000);
     assert.equal(b.status, 302, 'the redirect is answered, not followed');
-    assert.deepEqual(seen, ['GET /callback?code=c&state=s1', 'GET /redirect']);
+    const t0 = Date.now();
+    await assert.rejects(loopbackGet(port, '/trickle', 300), 'a listener that trickles bytes is cut off at the deadline');
+    assert.ok(Date.now() - t0 < 2000);
+    assert.deepEqual(seen, ['GET /callback?code=c&state=s1', 'GET /redirect', 'GET /trickle']);
   } finally { srv.close(); }
   await withSetupServer(async ({ port: p, cookie, csrf }) => {
     const h = { Cookie: cookie, Origin: `http://127.0.0.1:${p}`, 'X-Prism-CSRF': csrf, 'Content-Type': 'application/json' };

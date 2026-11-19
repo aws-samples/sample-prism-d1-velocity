@@ -411,7 +411,10 @@ export const loopbackGet: LoopbackGet = (port, path, timeoutMs) => new Promise((
     res.on('end', () => resolve({ status: res.statusCode ?? 0, type: String(res.headers['content-type'] || ''), body }));
     res.on('error', reject);
   });
-  req.setTimeout(timeoutMs, () => req.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })));
+  // A deadline for the whole exchange, not only an idle socket (a listener trickling bytes cannot hold it open).
+  const deadline = setTimeout(() => req.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })), timeoutMs);
+  deadline.unref();
+  req.on('close', () => clearTimeout(deadline));
   req.on('error', reject);
   req.end();
 });
