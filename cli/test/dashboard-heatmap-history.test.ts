@@ -62,7 +62,7 @@ test('history: collectHistory gives the weeks, or an error with a short reason w
   const slow = await collectHistory({ exporter: exporter(() => { throw Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }); }).fn, now: NOW });
   assert.equal(slow.history.error, 'codeburn did not answer within 60 s');
   const odd = await collectHistory({ exporter: exporter(() => ({ schema: 'other' })).fn, now: NOW });
-  assert.equal(odd.history.error, 'unrecognised codeburn export');
+  assert.equal(odd.history.error, 'unrecognised codeburn export (other)', 'names the schema (1.21.15)');
   const none = await collectHistory({ pathEnv: tmp('nopath'), now: NOW });
   assert.equal(none.history.error, 'codeburn is not installed');
 });

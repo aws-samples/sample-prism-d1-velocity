@@ -1753,7 +1753,8 @@ cache-read tokens and the top tools. For codeburn's own breakdown run `codeburn 
 or `codeburn month` in a terminal. The numbers come from one `codeburn export` for this calendar
 month (today is read from its per-day rows), plus one for the heatmap weeks before this month, which
 runs at most once a day because those days do not change. The month is drawn as soon as its export
-answers; while the earlier weeks load (about 8 seconds on a cold cache) their days show as "no data"
+answers; while the earlier weeks load (about 30 seconds on codeburn's first run, about 9 seconds
+once its own cache is built) their days show as "no data"
 with a loading pattern and the note "Loading earlier weeks from codeburn...". If that export fails
 or times out they stay "no data" and the note gives the reason; they are never drawn as $0. The
 legend shows the date range the heatmap covers. `--json` and `--snapshot` wait for the earlier
@@ -1761,15 +1762,23 @@ weeks, and `usage.history` in `--json` says whether they are `ready`, `pending` 
 `~/.prism/cache/usage.json` (readable only by you) for 5 minutes. The page paints from local data
 first, with the spend cards showing "loading", then fills usage in. A cache older than 5 minutes is
 shown at once and refreshed in the background. A failed or missing codeburn is shown as such and
-never cached.
+never cached. The cache is kept with the codeburn binary that wrote it: after codeburn is installed,
+upgraded or reinstalled, the next load runs new exports instead of serving the old copy (1.21.15).
+
+prism-cli reads both codeburn export formats: `codeburn.export.v2` (codeburn 0.9.24 to 0.9.27) and
+`codeburn.export.v3` (codeburn 0.9.28, camelCase fields). Before 1.21.15 a v3 export read
+as zero, so the card said there was no usage. An export in any other format, or one without the
+fields prism-cli reads, now shows an error on the card that names the codeburn version and the
+format, never "no usage"; update prism-cli (`npm i -g @prism-d1/cli`) when you see it.
 
 Before there is a month to draw, the Spend card stays in its place with an empty state. Without
 codeburn it says what the card will show once codeburn is set up, with **Set up codeburn** and the
 command once to copy, `prism-cli enable codeburn`. The button runs `prism-cli enable codeburn --yes`
 after a confirm dialog: it installs codeburn from npm when it is missing, then sets up its sync in
 the mode saved on the machine (local only by default; the scheduled push when the machine already
-syncs to a team PRISM). With codeburn set up and no usage this month yet, the card says so, with no
-button. A static snapshot shows the command only. The repo table's spend column shows `-` either way.
+syncs to a team PRISM). Once codeburn is on PATH the card says "Loading usage from codeburn..." while
+its first export runs, without the button (1.21.15). With codeburn set up and no usage this month
+yet, the card says so, with no button. A static snapshot shows the command only. The repo table's spend column shows `-` either way.
 
 ![The Spend card with demo data before codeburn is installed: what the card shows once it is set up, Set up codeburn, and prism-cli enable codeburn to copy](assets/images/prism-cli/dashboard-spend-empty-light.png)
 

@@ -41,6 +41,13 @@ export interface UsageCacheDeps {
   collectHistory?: () => Promise<HistoryResult>;
   now?: () => Date;
   ttlMs?: number;
+  /**
+   * codeburn's binary as it is now (tool-check.ts binaryStampOnPath); null
+   * when it is not on PATH. When set, it is stored with the panel, and a
+   * cached panel from another binary (an install, upgrade or removal since)
+   * is not served: the next read runs new exports.
+   */
+  binary?: () => string | null;
 }
 
 export interface UsageResult {
@@ -70,23 +77,35 @@ export class UsageCache {
     const c = readJson(this.d.file);
     const now = this.now();
     if (!c || c.schema !== USAGE_CACHE_SCHEMA || c.day !== localDate(now) || typeof c.savedAt !== 'number' || !c.panel || !cacheable(c.panel)) return null;
+    if (this.d.binary && c.binary !== this.d.binary()) return null;
     return { ...c.panel, stale: now.getTime() - c.savedAt >= this.ttl, refreshError: this.lastError };
   }
 
-  /** What to show without running codeburn: the cached panel, else the last failure, else null (not loaded yet). */
+  /**
+   * What to show without running codeburn: the cached panel, else the last
+   * failure, else null (not loaded yet). A "not installed" failure while
+   * codeburn is now on PATH (just set up) is null too, so the page shows
+   * "loading" until the first export answers, not the setup button again.
+   */
   current(): UsagePanel | null {
-    return this.peek() || this.lastFailure;
+    const hit = this.peek();
+    if (hit) return hit;
+    if (this.lastFailure?.status === 'not-installed' && this.d.binary?.()) return null;
+    return this.lastFailure;
   }
 
   /** The weeks-before-this-month copy in the cache file, from any day; collectUsage reuses it only for the same range. */
   private cachedPrior(): PriorDays | null {
-    const p = readJson(this.d.file)?.panel?.prior;
+    const c = readJson(this.d.file);
+    // Read by another codeburn binary (or a prism-cli before 1.21.15, which stored none): exported again.
+    if (this.d.binary && c?.binary !== this.d.binary()) return null;
+    const p = c?.panel?.prior;
     return p && typeof p.from === 'string' && typeof p.to === 'string' && Array.isArray(p.daily) ? p : null;
   }
 
-  private write(panel: UsagePanel, savedAt = this.now().getTime()): void {
+  private write(panel: UsagePanel, savedAt = this.now().getTime(), binary = this.d.binary?.()): void {
     try {
-      writePrivateJson(this.d.file, { schema: USAGE_CACHE_SCHEMA, savedAt, day: localDate(this.now()), panel });
+      writePrivateJson(this.d.file, { schema: USAGE_CACHE_SCHEMA, savedAt, day: localDate(this.now()), panel, ...(binary !== undefined ? { binary } : {}) });
     } catch (e: any) {
       process.stderr.write(`prism dashboard: could not write the usage cache: ${e?.message || e}\n`);
     }
@@ -110,7 +129,7 @@ export class UsageCache {
         const c = readJson(this.d.file);
         if (!c || c.schema !== USAGE_CACHE_SCHEMA || c.day !== localDate(this.now()) || !c.panel) return;
         // The panel keeps its range; the result sets the status (and the reason on an error).
-        this.write({ ...c.panel, prior: r.prior, history: { ...c.panel.history, ...r.history } }, c.savedAt);
+        this.write({ ...c.panel, prior: r.prior, history: { ...c.panel.history, ...r.history } }, c.savedAt, c.binary);
       } catch (e: any) {
         process.stderr.write(`prism dashboard: could not merge the earlier weeks into the usage cache: ${e?.message || e}\n`);
       }
@@ -133,6 +152,8 @@ export class UsageCache {
   refresh(): Promise<UsagePanel> {
     if (!this.refreshing) {
       this.refreshing = (async () => {
+        // The binary as the export starts: an upgrade during the export leaves the result stamped with the old one.
+        const binary = this.d.binary?.();
         let u = await this.d.collect(this.cachedPrior());
         // The earlier weeks may have landed while the month exported: keep them rather than flip back to pending.
         if (u.history?.status === 'pending') {
@@ -143,7 +164,7 @@ export class UsageCache {
         if (cacheable(u)) {
           this.lastError = null;
           this.lastFailure = null;
-          this.write(u);
+          this.write(u, undefined, binary);
           if (u.history?.status === 'pending') this.startHistory();
         } else {
           this.lastError = u.message || u.status;

@@ -6,6 +6,7 @@ import { serveStdio } from '../../dashboard/stdio.js';
 import type { PayloadTiming } from '../../dashboard/payload.js';
 import { collectHistory, collectUsage } from '../../dashboard/usage.js';
 import { UsageCache, usageCachePath } from '../../dashboard/usage-cache.js';
+import { binaryStampOnPath } from '../../utils/tool-check.js';
 import { buildSnapshotHtml, canOpen, openBrowser, writeSnapshot } from '../../dashboard/snapshot.js';
 import { ownVersion } from './version.js';
 import { UpdateCheck, updateCachePath } from '../../dashboard/update-check.js';
@@ -41,8 +42,9 @@ export default {
   async action(opts: { json?: boolean; all?: boolean; root?: string; port?: string; open?: boolean; fresh?: boolean; timing?: boolean; snapshot?: string; exitOnStdinClose?: boolean; serveStdio?: boolean }) {
     // stderr, so --json output stays parseable.
     if (opts.all) console.error('prism: --all is deprecated and has no effect; the dashboard now scans your home directory (or --root) by default.');
-    // The month paints first; the earlier weeks of the heatmap (one more export, ~8 s) follow in the background.
-    const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: (prior) => collectUsage({ prior, history: 'defer' }), collectHistory: () => collectHistory() });
+    // The month paints first; the earlier weeks of the heatmap (one more export: about 30 s on codeburn's first run, about 9 s after) follow in the background.
+    // A cached panel is used only with the codeburn binary that produced it: an install or upgrade runs new exports.
+    const usageCache = new UsageCache({ file: usageCachePath(homedir()), collect: (prior) => collectUsage({ prior, history: 'defer' }), collectHistory: () => collectHistory(), binary: () => binaryStampOnPath('codeburn') });
     /** One-shot outputs wait for the earlier weeks, so a file never says "loading" forever. */
     const settledUsage = async () => {
       const r = await usageCache.get({ fresh: opts.fresh });
