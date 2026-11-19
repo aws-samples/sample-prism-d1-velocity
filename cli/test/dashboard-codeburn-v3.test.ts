@@ -124,6 +124,14 @@ test('usage cache: a panel cached with another codeburn binary is not served; th
   assert.equal(old.peek()!.month!.cost, 9);
 });
 
+test('usage cache: an upgrade while the export runs leaves the result stamped with the binary that ran it', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'prism-cbv3-')), 'usage.json');
+  let binary = 'cb-0.9.27';
+  const cache = new UsageCache({ file, now: () => NOW, binary: () => binary, collect: async () => { binary = 'cb-0.9.28'; return okPanel(1); } });
+  await cache.refresh();
+  assert.equal(cache.peek(), null, 'exported by 0.9.27: not served once 0.9.28 is on PATH');
+});
+
 test('usage cache: "not installed" turns into loading (null) once codeburn is on PATH, until the first export answers', async () => {
   const file = join(mkdtempSync(join(tmpdir(), 'prism-cbv3-')), 'usage.json');
   let binary: string | null = null;

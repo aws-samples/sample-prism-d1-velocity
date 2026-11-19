@@ -172,8 +172,11 @@ function totalsFrom(row: any, k: ExportKeys): Totals {
   return { cost: num(row?.[k.cost]), calls: num(row?.[k.calls]), sessions: num(row?.[k.sessions]) };
 }
 
+/** Longest schema or codeburn version quoted in an error. */
+const MAX_LABEL = 40;
+
 /** "codeburn 0.9.28", or "codeburn" when the version is not known. */
-const codeburnName = (version: string | null) => (version ? `codeburn ${version.replace(/^codeburn\s+/i, '').slice(0, 40)}` : 'codeburn');
+const codeburnName = (version: string | null) => (version ? `codeburn ${version.replace(/^codeburn\s+/i, '').slice(0, MAX_LABEL)}` : 'codeburn');
 
 /**
  * Why prism-cli cannot read this export, or null when it can: a schema it does
@@ -184,7 +187,7 @@ export function unreadableExport(j: any, version: () => string | null): string |
   const k = exportKeys(j);
   const cb = () => codeburnName(version());
   if (!k) {
-    const schema = typeof j?.schema === 'string' ? `"${j.schema.slice(0, 40)}"` : 'no schema';
+    const schema = typeof j?.schema === 'string' ? `"${j.schema.slice(0, MAX_LABEL)}"` : 'no schema';
     return `${cb()} wrote an export with ${schema}; prism-cli reads ${EXPORT_V2} and ${EXPORT_V3}. Update prism-cli: npm i -g @prism-d1/cli`;
   }
   const lacks = (row: any, keys: string[]) => row && typeof row === 'object' && !keys.some((key) => key in row);
@@ -371,7 +374,7 @@ async function collectPrior(exporter: CodeburnExport, range: { from: string; to:
   try {
     const j = await exporter(['--from', range.from, '--to', range.to]);
     const k = exportKeys(j);
-    if (!k || unreadableExport(j, () => null) || !Array.isArray(j?.periods?.[0]?.daily)) return fail(`unrecognised codeburn export (${String(j?.schema).slice(0, 40)})`);
+    if (!k || unreadableExport(j, () => null) || !Array.isArray(j?.periods?.[0]?.daily)) return fail(`unrecognised codeburn export (${String(j?.schema).slice(0, MAX_LABEL)})`);
     const daily = (j.periods[0].daily as any[])
       .filter((r) => typeof r?.[k.date] === 'string' && r[k.date] >= range.from && r[k.date] <= range.to)
       .map((r) => ({ date: r[k.date] as string, cost: num(r[k.cost]) }))

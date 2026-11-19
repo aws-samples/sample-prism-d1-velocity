@@ -152,6 +152,8 @@ export class UsageCache {
   refresh(): Promise<UsagePanel> {
     if (!this.refreshing) {
       this.refreshing = (async () => {
+        // The binary as the export starts: an upgrade during the export leaves the result stamped with the old one.
+        const binary = this.d.binary?.();
         let u = await this.d.collect(this.cachedPrior());
         // The earlier weeks may have landed while the month exported: keep them rather than flip back to pending.
         if (u.history?.status === 'pending') {
@@ -162,7 +164,7 @@ export class UsageCache {
         if (cacheable(u)) {
           this.lastError = null;
           this.lastFailure = null;
-          this.write(u);
+          this.write(u, undefined, binary);
           if (u.history?.status === 'pending') this.startHistory();
         } else {
           this.lastError = u.message || u.status;
