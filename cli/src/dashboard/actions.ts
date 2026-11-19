@@ -52,7 +52,7 @@ import { PENTEST_RUN_ENV } from '../security/pentest-deploy.js';
 export type ActionId = 'codewatch-repo' | 'codewatch-global'
   | 'codewatch-reviewer-clone' | 'codewatch-reviewer-team' | 'codewatch-reviewer-global'
   | 'codewatch-reviewer-clone-reset' | 'codewatch-reviewer-team-reset' | 'codewatch-reviewer-global-reset' | 'codewatch-reviewer-apply-all'
-  | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team'
+  | 'codeburn-local' | 'codeburn-systemd' | 'codeburn-team' | 'codeburn-team-yes'
   | 'codeburn-remove' | 'codeburn-status' | 'codeburn-setup' | 'team-info'
   | 'aws-connect' | 'aws-connect-status' | 'aws-disconnect' | 'accountguard-check' | 'accountguard-recommend'
   | 'agent-hooks-kiro' | 'agent-hooks-kiro-global' | 'agent-hooks-claude' | 'agent-hooks-claude-global'
@@ -154,6 +154,11 @@ export const ACTIONS: Record<ActionId, ActionDef> = {
   'codeburn-systemd': { label: 'Schedule with a systemd user timer', args: ['enable', 'codeburn', '--schedule', 'systemd'], systemd: true, timeoutMs: 5 * MIN },
   // codeburn sync setup opens a browser to sign in, so this one gets longer.
   'codeburn-team': { label: "Sync to my team's PRISM", args: ['enable', 'codeburn', '--url'], url: true, timeoutMs: 10 * MIN },
+  // The same over an existing sync config (1.21.13): a new URL, or the same one to sign in again. --yes: there is no
+  // terminal to answer enable codeburn's question; the page's dialog, which names both URLs, is the confirmation.
+  'codeburn-team-yes': { label: 'Run the codeburn sync setup again', args: ['enable', 'codeburn', '--yes', '--url'], url: true, confirm: true, timeoutMs: 10 * MIN,
+    confirmLabel: 'Yes, replace this machine\'s codeburn sync setup and sign in again',
+    note: 'Runs codeburn sync setup for this URL: you sign in again in a browser, and codeburn then pushes your usage there. --yes also installs codeburn with npm if it is missing.' },
   'codeburn-remove': { label: 'Remove the sync schedule', args: ['enable', 'codeburn', '--remove'], confirm: true, confirmLabel: 'Yes, remove the scheduled codeburn sync push from this machine', timeoutMs: 2 * MIN },
   'codeburn-status': { label: 'codeburn status', args: ['enable', 'codeburn', '--status'], timeoutMs: MIN },
   // The Dashboard's Spend card when codeburn is missing (1.21.8). --yes: no terminal to answer the install prompt; the
@@ -314,6 +319,33 @@ export interface ActionStatus {
    * Read from the file the command wrote, never from its output.
    */
   result?: { repo: string; run: string; status: RunStatus } | null;
+  /** codeburn-team(-yes): the sign-in link codeburn sync setup printed, for a machine where no browser opened. */
+  signIn?: SignIn | null;
+}
+
+/** The sign-in page codeburn sync setup asks for, and the loopback port its login returns to on this machine. */
+export interface SignIn { url: string; callbackPort: number | null }
+
+const CODEBURN_SETUP_ACTIONS = new Set<ActionId>(['codeburn-team', 'codeburn-team-yes']);
+
+/**
+ * The sign-in link in `codeburn sync setup` output. codeburn (0.9.24 to 0.9.28) prints, on stderr,
+ * "If the browser doesn't open, visit:" and the authorization URL on the next line, whose redirect_uri
+ * is http://127.0.0.1:<port>/callback on the machine running it. It has no no-browser or device-code
+ * flag. Only an https URL is returned (codeburn refuses any other), so the page can link it.
+ */
+export function signInLink(output: string): SignIn | null {
+  const m = /If the browser doesn't open, visit:\s*\n\s*(\S+)/.exec(output);
+  if (!m) return null;
+  let u: URL;
+  try { u = new URL(m[1]); } catch { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password) return null;
+  let port: number | null = null;
+  try {
+    const r = new URL(u.searchParams.get('redirect_uri') ?? '');
+    if (r.hostname === '127.0.0.1' && /^\d+$/.test(r.port)) port = Number(r.port);
+  } catch { /* no loopback redirect: no port to forward */ }
+  return { url: u.href, callbackPort: port };
 }
 
 /** Actions that write a Security Agent result file in their repo. */
@@ -590,6 +622,8 @@ export class ActionRunner {
     // Both spellings of a symlinked home (/home/x -> /local/home/x): repo paths come back resolved.
     const homes = [...new Set([this.d.home, realHome(this.d.home)])];
     const mask = (t: string) => homes.reduce((x, h) => maskHome(x, h), t);
-    return { ...rest, ...(rest.cwd ? { cwd: homes.reduce((x, h) => tildeHome(x, h), rest.cwd) } : {}), output: mask(redact(buf)) };
+    const output = mask(redact(buf));
+    return { ...rest, ...(rest.cwd ? { cwd: homes.reduce((x, h) => tildeHome(x, h), rest.cwd) } : {}), output,
+      ...(rest.action && CODEBURN_SETUP_ACTIONS.has(rest.action) ? { signIn: signInLink(output) } : {}) };
   }
 }

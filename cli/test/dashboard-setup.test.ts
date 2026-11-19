@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { startServer, cookieName, BIND_HOST } from '../src/dashboard/server.js';
-import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, redact, repoId, type ActionId, type SpawnFn } from '../src/dashboard/actions.js';
+import { ActionRunner, ACTIONS, actionLogPath, collectorUrlError, redact, repoId, signInLink, type ActionId, type SpawnFn } from '../src/dashboard/actions.js';
 import { setupApi } from '../src/dashboard/setup-api.js';
 import { classifyProfile, iniKeys, resolveAwsIdentity, STATIC_DEFAULT_WARNING, NO_CREDENTIALS_WARNING } from '../src/dashboard/aws-identity.js';
 import { readConnectionFile, writeConnectionFile, loadConnection } from '../src/aws/connection.js';
@@ -201,6 +201,7 @@ test('each allowed action spawns the CLI binary (npm for the update) with a fixe
     'codeburn-local': { args: ['enable', 'codeburn', '--local'], cwd: '/work' },
     'codeburn-systemd': { args: ['enable', 'codeburn', '--schedule', 'systemd'], cwd: '/work' },
     'codeburn-team': { args: ['enable', 'codeburn', '--url', 'https://collector.example.com/otel?x=1'], cwd: '/work', body: { url: 'https://collector.example.com/otel?x=1' } },
+    'codeburn-team-yes': { args: ['enable', 'codeburn', '--yes', '--url', 'https://collector.example.com'], cwd: '/work', body: { url: 'https://collector.example.com', confirm: true } },
     'codeburn-remove': { args: ['enable', 'codeburn', '--remove'], cwd: '/work', body: { confirm: true } },
     'codeburn-status': { args: ['enable', 'codeburn', '--status'], cwd: '/work' },
     'codeburn-setup': { args: ['enable', 'codeburn', '--yes'], cwd: '/work', body: { confirm: true } },
@@ -464,4 +465,18 @@ test('page: theme boot script runs in <head>; dark is the default, light applies
   assert.match(html, /data-theme-set="light">Light<\/button><button type="button" data-theme-set="dark">Dark<\/button><button type="button" data-theme-set="system">System/);
   for (const s of [...html.matchAll(/<script nonce="N">([\s\S]*?)<\/script>/g)].map((m) => m[1])) new vm.Script(s);
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(html));
+});
+
+test('codeburn-team: the drawer status carries the sign-in link codeburn sync setup printed, https only, with its callback port', async () => {
+  const AUTH = 'https://auth.example.com/oauth2/authorize?response_type=code&client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2Fcallback&state=s1&code_challenge=c1&code_challenge_method=S256';
+  assert.deepEqual(signInLink(`Opening browser for login...\nIf the browser doesn't open, visit:\n  ${AUTH}\n\nWaiting for login (5 min timeout)...\n`), { url: AUTH, callbackPort: 53682 });
+  assert.equal(signInLink("If the browser doesn't open, visit:\n  http://auth.example.com/x\n"), null, 'http is not linked');
+  assert.equal(signInLink("If the browser doesn't open, visit:\n  javascript:alert(1)\n"), null);
+  assert.equal(signInLink('no link here'), null);
+  const calls: Spawned[] = [];
+  const r = runner(calls);
+  await r.start({ action: 'codeburn-team-yes', url: 'https://collector.example.com', confirm: true });
+  calls[0].child.stderr.emit('data', `If the browser doesn't open, visit:\n  ${AUTH}\n`);
+  assert.deepEqual(r.status().signIn, { url: AUTH, callbackPort: 53682 });
+  assert.equal((await runner([]).start({ action: 'codeburn-team-yes', url: 'https://collector.example.com' })).status, 400, 'needs confirm: true');
 });

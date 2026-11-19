@@ -7,7 +7,7 @@ import type { RunResult } from '../src/utils/exec.js';
 import { codeburnVersionOk, enableCodeburn, INSTALL_CMD, runEnableCodeburn, systemdInstallSchedule, systemdRemoveSchedule, systemdUnits, type CodeburnDeps } from '../src/commands/enable/codeburn.js';
 import alias, { DEPRECATION } from '../src/commands/bootstrapper/setup-otel-sync.js';
 import { machineChecks } from '../src/dashboard/setup.js';
-import { crontabLines, systemdTimerExists } from '../src/utils/otel-sync-schedule.js';
+import { crontabLines, sameSyncUrl, syncUrlKey, systemdTimerExists } from '../src/utils/otel-sync-schedule.js';
 import { readSavedMode, writeSyncMode } from '../src/utils/sync-mode.js';
 
 const URL = 'https://otel.example.com';
@@ -102,7 +102,7 @@ test('enable codeburn: second run reports what is already done and does not set 
   assert.ok(!m.calls.some((c) => c.includes('sync setup')), 'no sync setup');
   assert.ok(!m.calls.some((c) => c.includes('--since 30d')), 'no backfill');
   assert.deepEqual(m.scheduleCalls, ['remove', `install ${CB} 12`], 'schedule refreshed in place');
-  assert.match(m.text(), /already configured for https:\/\/otel\.example\.com/);
+  assert.match(m.text(), /already syncs to https:\/\/otel\.example\.com \(to sign in again: prism-cli enable codeburn --url https:\/\/otel\.example\.com --yes\)/);
   assert.match(m.text(), /already installed/);
   assert.match(m.text(), /already set up; nothing new to do/);
   assert.deepEqual(m.asked, []);
@@ -543,4 +543,77 @@ test('team mode with no URL and no terminal says to ask the platform team', asyn
   writeSyncMode(m.home, 'team');
   assert.equal(await enableCodeburn({}, m.deps), 1);
   assert.match(m.err.join('\n'), /the collector URL is required\. Ask your platform team for it, then run prism-cli enable codeburn --url <collector URL>\./);
+});
+
+test('sync URL key: scheme and host case, default port and trailing slashes compare equal; a prefix does not', () => {
+  assert.ok(sameSyncUrl('https://collector.example.com', 'HTTPS://Collector.Example.COM:443/'));
+  assert.ok(sameSyncUrl('https://collector.example.com/otel', 'https://collector.example.com/otel//'));
+  assert.ok(!sameSyncUrl('https://collector.example.com/otel', 'https://collector.example.com'), 'a prefix of the stored URL is another URL');
+  assert.ok(!sameSyncUrl('https://collector.example.com.evil.example', 'https://collector.example.com'));
+  assert.ok(!sameSyncUrl('https://collector.example.com:8443', 'https://collector.example.com'));
+  assert.ok(!sameSyncUrl('https://collector.example.com/OTEL', 'https://collector.example.com/otel'), 'the path keeps its case');
+  assert.ok(!sameSyncUrl('', 'https://collector.example.com'));
+  assert.equal(syncUrlKey('not a url'), null);
+});
+
+const CUR = 'https://collector.example.com';
+const setupRan = (m: ReturnType<typeof fakeMachine>, url = CUR) => m.calls.includes(`interactive ${CB} sync setup ${url}`);
+
+test('enable codeburn --url, same URL: asks to re-run the sync setup; yes re-runs, no keeps it with the command', async () => {
+  const y = fakeMachine({ syncUrl: CUR, schedule: true, answers: ['y'] });
+  assert.equal(await enableCodeburn({ url: 'https://Collector.example.com/' }, y.deps), 0);
+  assert.deepEqual(y.asked, [`  codeburn already syncs to ${CUR}. Re-run the sync setup (sign in again)? [y/N] `]);
+  assert.ok(setupRan(y, 'https://Collector.example.com/'), y.calls.join('; '));
+
+  const n = fakeMachine({ syncUrl: CUR, schedule: true, answers: ['n'] });
+  assert.equal(await enableCodeburn({ url: CUR }, n.deps), 0);
+  assert.equal(n.asked.length, 1);
+  assert.ok(!n.calls.some((c) => c.includes('sync setup')));
+  assert.match(n.text(), /Not changed: kept the sync setup for https:\/\/collector\.example\.com\. To run the sync setup later: prism-cli enable codeburn --url https:\/\/collector\.example\.com --yes/);
+});
+
+test('enable codeburn --url, same URL: --yes re-runs without asking; no terminal asks nothing and says how', async () => {
+  const y = fakeMachine({ syncUrl: CUR, schedule: true, tty: false });
+  assert.equal(await enableCodeburn({ url: CUR, yes: true }, y.deps), 0);
+  assert.deepEqual(y.asked, []);
+  assert.ok(setupRan(y));
+
+  const t = fakeMachine({ syncUrl: CUR, schedule: true, tty: false });
+  assert.equal(await enableCodeburn({ url: CUR }, t.deps), 0);
+  assert.deepEqual(t.asked, [], 'no prompt (no readline) without a terminal');
+  assert.ok(!t.calls.some((c) => c.includes('sync setup')));
+  assert.match(t.text(), /No terminal to ask, so kept the sync setup for https:\/\/collector\.example\.com\. To run the sync setup: prism-cli enable codeburn --url https:\/\/collector\.example\.com --yes/);
+});
+
+test('enable codeburn --url, different URL: shows old -> new and asks; --yes switches; no terminal keeps the old one', async () => {
+  const NEW = 'https://collector2.example.com/otel?team=a';
+  const y = fakeMachine({ syncUrl: CUR, schedule: true, answers: ['y'] });
+  assert.equal(await enableCodeburn({ url: NEW }, y.deps), 0);
+  assert.match(y.text(), /codeburn syncs to a different collector: https:\/\/collector\.example\.com -> https:\/\/collector2\.example\.com\/otel\?team=a/);
+  assert.deepEqual(y.asked, ['  Reconfigure for the new URL? [y/N] ']);
+  assert.ok(setupRan(y, NEW));
+
+  const yes = fakeMachine({ syncUrl: CUR, schedule: true, tty: false });
+  assert.equal(await enableCodeburn({ url: NEW, yes: true }, yes.deps), 0);
+  assert.deepEqual(yes.asked, []);
+  assert.ok(setupRan(yes, NEW));
+
+  const t = fakeMachine({ syncUrl: CUR, schedule: true, tty: false });
+  assert.equal(await enableCodeburn({ url: NEW }, t.deps), 0);
+  assert.deepEqual(t.asked, [], 'no prompt (no readline) without a terminal');
+  assert.ok(!t.calls.some((c) => c.includes('sync setup')));
+  assert.match(t.text(), /No terminal to ask, so kept https:\/\/collector\.example\.com\. To run the sync setup: prism-cli enable codeburn --url 'https:\/\/collector2\.example\.com\/otel\?team=a' --yes/);
+  assert.match(t.text(), /Endpoint: {2}https:\/\/collector\.example\.com$/m, 'the summary names the URL that was kept');
+
+  const prefix = fakeMachine({ syncUrl: `${CUR}/otel`, schedule: true, tty: false });
+  assert.equal(await enableCodeburn({ url: CUR }, prefix.deps), 0);
+  assert.match(prefix.text(), /different collector: https:\/\/collector\.example\.com\/otel -> https:\/\/collector\.example\.com/, 'a prefix is not the same URL');
+});
+
+test('enable codeburn --dry-run over an existing sync URL says what it would ask and asks nothing', async () => {
+  const m = fakeMachine({ syncUrl: CUR, schedule: true });
+  assert.equal(await enableCodeburn({ url: CUR, dryRun: true }, m.deps), 0);
+  assert.deepEqual(m.asked, []);
+  assert.match(m.text(), /would ask: codeburn already syncs to https:\/\/collector\.example\.com\. Re-run the sync setup \(sign in again\)\? \[y\/N\] \(--yes runs it\)/);
+  assert.ok(!m.calls.some((c) => c.startsWith('interactive')));
 });

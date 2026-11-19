@@ -20,6 +20,7 @@
  * Account ids and ARNs appear only here and in the page, never in `dashboard --json`.
  */
 import { gitleaksInstallHint, shellPath } from './setup.js';
+import { configuredSyncUrl } from '../utils/otel-sync-schedule.js';
 import { ACTIONS, displayCommand, redact, repoId, type ActionId, type ActionRunner, type ApiResult } from './actions.js';
 import { profileChoices, resolveAwsIdentity, type IdentityDeps } from './aws-identity.js';
 import { accountGuardView, setBaseline, type AccountGuardDeps } from './accountguard.js';
@@ -83,6 +84,9 @@ export function setupApi(d: SetupApiDeps) {
           cwd: tildeHome(d.cwd, d.identity.home),
           copy: { ...COPY_ONLY, gitleaks: gitleaksInstallHint() },
           links: { releases: RELEASES_URL },
+          // The URL codeburn syncs to now (null: none set up, or its config is unreadable), so Sync to team can name it
+          // in its confirm dialog before replacing it. Live page only: the snapshot drops it.
+          codeburnSyncUrl: configuredSyncUrl(d.identity.home) || null,
           // The Connect picker's choices: section names and configured regions only, read fresh (aws-identity.ts profileChoices).
           aws: { ...resolveAwsIdentity(d.identity), choices: profileChoices(d.identity) },
         };

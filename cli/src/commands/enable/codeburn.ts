@@ -18,7 +18,7 @@ import {
   linuxCrontabAvailable, crontabLines, darwinPlistPath, scheduleExists, schedulerName,
   CODEBURN_INSTALL_ARGS, ENABLE_CODEBURN_CMD, SYNC_SINCE, syncArgs,
   linuxCronScheduleExists, SYSTEMD_SCHEDULER_NAME, SYSTEMD_UNIT, systemdServicePath, systemdTimerExists,
-  systemdTimerPath, systemdUserAvailable, systemdUserDir, configuredSyncUrl,
+  systemdTimerPath, systemdUserAvailable, systemdUserDir, configuredSyncUrl, sameSyncUrl,
 } from '../../utils/otel-sync-schedule.js';
 import { runGuarded } from './security.js';
 import {
@@ -450,6 +450,28 @@ function isHttpUrl(value: string): boolean {
 
 const yes = (answer: string) => ['y', 'yes'].includes(answer.trim().toLowerCase());
 const cmdLine = (args: string[]) => `codeburn ${args.join(' ')}`;
+/** `s` as one POSIX shell word, for a command the user copies. */
+const shellArg = (s: string) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
+/**
+ * Whether to run codeburn sync setup over the existing sync config: --yes does; a terminal asks;
+ * with no terminal (the dashboard runs this with stdin closed) nothing is asked: it keeps the
+ * config and prints the command that re-runs it. `kept` completes "No terminal to ask, so ...".
+ */
+async function confirmSetup(opts: CodeburnOptions, d: CodeburnDeps, dry: boolean, question: string, kept: string, rerun: string): Promise<boolean> {
+  if (opts.yes) return true;
+  if (dry) {
+    d.log(`  → would ask: ${question.trim()} (--yes runs it)`);
+    return false;
+  }
+  if (!d.isTTY) {
+    d.log(`  No terminal to ask, so ${kept}. To run the sync setup: ${rerun}`);
+    return false;
+  }
+  if (yes(await d.ask(question))) return true;
+  d.log(`  Not changed: ${kept}. To run the sync setup later: ${rerun}`);
+  return false;
+}
 
 /** Prints `codeburn sync status`, indented. Non-fatal: a failure is one warning line. */
 function reportSyncStatus(cb: string, d: CodeburnDeps): void {
@@ -748,18 +770,23 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
   }
   const shownUrl = otelUrl || '<OtelCollectorUrl>';
 
-  // 3. codeburn sync setup, unless already configured for this endpoint.
+  // 3. codeburn sync setup: always for a new endpoint; over an existing one only after a yes (or --yes).
   let needsSetup = true;
-  if (existingUrl && otelUrl && (existingUrl === otelUrl || existingUrl.startsWith(otelUrl))) {
-    d.log(`  ✓ codeburn sync already configured for ${existingUrl}`);
-    needsSetup = false;
-  } else if (existingUrl && otelUrl) {
-    d.log(`  ⚠ codeburn sync configured for a different endpoint: ${existingUrl}`);
-    if (dry) {
-      d.log('  → would ask whether to reconfigure it for the new URL (--yes reconfigures)');
-    } else if (!opts.yes && !yes(await d.ask('  Reconfigure for the new URL? [y/N] '))) {
-      d.log('  Keeping existing configuration.');
-      needsSetup = false;
+  if (existingUrl && otelUrl) {
+    const rerun = `${ENABLE_CODEBURN_CMD} --url ${shellArg(otelUrl)} --yes`;
+    if (sameSyncUrl(existingUrl, otelUrl)) {
+      if (opts.url) {
+        needsSetup = await confirmSetup(opts, d, dry, `  codeburn already syncs to ${existingUrl}. Re-run the sync setup (sign in again)? [y/N] `,
+          `kept the sync setup for ${existingUrl}`, rerun);
+      } else {
+        // The URL came from codeburn's own config: a plain re-run refreshes the schedule and asks nothing.
+        d.log(`  ✓ codeburn already syncs to ${existingUrl} (to sign in again: ${rerun})`);
+        needsSetup = false;
+      }
+    } else {
+      d.log(`  ⚠ codeburn syncs to a different collector: ${existingUrl} -> ${otelUrl}`);
+      needsSetup = await confirmSetup(opts, d, dry, '  Reconfigure for the new URL? [y/N] ', `kept ${existingUrl}`, rerun);
+      if (!needsSetup) otelUrl = existingUrl;
     }
   }
   const setupArgs = ['sync', 'setup', shownUrl];
@@ -768,7 +795,7 @@ export async function enableCodeburn(opts: CodeburnOptions, d: CodeburnDeps): Pr
       d.log(`  → would run: ${cmdLine(setupArgs)} (opens a browser to sign in)`);
     } else {
       d.log(`\n  Running: ${cmdLine(setupArgs)}`);
-      d.log('  (This will open a browser for OIDC authentication)\n');
+      d.log('  (This opens a browser to sign in. No browser here, e.g. a remote machine: open the sign-in link codeburn prints below.)\n');
       // argv, not a command string: otelUrl comes from the prompt or a flag.
       if (!d.runInteractive(bin, setupArgs)) {
         d.error('\n  ✗ codeburn sync setup failed. Ensure your Cognito user exists and try again.');
@@ -860,7 +887,7 @@ export const CODEBURN_OPTIONS = [
   { flags: '--url <url>', description: "Sync mode team: your team's collector URL (the OtelCollectorUrl stack output, from your platform team; default: the URL codeburn already syncs to)" },
   { flags: '--admin', description: 'Sync mode admin: print the platform-team setup steps and the prism-cli team helper commands (no AWS calls)' },
   { flags: '--interval <hours>', description: 'Sync interval in hours (default: 12)' },
-  { flags: '--yes', description: `Install codeburn (${INSTALL_CMD}), reconfigure a different endpoint, and accept an offered systemd user timer without a prompt` },
+  { flags: '--yes', description: `Install codeburn (${INSTALL_CMD}), run the sync setup again over an existing endpoint (a new URL, or the same one to sign in again), and accept an offered systemd user timer without a prompt` },
   { flags: '--dry-run', description: 'Print the plan with the exact commands; change nothing' },
   { flags: '--status', description: 'Show codeburn, sync and schedule status' },
   { flags: '--remove', description: 'Remove the sync schedule (both kinds on Linux, unless --schedule picks one); with --local, switch to local and remove it' },

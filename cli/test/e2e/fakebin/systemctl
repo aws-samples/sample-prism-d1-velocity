@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake systemctl for the codeburnurl suite: no systemd user manager, so the crontab schedule is used.
+echo "Failed to connect to bus: No medium found" >&2
+exit 1

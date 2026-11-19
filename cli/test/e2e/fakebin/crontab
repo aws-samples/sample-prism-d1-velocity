@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fake crontab for the codeburnurl suite: $HOME/fake-crontab, so a run never touches the real user's crontab.
+f="$HOME/fake-crontab"
+if [ "$1" = "-l" ]; then
+  if [ -f "$f" ]; then cat "$f"; exit 0; fi
+  echo "no crontab for demo" >&2; exit 1
+fi
+cat "$1" > "$f"

@@ -6,6 +6,30 @@
 const fs = require('fs');
 const a = process.argv.slice(2);
 const opt = (k) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : null; };
+// sync (the codeburnurl suite): every call goes to $HOME/codeburn-calls.log. `sync setup <url>` prints the sign-in lines
+// codeburn 0.9.24 prints (on stderr), waits FAKE_CB_SETUP_MS (default 4000) for the "login", then writes the sync config
+// as codeburn does (the URL minus one trailing slash). Example URLs only; nothing is fetched.
+if (a[0] === 'sync') {
+  const H = process.env.HOME, cfg = require('path').join(H, '.config', 'codeburn', 'sync.json');
+  fs.appendFileSync(require('path').join(H, 'codeburn-calls.log'), a.join(' ') + '\n');
+  if (a[1] === 'setup') {
+    const baseUrl = String(a[2]).replace(/\/$/, '');
+    const auth = 'https://auth.example.com/oauth2/authorize?response_type=code&client_id=fakeclient&redirect_uri=' + encodeURIComponent('http://127.0.0.1:53682/callback') + '&scope=openid&state=fakestate&code_challenge=fakechallenge&code_challenge_method=S256';
+    process.stderr.write(`Fetching discovery doc from ${baseUrl}...\n\nOpening browser for login...\nIf the browser doesn't open, visit:\n  ${auth}\n\nWaiting for login (5 min timeout)...\n`);
+    setTimeout(() => {
+      fs.mkdirSync(require('path').dirname(cfg), { recursive: true });
+      fs.writeFileSync(cfg, JSON.stringify({ baseUrl, clientId: 'fakeclient', tracesPath: '/v1/traces', issuer: 'https://auth.example.com' }));
+      process.stderr.write(`\n\u2713 Sync configured successfully.\n  Endpoint: ${baseUrl}\n`);
+      process.exit(0);
+    }, Number(process.env.FAKE_CB_SETUP_MS || 4000));
+    return;
+  }
+  if (a[1] === 'status') {
+    try { console.log('Endpoint: ' + JSON.parse(fs.readFileSync(cfg, 'utf8')).baseUrl + '\nAuth: configured'); } catch { console.error('Sync not configured.'); process.exit(1); }
+    process.exit(0);
+  }
+  console.log('Synced 0 calls'); process.exit(0);
+}
 if (a[0] !== 'export') { console.log('codeburn 0.9.24 (fake)'); process.exit(0); }
 if (process.env.FAKE_CB === 'none') { console.error('codeburn: no data directory found'); process.exit(1); }
 const from = opt('--from'), to = opt('--to'), out = opt('-o');

@@ -426,8 +426,9 @@ In team mode the command takes these steps, and a re-run reports the ones alread
    (`npm install -g codeburn`) and asks first; `--yes` skips the question. With no terminal and no
    `--yes` it stops and prints the command for you to run.
 2. **Connects codeburn's sync** with `codeburn sync setup <url>`, which opens a browser to sign in to
-   the Cognito user pool. Skipped when codeburn already syncs to that URL. Without `--url`, it uses
-   the URL codeburn is already configured with, and otherwise asks for one.
+   the Cognito user pool. Without `--url`, it uses the URL codeburn is already configured with (and
+   does not sign in again), and otherwise asks for one. When codeburn already syncs somewhere, see
+   [Changing the collector URL or signing in again](#changing-the-collector-url-or-signing-in-again).
 3. **Backfills** 30 days of history (`codeburn sync push --since 30d --attribution`), on first setup
    only.
 4. **Installs a platform-native schedule** — crontab on Linux, LaunchAgent on macOS, Scheduled Task
@@ -437,6 +438,33 @@ In team mode the command takes these steps, and a re-run reports the ones alread
    of your crontab, and when the crontab cannot be read a systemd user timer is offered (`--yes`
    accepts it).
 5. **Reports `codeburn sync status`.**
+
+### Changing the collector URL or signing in again
+
+`--url` is compared with the URL codeburn stores (in `~/.config/codeburn/sync.json`, as given to
+`codeburn sync setup` minus a trailing slash) after normalizing both: scheme and host case, the
+default port and trailing slashes do not matter. A path or a different port does, so
+`https://collector.example.com` and `https://collector.example.com/otel` are different URLs.
+
+- **Same URL:** it asks `codeburn already syncs to <url>. Re-run the sync setup (sign in again)? [y/N]`.
+  `--yes` re-runs it without asking. Use this when the sign-in expired or was revoked.
+- **Different URL:** it prints `<old> -> <new>` and asks `Reconfigure for the new URL? [y/N]`;
+  `--yes` switches without asking.
+- **No terminal and no `--yes`** (a script, CI, the dashboard before 1.21.13): it asks nothing, keeps
+  the current setup, prints the command that would change it
+  (`prism-cli enable codeburn --url <url> --yes`) and carries on with the schedule, exit 0.
+
+In the dashboard, Settings › Usage sync shows the **Current collector** with a **Re-run sync setup**
+button. **Sync to team** with a URL, when one is already set, first opens a dialog naming both URLs
+(**Switch to <new>**, or **Re-run sync setup for <url>** when it is the same one); confirming runs
+`prism-cli enable codeburn --yes --url <url>`. With no URL set yet it runs as before.
+
+**Signing in on a remote machine.** `codeburn sync setup` opens a browser on the machine it runs on and
+has no no-browser or device-code option. On a remote machine (a dev desktop over SSH, no display) no
+browser opens: open the link codeburn prints instead. In the dashboard, the action drawer shows it as
+**Open the codeburn sign-in page** while codeburn waits (5 minutes). The sign-in returns to
+`http://127.0.0.1:<port>/callback` on the machine running codeburn, so from your laptop forward that
+port first: `ssh -L <port>:127.0.0.1:<port> <remote machine>` (the drawer names the port).
 
 `--dry-run` prints the plan with the exact commands and changes nothing. `--status` shows codeburn,
 the sync config, the schedule, the last sync log lines and `codeburn sync status`. `--remove`
@@ -1314,8 +1342,10 @@ and links straight to it as `#settings/<tab>`:
   (`enable agent-hooks --client <c> [--global] [--uninstall]`). It shows the Claude Code plugin's
   version, with a warning below 0.3.0 (older plugins predate the harness hooks) and the commands that
   update it, and the Kiro Crew app with a button for `prism-cli enable kirocrew`.
-- **Usage sync:** where codeburn usage goes and the sync schedule, and **Run team info** (`team info`,
-  read-only), which reads the team stack's collector URL and user pool.
+- **Usage sync:** where codeburn usage goes and the sync schedule, the current collector URL with
+  **Re-run sync setup** (sign in again), **Sync to team** (asks first, naming both URLs, before it
+  replaces a current one), and **Run team info** (`team info`, read-only), which reads the team stack's
+  collector URL and user pool.
 - **AWS:** the AWS account the AWS commands default to (`prism-cli aws connect`); see below.
 - **Updates:** the installed and latest prism-cli, when it was published and when npm was last
   asked; **Update prism-cli** runs `npm i -g @prism-d1/cli@latest` (after the confirm dialog);

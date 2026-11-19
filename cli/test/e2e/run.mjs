@@ -12,7 +12,7 @@ import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startDashboard, demoEnv, ENTRY, CLI } from './start-dashboard.mjs';
+import { startDashboard, demoEnv, binDir, ENTRY, CLI } from './start-dashboard.mjs';
 // The same account-id rule the dashboard masks with: ARNs, Account lines, account fields and bare runs,
 // but not a commit prefix, result id or UUID group that happens to be 12 digits.
 const { accountIdsIn } = await import(join(CLI, 'dist', 'src', 'utils', 'redact.js'));
@@ -2299,6 +2299,106 @@ try {
       srv.proc.kill();
     }
   }
+  if (want('codeburnurl')) {
+    // Sync to team over an existing sync URL (1.21.13). A fake codeburn (its sync setup prints the sign-in link and
+    // "signs in" after 4 s), a fake crontab and a fake systemctl first on PATH, so no real schedule is touched.
+    const out = { log: [], cases: {} };
+    R.suites.codeburnurl = out;
+    const CUR = 'https://collector.example.com', NEW = 'https://collector2.example.com';
+    const withFakes = (h) => {
+      const b = join(h, 'bin-cron');
+      mkdirSync(b, { recursive: true });
+      for (const n of ['crontab', 'systemctl']) symlinkSync(join(HERE, 'fakebin', n), join(b, n));
+    };
+    const synced = (h) => { withFakes(h); mkdirSync(join(h, '.config', 'codeburn'), { recursive: true }); writeFileSync(join(h, '.config', 'codeburn', 'sync.json'), JSON.stringify({ baseUrl: CUR, clientId: 'fakeclient', tracesPath: '/v1/traces', issuer: 'https://auth.example.com' })); };
+    const envFor = (h) => ({ PRISM_NO_UPDATE_CHECK: '1', PATH: `${join(h, 'bin-cron')}:${binDir(h)}:/usr/bin:/bin` });
+    const calls = (h) => (existsSync(join(h, 'codeburn-calls.log')) ? readFileSync(join(h, 'codeburn-calls.log'), 'utf8').trim().split('\n').filter(Boolean) : []);
+    const stored = (h) => { try { return JSON.parse(readFileSync(join(h, '.config', 'codeburn', 'sync.json'), 'utf8')).baseUrl; } catch { return null; } };
+    const dialog = (page) => page.evaluate(() => { const d = document.querySelector('dialog.confirm[open]'); return d ? { title: d.querySelector('h2')?.textContent, text: d.innerText, cmd: d.querySelector('pre.cmd')?.textContent, run: d.querySelector('.actions button.run')?.textContent } : null; });
+    const drawerDone = (page) => page.waitForFunction(() => /exit \d+|timed out/.test(document.querySelector('#action-drawer')?.innerText || ''), null, { timeout: 60000 }).catch(() => {});
+
+    // A. No sync URL here: Sync to team opens the plain dialog (no --yes, no Current collector row).
+    {
+      const srv = await live('cburl-none', 'full', envFor(join(SCRATCH, 'e2e-cburl-none')), withFakes);
+      const { ctx, page, log } = await openCtx(srv);
+      out.log.push(...log);
+      await page.goto(srv.base + '/#settings/sync'); await sleep(800);
+      const o = out.cases.none = {};
+      o.currentRow = await page.locator('#settings b', { hasText: 'Current collector' }).count();
+      await page.fill('input.url', NEW);
+      await page.click('button:has-text("Sync to team")');
+      await sleep(300);
+      o.dialog = await dialog(page);
+      await page.click('dialog.confirm .actions button:has-text("Cancel")');
+      await ctx.close(); srv.proc.kill();
+    }
+
+    // B. A sync URL set: the Current collector row; Sync to team with another URL names both, runs --yes, the drawer links the sign-in.
+    const srv = await live('cburl', 'full', envFor(join(SCRATCH, 'e2e-cburl')), synced);
+    const H = srv.home;
+    const { ctx, page, log } = await openCtx(srv);
+    out.log.push(...log);
+    await page.goto(srv.base + '/#settings/sync'); await sleep(800);
+    const b = out.cases.change = {};
+    b.currentRow = await page.evaluate(() => [...document.querySelectorAll('#settings .srow')].map((r) => r.innerText.replace(/\s+/g, ' ')).find((t) => /^Current collector/.test(t)) || null);
+    await page.locator('#settings section', { hasText: 'Usage sync (codeburn)' }).first().screenshot({ path: join(SHOTS, 'codeburnurl-sync-current-1280.png') }).catch(() => {});
+    await page.fill('input.url', NEW);
+    await page.click('button:has-text("Sync to team")');
+    await sleep(300);
+    b.dialog = await dialog(page);
+    await page.screenshot({ path: join(SHOTS, 'codeburnurl-dialog-switch-1280.png') });
+    await page.check('dialog.confirm input[type=checkbox]');
+    await page.click('dialog.confirm .actions button.run');
+    await page.waitForSelector('#action-drawer [data-signin] a', { timeout: 20000 }).catch(() => {});
+    b.signIn = await page.evaluate(() => { const s = document.querySelector('#action-drawer [data-signin]'); const a = s?.querySelector('a'); return s ? { text: s.innerText, href: a?.getAttribute('href'), target: a?.getAttribute('target'), rel: a?.getAttribute('rel') } : null; });
+    b.command = await page.evaluate(() => document.querySelector('#action-drawer code')?.textContent);
+    await page.locator('#action-drawer').screenshot({ path: join(SHOTS, 'codeburnurl-drawer-signin-1280.png') }).catch(() => {});
+    await drawerDone(page);
+    b.status = await page.evaluate(() => document.querySelector('#action-drawer')?.innerText.slice(0, 200));
+    b.calls = calls(H);
+    b.stored = stored(H);
+    await sleep(1500);
+
+    // C. Re-run sync setup for the current URL: Cancel runs nothing; Re-run runs sync setup for the same URL with --yes.
+    const c = out.cases.rerun = {};
+    await page.goto(srv.base + '/#settings/sync'); await sleep(1000);
+    c.currentRow = await page.evaluate(() => [...document.querySelectorAll('#settings .srow')].map((r) => r.innerText.replace(/\s+/g, ' ')).find((t) => /^Current collector/.test(t)) || null);
+    const before = calls(H).length;
+    await page.click('button:has-text("Re-run sync setup")');
+    await sleep(300);
+    c.dialog = await dialog(page);
+    await page.screenshot({ path: join(SHOTS, 'codeburnurl-dialog-rerun-1280.png') });
+    await page.click('dialog.confirm .actions button:has-text("Cancel")');
+    await sleep(800);
+    c.afterCancel = calls(H).length - before;
+    await page.click('button:has-text("Re-run sync setup")');
+    await sleep(300);
+    await page.check('dialog.confirm input[type=checkbox]');
+    await page.click('dialog.confirm .actions button.run');
+    await page.waitForSelector('#action-drawer [data-signin] a', { timeout: 20000 }).catch(() => {});
+    c.signIn = await page.evaluate(() => !!document.querySelector('#action-drawer [data-signin] a'));
+    c.command = await page.evaluate(() => document.querySelector('#action-drawer code')?.textContent);
+    await drawerDone(page);
+    c.status = await page.evaluate(() => document.querySelector('#action-drawer')?.innerText.slice(0, 200));
+    c.calls = calls(H).slice(before);
+    // Phone width: the row and the dialog fit.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(srv.base + '/#settings/sync'); await sleep(800);
+    c.phone = await layoutCheck(page);
+    await page.locator('#settings section', { hasText: 'Usage sync (codeburn)' }).first().screenshot({ path: join(SHOTS, 'codeburnurl-sync-current-390.png') }).catch(() => {});
+    await ctx.close(); srv.proc.kill();
+
+    // D. The CLI with stdin closed and no --yes (what the drawer did before 1.21.13): asks nothing, keeps the URL, exits 0.
+    const d = out.cases.notty = {};
+    const before2 = calls(H).length;
+    const t0 = Date.now();
+    const r = spawnSync(process.execPath, [ENTRY, 'enable', 'codeburn', '--url', CUR], { cwd: H, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'], env: demoEnv(H, envFor(H)) });
+    d.ms = Date.now() - t0;
+    d.exit = r.status;
+    d.out = (r.stdout + r.stderr).split('\n').filter((l) => /syncs to|No terminal|Endpoint/.test(l)).join('\n');
+    d.setupCalls = calls(H).slice(before2).filter((l) => l.startsWith('sync setup'));
+    d.stored = stored(H);
+  }
 } catch (e) {
   R.fatal = String(e.stack || e);
 } finally {
@@ -2795,6 +2895,26 @@ function verdicts(R) {
     const M = V.remember || {};
     add('RM5', 'a failed save of the remembered repo says so under the picker, keeps the pick, and leaves no temp file',
       /^Not remembered for next time: could not save ~\/\.prism\/dashboard\.json: E[A-Z]+\.$/.test(M.note || '') && M.selected === M.want && !(M.prism || []).some((f) => f.endsWith('.tmp')), JSON.stringify(M));
+  }
+  if (S.codeburnurl) {
+    const C = S.codeburnurl.cases || {}, n = C.none || {}, b = C.change || {}, c = C.rerun || {}, d = C.notty || {};
+    add('CU1', 'no sync URL yet: Sync to team opens the plain dialog (no --yes) and there is no Current collector row',
+      n.currentRow === 0 && n.dialog?.title === "Sync to my team's PRISM" && n.dialog.cmd === 'prism-cli enable codeburn --url https://collector2.example.com', JSON.stringify(n).slice(0, 400));
+    add('CU2', 'a sync URL set: Current collector row; Sync to team with a new URL confirms naming both URLs and runs --yes',
+      /^Current collector https:\/\/collector\.example\.com Re-run sync setup/.test(b.currentRow || '') && b.dialog?.title === 'Switch to https://collector2.example.com'
+      && /syncs to https:\/\/collector\.example\.com now/.test(b.dialog.text) && b.dialog.cmd === 'prism-cli enable codeburn --yes --url https://collector2.example.com' && b.dialog.run === 'Switch'
+      && b.command === 'prism-cli enable codeburn --yes --url https://collector2.example.com', JSON.stringify(b).slice(0, 500));
+    add('CU3', 'the switch runs codeburn sync setup for the new URL and the drawer links the sign-in page (https, new tab) with the port to forward',
+      b.calls?.includes('sync setup https://collector2.example.com') && b.stored === 'https://collector2.example.com' && /exit 0/.test(b.status || '')
+      && /^https:\/\/auth\.example\.com\/oauth2\/authorize\?/.test(b.signIn?.href || '') && b.signIn.target === '_blank' && b.signIn.rel === 'noopener noreferrer' && /forward port 53682/.test(b.signIn.text), JSON.stringify(b).slice(0, 500));
+    add('CU4', 'Re-run sync setup for the same URL: its own dialog, Cancel runs nothing, Run runs sync setup again with --yes and shows the sign-in link',
+      /^Current collector https:\/\/collector2\.example\.com/.test(c.currentRow || '') && c.dialog?.title === 'Re-run sync setup for https://collector2.example.com' && c.dialog.run === 'Re-run sync setup'
+      && c.afterCancel === 0 && c.signIn && c.command === 'prism-cli enable codeburn --yes --url https://collector2.example.com' && c.calls?.includes('sync setup https://collector2.example.com') && /exit 0/.test(c.status || ''), JSON.stringify(c).slice(0, 500));
+    add('CU5', 'the Usage sync card fits at 390 px with the Current collector row', c.phone && c.phone.scrollWidth <= c.phone.width + 1 && !c.phone.offRight.length, JSON.stringify(c.phone || {}).slice(0, 300));
+    add('CU6', 'enable codeburn with stdin closed and no --yes: no prompt, keeps the URL, prints the re-run command, exits 0 at once',
+      d.exit === 0 && d.ms < 20000 && !d.setupCalls?.length && d.stored === 'https://collector2.example.com' && /No terminal to ask, so kept/.test(d.out || '') && /prism-cli enable codeburn --url https:\/\/collector\.example\.com --yes/.test(d.out || ''), JSON.stringify(d).slice(0, 400));
+    const errs = (S.codeburnurl.log || []).filter((l) => l.type === 'pageerror' || l.type === 'console.error');
+    add('CU7', 'no page errors in the codeburnurl suite', !errs.length, JSON.stringify(errs).slice(0, 300));
   }
   if (S.steering) {
     const C = S.steering.cases || {}, m = C.missing || {}, i = C.installed || {}, u = C.user || {};
